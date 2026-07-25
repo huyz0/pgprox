@@ -211,7 +211,7 @@ field numbers may still change.
   Acceptance: a refused token is not retried on every reconnect, and the
   negative TTL is shorter than the positive one so a revocation reversal is not
   stuck behind it.
-- [ ] `M2.7` Algorithm allowlist on the JWT header.
+- [x] `M2.7` Algorithm allowlist on the JWT header.
   Acceptance: `none` and the `HS*` family are rejected before the sidecar is
   called; the six approved algorithms pass. The proxy still does not verify
   signatures.
