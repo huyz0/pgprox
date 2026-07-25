@@ -23,6 +23,9 @@ confidence-threshold = 0.93
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace crates are referenced by path and have no version by design.
+# Inventing one to satisfy the ban would be a fiction the lockfile ignores.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

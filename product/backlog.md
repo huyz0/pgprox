@@ -375,6 +375,16 @@ rather than remembered.
   Acceptance: a script rejects a seeded sideways dependency, and rejects
   `pgprox-testkit` appearing as a runtime dependency of anything.
 
+- [x] `M1F.33` `cargo deny` has been failing since M1.10 and nothing noticed,
+  because it runs only in CI and the milestone gates, not in the pre-commit
+  path. A supply-chain check nobody runs is a supply-chain check nobody has.
+  Acceptance: it runs on every commit that touches a manifest or the lockfile.
+- [x] `M1F.34` `rustls-pemfile` is flagged unmaintained by RustSec. Migrate to
+  the PEM support now in `rustls-pki-types`, which is where it went.
+- [x] `M1F.35` Workspace path dependencies trip the wildcard ban. They have no
+  version by design, so the ban needs `allow-wildcard-paths`, not a version
+  invented for a local path.
+
 ### Group G: close
 
 - [ ] `M1F.26` Close M1F. Acceptance: `scripts/m1f-complete.sh` exits zero.

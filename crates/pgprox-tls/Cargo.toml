@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 
 [features]
 default = []
@@ -17,7 +18,9 @@ integration = []
 [dependencies]
 pgprox-core = { path = "../pgprox-core" }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"] }
-rustls-pemfile = "2"
+# PEM parsing lives in rustls-pki-types now; rustls-pemfile is unmaintained
+# per RustSec. Same maintainers, same code, current home.
+rustls-pki-types = { version = "1", features = ["std"] }
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"] }
 thiserror.workspace = true
 

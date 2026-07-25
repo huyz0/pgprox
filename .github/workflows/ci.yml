@@ -48,12 +48,8 @@ jobs:
         with:
           tool: cargo-deny
       - name: cargo deny
-        run: |
-          if [ -f deny.toml ]; then
-            cargo deny check
-          else
-            echo "no deny.toml yet (pre-M0), skipping"
-          fi
+        # The same script the pre-commit hook runs, so the two cannot drift.
+        run: scripts/check-deps.sh
 
   secrets:
     name: secret scan

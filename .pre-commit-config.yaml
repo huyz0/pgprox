@@ -56,6 +56,16 @@ repos:
         pass_filenames: false
         files: '(AGENTS\.md|SKILL\.md|^scripts/|\.pre-commit-config\.yaml)$'
 
+      - id: supply-chain
+        name: cargo deny (advisories, licences, bans, sources)
+        entry: scripts/check-deps.sh
+        language: script
+        pass_filenames: false
+        # Only when a manifest or the lockfile moves, so an ordinary commit
+        # pays nothing. This ran only in CI and the milestone gates before, and
+        # went red for several commits without anyone noticing.
+        files: '(Cargo\.toml|Cargo\.lock|deny\.toml)$'
+
       - id: layering
         name: crate dependency rule
         entry: scripts/check-layering.sh

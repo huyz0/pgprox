@@ -20,6 +20,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use rustls::pki_types::pem::PemObject as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 
@@ -72,17 +73,13 @@ pub enum TlsError {
 ///
 /// Fails if the file cannot be read or holds no certificate.
 pub fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError> {
-    let pem = std::fs::read(path).map_err(|source| TlsError::Io {
-        path: path.to_owned(),
-        source,
-    })?;
-
-    let certs: Vec<_> = rustls_pemfile::certs(&mut pem.as_slice())
-        .collect::<Result<_, _>>()
-        .map_err(|source| TlsError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
+    // A corrupt PEM block must be an error rather than an empty result, since
+    // "no certificates here" is indistinguishable from an empty file and sends
+    // an operator looking in the wrong place.
+    let certs = CertificateDer::pem_file_iter(path)
+        .map_err(|e| pem_error(path, &e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| pem_error(path, &e))?;
 
     if certs.is_empty() {
         return Err(TlsError::NoCertificates {
@@ -98,19 +95,23 @@ pub fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError>
 ///
 /// Fails if the file cannot be read or holds no key.
 pub fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsError> {
-    let pem = std::fs::read(path).map_err(|source| TlsError::Io {
-        path: path.to_owned(),
-        source,
-    })?;
+    PrivateKeyDer::from_pem_file(path).map_err(|e| match e {
+        rustls::pki_types::pem::Error::NoItemsFound => TlsError::NoPrivateKey {
+            path: path.to_owned(),
+        },
+        other => pem_error(path, &other),
+    })
+}
 
-    rustls_pemfile::private_key(&mut pem.as_slice())
-        .map_err(|source| TlsError::Io {
-            path: path.to_owned(),
-            source,
-        })?
-        .ok_or_else(|| TlsError::NoPrivateKey {
-            path: path.to_owned(),
-        })
+/// Maps a PEM parse failure onto this crate's error, keeping the path.
+///
+/// A missing file and a corrupt one are both `Io` here, because both mean an
+/// operator should go and look at that path.
+fn pem_error(path: &Path, error: &rustls::pki_types::pem::Error) -> TlsError {
+    TlsError::Io {
+        path: path.to_owned(),
+        source: std::io::Error::other(error.to_string()),
+    }
 }
 
 /// Builds the listener's TLS configuration.

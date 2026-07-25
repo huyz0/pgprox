@@ -8,6 +8,9 @@ edition = "2024"
 rust-version = "1.94"
 license = "Apache-2.0"
 repository = "https://github.com/pgprox/pgprox"
+# An application, not a library set. Nothing here goes to crates.io, and saying
+# so is what lets path dependencies be path dependencies.
+publish = false
 
 [workspace.dependencies]
 async-trait = "0.1"
