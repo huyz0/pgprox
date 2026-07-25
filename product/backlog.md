@@ -155,7 +155,7 @@ drivers. Between them that covers every message the codec claims to handle.
 - [x] `M1.6` Startup dispatch: `SSLRequest`, `GSSENCRequest`, `CancelRequest`,
   `StartupMessage`, and protocol version negotiation.
   Acceptance: a client asking for 3.2 gets 3.2 or a `NegotiateProtocolVersion`
-  down to 3.0; a `CancelRequest` yields the encoded node and counter.
+  down to 3.0; a `CancelRequest` yields the encoded node and secret.
 - [x] `M1.7` Session state machine: transaction status tracking and
   extended-query sequence tracking.
   Acceptance: release is permitted only at `ReadyForQuery('I')` with no sequence
@@ -394,6 +394,13 @@ rather than remembered.
 ### Group G: close
 
 - [ ] `M1F.26` Close M1F. Acceptance: `scripts/m1f-complete.sh` exits zero.
+
+Remaining after five review rounds, all planned work rather than discovered
+defects: M1F.15 and M1F.16 are protocol 3.2, gated on the M1F.30 spec's open
+question; M1F.21 is the session-parameter allowlist ADR 0001 named; M1F.22 is
+confirming the GSSAPI refusal against a real GSSAPI client; M1F.24 runs the
+driver matrix against real Postgres rather than only the harness; M1F.25 seeds
+the fuzz corpus from the reference proxies.
 
 ## M2: auth and sidecar (track B)
 
