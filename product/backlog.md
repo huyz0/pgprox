@@ -134,7 +134,7 @@ drivers. Between them that covers every message the codec claims to handle.
 - [x] `M1.1` Define M1: this decomposition, and `scripts/conformance.sh`.
   Acceptance: the script exits non-zero now, naming what is missing, and reports
   which drivers ran versus were skipped rather than silently narrowing.
-- [ ] `M1.2` `pgprox-proto` crate and frame primitives: message type byte,
+- [x] `M1.2` `pgprox-proto` crate and frame primitives: message type byte,
   length prefix, incomplete-frame handling.
   Acceptance: a frame split across arbitrary byte boundaries reassembles; a
   length larger than the configured maximum is an error, never an allocation.

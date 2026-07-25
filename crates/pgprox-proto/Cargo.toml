@@ -1,0 +1,23 @@
+[package]
+name = "pgprox-proto"
+description = "Postgres wire protocol codec, both directions."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Tests that need Docker or a real Postgres. Excluded from tier 1.
+integration = []
+
+[dependencies]
+pgprox-core = { path = "../pgprox-core" }
+thiserror.workspace = true
+
+[dev-dependencies]
+pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true
