@@ -36,6 +36,7 @@ use pgprox_proto::frame::Direction;
 use pgprox_proto::frame::{DEFAULT_MAX_FRAME, Decoded, Frame, Tag, decode};
 use pgprox_proto::relay::FrameRelay;
 use pgprox_proto::session::SessionState;
+use pgprox_testkit::{Readiness, classify_startup_reply};
 
 /// A Postgres the tests can connect to.
 ///
@@ -106,12 +107,11 @@ impl Postgres {
         pg
     }
 
-    /// Blocks until the server completes a startup exchange without an error.
+    /// Blocks until the server is genuinely serving.
     ///
-    /// A container accepts TCP and answers a startup well before its databases
-    /// exist, replying `57P03 the database system is starting up`. Sleeping a
-    /// fixed amount instead of retrying is how this test suite would become
-    /// intermittently red on a loaded machine.
+    /// The classification lives in `pgprox-testkit` because this exact bug,
+    /// treating a `57P03` "starting up" reply as ready, shipped here first and
+    /// was then written again from scratch in the SCRAM tests.
     fn wait_ready(&self) {
         let deadline = Instant::now() + Duration::from_secs(60);
         let mut last = String::from("never connected");
@@ -121,8 +121,17 @@ impl Postgres {
                     sock.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
                     if send_startup(&mut sock, "postgres", "conformance").is_ok() {
                         let mut probe = Conn::new(sock);
-                        match probe.read_until_ready() {
-                            Ok(_) => return,
+                        match probe.first_reply() {
+                            Ok((tag, body)) => match classify_startup_reply(tag, &body) {
+                                Readiness::Ready => return,
+                                Readiness::Failed => {
+                                    last = format!(
+                                        "server refused the probe: {}",
+                                        String::from_utf8_lossy(&body)
+                                    );
+                                }
+                                Readiness::NotYet => last = "still starting".into(),
+                            },
                             Err(e) => last = e.to_string(),
                         }
                     }
@@ -208,6 +217,15 @@ impl Conn {
             }
             self.buf.extend_from_slice(&chunk[..n]);
         }
+    }
+
+    /// Reads one message and returns its tag and body, for the readiness probe.
+    fn first_reply(&mut self) -> std::io::Result<(u8, Vec<u8>)> {
+        let bytes = self.next_frame_bytes()?;
+        let Decoded::Frame(frame, _) = decode(&bytes, DEFAULT_MAX_FRAME).unwrap() else {
+            unreachable!("already known complete");
+        };
+        Ok((frame.tag().get(), frame.body().to_vec()))
     }
 
     /// Reads frames until `ReadyForQuery`, returning every tag seen.

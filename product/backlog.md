@@ -340,7 +340,7 @@ pgdog carries a whole logical-decoding subtree. We only track the mode.
 Found by reviewing the work rather than by a gate, which is why they are listed
 rather than remembered.
 
-- [ ] `M1F.27` A shared Docker readiness helper. The M1.11 probe bug, accepting
+- [x] `M1F.27` A shared Docker readiness helper. The M1.11 probe bug, accepting
   any message as ready including the `57P03` a starting container sends, was
   reproduced verbatim in `scram_live.rs`. The same mistake twice means the fix
   belongs in one place rather than in whoever writes the next probe.

@@ -1,0 +1,14 @@
+[package]
+name = "pgprox-testkit"
+description = "Shared test scaffolding: container lifecycle and readiness probes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

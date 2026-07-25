@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use pgprox_auth::scram;
+use pgprox_testkit::{Readiness, classify_startup_reply};
 
 /// Postgres 18 with `scram-sha-256` required for every host connection.
 struct ScramPostgres {
@@ -86,15 +87,15 @@ impl ScramPostgres {
                 sock.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
                 if send_startup(&mut sock).is_ok() {
                     let mut buf = Vec::new();
-                    // An Authentication message, specifically. A starting
-                    // container answers a startup with ErrorResponse 57P03, so
-                    // accepting any message reports ready too early. The same
-                    // mistake made the M1.11 Postgres probe pass on 17 and fail
-                    // on 18.
-                    if let Ok((tag, _)) = read_message(&mut sock, &mut buf)
-                        && tag == b'R'
-                    {
-                        return;
+                    if let Ok((tag, body)) = read_message(&mut sock, &mut buf) {
+                        match classify_startup_reply(tag, &body) {
+                            Readiness::Ready => return,
+                            Readiness::Failed => panic!(
+                                "Postgres rejected the probe: {}",
+                                String::from_utf8_lossy(&body)
+                            ),
+                            Readiness::NotYet => {}
+                        }
                     }
                 }
             }

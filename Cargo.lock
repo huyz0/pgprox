@@ -843,6 +843,7 @@ dependencies = [
  "base64",
  "hyper-util",
  "pgprox-core",
+ "pgprox-testkit",
  "prost",
  "serde_json",
  "sha2",
@@ -872,10 +873,15 @@ name = "pgprox-proto"
 version = "0.1.0"
 dependencies = [
  "pgprox-core",
+ "pgprox-testkit",
  "proptest",
  "thiserror",
  "tokio",
 ]
+
+[[package]]
+name = "pgprox-testkit"
+version = "0.1.0"
 
 [[package]]
 name = "pgprox-tls"
