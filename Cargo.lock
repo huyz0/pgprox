@@ -861,6 +861,7 @@ dependencies = [
  "pgprox-core",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
  "tower",
  "utoipa",

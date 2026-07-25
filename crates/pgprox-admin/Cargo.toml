@@ -14,6 +14,7 @@ axum = { workspace = true, features = ["json", "query", "tokio", "http1"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 utoipa.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }

@@ -725,7 +725,7 @@ that already took sixty seconds to arrive.
 - [x] `M4.12` The OpenAPI document, generated from the handlers. Acceptance:
   the generated document validates, and it describes every route the router
   actually serves rather than a hand-written list that can drift.
-- [ ] `M4.13` The `SHOW` parser. Acceptance: `SHOW POOLS`, `SHOW SERVERS`,
+- [x] `M4.13` The `SHOW` parser. Acceptance: `SHOW POOLS`, `SHOW SERVERS`,
   `SHOW CLIENTS`, `SHOW PEERS`, `SHOW QUOTA`, `SHOW TENANTS`, `SHOW CONFIG` and
   `SHOW STATS` each parse, each has a `SHOW LOCAL` form, and an unknown `SHOW`
   is an error rather than an empty result.
