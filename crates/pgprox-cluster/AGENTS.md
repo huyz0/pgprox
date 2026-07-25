@@ -26,9 +26,19 @@ purpose, thousands of times, in milliseconds.
 - **Determinism is not negotiable.** Nothing uses the system clock or the
   system RNG. A failing seed must replay exactly, or a property test is an
   anecdote rather than evidence.
-- On leader change, the new leader waits one full lease TTL before granting from
-  the free pool. Do not optimize this away: it is what makes over-granting
-  impossible across a failover.
+- The guaranteed share is divided by the **configured** fleet size, never by the
+  live member count. A node that can see only itself must not conclude it is the
+  whole cluster.
+- A leader may grant only while it can see a strict majority of the fleet.
+  Leading a partitioned minority is not leading.
+- On taking office, a leader waits `ttl + suspect_after` before granting, and
+  regaining a quorum counts as taking office. Do not shorten this to `ttl`: a
+  failure detector reports the past, so a node can arm its clock on a quorum it
+  has already lost while the other leader is still granting.
+- These three came out of `guaranteed_plus_leased_never_exceeds_the_cap`, not out
+  of reading the design. Every one of them looked unnecessary until the test
+  produced the schedule that needed it. Treat a change that removes one as
+  needing a new proof, not a new argument.
 - `QuotaLease::count` already returns zero once expired. Rely on that rather
   than checking expiry separately, so a forgotten check cannot over-subscribe.
 - A failing seed is committed as a regression case, named for what it broke.

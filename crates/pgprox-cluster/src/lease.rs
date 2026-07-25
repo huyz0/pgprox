@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use pgprox_core::cluster::{MembershipView, QuotaError, QuotaLease};
+use pgprox_core::cluster::{QuotaError, QuotaLease};
 use pgprox_core::ids::{NodeId, ServerId};
 use std::time::Instant;
 
@@ -92,19 +92,29 @@ impl LeaseLedger {
         }
     }
 
-    /// Records that this node has become leader.
+    /// Records whether this node is currently able to lead.
     ///
-    /// Starts the takeover wait. Called on every membership change so a node
-    /// that was already leader is not reset: re-arming the wait on every gossip
-    /// round would stall granting indefinitely in a churning cluster.
-    pub fn observe_membership(&mut self, view: &MembershipView, now: Instant) {
-        let is_leader = view.is_leader();
-        match (is_leader, self.took_office) {
+    /// Takes a decision rather than a view, because being the lowest active ID
+    /// is not sufficient on its own: the caller must also have established that
+    /// it can see enough of the fleet to act. A node that was leading a
+    /// partitioned minority has not been leading in any sense that matters, and
+    /// passing `true` throughout would let it grant the instant the partition
+    /// heals, against capacity the majority's leader had already handed out.
+    /// Passing `false` while it cannot act makes regaining contact a fresh
+    /// takeover, which serves the full wait.
+    ///
+    /// Starts the takeover wait on a false-to-true transition. Called on every
+    /// gossip round, so a node that was already leading is deliberately not
+    /// reset: re-arming every round would stall granting forever in a churning
+    /// cluster.
+    pub fn observe_leadership(&mut self, leading: bool, now: Instant) {
+        match (leading, self.took_office) {
             (true, None) => self.took_office = Some(now),
             (false, Some(_)) => {
-                // Lost office. The ledger is discarded rather than kept, because
-                // its contents describe grants this node can no longer renew,
-                // and a stale ledger is worse than an empty one.
+                // Lost office, or lost the ability to act on it. The ledger is
+                // discarded rather than kept, because its contents describe
+                // grants this node can no longer renew, and a stale ledger is
+                // worse than an empty one.
                 self.took_office = None;
                 self.grants.clear();
             }
@@ -205,7 +215,6 @@ impl LeaseLedger {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use pgprox_core::cluster::{Member, NodeMode};
 
     fn node(n: u16) -> NodeId {
         NodeId::new(n)
@@ -213,18 +222,6 @@ mod tests {
 
     fn server() -> ServerId {
         ServerId::new("db-1", 5432)
-    }
-
-    fn view(local: u16, ids: &[u16]) -> MembershipView {
-        MembershipView::new(
-            node(local),
-            ids.iter()
-                .map(|id| Member {
-                    id: node(*id),
-                    mode: NodeMode::Active,
-                })
-                .collect(),
-        )
     }
 
     /// A ledger whose takeover wait has already elapsed.
@@ -235,7 +232,7 @@ mod tests {
         let config = LeaseConfig::default();
         let mut ledger = LeaseLedger::new(pool, config);
         let start = Instant::now();
-        ledger.observe_membership(&view(1, &[1, 2, 3]), start);
+        ledger.observe_leadership(true, start);
         (ledger, start + config.takeover_wait)
     }
 
@@ -247,7 +244,7 @@ mod tests {
         let config = LeaseConfig::default();
         let mut ledger = LeaseLedger::new(100, config);
         let start = Instant::now();
-        ledger.observe_membership(&view(1, &[1, 2, 3]), start);
+        ledger.observe_leadership(true, start);
 
         assert!(!ledger.can_grant(start));
         assert_eq!(
@@ -271,7 +268,7 @@ mod tests {
         let mut ledger = LeaseLedger::new(100, LeaseConfig::default());
         let start = Instant::now();
         // Node 3 is not the lowest ID, so it is not the leader.
-        ledger.observe_membership(&view(3, &[1, 2, 3]), start);
+        ledger.observe_leadership(false, start);
 
         let much_later = start + Duration::from_secs(100);
         assert!(!ledger.can_grant(much_later));
@@ -288,14 +285,11 @@ mod tests {
         let config = LeaseConfig::default();
         let mut ledger = LeaseLedger::new(100, config);
         let start = Instant::now();
-        ledger.observe_membership(&view(1, &[1, 2, 3]), start);
+        ledger.observe_leadership(true, start);
 
         let ready = start + config.takeover_wait;
         for tick in 1..20 {
-            ledger.observe_membership(
-                &view(1, &[1, 2, 3]),
-                start + Duration::from_millis(tick * 100),
-            );
+            ledger.observe_leadership(true, start + Duration::from_millis(tick * 100));
         }
         assert!(ledger.can_grant(ready), "the wait was re-armed by churn");
     }
@@ -310,7 +304,7 @@ mod tests {
         assert_eq!(ledger.outstanding(now), 40);
 
         // Node 0 appears and takes the leadership.
-        ledger.observe_membership(&view(1, &[0, 1, 2, 3]), now);
+        ledger.observe_leadership(false, now);
         assert!(!ledger.can_grant(now));
         assert_eq!(ledger.outstanding(now), 0, "a stale ledger survived");
     }

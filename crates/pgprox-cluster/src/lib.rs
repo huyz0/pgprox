@@ -14,14 +14,18 @@
 //! Partitions must therefore cause under-subscription, never over-subscription.
 //! Slow beats down.
 
+pub mod coordinator;
 pub mod digest;
 pub mod lease;
+pub mod membership;
 pub mod quota;
 pub mod reservation;
 pub mod shed;
 
+pub use coordinator::{CoordinatorConfig, NodeCoordinator};
 pub use digest::{DigestStore, MergeOutcome, VersionedDigest};
 pub use lease::{LeaseConfig, LeaseLedger};
+pub use membership::{Membership, MembershipConfig, NodeState};
 pub use quota::{NodeAllowance, QuotaSplit, split};
 pub use reservation::{ReservationConfig, Reservations, TenantEntitlement};
 pub use shed::{ShedConfig, ShedCtx, ShedDecision, ShedRefusal};

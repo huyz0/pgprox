@@ -13,8 +13,23 @@
 //! membership size, including while membership is disagreed upon.
 //!
 //! Integer division is what makes this safe rather than merely likely. The
-//! remainder is deliberately left in the free pool instead of being distributed,
-//! because distributing it is exactly how the sum creeps over the cap.
+//! division remainder is deliberately given to nobody, neither spread across
+//! nodes nor added to the free pool, because either is how the sum creeps over
+//! the cap.
+//!
+//! # Why the free pool ignores the remainder
+//!
+//! The free pool is `cap − floor(cap × fraction)`, which does not mention the
+//! node count. That independence is the point. Leases outlive the membership
+//! view they were granted under, so a pool that grew when membership shrank
+//! would still be outstanding when membership grew back and the guaranteed
+//! total rose to meet it. At cap 100 and fraction 0.5 that is a free pool of 52
+//! granted at three nodes, still live against a guaranteed total of 50 at five,
+//! for 102 against a cap of 100.
+//!
+//! The cost is at most `nodes − 1` connections left unused. The alternative is a
+//! cap breach during ordinary scale-up, which is the failure this crate exists
+//! to prevent.
 
 use pgprox_core::ids::ServerId;
 
@@ -23,7 +38,10 @@ use pgprox_core::ids::ServerId;
 pub struct QuotaSplit {
     /// Connections each live node may open without asking.
     pub guaranteed_per_node: u32,
-    /// Connections the leader may lease out, including the division remainder.
+    /// Connections the leader may lease out.
+    ///
+    /// Independent of [`QuotaSplit::nodes`], so a membership change never
+    /// changes how much the leader may grant. See the module docs.
     pub free_pool: u32,
     /// The cap this was derived from.
     pub cap: u32,
@@ -69,9 +87,10 @@ pub fn split(cap: u32, nodes: u32, guaranteed_fraction: f64) -> QuotaSplit {
 
     let fraction = guaranteed_fraction.clamp(0.0, 1.0);
 
-    // Round down at every step. The remainder stays in the free pool, where it
-    // is handed out one lease at a time under the leader's accounting, rather
-    // than being spread across nodes that each act on it independently.
+    // Round down at every step. Whatever the division leaves over is reserved
+    // for nobody: spreading it across nodes lets each act on it independently,
+    // and adding it to the free pool makes the pool depend on the node count,
+    // which is the membership-change breach described in the module docs.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -82,7 +101,7 @@ pub fn split(cap: u32, nodes: u32, guaranteed_fraction: f64) -> QuotaSplit {
 
     // Derived by subtraction, not by a second multiplication, so the two halves
     // cannot drift apart through rounding.
-    let free_pool = cap - guaranteed_per_node * nodes;
+    let free_pool = cap - guaranteed_total;
 
     QuotaSplit {
         guaranteed_per_node,
@@ -149,26 +168,49 @@ mod tests {
     }
 
     #[test]
-    fn the_remainder_stays_in_the_free_pool() {
+    fn the_remainder_is_given_to_nobody() {
         // Distributing it is how the sum creeps over the cap: each node would
-        // act on its extra independently.
+        // act on its extra independently. Putting it in the free pool is
+        // subtler and is what `the_free_pool_does_not_move_with_membership`
+        // covers.
         let s = split(100, 3, 0.5);
         assert_eq!(s.guaranteed_per_node, 16, "50 / 3 rounds down");
-        assert_eq!(s.free_pool, 100 - 48, "the remainder went to the pool");
-        assert_eq!(s.total(), 100, "nothing was lost or invented");
+        assert_eq!(s.free_pool, 50, "the pool is cap minus the guaranteed half");
+        assert_eq!(s.total(), 98, "two connections are deliberately stranded");
     }
 
     #[test]
-    fn nothing_is_lost_to_rounding() {
-        // The free pool is derived by subtraction rather than a second
-        // multiplication, so the halves cannot drift apart.
+    fn the_free_pool_does_not_move_with_membership() {
+        // The regression. A pool that grew when membership shrank would still
+        // be outstanding when membership grew back, because leases outlive the
+        // view they were granted under. At cap 100 and fraction 0.5 that was a
+        // pool of 52 granted at three nodes against a guaranteed total of 50 at
+        // five nodes: 102 against a cap of 100.
+        for cap in [10_u32, 100, 4096, 65535] {
+            for fraction in [0.0, 0.25, 0.5, 0.8, 1.0] {
+                let pools: Vec<u32> = (1_u32..=12)
+                    .map(|n| split(cap, n, fraction).free_pool)
+                    .collect();
+                assert!(
+                    pools.windows(2).all(|w| w[0] == w[1]),
+                    "cap={cap} fraction={fraction}: free pool moved with membership: {pools:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_worst_case_waste_is_one_connection_short_of_the_node_count() {
+        // What the membership-independent pool costs. At a realistic cap this
+        // is four connections out of thousands; the alternative is a breach
+        // during ordinary scale-up.
         for cap in [1_u32, 7, 99, 100, 4096, 65535] {
             for nodes in 1_u32..=9 {
                 let s = split(cap, nodes, 0.5);
-                assert_eq!(
-                    s.guaranteed_per_node * nodes + s.free_pool,
-                    cap,
-                    "cap={cap} nodes={nodes} did not account for every connection"
+                let stranded = cap - s.total();
+                assert!(
+                    stranded < nodes,
+                    "cap={cap} nodes={nodes} stranded {stranded} connections"
                 );
             }
         }
@@ -184,11 +226,13 @@ mod tests {
     }
 
     #[test]
-    fn a_fraction_of_one_still_leaves_the_remainder_leasable() {
+    fn a_fraction_of_one_leaves_nothing_to_lease() {
+        // Every connection is guaranteed, so there is no leader involvement at
+        // all. The division remainder is stranded rather than leasable.
         let s = split(100, 3, 1.0);
         assert_eq!(s.guaranteed_per_node, 33);
-        assert_eq!(s.free_pool, 1, "99 guaranteed, one left over");
-        assert_eq!(s.total(), 100);
+        assert_eq!(s.free_pool, 0, "a fully guaranteed cap has no free pool");
+        assert_eq!(s.total(), 99);
     }
 
     #[test]
@@ -223,10 +267,10 @@ mod tests {
     #[test]
     fn a_cap_smaller_than_the_node_count_guarantees_nothing() {
         // Five nodes and three connections: nobody gets a guaranteed share, and
-        // all three are leased one at a time. Slow, and never over the cap.
+        // what is left is leased one at a time. Slow, and never over the cap.
         let s = split(3, 5, 0.5);
         assert_eq!(s.guaranteed_per_node, 0);
-        assert_eq!(s.free_pool, 3);
+        assert_eq!(s.free_pool, 2, "floor(3 x 0.5) is stranded");
         assert!(s.total() <= 3);
     }
 

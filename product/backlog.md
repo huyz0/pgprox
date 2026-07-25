@@ -445,8 +445,8 @@ found in staging.
 - [x] `M3.8` Gossip digest encoding, and merging a peer's digest into the local
   view. Acceptance: a digest round-trips, and merging is order-independent so
   two nodes converge regardless of delivery order.
-- [ ] `M3.9` The `ClusterCoordinator` implementation, wiring the above together.
-- [ ] `M3.10` The invariant, as a property test over randomized schedules
+- [x] `M3.9` The `ClusterCoordinator` implementation, wiring the above together.
+- [x] `M3.10` The invariant, as a property test over randomized schedules
   including partitions, leader loss and simultaneous restarts. Acceptance: a
   failing seed is committed as a regression case.
 - [ ] `M3.11` Close M3.
