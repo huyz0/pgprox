@@ -19,6 +19,7 @@ pub mod buf;
 pub mod clock;
 pub mod error;
 pub mod ids;
+pub mod pool;
 pub mod secret;
 
 pub use auth::{AuthRequest, Backend, ClaimSet, Grant, PoolHints, PoolMode, TlsMode};
@@ -26,4 +27,5 @@ pub use buf::{BufferSlab, PooledBuf};
 pub use clock::{Clock, SystemClock};
 pub use error::{AuthRejection, ClientError, SqlState};
 pub use ids::{ConnId, Lsn, NodeId, PoolKey, ServerId, TenantId};
+pub use pool::{PoolError, PoolStats, ReleaseOutcome, UpstreamGuard, UpstreamPool};
 pub use secret::SecretString;
