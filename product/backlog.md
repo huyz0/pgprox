@@ -581,7 +581,7 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
   by the router with no await, plus the session write watermark. Acceptance: a
   replica behind the watermark is never eligible, and a session that has never
   written accepts any healthy replica.
-- [ ] `M5.6` The `Router` implementation over `route::decide`, with the target
+- [x] `M5.6` The `Router` implementation over `route::decide`, with the target
   fixed at the transaction's first statement. Acceptance: the second statement
   of a transaction goes where the first did, whatever its own class.
 - [ ] `M5.7` A fuzz target for the classifier. Acceptance: it builds and runs a
