@@ -425,7 +425,7 @@ found in staging.
 - [x] `M3.2` `pgprox-cluster` crate and the deterministic simulation: virtual
   clock, an injectable network that can delay, drop, reorder and partition, and
   seeded scheduling. Acceptance: the same seed produces the same run twice.
-- [ ] `M3.3` Quota arithmetic as a pure function: guaranteed share per node from
+- [x] `M3.3` Quota arithmetic as a pure function: guaranteed share per node from
   the cap and live membership, and the leasable free pool. Acceptance: the sum
   can never exceed the cap for any membership size, checked exhaustively for
   small N and by property test beyond.
