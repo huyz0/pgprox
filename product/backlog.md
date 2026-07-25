@@ -687,7 +687,7 @@ that already took sixty seconds to arrive.
   `pgprox_core::admin` contract with its fake. Acceptance: the gate script runs
   and reports what is missing rather than passing vacuously, and the fake
   serves a snapshot without any other crate existing.
-- [ ] `M4.2` `pgprox-config` and the config document: parsing into `Config`,
+- [x] `M4.2` `pgprox-config` and the config document: parsing into `Config`,
   with the document format chosen and its dependency cleared by
   `scripts/check-deps.sh`. Acceptance: a malformed document names the field
   that is wrong, and a document that parses but fails `Config::validate` is

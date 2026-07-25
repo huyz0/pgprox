@@ -1,0 +1,24 @@
+[package]
+name = "pgprox-config"
+description = "Configuration providers, schema validation and hot reload."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+pgprox-core = { path = "../pgprox-core" }
+async-trait.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_yaml.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
+
+[dev-dependencies]
+pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+
+[lints]
+workspace = true

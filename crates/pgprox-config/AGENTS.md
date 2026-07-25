@@ -13,6 +13,18 @@
   the TTL, a node drained at 2am stays drained forever and nobody can tell
   whether that was intentional.
 - Validation happens once, in the shared path, so all three providers behave
-  identically.
+  identically. It is `Config::validate` from `pgprox-core`, the same function
+  the fake calls, so a document this crate accepts and one the fake accepts
+  cannot diverge.
+- **`deny_unknown_fields` on every document type.** A misspelled key that is
+  silently ignored is the worst configuration bug there is: the operator sees
+  their edit in git, the node reports nothing, and the setting never took
+  effect.
+- Durations take a unit and servers take a port. Both could have a default and
+  neither does, because a configuration that silently means something other
+  than what it looks like is worse than one that refuses to start.
+- The document format is this crate's to own, which is why it is a separate type
+  from `Config` rather than `Deserialize` on it. A field can be renamed in
+  `pgprox-core` without every deployment's ConfigMap becoming invalid.
 
 See ADR [0006](../../product/decisions/0006-pluggable-config-declarative-drain.md).
