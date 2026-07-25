@@ -1,0 +1,25 @@
+[package]
+name = "pgprox-admin"
+description = "HTTP/JSON admin API and the SHOW pseudo-database."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+pgprox-core = { path = "../pgprox-core" }
+axum = { workspace = true, features = ["json", "query", "tokio", "http1"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+utoipa.workspace = true
+
+[dev-dependencies]
+pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
+tower = { workspace = true, features = ["util"] }
+http-body-util.workspace = true
+
+[lints]
+workspace = true

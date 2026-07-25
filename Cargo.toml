@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/pgprox-core", "crates/pgprox-proto", "crates/pgprox-tls", "crates/pgprox-auth", "crates/pgprox-testkit", "crates/pgprox-cluster", "crates/pgprox-route", "crates/pgprox-pool", "crates/pgprox-config", "crates/pgprox-observe"]
+members = ["crates/pgprox-core", "crates/pgprox-proto", "crates/pgprox-tls", "crates/pgprox-auth", "crates/pgprox-testkit", "crates/pgprox-cluster", "crates/pgprox-route", "crates/pgprox-pool", "crates/pgprox-config", "crates/pgprox-observe", "crates/pgprox-admin"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,6 +25,16 @@ serde = { version = "1", default-features = false }
 # so the day an advisory is filed the build fails and we move.
 serde_yaml = "0.9"
 tempfile = "3"
+serde_json = "1"
+# Axum without its default features: no multipart, no forms, no static file
+# serving. An admin API needs JSON and query parameters, and every feature it
+# does not have is a parser that cannot be reached from a socket.
+axum = { version = "0.8", default-features = false }
+# The OpenAPI document is generated from the handlers, so tooling and agents get
+# a typed contract rather than scraped text. See ADR 0007.
+utoipa = "5"
+tower = { version = "0.5", default-features = false }
+http-body-util = "0.1"
 
 [workspace.lints.rust]
 # No unsafe anywhere. If the buffer slab or the codec appears to need it, that
