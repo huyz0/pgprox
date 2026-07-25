@@ -147,7 +147,7 @@ drivers. Between them that covers every message the codec claims to handle.
   `Sync`, `Describe`, `Close`, `Terminate`.
   Acceptance: statement and portal names are readable, which is what prepared
   statement mapping needs.
-- [ ] `M1.5` Encoding: `ErrorResponse` from a `ClientError`, `Authentication*`,
+- [x] `M1.5` Encoding: `ErrorResponse` from a `ClientError`, `Authentication*`,
   `ParameterStatus`, `BackendKeyData`, `ReadyForQuery`,
   `NegotiateProtocolVersion`.
   Acceptance: an encoded `ErrorResponse` carries the SQLSTATE from the mapping

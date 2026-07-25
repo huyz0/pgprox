@@ -15,6 +15,7 @@
 //! caller's buffer.
 
 pub mod backend;
+pub mod encode;
 pub mod frame;
 pub mod frontend;
 pub mod read;
