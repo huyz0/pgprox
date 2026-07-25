@@ -880,6 +880,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pgprox-pool"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "pgprox-core",
+ "proptest",
+ "tokio",
+]
+
+[[package]]
 name = "pgprox-proto"
 version = "0.1.0"
 dependencies = [

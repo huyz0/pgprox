@@ -587,7 +587,7 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
 - [x] `M5.7` A fuzz target for the classifier. Acceptance: it builds and runs a
   short seeded corpus without panicking, and the invariant is asserted inside
   the target rather than only outside it.
-- [ ] `M5.8` `pgprox-pool` and pin detection: `LISTEN`/`UNLISTEN`, session
+- [x] `M5.8` `pgprox-pool` and pin detection: `LISTEN`/`UNLISTEN`, session
   advisory locks, temp tables, `WITH HOLD` cursors, SQL-level `PREPARE`, and
   `SET` outside the replayable allowlist. Acceptance: every trigger is
   detected and carries a distinct reason for `pgprox_pin_total{reason}`, and

@@ -47,4 +47,15 @@ else
   fail "doctests ($label): run 'cargo test --doc' for detail"
 fi
 
+# Rustdoc warnings are not clippy warnings and nothing else catches them. A
+# broken intra-doc link is a reference that silently stops resolving, which is
+# how documentation rots: the prose still names the thing, but the reader can no
+# longer get to it. Found when a link to another crate's type compiled and
+# tested clean while pointing at nothing.
+if RUSTDOCFLAGS="-D warnings" cargo doc "${scope[@]}" --no-deps --all-features >/dev/null 2>&1; then
+  ok "rustdoc ($label)"
+else
+  fail "rustdoc ($label): run 'cargo doc --no-deps' for detail"
+fi
+
 finish

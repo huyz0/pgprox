@@ -69,7 +69,7 @@
 //!
 //! That is not hypothetical. `SELECT $1 INSERT $$` was classified read-only
 //! because `$1 INSERT $` was accepted as a dollar-quote tag and swallowed the
-//! rest of the statement. See [`is_dollar_tag`].
+//! rest of the statement. See the dollar-quote tag validation below.
 
 use pgprox_core::route::StmtClass;
 

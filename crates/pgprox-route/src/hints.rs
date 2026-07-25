@@ -13,9 +13,10 @@
 //! cannot, because the client does not know how far each replica has replayed.
 //!
 //! So [`RouteHint::Replica`] can admit a statement the classifier called
-//! [`StmtClass::Unknown`], which is the client saying it knows more about its
-//! own SQL than a lexical scan does. It can never admit a
-//! [`StmtClass::Write`], and it never overrides the watermark check. Both of
+//! [`Unknown`](pgprox_core::route::StmtClass::Unknown), which is the client
+//! saying it knows more about its own SQL than a lexical scan does. It can never
+//! admit a [`Write`](pgprox_core::route::StmtClass::Write), and it never
+//! overrides the watermark check. Both of
 //! those live in [`pgprox_core::route::decide`], which is the single place the
 //! rule is written down.
 //!
