@@ -12,6 +12,8 @@
 //! [`pin`] decides which sessions genuinely cannot be moved, and the statement
 //! map removes the largest reason they otherwise would be.
 
+pub mod params;
 pub mod pin;
 
+pub use params::{ParamChange, SessionParams};
 pub use pin::{PinReason, PinState, REPLAYABLE_PARAMETERS, pin_reason};

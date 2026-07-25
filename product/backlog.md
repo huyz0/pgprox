@@ -592,7 +592,7 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
   `SET` outside the replayable allowlist. Acceptance: every trigger is
   detected and carries a distinct reason for `pgprox_pin_total{reason}`, and
   the `_xact_` advisory lock variants do not pin.
-- [ ] `M5.9` Session parameter tracking and replay: the allowlist, `SET`,
+- [x] `M5.9` Session parameter tracking and replay: the allowlist, `SET`,
   `SET LOCAL`, `RESET` and `RESET ALL`. Acceptance: a parameter in the
   allowlist is replayed on acquire only when the target connection's value
   differs, `SET LOCAL` is never replayed, and a parameter outside the
