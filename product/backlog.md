@@ -285,7 +285,7 @@ this is the largest single gap.
   acceptable; refusing without saying so is not.
 - [ ] `M1F.12` Wire SCRAM into the auth path as the non-JWT branch, selected by
   a configured static-credential rule.
-- [ ] `M1F.13` SCRAM conformance against real Postgres and all five drivers.
+- [x] `M1F.13` SCRAM conformance against real Postgres and all five drivers.
   Acceptance: each driver authenticates with SCRAM through the harness.
 
 ### Group C: protocol 3.2
