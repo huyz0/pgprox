@@ -37,7 +37,12 @@ use pgprox_core::sql::{Lexer, Token};
 pub enum ShowTarget {
     /// Upstream pools. Shared with `PgBouncer`.
     Pools,
-    /// Upstream servers. Shared with `PgBouncer`.
+    /// Upstream server *connections*. Shared with `PgBouncer`.
+    ///
+    /// Not the capacity view. `GET /v1/servers` reports caps and headroom;
+    /// this reports one row per upstream connection, because that is what
+    /// `PgBouncer` reports and existing dashboards read it that way. The
+    /// capacity view's `SHOW` equivalent is [`ShowTarget::Quota`].
     Servers,
     /// Client connections. Shared with `PgBouncer`.
     Clients,
@@ -47,7 +52,10 @@ pub enum ShowTarget {
     Config,
     /// Other proxy nodes. `pgprox` only: `PgBouncer` is one process.
     Peers,
-    /// Upstream connection quota. `pgprox` only.
+    /// Upstream connection quota: caps, usage, headroom. `pgprox` only.
+    ///
+    /// The `SHOW` form of `GET /v1/servers`. Named differently because
+    /// `SHOW SERVERS` was already taken by `PgBouncer` for something else.
     Quota,
     /// Tenants. `pgprox` only.
     Tenants,

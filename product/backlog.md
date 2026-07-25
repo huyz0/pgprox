@@ -741,6 +741,11 @@ that already took sixty seconds to arrive.
   M4: the registry declared names, kinds and help text and could produce none
   of it, so an exporter would have to type every name again at the call site,
   which is the second source the registry exists to remove.
+- [x] `M4.18` Test that the two surfaces agree, and pin which pairs actually
+  correspond. Found reviewing M4: ADR 0018's central claim, that the HTTP API
+  and `SHOW` cannot drift into different answers, was nowhere checked. Worse,
+  `SHOW SERVERS` and `GET /v1/servers` share a word and mean different things,
+  and nothing said so.
 - [ ] `M4.15` Close M4.
 
 ## M6 and later

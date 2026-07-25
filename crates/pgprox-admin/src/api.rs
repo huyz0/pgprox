@@ -157,11 +157,17 @@ pub async fn pools(
 }
 
 /// `GET /v1/servers`
+///
+/// The capacity view: caps, usage, headroom. Its `SHOW` equivalent is
+/// `SHOW QUOTA`, **not** `SHOW SERVERS`, which is `PgBouncer`'s per-connection
+/// socket view and has to keep that shape. The shared word is a trap, and
+/// `tests/surfaces_agree.rs` pins the correspondence that actually holds.
 #[utoipa::path(
     get, path = "/v1/servers", tag = "read",
     params(("scope" = Option<String>, Query, description = "cluster (default) or local")),
     responses(
-        (status = 200, description = "Upstream servers and their caps"),
+        (status = 200, description = "Upstream servers and their caps. The SHOW \
+                                      equivalent is SHOW QUOTA, not SHOW SERVERS."),
         (status = 400, description = "Unrecognised scope", body = ErrorBody),
     ),
 )]

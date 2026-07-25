@@ -26,6 +26,15 @@ composition root implements by fanning in. See ADR
   `AdminError::Partial`, never a short list, because a short list presented as
   complete is how an operator concludes a tenant has no clients.
 - The `SHOW` subset that PgBouncer also has stays compatible with it, so existing
-  dashboards and runbooks keep working.
+  dashboards and runbooks keep working. Columns come from
+  `reference/pgbouncer/src/admin.c`, names and order both, because most
+  dashboards read by position.
+- **`SHOW SERVERS` is not `GET /v1/servers`.** The first is PgBouncer's
+  per-connection socket view and cannot change; the second is the capacity
+  view, whose `SHOW` form is `SHOW QUOTA`. `tests/surfaces_agree.rs` pins which
+  pairs actually correspond.
+- The two surfaces reading one `Observatory` is an architectural claim, and
+  `tests/surfaces_agree.rs` is what makes it true rather than hoped for. Add a
+  case there when adding a question either surface can answer.
 
 See ADR [0007](../../product/decisions/0007-cluster-scoped-observability.md).
