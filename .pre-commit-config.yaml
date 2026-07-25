@@ -49,6 +49,13 @@ repos:
         # Runs on every commit rather than only when AGENTS.md changes, because
         # a symlink can break without any tracked file being touched.
 
+      - id: portability
+        name: system stays tool-agnostic
+        entry: scripts/check-portability.sh
+        language: script
+        pass_filenames: false
+        files: '(AGENTS\.md|SKILL\.md|^scripts/|\.pre-commit-config\.yaml)$'
+
       - id: fmt
         name: cargo fmt
         entry: scripts/check-fmt.sh

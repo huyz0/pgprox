@@ -43,10 +43,10 @@ early produces tasks that are wrong by the time they are reached.
 - [x] `M-1.10` CI workflow running the same scripts. Acceptance: workflow file
   validates and calls `scripts/` rather than reimplementing the checks.
 - [x] `M-1.11` Claude Code hooks as accelerator, calling identical scripts.
-  Acceptance: `.claude/settings.json` hooks reference `scripts/`, no check is
+  Acceptance: an agent-hook adapter references `scripts/`, no check is
   implemented twice.
 - [x] `M-1.12` Skills, part one: `spec`, `tdd`, `next-task`. Acceptance: Agent
-  Skills format, vendor-neutral bodies, no `.claude/` paths.
+  Skills format, vendor-neutral bodies, no vendor-specific paths.
 - [x] `M-1.13` Skills, part two: `contract-change`, `crate-review`, `adr`.
 - [x] `M-1.14` Skills, part three: `hot-path`, `wire-debug`, `skill-forge`.
 - [x] `M-1.15` Skill discovery symlink and per-crate `AGENTS.md` stubs for the
@@ -54,7 +54,7 @@ early produces tasks that are wrong by the time they are reached.
 - [x] `M-1.16` `scripts/m-1-complete.sh`, the milestone completion condition.
   Acceptance: exits zero on a complete M-1 and non-zero with a useful message on
   each individual failure.
-- [ ] `M-1.17` Portability check on a second tool. Run a small throwaway task
+- [~] `M-1.17` Portability check on a second tool. Run a small throwaway task
   under Codex CLI or Cursor and record the result as an ADR. Acceptance: the ADR
   states what worked, what did not, and what was changed as a result.
 

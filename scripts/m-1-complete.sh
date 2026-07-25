@@ -45,7 +45,7 @@ for s in spec tdd next-task contract-change crate-review adr hot-path \
 done
 
 # --- enforcement -------------------------------------------------------------
-for s in check-fmt check-crate check-coverage check-drift; do
+for s in check-fmt check-crate check-coverage check-drift check-portability; do
   if [[ -x "scripts/$s.sh" ]]; then
     ok "scripts/$s.sh"
   else
@@ -77,14 +77,22 @@ else
   fail "no CI workflow"
 fi
 
-if [[ -f .claude/settings.json ]]; then
-  if grep -qs 'scripts/' .claude/settings.json; then
-    ok "agent hooks call scripts/"
-  else
-    fail "agent hooks do not call scripts/ (accelerator only, never a second implementation)"
-  fi
+# At least one agent-hook adapter, whichever tool the developer uses. Requiring
+# a specific vendor's file here would mean M-1 can never pass for someone
+# working only in Cursor or Codex, which is the exact failure the portability
+# work exists to prevent.
+adapters=(.claude/settings.json .cursor/hooks.json .windsurf/hooks.json)
+found_adapter=""
+for a in "${adapters[@]}"; do
+  [[ -f "$a" ]] && found_adapter="$a" && break
+done
+
+if [[ -z "$found_adapter" ]]; then
+  fail "no agent-hook adapter found (looked for: ${adapters[*]})"
+elif grep -qs 'scripts/' "$found_adapter"; then
+  ok "agent hooks call scripts/ ($found_adapter)"
 else
-  fail ".claude/settings.json missing (agent hook accelerator)"
+  fail "$found_adapter does not call scripts/ (accelerator only, never a second implementation)"
 fi
 
 # --- portability -------------------------------------------------------------
@@ -96,10 +104,12 @@ fi
 
 # --- drift -------------------------------------------------------------------
 echo
-if ./scripts/check-drift.sh >/dev/null 2>&1; then
-  ok "check-drift.sh"
-else
-  fail "check-drift.sh (run it directly for detail)"
-fi
+for c in check-drift check-portability; do
+  if "./scripts/$c.sh" >/dev/null 2>&1; then
+    ok "$c.sh"
+  else
+    fail "$c.sh (run it directly for detail)"
+  fi
+done
 
 finish
