@@ -19,6 +19,8 @@
 //! stage. This has already caused one bug in this project, in the SCRAM tests,
 //! and the crate's `AGENTS.md` says so at length.
 
+pub mod auth;
 pub mod state;
 
+pub use auth::{Progress, TokenAuth};
 pub use state::{Action, Credential, Handshake, HandshakeConfig, Reply, StartupInfo, TlsPosture};

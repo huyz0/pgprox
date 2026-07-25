@@ -781,10 +781,18 @@ rule already allows `pgprox-proto`.
   `ReadyForQuery`, sans-I/O, as a pure function of state and event. Acceptance:
   a client that skips `SSLRequest` under `require_tls` gets an `ErrorResponse`
   saying why rather than a closed socket, and no step touches a socket.
-- [ ] `M6.3` The authentication phase against a `CredentialResolver`.
-  Acceptance: the JWT arrives in the password field, a startup user matching a
-  static-credential rule gets SASL instead, and neither path puts a credential
-  in a log line, a span attribute or an error.
+- [x] `M6.3` The token path: a `PasswordMessage` carrying a JWT, resolved
+  through `CredentialResolver`. Split from the SCRAM path below while doing it,
+  because the two share only the branch that chooses between them and could
+  not be committed together with the tree green. Acceptance: the token reaches
+  the resolver, a refusal and an unreachable sidecar are distinguishable to an
+  operator and identical to the client, and no `Debug` anywhere on the path
+  prints the token.
+- [ ] `M6.3a` The static-user SCRAM path, verified against a credential this
+  crate does not own. Acceptance: `pgprox-session` gains no dependency on
+  `pgprox-auth`, so the seam is a trait the composition root fills, and a
+  client that gets the proof wrong is refused with the same message a bad token
+  gets.
 - [ ] `M6.4` The relay step: one client frame in, actions out, with the release
   decision taken from `ReadyForQuery` rather than from the SQL text.
   Acceptance: a connection is never released mid-transaction, never with an
