@@ -752,7 +752,93 @@ that already took sixty seconds to arrive.
   absence meant opposite things in two APIs M6 has to wire together.
 - [x] `M4.15` Close M4.
 
-## M6 and later
+## M6: integration
+
+`pgprox-session` and `bin/pgprox` compose the real implementations. Everything
+before this milestone was built against fakes on purpose, so M6 is where the
+design either fits together or does not.
+
+### The failure mode this milestone inverts
+
+M5 found three modules with good tests and no caller, and M4 found a fourth.
+M6 is almost entirely callers, so that failure inverts: the risk here is not an
+uncalled module but two modules that each work and do not meet. The check that
+catches it is the same one that caught the others, applied in the other
+direction: for each seam, name the single place the two sides join, and fail if
+there is more than one.
+
+### The two seams left open on purpose
+
+`Connector` and `ReplicaProbe` are traits with fakes and no real implementation,
+because implementing either needs a socket and the crates that own them are
+sans-I/O. Both land here, in `pgprox-session`, which is where the dependency
+rule already allows `pgprox-proto`.
+
+- [x] `M6.1` Define M6: this decomposition and `scripts/m6-complete.sh`.
+  Acceptance: the gate script runs against the current tree and reports what is
+  missing, rather than passing vacuously.
+- [ ] `M6.2` `pgprox-session` and the client state machine: startup through
+  `ReadyForQuery`, sans-I/O, as a pure function of state and event. Acceptance:
+  a client that skips `SSLRequest` under `require_tls` gets an `ErrorResponse`
+  saying why rather than a closed socket, and no step touches a socket.
+- [ ] `M6.3` The authentication phase against a `CredentialResolver`.
+  Acceptance: the JWT arrives in the password field, a startup user matching a
+  static-credential rule gets SASL instead, and neither path puts a credential
+  in a log line, a span attribute or an error.
+- [ ] `M6.4` The relay step: one client frame in, actions out, with the release
+  decision taken from `ReadyForQuery` rather than from the SQL text.
+  Acceptance: a connection is never released mid-transaction, never with an
+  extended-query sequence outstanding, and never while pinned.
+- [ ] `M6.5` Session parameter replay and prepared-statement replay on acquire.
+  Acceptance: a session that set a replayable parameter observes it on a
+  different upstream connection, and a `Parse` the target connection does not
+  hold is replayed before the `Bind` that needs it.
+- [ ] `M6.6` The I/O shell, generic over `AsyncRead + AsyncWrite + Unpin`.
+  Acceptance: the whole session runs over `tokio::io::duplex` with no port
+  opened, and cancelling the future mid-frame leaves no connection leaked.
+- [ ] `M6.7` The real `Connector`: open an upstream connection, authenticate to
+  Postgres, harvest its `ParameterStatus` set. Acceptance: the trait's fake and
+  the real implementation are exercised by the same test body, so a behaviour
+  the fake invents is caught.
+- [ ] `M6.8` The `ParameterStatus` probe cache, keyed per `(host, db)`.
+  Acceptance: a second pool for the same host and database opens no second
+  probe connection.
+- [ ] `M6.9` The real `ReplicaProbe` over `pg_last_wal_replay_lsn()` and
+  `pg_is_in_recovery()`. Acceptance: a replica that stops replaying leaves the
+  eligible set within one poll interval, and a probe failure is a stale reading
+  with an age rather than a silent zero.
+- [ ] `M6.10` Cancellation across nodes: decode the node from the key, forward
+  to the owner, issue the real `CancelRequest` upstream. Acceptance: a cancel
+  arriving at a node that does not own the connection reaches the one that
+  does, and an unknown key is refused rather than ignored.
+- [ ] `M6.11` `M3.12`: forward a quota request to the leader over the gossip
+  transport. Carried from M3, where it was deferred because it needed a
+  transport that did not exist. Acceptance: a node that is not the leader
+  obtains a lease, and a request racing a leader change either fails or is
+  granted by exactly one leader, never both.
+- [ ] `M6.12` The live `Observatory`, reading the real components. Acceptance:
+  the surfaces-agree suite from `M4.18` passes against the live implementation
+  unchanged, since it was written against the contract rather than the fake.
+- [ ] `M6.13` `bin/pgprox`: the composition root, with the wiring in a lib
+  target and `main.rs` doing nothing a test cannot call. Acceptance: the wiring
+  is called by a test with fakes, and `main.rs` is the only excluded file.
+- [ ] `M6.14` The accept loop and listener, with TLS and the client connection
+  ceiling. Acceptance: a node at its ceiling refuses with a message naming the
+  limit, and refusal never takes down connections already established.
+- [ ] `M6.15` The drain sequence, end to end. Acceptance: `/readyz` fails
+  first, gossip announces before any client is closed, in-flight transactions
+  finish, and the grace timer force-closes the remainder.
+- [ ] `M6.16` `deploy/` and `scripts/e2e.sh`: three proxy nodes, a primary, two
+  replicas, the mock sidecar. Acceptance: the script brings the stack up and
+  reports which component failed when it does not, rather than a compose exit
+  code.
+- [ ] `M6.17` The e2e assertions the milestone is judged on: pgbench clean,
+  drain with zero failed transactions, no replica read behind the session
+  watermark. Acceptance: each assertion fails when its property is broken on
+  purpose, verified once per assertion.
+- [ ] `M6.18` Close M6.
+
+## M7 and later
 
 Not yet decomposed. See [roadmap.md](roadmap.md). The `next-task` skill
 decomposes the next milestone when the current one closes.

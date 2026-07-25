@@ -22,7 +22,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M3 | Cluster (track C) | complete |
 | M4 | Operations (track D) | complete |
 | M5 | Pooling and routing (track E) | complete |
-| M6 | Integration | ready |
+| M6 | Integration | in progress |
 | M7 | Scale and performance | blocked by M6 |
 | M8 | FIPS and release | blocked by M7 |
 | M9 | Query cache (post-MVP) | blocked by M8 |
@@ -151,8 +151,12 @@ DML-bearing statement is classified read-only.
 `pgprox-session` and `bin/pgprox` composing the real implementations.
 
 ```bash
-scripts/e2e.sh
+scripts/m6-complete.sh && scripts/e2e.sh
 ```
+
+The first is the part that runs without Docker: the two seams left open on
+purpose (`Connector` and `ReplicaProbe`), the live `Observatory`, and the
+composition root. The second is the milestone's real judgement.
 
 Checks: docker-compose brings up 3 proxy nodes, a primary, 2 replicas, and the
 mock sidecar; pgbench runs clean; the drain test reports zero failed
