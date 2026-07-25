@@ -21,6 +21,20 @@ tests and mutation testing.
 - Drain, shed, and socket-pressure eviction share one path for closing a client
   cleanly: wait for `ReadyForQuery('I')`, send `57P01`, close.
 
+## The hazard that has already bitten twice
+
+**A read can pull in bytes past the stage you are in, and dropping them loses
+the start of the next stage.**
+
+In the SCRAM test a helper owned its read buffer locally, so bytes read past the
+handshake vanished when it returned and the session appeared to close. The same
+shape will appear here at every boundary: startup to authentication,
+authentication to query, query to COPY, and either direction into a pinned
+replication stream.
+
+The buffer belongs to the connection, not to the function handling the current
+stage. Any helper that reads must take it by reference rather than owning one.
+
 The relay loop and frame scanning are declared hot paths. Use the `hot-path`
 skill before touching them.
 

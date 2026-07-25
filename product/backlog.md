@@ -283,14 +283,17 @@ this is the largest single gap.
 - [x] `M1F.11` Channel binding (`SCRAM-SHA-256-PLUS`). Decide and record: it
   requires the TLS exporter and interacts with the FIPS suite list. Refusing is
   acceptable; refusing without saying so is not.
-- [ ] `M1F.12` Wire SCRAM into the auth path as the non-JWT branch, selected by
-  a configured static-credential rule.
+- [!] `M1F.12` **Blocked on M6.** Wire SCRAM into the auth path as the non-JWT
+  branch, selected by a configured static-credential rule. There is no auth path
+  to wire into until `pgprox-session` exists, so this was an ordering error when
+  written, not work anyone skipped. Move it into M6's decomposition when that
+  milestone is planned.
 - [x] `M1F.13` SCRAM conformance against real Postgres and all five drivers.
   Acceptance: each driver authenticates with SCRAM through the harness.
 
 ### Group C: protocol 3.2
 
-- [ ] `M1F.14` 256-bit cancel keys. `ConnId` is 64-bit and `BackendKeyData` is
+- [!] `M1F.14` **Escalated, see M1F.30.** 256-bit cancel keys. `ConnId` is 64-bit and `BackendKeyData` is
   two `i32`s, so this is a `pgprox-core` contract change: use the
   `contract-change` skill and expect to touch every crate that holds a `ConnId`.
 - [ ] `M1F.15` Negotiate 3.2 upward rather than down, keeping the 3.0 path for
@@ -346,10 +349,10 @@ rather than remembered.
   belongs in one place rather than in whoever writes the next probe.
   Acceptance: one helper, both suites use it, and a test asserts it rejects a
   57P03 as not-ready.
-- [ ] `M1F.28` Correct M1F.12's ordering. It says wire SCRAM into the auth path,
+- [x] `M1F.28` Correct M1F.12's ordering. It says wire SCRAM into the auth path,
   but there is no auth path until `pgprox-session` exists at M6. It is blocked,
   not merely undone, and the backlog should say which.
-- [ ] `M1F.29` Record the buffered-handoff hazard where M6 will read it. In
+- [x] `M1F.29` Record the buffered-handoff hazard where M6 will read it. In
   `scram_live` a helper owned its read buffer locally, so bytes pulled in past
   the handshake were dropped and the session appeared to close. The relay has
   the same hazard at every stage boundary.
