@@ -83,7 +83,7 @@ below is types plus tests plus fake where one applies.
 - [x] `M0.5` Error taxonomy and the SQLSTATE mapping.
   Acceptance: every client-visible error maps to the code in the table in
   `standards/error-handling.md`; no error variant can carry a credential.
-- [ ] `M0.6` `Clock` trait, `SystemClock`, and `FakeClock`.
+- [x] `M0.6` `Clock` trait, `SystemClock`, and `FakeClock`.
   Acceptance: `FakeClock` advances only when told, and a test using it completes
   without sleeping.
 - [ ] `M0.7` Buffer slab.

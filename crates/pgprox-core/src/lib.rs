@@ -14,10 +14,12 @@
 //! implementation, every call site, and an ADR. If it touches more than one
 //! track, stop and escalate first. See `standards/contracts.md`.
 
+pub mod clock;
 pub mod error;
 pub mod ids;
 pub mod secret;
 
+pub use clock::{Clock, SystemClock};
 pub use error::{AuthRejection, ClientError, SqlState};
 pub use ids::{ConnId, Lsn, NodeId, PoolKey, ServerId, TenantId};
 pub use secret::SecretString;
