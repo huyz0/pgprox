@@ -143,7 +143,7 @@ drivers. Between them that covers every message the codec claims to handle.
   the `Authentication*` family.
   Acceptance: each decodes from real bytes; everything else passes through as
   opaque frames without being parsed.
-- [ ] `M1.4` Frontend messages we inspect: `Query`, `Parse`, `Bind`, `Execute`,
+- [x] `M1.4` Frontend messages we inspect: `Query`, `Parse`, `Bind`, `Execute`,
   `Sync`, `Describe`, `Close`, `Terminate`.
   Acceptance: statement and portal names are readable, which is what prepared
   statement mapping needs.
