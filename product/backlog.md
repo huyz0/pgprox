@@ -564,7 +564,7 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
 - [ ] `M5.1` Define M5: this decomposition, `scripts/m5-complete.sh`, and the
   ADR 0011 amendment above. Acceptance: the gate script runs and reports what
   is missing rather than passing vacuously.
-- [ ] `M5.2` `pgprox-route` and the statement classifier: a token-prefix scan
+- [x] `M5.2` `pgprox-route` and the statement classifier: a token-prefix scan
   from SQL text to `StmtClass`. Acceptance: a property test finds no
   DML-bearing statement classified read-only, and `WITH ... INSERT`,
   `SELECT ... FOR UPDATE`, `SELECT ... FOR SHARE` and `EXPLAIN ANALYZE` are all

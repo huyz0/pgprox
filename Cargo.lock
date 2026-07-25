@@ -891,6 +891,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pgprox-route"
+version = "0.1.0"
+dependencies = [
+ "pgprox-core",
+ "proptest",
+]
+
+[[package]]
 name = "pgprox-testkit"
 version = "0.1.0"
 

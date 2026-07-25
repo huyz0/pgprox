@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f0801f192f041975f3ecc236c892cd06bcc7231f7ac47586a56086a31a2416d9 # shrinks to strength = "UPDATE", wait = "", mask = 0
+cc 58c2146df975192eda10170a6b149b42c8426c21afb3e544827f16fed0848451 # shrinks to sql = " WITH x AS (insert into t values (1) RETURNING *) SELECT * FROM x"

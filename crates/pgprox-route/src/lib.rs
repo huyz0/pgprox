@@ -1,0 +1,18 @@
+//! Statement classification, replica eligibility and target selection.
+//!
+//! # The rule that matters
+//!
+//! When the classifier is not confident, route to the primary.
+//!
+//! A false negative costs a little throughput. A false positive is a stale
+//! read, which is a data-correctness bug from the tenant's perspective and
+//! worse than the slowness it was meant to fix.
+//!
+//! The routing decision itself lives in [`pgprox_core::route::decide`], not
+//! here, so the real router and every fake share one implementation. This crate
+//! supplies what that decision needs: what a statement does, and how far each
+//! replica has replayed.
+
+pub mod classify;
+
+pub use classify::classify;
