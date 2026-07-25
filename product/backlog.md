@@ -253,7 +253,7 @@ nothing. They are not gaps.
   fast-path, still reachable. pgdog models it as `fastpath`. Decide explicitly
   whether to support or refuse it, and record the choice; refusing silently is
   the option that is definitely wrong.
-- [ ] `M1F.4` Full `ErrorResponse`/`NoticeResponse` field set. Three of about
+- [x] `M1F.4` Full `ErrorResponse`/`NoticeResponse` field set. Three of about
   twenty are extracted. Add detail, hint, position, internal position, internal
   query, where, schema, table, column, datatype, constraint, file, line,
   routine. Acceptance: a real Postgres error round-trips every field it sent.

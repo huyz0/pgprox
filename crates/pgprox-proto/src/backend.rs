@@ -74,16 +74,53 @@ pub enum AuthRequest {
 
 /// A decoded error or notice.
 ///
-/// Fields are borrowed from the frame body.
+/// Fields are borrowed from the frame body. Every field Postgres defines is
+/// captured, because these are what an operator reads when something breaks and
+/// a proxy that drops them makes its own logs worse than connecting directly.
+///
+/// Absent fields are the empty string rather than an option: Postgres omits most
+/// of them most of the time, and threading twenty options through call sites
+/// buys nothing over checking for empty.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[non_exhaustive]
 pub struct ErrorFields<'a> {
+    /// `S`, the severity, localized to the server's language.
+    pub severity: &'a str,
+    /// `V`, the severity, never localized. Added in Postgres 9.6, so it is
+    /// absent from older servers and `severity` is the fallback.
+    pub severity_nonlocalized: &'a str,
     /// `C`, the SQLSTATE.
     pub code: &'a str,
     /// `M`, the primary message.
     pub message: &'a str,
-    /// `S`, the severity, localized.
-    pub severity: &'a str,
+    /// `D`, an optional secondary message with more detail.
+    pub detail: &'a str,
+    /// `H`, a suggestion about what to do about the problem.
+    pub hint: &'a str,
+    /// `P`, a one-based character index into the original query.
+    pub position: &'a str,
+    /// `p`, a position into `internal_query` rather than the client's query.
+    pub internal_position: &'a str,
+    /// `q`, the internally generated statement the error refers to.
+    pub internal_query: &'a str,
+    /// `W`, the call stack traceback.
+    pub context: &'a str,
+    /// `s`, the schema the error relates to.
+    pub schema: &'a str,
+    /// `t`, the table the error relates to.
+    pub table: &'a str,
+    /// `c`, the column the error relates to.
+    pub column: &'a str,
+    /// `d`, the data type the error relates to.
+    pub datatype: &'a str,
+    /// `n`, the constraint the error relates to.
+    pub constraint: &'a str,
+    /// `F`, the server source file reporting it.
+    pub file: &'a str,
+    /// `L`, the server source line.
+    pub line: &'a str,
+    /// `R`, the server routine reporting it.
+    pub routine: &'a str,
 }
 
 /// A decoded backend message.
@@ -257,9 +294,27 @@ fn decode_error_fields<'a>(r: &mut Reader<'a>) -> Result<ErrorFields<'a>, Backen
         }
         let value = r.cstr("field_value")?;
         match kind {
+            b'S' => fields.severity = value,
+            b'V' => fields.severity_nonlocalized = value,
             b'C' => fields.code = value,
             b'M' => fields.message = value,
-            b'S' => fields.severity = value,
+            b'D' => fields.detail = value,
+            b'H' => fields.hint = value,
+            b'P' => fields.position = value,
+            b'p' => fields.internal_position = value,
+            b'q' => fields.internal_query = value,
+            b'W' => fields.context = value,
+            b's' => fields.schema = value,
+            b't' => fields.table = value,
+            b'c' => fields.column = value,
+            b'd' => fields.datatype = value,
+            b'n' => fields.constraint = value,
+            b'F' => fields.file = value,
+            b'L' => fields.line = value,
+            b'R' => fields.routine = value,
+            // Postgres adds field types over time. An unfamiliar one is skipped
+            // rather than rejected, so a newer server cannot make an error
+            // undecodable.
             _ => {}
         }
     }
@@ -511,6 +566,70 @@ mod tests {
         assert_eq!(fields.code, "42P01");
         assert_eq!(fields.severity, "ERROR");
         assert!(fields.message.contains("does not exist"));
+    }
+
+    #[test]
+    fn every_documented_error_field_is_captured() {
+        // The shape a constraint violation actually has. Dropping these makes
+        // the proxy's logs worse than connecting directly, which is the failure
+        // this guards.
+        let body = b"SERROR\x00VERROR\x00C23505\x00Mduplicate key value\x00DKey (id)=(1) already exists.\x00HConsider an upsert.\x00P42\x00qINSERT INTO t\x00p7\x00WPL/pgSQL function f()\x00spublic\x00torders\x00cid\x00dinteger\x00norders_pkey\x00Fnbtinsert.c\x00L199\x00R_bt_check_unique\x00\x00";
+
+        let BackendMessage::ErrorResponse(f) = decode(&frame(Tag::ERROR_RESPONSE, body)).unwrap()
+        else {
+            unreachable!()
+        };
+
+        assert_eq!(f.severity, "ERROR");
+        assert_eq!(f.severity_nonlocalized, "ERROR");
+        assert_eq!(f.code, "23505");
+        assert_eq!(f.message, "duplicate key value");
+        assert_eq!(f.detail, "Key (id)=(1) already exists.");
+        assert_eq!(f.hint, "Consider an upsert.");
+        assert_eq!(f.position, "42");
+        assert_eq!(f.internal_query, "INSERT INTO t");
+        assert_eq!(f.internal_position, "7");
+        assert_eq!(f.context, "PL/pgSQL function f()");
+        assert_eq!(f.schema, "public");
+        assert_eq!(f.table, "orders");
+        assert_eq!(f.column, "id");
+        assert_eq!(f.datatype, "integer");
+        assert_eq!(f.constraint, "orders_pkey");
+        assert_eq!(f.file, "nbtinsert.c");
+        assert_eq!(f.line, "199");
+        assert_eq!(f.routine, "_bt_check_unique");
+    }
+
+    #[test]
+    fn lowercase_and_uppercase_field_types_are_distinct() {
+        // The trap in this table: P is position and p is internal position,
+        // s is schema and S is severity, c is column and C is the SQLSTATE.
+        // Case-insensitive matching would silently swap them.
+        let body = b"P1\x00p2\x00Sseverity\x00sschema\x00Ccode\x00ccolumn\x00\x00";
+        let BackendMessage::ErrorResponse(f) = decode(&frame(Tag::ERROR_RESPONSE, body)).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(f.position, "1");
+        assert_eq!(f.internal_position, "2");
+        assert_eq!(f.severity, "severity");
+        assert_eq!(f.schema, "schema");
+        assert_eq!(f.code, "code");
+        assert_eq!(f.column, "column");
+    }
+
+    #[test]
+    fn absent_fields_are_empty_rather_than_missing() {
+        // Postgres omits most fields most of the time.
+        let BackendMessage::ErrorResponse(f) =
+            decode(&frame(Tag::ERROR_RESPONSE, b"C42P01\x00Mnope\x00\x00")).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(f.code, "42P01");
+        assert!(f.detail.is_empty());
+        assert!(f.constraint.is_empty());
+        assert!(f.routine.is_empty());
     }
 
     #[test]

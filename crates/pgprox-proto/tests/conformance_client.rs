@@ -920,5 +920,61 @@ fn conformance_client_receives_a_listen_notify() {
     assert_eq!(payload, "hello from the test");
 }
 
+#[test]
+#[ignore = "requires docker"]
+fn conformance_client_captures_every_error_field_a_real_server_sends() {
+    // Synthetic bytes prove the parser reads what I wrote. This proves it reads
+    // what Postgres actually sends, which is the only version that matters.
+    let pg = Postgres::start(&major());
+    let mut conn = pg.connect();
+
+    conn.query("DROP TABLE IF EXISTS err_fields").unwrap();
+    conn.query("CREATE TABLE err_fields (id int PRIMARY KEY)")
+        .unwrap();
+    conn.query("INSERT INTO err_fields VALUES (1)").unwrap();
+
+    let mut body = b"INSERT INTO err_fields VALUES (1)".to_vec();
+    body.push(0);
+    conn.send(Tag::QUERY, &body).unwrap();
+
+    let mut captured = None;
+    loop {
+        let bytes = conn.next_frame_bytes().unwrap();
+        let Decoded::Frame(frame, _) = decode(&bytes, DEFAULT_MAX_FRAME).unwrap() else {
+            unreachable!()
+        };
+        let msg = backend::decode(&frame).unwrap();
+        conn.state.on_backend(&msg);
+        if let BackendMessage::ErrorResponse(fields) = msg {
+            captured = Some((
+                fields.code.to_owned(),
+                fields.severity_nonlocalized.to_owned(),
+                fields.detail.to_owned(),
+                fields.schema.to_owned(),
+                fields.table.to_owned(),
+                fields.constraint.to_owned(),
+                fields.routine.to_owned(),
+            ));
+        }
+        if matches!(msg, BackendMessage::ReadyForQuery(_)) {
+            break;
+        }
+    }
+
+    let (code, severity, detail, schema, table, constraint, routine) =
+        captured.expect("no ErrorResponse for a duplicate key");
+
+    assert_eq!(code, "23505", "expected unique_violation");
+    assert_eq!(severity, "ERROR", "non-localized severity was dropped");
+    assert!(
+        detail.contains("already exists"),
+        "detail was dropped: {detail:?}"
+    );
+    assert_eq!(schema, "public", "schema was dropped");
+    assert_eq!(table, "err_fields", "table was dropped");
+    assert!(!constraint.is_empty(), "constraint name was dropped");
+    assert!(!routine.is_empty(), "server routine was dropped");
+}
+
 /// Keeps `Frame` referenced so the import list stays honest if tests change.
 const _: fn(&Frame<'_>) = |_| {};
