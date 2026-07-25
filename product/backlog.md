@@ -31,7 +31,7 @@ early produces tasks that are wrong by the time they are reached.
   `architecture.md` states the crate dependency rule (everything depends on
   `pgprox-core` and nothing else in the workspace, with `pgprox-session` and
   `bin/pgprox` as the two stated exceptions).
-- [ ] `M-1.7` ADRs, one per row of the decisions table in the plan. Ten records,
+- [x] `M-1.7` ADRs, one per row of the decisions table in the plan. Ten records,
   each naming the alternatives rejected and why. Acceptance: `decisions/0001`
   through `decisions/0010` exist and each has a Consequences section.
 - [x] `M-1.8` Enforcement scripts: `check-fmt.sh`, `check-crate.sh`,
