@@ -152,7 +152,7 @@ drivers. Between them that covers every message the codec claims to handle.
   `NegotiateProtocolVersion`.
   Acceptance: an encoded `ErrorResponse` carries the SQLSTATE from the mapping
   and is accepted by a real driver.
-- [ ] `M1.6` Startup dispatch: `SSLRequest`, `GSSENCRequest`, `CancelRequest`,
+- [x] `M1.6` Startup dispatch: `SSLRequest`, `GSSENCRequest`, `CancelRequest`,
   `StartupMessage`, and protocol version negotiation.
   Acceptance: a client asking for 3.2 gets 3.2 or a `NegotiateProtocolVersion`
   down to 3.0; a `CancelRequest` yields the encoded node and counter.
