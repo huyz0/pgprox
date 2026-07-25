@@ -401,6 +401,56 @@ confirming the GSSAPI refusal against a real GSSAPI client; M1F.24 runs the
 driver matrix against real Postgres rather than only the harness; M1F.25 seeds
 the fuzz corpus from the reference proxies.
 
+## M3: cluster (track C)
+
+`pgprox-cluster` holds the membership, quota and placement logic. It needs no
+Postgres and no sidecar, so it develops entirely against a deterministic
+simulation.
+
+`pgprox-core` already provides `MembershipView` with rendezvous hashing,
+`QuotaLease`, `ClusterDigest` and the `ClusterCoordinator` trait. This milestone
+builds the real implementation behind that trait.
+
+The invariant everything serves:
+
+> Guaranteed share plus outstanding leases never exceeds the cap, under
+> arbitrary partition, leader loss, and simultaneous restart.
+
+Breaching an upstream cap can lock out the operator and take the database down
+for every tenant on that host. It is the one property with no graceful
+degradation, so it is proven by property test over a simulation rather than
+found in staging.
+
+- [x] `M3.1` Define M3: this decomposition and `scripts/m3-complete.sh`.
+- [ ] `M3.2` `pgprox-cluster` crate and the deterministic simulation: virtual
+  clock, an injectable network that can delay, drop, reorder and partition, and
+  seeded scheduling. Acceptance: the same seed produces the same run twice.
+- [ ] `M3.3` Quota arithmetic as a pure function: guaranteed share per node from
+  the cap and live membership, and the leasable free pool. Acceptance: the sum
+  can never exceed the cap for any membership size, checked exhaustively for
+  small N and by property test beyond.
+- [ ] `M3.4` Leader selection from a membership view, and what happens when it
+  changes. Acceptance: every node agrees on the leader given the same view, and
+  a new leader waits one full lease TTL before granting from the free pool.
+- [ ] `M3.5` Lease lifecycle: request, grant, renew, expire, release.
+  Acceptance: an unreachable node's leases expire without anyone acting, and a
+  lease is never counted after its expiry.
+- [ ] `M3.6` Tenant reservations with use-it-or-lose-it decay.
+  Acceptance: a home node holding an unused reservation loses it after the
+  configured rounds, and a non-home node can then claim it.
+- [ ] `M3.7` Shed decisions and their guard rails: idle threshold, per-tenant
+  rate limit, settle window after a membership change, never toward a draining
+  node, never a pinned or in-transaction session, global kill switch.
+  Acceptance: each guard rail refuses a shed that would otherwise happen.
+- [ ] `M3.8` Gossip digest encoding, and merging a peer's digest into the local
+  view. Acceptance: a digest round-trips, and merging is order-independent so
+  two nodes converge regardless of delivery order.
+- [ ] `M3.9` The `ClusterCoordinator` implementation, wiring the above together.
+- [ ] `M3.10` The invariant, as a property test over randomized schedules
+  including partitions, leader loss and simultaneous restarts. Acceptance: a
+  failing seed is committed as a regression case.
+- [ ] `M3.11` Close M3.
+
 ## M2: auth and sidecar (track B)
 
 `pgprox-auth` turns a client's token into the credentials for its database, by

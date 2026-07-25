@@ -19,7 +19,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M1R | Protocol revision: streaming and test breadth | complete |
 | M1F | Full protocol coverage | complete |
 | M2 | Auth and sidecar (track B) | complete |
-| M3 | Cluster (track C) | ready |
+| M3 | Cluster (track C) | in progress |
 | M4 | Operations (track D) | ready |
 | M5 | Pooling and routing (track E) | ready |
 | M6 | Integration | blocked by M1, M5 |
