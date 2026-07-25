@@ -86,6 +86,12 @@ impl Tag {
     pub const DATA_ROW: Self = Self(b'D');
     /// `C`, command complete.
     pub const COMMAND_COMPLETE: Self = Self(b'C');
+    /// `I`, the statement was empty.
+    ///
+    /// Sent instead of `CommandComplete`, not in addition to it, so anything
+    /// counting completions must recognise both or it miscounts every empty
+    /// statement a driver sends.
+    pub const EMPTY_QUERY_RESPONSE: Self = Self(b'I');
     /// `E`, an error response.
     pub const ERROR_RESPONSE: Self = Self(b'E');
     /// `N`, a notice response.
@@ -297,6 +303,7 @@ pub fn inspect_policy(direction: Direction, tag: Tag) -> Inspect {
             | Tag::PARAMETER_STATUS
             | Tag::BACKEND_KEY_DATA
             | Tag::COMMAND_COMPLETE
+            | Tag::EMPTY_QUERY_RESPONSE
             | Tag::NEGOTIATE_PROTOCOL_VERSION
             | Tag::COPY_IN_RESPONSE
             | Tag::COPY_OUT_RESPONSE
@@ -825,6 +832,11 @@ mod tests {
         .filter(|t| inspect_policy(Direction::Backend, *t) == Inspect::Whole)
         .collect();
         assert_eq!(whole.len(), 9, "a message changed policy without review");
+        assert_eq!(
+            inspect_policy(Direction::Backend, Tag::EMPTY_QUERY_RESPONSE),
+            Inspect::Whole,
+            "an empty query response must be seen, not relayed blindly"
+        );
     }
 
     #[test]

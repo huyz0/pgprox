@@ -243,7 +243,7 @@ nothing. They are not gaps.
 
 ### Group A: message surface
 
-- [ ] `M1F.1` `EmptyQueryResponse` (`I`). No `Tag` constant exists at all. An
+- [x] `M1F.1` `EmptyQueryResponse` (`I`). No `Tag` constant exists at all. An
   empty statement yields this instead of `CommandComplete`, so anything counting
   completions is wrong today.
 - [ ] `M1F.2` `ParameterDescription` (`t`) decoder. Encoded by the harness,

@@ -108,6 +108,11 @@ pub enum BackendMessage<'a> {
         /// The secret needed to cancel.
         secret: i32,
     },
+    /// `I`, the statement was empty.
+    ///
+    /// Postgres sends this *instead of* `CommandComplete`, so a proxy tracking
+    /// statement completion must treat the two as one category.
+    EmptyQueryResponse,
     /// `C`, a command finished.
     CommandComplete {
         /// The command tag, such as `SELECT 3` or `INSERT 0 1`.
@@ -190,6 +195,7 @@ pub fn decode<'a>(frame: &Frame<'a>) -> Result<BackendMessage<'a>, BackendError>
         Tag::COMMAND_COMPLETE => BackendMessage::CommandComplete {
             tag: r.cstr("command_tag")?,
         },
+        Tag::EMPTY_QUERY_RESPONSE => BackendMessage::EmptyQueryResponse,
         Tag::ERROR_RESPONSE => BackendMessage::ErrorResponse(decode_error_fields(&mut r)?),
         Tag::NOTICE_RESPONSE => BackendMessage::NoticeResponse(decode_error_fields(&mut r)?),
         Tag::NOTIFICATION_RESPONSE => BackendMessage::NotificationResponse {
@@ -375,6 +381,32 @@ mod tests {
                 secret: -42,
             }
         );
+    }
+
+    #[test]
+    fn an_empty_query_response_is_recognised() {
+        // Sent instead of CommandComplete. Treating it as opaque means every
+        // empty statement a driver sends is a miscounted completion.
+        assert_eq!(
+            decode(&frame(Tag::EMPTY_QUERY_RESPONSE, b"")).unwrap(),
+            BackendMessage::EmptyQueryResponse
+        );
+    }
+
+    #[test]
+    fn empty_query_and_command_complete_are_both_completions() {
+        // The category a proxy actually cares about.
+        let empty = decode(&frame(Tag::EMPTY_QUERY_RESPONSE, b"")).unwrap();
+        let complete = decode(&frame(Tag::COMMAND_COMPLETE, b"SELECT 1\x00")).unwrap();
+        for msg in [empty, complete] {
+            assert!(
+                matches!(
+                    msg,
+                    BackendMessage::EmptyQueryResponse | BackendMessage::CommandComplete { .. }
+                ),
+                "{msg:?} is not a completion"
+            );
+        }
     }
 
     #[test]

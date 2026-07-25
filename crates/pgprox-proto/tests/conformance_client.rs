@@ -698,7 +698,7 @@ fn conformance_client_handles_an_empty_query() {
 
     let (tags, _, _) = conn.relay_query(";").unwrap();
     assert!(
-        tags.contains(&Tag(b'I')),
+        tags.contains(&Tag::EMPTY_QUERY_RESPONSE),
         "expected EmptyQueryResponse: {tags:?}"
     );
     assert!(conn.state.is_releasable());
