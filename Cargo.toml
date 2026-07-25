@@ -11,6 +11,7 @@ repository = "https://github.com/pgprox/pgprox"
 
 [workspace.dependencies]
 thiserror = "2"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 
 [workspace.lints.rust]
 # No unsafe anywhere. If the buffer slab or the codec appears to need it, that

@@ -15,5 +15,7 @@
 //! track, stop and escalate first. See `standards/contracts.md`.
 
 pub mod ids;
+pub mod secret;
 
 pub use ids::{ConnId, Lsn, NodeId, PoolKey, ServerId, TenantId};
+pub use secret::SecretString;

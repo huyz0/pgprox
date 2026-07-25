@@ -77,7 +77,7 @@ below is types plus tests plus fake where one applies.
   `ServerId`, `ConnId`, `Lsn`, `PoolKey`.
   Acceptance: a swapped pair of IDs fails to compile; `Lsn` orders correctly
   across the 32-bit boundary; `ConnId` round-trips its node ID.
-- [ ] `M0.4` `SecretString`.
+- [x] `M0.4` `SecretString`.
   Acceptance: `Debug` and `Display` print no part of the secret; the value is
   reachable only through `expose()`; memory is zeroed on drop.
 - [ ] `M0.5` Error taxonomy and the SQLSTATE mapping.
