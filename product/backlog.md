@@ -165,7 +165,7 @@ drivers. Between them that covers every message the codec claims to handle.
 - [ ] `M1.9` Fuzz targets for the decoder, with a committed corpus.
   Acceptance: `cargo fuzz` runs both targets; any crash found becomes a unit
   test.
-- [ ] `M1.10` `pgprox-tls`: rustls server and client config, FIPS feature gate,
+- [x] `M1.10` `pgprox-tls`: rustls server and client config, FIPS feature gate,
   certificate loading.
   Acceptance: a FIPS build asserts `fips()` on both configs and refuses to start
   otherwise; there is no way to configure skip-verification.

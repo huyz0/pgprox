@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/pgprox-core", "crates/pgprox-proto"]
+members = ["crates/pgprox-core", "crates/pgprox-proto", "crates/pgprox-tls"]
 
 [workspace.package]
 version = "0.1.0"

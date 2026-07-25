@@ -12,8 +12,12 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::time::{Instant, SystemTime};
+
+#[cfg(any(test, feature = "test-fakes"))]
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+#[cfg(any(test, feature = "test-fakes"))]
+use std::time::Duration;
 
 /// A source of time.
 ///
