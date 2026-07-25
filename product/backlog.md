@@ -270,15 +270,15 @@ this is the largest single gap.
 - [x] `M1F.6` SASL message framing: `AuthenticationSASL`,
   `AuthenticationSASLContinue`, `AuthenticationSASLFinal`, and the
   `SASLInitialResponse`/`SASLResponse` frontend forms.
-- [ ] `M1F.7` SCRAM client-first and server-first messages: nonce generation,
+- [x] `M1F.7` SCRAM client-first and server-first messages: nonce generation,
   channel-binding flag, the `n,,` GS2 header. Sans-I/O, so testable against RFC
   5802 vectors.
-- [ ] `M1F.8` Salted password derivation: PBKDF2-HMAC-SHA-256, `SaltedPassword`,
+- [x] `M1F.8` Salted password derivation: PBKDF2-HMAC-SHA-256, `SaltedPassword`,
   `ClientKey`, `StoredKey`, `ServerKey`. Must use the FIPS provider so the FIPS
   build does not diverge.
-- [ ] `M1F.9` Client proof and server signature verification, in constant time.
+- [x] `M1F.9` Client proof and server signature verification, in constant time.
   Acceptance: RFC 5802 and RFC 7677 test vectors pass.
-- [ ] `M1F.10` `scram-sha-256` verifier parsing, for verifying a client against
+- [x] `M1F.10` `scram-sha-256` verifier parsing, for verifying a client against
   a stored verifier rather than a password.
 - [x] `M1F.11` Channel binding (`SCRAM-SHA-256-PLUS`). Decide and record: it
   requires the TLS exporter and interacts with the FIPS suite list. Refusing is

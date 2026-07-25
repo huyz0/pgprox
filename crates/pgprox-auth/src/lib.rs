@@ -13,7 +13,9 @@
 pub mod cache;
 pub mod client;
 pub mod jwt;
+pub mod scram;
 
 pub use cache::{CacheConfig, CachingResolver};
 pub use client::{SidecarConfig, SidecarResolver};
 pub use jwt::{ALLOWED_ALGORITHMS, check_algorithm};
+pub use scram::{ScramError, ScramKeys};
