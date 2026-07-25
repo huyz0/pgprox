@@ -695,7 +695,7 @@ that already took sixty seconds to arrive.
 - [x] `M4.3` The file provider, polling the mount directory. Acceptance: a
   ConfigMap-style symlink swap is picked up, which is the case an event watcher
   pointed at the file misses entirely.
-- [ ] `M4.4` Hot reload semantics: validate then swap, never publish an invalid
+- [x] `M4.4` Hot reload semantics: validate then swap, never publish an invalid
   configuration, and keep serving the last good one. Acceptance: a broken
   document reaching the directory leaves watchers on the previous config and
   surfaces the error, rather than taking the node down or serving nothing.

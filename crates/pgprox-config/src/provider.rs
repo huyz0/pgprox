@@ -24,6 +24,22 @@
 //! Reacting to it in microseconds rather than a second buys nothing, and the
 //! read is one `stat` and, only when something moved, one small file.
 //!
+//! # A broken edit does not take the node down
+//!
+//! Validate, then swap. A document that does not parse, or parses into a
+//! configuration that does not validate, leaves watchers exactly where they
+//! were and is reported.
+//!
+//! The alternative is worse than it sounds. A running node has clients on it,
+//! and a typo in a `ConfigMap` is a routine event; taking the node down for one
+//! would turn every config edit into a deploy. Serving nothing is not an option
+//! either, because "no limits configured" reads to the rest of the process as
+//! "defaults", which silently discards every cap the operator set.
+//!
+//! So the last good configuration keeps serving, the error is surfaced through
+//! [`FileSource::last_error`], and the node keeps working while somebody fixes
+//! the file.
+//!
 //! # What "changed" means
 //!
 //! The content, not the timestamp. A `ConfigMap` update rewrites the file even
@@ -32,7 +48,7 @@
 //! against what is held is cheap and exact.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use pgprox_core::config::{Config, ConfigError, ConfigSource};
@@ -92,6 +108,12 @@ impl FileConfig {
 pub struct FileSource {
     config: FileConfig,
     tx: watch::Sender<Arc<Config>>,
+    /// The last poll that failed, cleared by the next that succeeds.
+    ///
+    /// A node serving a stale configuration and a node serving a current one
+    /// look identical from outside, which is exactly when an operator needs to
+    /// be told which they have.
+    last_error: Mutex<Option<ConfigError>>,
 }
 
 impl FileSource {
@@ -109,7 +131,11 @@ impl FileSource {
     pub fn new(config: FileConfig) -> Result<Arc<Self>, ConfigError> {
         let initial = read(&config.path())?;
         let (tx, _) = watch::channel(Arc::new(initial));
-        Ok(Arc::new(Self { config, tx }))
+        Ok(Arc::new(Self {
+            config,
+            tx,
+            last_error: Mutex::new(None),
+        }))
     }
 
     /// How this provider is configured.
@@ -125,12 +151,63 @@ impl FileSource {
     ///
     /// # Errors
     ///
-    /// Whatever the read or the parse produced. The previous configuration
-    /// stays published either way: a broken edit must not take a running node
-    /// down. See `M4.4`.
+    /// Whatever the read or the parse produced. Watchers keep the last good
+    /// configuration either way: a typo in a `ConfigMap` is routine, and taking a
+    /// node with clients on it down for one would make every config edit a
+    /// deploy.
     pub fn poll(&self) -> Result<bool, ConfigError> {
-        let next = read(&self.config.path())?;
-        Ok(self.publish_if_changed(next))
+        match read(&self.config.path()) {
+            Ok(next) => {
+                self.set_error(None);
+                Ok(self.publish_if_changed(next))
+            }
+            Err(err) => {
+                self.set_error(Some(err.clone()));
+                Err(err)
+            }
+        }
+    }
+
+    /// The last poll error, or [`None`] if the last poll succeeded.
+    ///
+    /// What `/readyz` and the admin API report. A node serving a stale
+    /// configuration and one serving a current configuration look identical
+    /// from outside, so this is how an operator tells them apart.
+    #[must_use]
+    pub fn last_error(&self) -> Option<ConfigError> {
+        self.last_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Whether the last poll succeeded.
+    #[must_use]
+    pub fn is_healthy(&self) -> bool {
+        self.last_error().is_none()
+    }
+
+    fn set_error(&self, err: Option<ConfigError>) {
+        *self
+            .last_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = err;
+    }
+
+    /// Polls until cancelled, on the configured interval.
+    ///
+    /// A failing poll is logged by the caller through [`Self::last_error`] and
+    /// the loop keeps going, because the file becoming readable again is the
+    /// expected outcome and stopping would mean never noticing that it did.
+    pub async fn run(self: Arc<Self>) {
+        let mut ticker = tokio::time::interval(self.config.poll_interval);
+        // The first tick fires immediately and the constructor has already
+        // read the file, so skip it rather than doing the same work twice.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let _ = self.poll();
+        }
     }
 
     /// Publishes only if the content differs from what watchers hold.
@@ -318,6 +395,155 @@ mod tests {
         // Rewritten with the same content, as kubelet does.
         fs::write(dir.path().join("pgprox.yaml"), MINIMAL).unwrap();
         assert!(!source.poll().unwrap(), "identical content was republished");
+    }
+
+    #[tokio::test]
+    async fn a_broken_edit_leaves_the_last_good_configuration_serving() {
+        // A typo in a ConfigMap is routine. Taking a node with clients on it
+        // down for one would turn every config edit into a deploy, and serving
+        // nothing is worse still: "no limits configured" reads to the rest of
+        // the process as "defaults", silently discarding every cap the operator
+        // set.
+        let (dir, config) = mounted(MINIMAL);
+        let source = FileSource::new(config).unwrap();
+        let mut rx = source.watch();
+        rx.borrow_and_update();
+        assert!(source.is_healthy());
+
+        fs::write(
+            dir.path().join("pgprox.yaml"),
+            "max_client_conns: [broken
+",
+        )
+        .unwrap();
+        let err = source.poll().unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
+
+        assert!(
+            !rx.has_changed().unwrap(),
+            "a broken document reached watchers"
+        );
+        assert_eq!(
+            rx.borrow().max_client_conns,
+            100,
+            "the last good configuration stopped serving"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_document_that_parses_but_does_not_validate_is_also_refused() {
+        // Validation is part of the swap, not a separate step a caller might
+        // forget, so a valid YAML document with a nonsense value is treated
+        // exactly like a broken one.
+        let (dir, config) = mounted(MINIMAL);
+        let source = FileSource::new(config).unwrap();
+        let mut rx = source.watch();
+        rx.borrow_and_update();
+
+        fs::write(
+            dir.path().join("pgprox.yaml"),
+            "max_client_conns: 0
+",
+        )
+        .unwrap();
+        assert!(source.poll().is_err());
+        assert_eq!(rx.borrow().max_client_conns, 100);
+    }
+
+    #[test]
+    fn a_failing_poll_is_reported_and_a_later_good_one_clears_it() {
+        // A node serving a stale configuration and one serving a current
+        // configuration look identical from outside, so this is how an operator
+        // tells them apart.
+        let (dir, config) = mounted(MINIMAL);
+        let source = FileSource::new(config).unwrap();
+        assert!(source.last_error().is_none());
+
+        fs::write(
+            dir.path().join("pgprox.yaml"),
+            "servers: [
+",
+        )
+        .unwrap();
+        assert!(source.poll().is_err());
+        assert!(
+            source.last_error().is_some(),
+            "the failure was not reported"
+        );
+        assert!(!source.is_healthy());
+
+        fs::write(
+            dir.path().join("pgprox.yaml"),
+            "max_client_conns: 300
+",
+        )
+        .unwrap();
+        assert!(source.poll().unwrap());
+        assert!(
+            source.is_healthy(),
+            "a good poll did not clear the previous failure"
+        );
+    }
+
+    #[test]
+    fn a_file_that_disappears_does_not_take_the_node_down() {
+        // Mid-swap a ConfigMap directory can be momentarily inconsistent, and
+        // a node that fell over for that would fall over on every update.
+        let (dir, config) = mounted(MINIMAL);
+        let source = FileSource::new(config).unwrap();
+
+        fs::remove_file(dir.path().join("pgprox.yaml")).unwrap();
+        let err = source.poll().unwrap_err();
+        assert!(matches!(err, ConfigError::Unreadable { .. }), "{err:?}");
+        assert_eq!(
+            source.watch().borrow().max_client_conns,
+            100,
+            "a vanished file stopped the last good configuration serving"
+        );
+
+        // And it recovers when the swap completes.
+        fs::write(
+            dir.path().join("pgprox.yaml"),
+            "max_client_conns: 400
+",
+        )
+        .unwrap();
+        assert!(source.poll().unwrap());
+        assert_eq!(source.watch().borrow().max_client_conns, 400);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_poll_loop_keeps_going_after_a_failure() {
+        // The file becoming readable again is the expected outcome, and
+        // stopping would mean never noticing that it did.
+        let (dir, config) = mounted(MINIMAL);
+        let interval = config.poll_interval;
+        let source = FileSource::new(config).unwrap();
+        let mut rx = source.watch();
+        rx.borrow_and_update();
+
+        let running = tokio::spawn(Arc::clone(&source).run());
+
+        fs::write(
+            dir.path().join("pgprox.yaml"),
+            "broken: [
+",
+        )
+        .unwrap();
+        tokio::time::sleep(interval * 2).await;
+        assert!(!source.is_healthy(), "the loop did not see the bad file");
+
+        fs::write(
+            dir.path().join("pgprox.yaml"),
+            "max_client_conns: 777
+",
+        )
+        .unwrap();
+        tokio::time::sleep(interval * 2).await;
+
+        assert!(source.is_healthy(), "the loop stopped after a failure");
+        assert_eq!(rx.borrow_and_update().max_client_conns, 777);
+        running.abort();
     }
 
     #[test]

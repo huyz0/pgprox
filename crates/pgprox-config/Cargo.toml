@@ -18,7 +18,7 @@ tokio = { workspace = true, features = ["sync", "time", "rt"] }
 [dev-dependencies]
 pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
 tempfile.workspace = true
-tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros", "test-util"] }
 
 [lints]
 workspace = true
