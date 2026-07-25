@@ -719,7 +719,7 @@ that already took sixty seconds to arrive.
   Acceptance: an aggregate answers from the local view with no fan-out,
   `?scope=local` narrows it, and no response contains a credential or an
   upstream hostname.
-- [ ] `M4.11` The write endpoints: drain, undrain, and pool reset. Acceptance:
+- [x] `M4.11` The write endpoints: drain, undrain, and pool reset. Acceptance:
   a drain through the API writes the same desired state the config document
   would, carrying the TTL from `M4.5`.
 - [ ] `M4.12` The OpenAPI document, generated from the handlers. Acceptance:

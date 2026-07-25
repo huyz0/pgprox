@@ -97,6 +97,39 @@ impl ServerId {
         Self(Arc::from(format!("{}:{}", host.as_ref(), port)))
     }
 
+    /// Reads a `host:port` string back into an identifier.
+    ///
+    /// The inverse of [`ServerId::as_str`], so a value that has been through a
+    /// config document, a log line or a URL path round-trips. Lives here rather
+    /// than in each caller because two implementations of "what is a valid
+    /// server address" is two chances to accept one the other would not.
+    ///
+    /// The port is required. Defaulting it to 5432 would let a configuration or
+    /// a request silently name a different server than it appears to.
+    ///
+    /// ```
+    /// use pgprox_core::ids::ServerId;
+    ///
+    /// let id = ServerId::new("db-1", 5432);
+    /// assert_eq!(ServerId::parse(id.as_str()), Some(id));
+    /// assert_eq!(ServerId::parse("db-1"), None, "the port is required");
+    /// assert_eq!(ServerId::parse("db-1:0"), None, "nothing listens on port 0");
+    /// ```
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        // Split from the right, so the colons inside an IPv6 address do not
+        // confuse it.
+        let (host, port) = text.rsplit_once(':')?;
+        if host.is_empty() {
+            return None;
+        }
+        let port: u16 = port.parse().ok()?;
+        if port == 0 {
+            return None;
+        }
+        Some(Self::new(host, port))
+    }
+
     /// Borrows the underlying `host:port` string.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -282,6 +315,58 @@ impl fmt::Display for PoolKey {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use super::ServerId as ServerIdForParseTests;
+
+    #[test]
+    fn a_server_address_round_trips_through_its_string_form() {
+        // The property that matters: a value that has been through a config
+        // document, a log line or a URL path comes back the same. A read
+        // endpoint rendering a key that a write endpoint then refuses is the
+        // failure this prevents.
+        for (host, port) in [("db-1", 5432_u16), ("10.0.0.9", 6432), ("[::1]", 5432)] {
+            let id = ServerIdForParseTests::new(host, port);
+            assert_eq!(
+                ServerIdForParseTests::parse(id.as_str()),
+                Some(id.clone()),
+                "{host}:{port} did not round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ipv6_address_survives_its_own_colons() {
+        // Split from the right, so the colons inside the address do not look
+        // like the port separator.
+        let id = ServerIdForParseTests::parse("[2001:db8::1]:5432").unwrap();
+        assert_eq!(id.as_str(), "[2001:db8::1]:5432");
+    }
+
+    #[test]
+    fn an_address_without_a_port_is_refused() {
+        // Defaulting to 5432 would let a configuration or a request silently
+        // name a different server than it appears to.
+        assert_eq!(ServerIdForParseTests::parse("db-1"), None);
+        assert_eq!(ServerIdForParseTests::parse(""), None);
+    }
+
+    #[test]
+    fn a_nonsense_address_is_refused_rather_than_accepted_oddly() {
+        for bad in ["db-1:", "db-1:abc", "db-1:99999", "db-1:-1", ":5432", ":"] {
+            assert_eq!(
+                ServerIdForParseTests::parse(bad),
+                None,
+                "{bad} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn port_zero_is_refused() {
+        // Nothing listens on it, so an address naming it is a mistake rather
+        // than a server.
+        assert_eq!(ServerIdForParseTests::parse("db-1:0"), None);
+    }
+
     use super::*;
 
     #[test]

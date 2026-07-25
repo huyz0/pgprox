@@ -32,13 +32,15 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use pgprox_core::admin::{
     AdminError, ClientView, ClusterView, Observatory, PoolView, Scope, ServerView, Stats,
     TenantView,
 };
-use pgprox_core::ids::TenantId;
+use pgprox_core::cluster::NodeMode;
+use pgprox_core::ids::{PoolKey, ServerId, TenantId};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// What every handler is given.
 pub type Shared = Arc<dyn Observatory>;
@@ -287,6 +289,147 @@ pub async fn config(State(observatory): State<Shared>) -> Json<ConfigBody> {
             })
             .collect(),
     })
+}
+
+/// What a drain request carries.
+#[derive(Debug, Default, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct DrainRequest {
+    /// How long the drain should last, in milliseconds.
+    ///
+    /// Omitted takes the configured default. There is no way to ask for no
+    /// expiry at all: a drain that never lapses belongs in the config document,
+    /// where it is reviewed and survives a restart. See ADR 0006.
+    #[serde(default)]
+    pub ttl_ms: Option<u64>,
+}
+
+/// What a write returned.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct AcceptedBody {
+    /// What happened, for a human reading a terminal.
+    pub result: String,
+}
+
+/// What a pool reset returned.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ResetBody {
+    /// How many idle connections were closed.
+    ///
+    /// Connections in use are finishing real transactions and are left alone,
+    /// so this is the number an operator should expect to be smaller than the
+    /// pool.
+    pub closed: u32,
+}
+
+/// `POST /v1/drain`
+///
+/// Writes the same desired state the config document would, carrying a TTL so
+/// it expires. A node drained at 2am that stays drained forever is
+/// indistinguishable from one somebody meant to drain.
+#[utoipa::path(
+    post, path = "/v1/drain", tag = "write",
+    request_body = DrainRequest,
+    responses(
+        (status = 200, description = "The node is draining", body = AcceptedBody),
+        (status = 409, description = "Refused", body = ErrorBody),
+    ),
+)]
+pub async fn drain(
+    State(observatory): State<Shared>,
+    body: Option<Json<DrainRequest>>,
+) -> Result<Json<AcceptedBody>, ApiError> {
+    // An empty body is a drain with the default TTL, because `curl -X POST`
+    // with no body is what an operator types under pressure.
+    let ttl = body
+        .and_then(|Json(request)| request.ttl_ms)
+        .map(Duration::from_millis);
+
+    observatory
+        .set_mode(NodeMode::Draining, Some(ttl.unwrap_or(DEFAULT_DRAIN_TTL)))
+        .await?;
+    Ok(Json(AcceptedBody {
+        result: "draining".to_owned(),
+    }))
+}
+
+/// `POST /v1/undrain`
+///
+/// Removes an imperative drain. It cannot undo one the config document asked
+/// for: that would reverse a reviewed change, and the next config poll would
+/// flip it back anyway.
+#[utoipa::path(
+    post, path = "/v1/undrain", tag = "write",
+    responses(
+        (status = 200, description = "The node is active", body = AcceptedBody),
+        (status = 409, description = "The document drains this node", body = ErrorBody),
+    ),
+)]
+pub async fn undrain(State(observatory): State<Shared>) -> Result<Json<AcceptedBody>, ApiError> {
+    observatory.set_mode(NodeMode::Active, None).await?;
+    Ok(Json(AcceptedBody {
+        result: "active".to_owned(),
+    }))
+}
+
+/// `POST /v1/pools/{server}/{database}/{user}/reset`
+///
+/// Closes a pool's idle connections. Connections in use are finishing real
+/// transactions, and an operator asking for a reset is not asking for those to
+/// fail.
+///
+/// The key is three path segments rather than one opaque string, because an
+/// operator types this from what `GET /v1/pools` showed them and a composite
+/// key would have to be escaped.
+#[utoipa::path(
+    post, path = "/v1/pools/{server}/{database}/{user}/reset", tag = "write",
+    params(
+        ("server" = String, Path, description = "host:port"),
+        ("database" = String, Path, description = "Database name"),
+        ("user" = String, Path, description = "Role"),
+    ),
+    responses(
+        (status = 200, description = "Idle connections closed", body = ResetBody),
+        (status = 404, description = "No such pool", body = ErrorBody),
+    ),
+)]
+pub async fn reset_pool(
+    State(observatory): State<Shared>,
+    Path((server, database, user)): Path<(String, String, String)>,
+) -> Result<Json<ResetBody>, ApiError> {
+    let Some(server_id) = ServerId::parse(&server) else {
+        return Err(ApiError::BadRequest(format!(
+            "server must be `host:port`, got `{server}`"
+        )));
+    };
+    let key = PoolKey::new(server_id, &database, &user);
+    let closed = observatory.reset_pool(&key).await?;
+    Ok(Json(ResetBody { closed }))
+}
+
+/// The TTL used when a caller gives none.
+///
+/// Mirrors `pgprox_config::DrainConfig::default`. This crate cannot depend on
+/// that one, so the value is repeated with a test in `pgprox-config` holding
+/// the two together.
+const DEFAULT_DRAIN_TTL: Duration = Duration::from_secs(30 * 60);
+
+/// The write half of the admin API.
+///
+/// Split from the reads so a deployment can put them behind different access.
+/// Reading pool depths and draining a node are not the same privilege.
+pub fn write_routes() -> axum::Router<Shared> {
+    axum::Router::new()
+        .route("/v1/drain", post(drain))
+        .route("/v1/undrain", post(undrain))
+        .route(
+            "/v1/pools/{server}/{database}/{user}/reset",
+            post(reset_pool),
+        )
+}
+
+/// Every route.
+pub fn routes() -> axum::Router<Shared> {
+    read_routes().merge(write_routes())
 }
 
 /// The read half of the admin API.
@@ -851,6 +994,184 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Sends a POST and returns the status and the parsed body.
+    async fn post(
+        fake: &Arc<FakeObservatory>,
+        uri: &str,
+        body: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let shared: Shared = Arc::clone(fake) as Shared;
+        let request = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_owned()))
+            .unwrap();
+
+        let response = routes().with_state(shared).oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json = if bytes.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes).expect("responses are JSON")
+        };
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn draining_writes_the_same_desired_state_with_a_ttl() {
+        // The imperative path and the declarative one end in the same place;
+        // the TTL is what stops a 2am drain outliving the incident.
+        let fake = observatory();
+        let (status, body) = post(&fake, "/v1/drain", r#"{"ttl_ms": 600000}"#).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["result"], "draining");
+        assert_eq!(
+            fake.mode(),
+            (NodeMode::Draining, Some(Duration::from_secs(600)))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_drain_with_no_body_takes_the_default_ttl() {
+        // `curl -X POST` with no body is what an operator types under pressure,
+        // and it must not be a 400 at that moment.
+        let fake = observatory();
+        let shared: Shared = Arc::clone(&fake) as Shared;
+        let response = routes()
+            .with_state(shared)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/drain")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let (mode, ttl) = fake.mode();
+        assert_eq!(mode, NodeMode::Draining);
+        assert_eq!(ttl, Some(DEFAULT_DRAIN_TTL), "no TTL was applied");
+    }
+
+    #[tokio::test]
+    async fn a_drain_always_carries_an_expiry() {
+        // There is no way to ask for one that never lapses. A drain that should
+        // outlive the incident belongs in the config document, where it is
+        // reviewed and survives a restart.
+        let fake = observatory();
+        post(&fake, "/v1/drain", "{}").await;
+        assert!(
+            fake.mode().1.is_some(),
+            "an API drain was written without an expiry"
+        );
+    }
+
+    #[tokio::test]
+    async fn undraining_clears_the_overlay() {
+        let fake = observatory();
+        post(&fake, "/v1/drain", "{}").await;
+        assert_eq!(fake.mode().0, NodeMode::Draining);
+
+        let (status, body) = post(&fake, "/v1/undrain", "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["result"], "active");
+        assert_eq!(fake.mode(), (NodeMode::Active, None));
+    }
+
+    #[tokio::test]
+    async fn resetting_a_pool_closes_idle_connections_and_reports_how_many() {
+        // Connections in use are finishing real transactions, and an operator
+        // asking for a reset is not asking for those to fail.
+        let fake = observatory();
+        let (status, body) =
+            post(&fake, "/v1/pools/db-1:5432/tenant_acme/acme_app/reset", "").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["closed"], 1);
+
+        let remaining = fake.pools(Scope::Local);
+        assert_eq!(remaining[0].stats.idle, 0);
+        assert_eq!(
+            remaining[0].stats.active, 2,
+            "an in-use connection was closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn resetting_a_pool_that_does_not_exist_is_a_404() {
+        let fake = observatory();
+        let (status, body) = post(&fake, "/v1/pools/db-9:5432/nope/nobody/reset", "").await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body["error"].as_str().unwrap().contains("db-9"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_pool_key_that_is_not_a_server_address_is_a_bad_request() {
+        // The path is typed by an operator from what GET /v1/pools showed them,
+        // so a mistake here is a typo rather than an attack, and it should say
+        // which part was wrong.
+        let fake = observatory();
+        let (status, body) = post(&fake, "/v1/pools/db-1/tenant_acme/acme_app/reset", "").await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"].as_str().unwrap().contains("host:port"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pool_key_round_trips_from_what_the_read_endpoint_showed() {
+        // The one that would break silently: GET renders the key, POST parses
+        // it back, and the two must agree about what a server address is.
+        let (_, listed) = get("/v1/pools?scope=local").await;
+        let pool = &listed.as_array().unwrap()[0];
+        let uri = format!(
+            "/v1/pools/{}/{}/{}/reset",
+            pool["server"].as_str().unwrap(),
+            pool["database"].as_str().unwrap(),
+            pool["user"].as_str().unwrap(),
+        );
+
+        let fake = observatory();
+        let (status, _) = post(&fake, &uri, "").await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the key a read endpoint rendered was not accepted back"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_write_routes_are_separable_from_the_reads() {
+        // So a deployment can put them behind different access: reading pool
+        // depths and draining a node are not the same privilege.
+        let shared: Shared = observatory();
+        let response = read_routes()
+            .with_state(shared)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/drain")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "a write reached a router that was only given reads"
+        );
     }
 
     #[tokio::test]

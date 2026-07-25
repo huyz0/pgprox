@@ -164,22 +164,27 @@ fn parse_server(text: &str) -> Result<ServerId, ConfigError> {
         reason,
     };
 
-    let (host, port) = text
-        .rsplit_once(':')
-        .ok_or_else(|| invalid("expected `host:port`, with the port written out".to_owned()))?;
+    // `ServerId::parse` decides what a valid address is, so this crate and the
+    // admin API cannot disagree about it. The reasons below are this crate's,
+    // because a config error has to name a field and a URL path does not.
+    if let Some(server) = ServerId::parse(text) {
+        return Ok(server);
+    }
+
+    let Some((host, port)) = text.rsplit_once(':') else {
+        return Err(invalid(
+            "expected `host:port`, with the port written out".to_owned(),
+        ));
+    };
     if host.is_empty() {
         return Err(invalid("the host is empty".to_owned()));
     }
-    let port: u16 = port
-        .parse()
-        .map_err(|_| invalid(format!("`{port}` is not a port number")))?;
-    if port == 0 {
+    if port.parse::<u16>().is_ok_and(|port| port == 0) {
         return Err(invalid(
             "port 0 is not a port anything listens on".to_owned(),
         ));
     }
-
-    Ok(ServerId::new(host, port))
+    Err(invalid(format!("`{port}` is not a port number")))
 }
 
 /// Reads `active` or `drain`.

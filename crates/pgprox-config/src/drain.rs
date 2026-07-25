@@ -354,6 +354,19 @@ mod tests {
     }
 
     #[test]
+    fn the_default_ttl_matches_the_one_the_admin_api_applies() {
+        // pgprox-admin cannot depend on this crate, so it repeats the value.
+        // This is the test that stops the two drifting: an API drain and a
+        // configured one must last the same time, or an operator's mental model
+        // is wrong for one of them.
+        assert_eq!(
+            DrainConfig::default().default_ttl,
+            Duration::from_secs(30 * 60),
+            "pgprox-admin's DEFAULT_DRAIN_TTL mirrors this; change both together"
+        );
+    }
+
+    #[test]
     fn the_defaults_resolve_a_forgotten_drain_inside_a_working_day() {
         // The whole point of the TTL. A default measured in days would be no
         // better than none.
