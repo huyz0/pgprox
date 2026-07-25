@@ -16,6 +16,7 @@ pgprox-core = { path = "../pgprox-core" }
 thiserror.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 

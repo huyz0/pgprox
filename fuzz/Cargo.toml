@@ -1,0 +1,30 @@
+[package]
+name = "pgprox-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Not a workspace member: cargo-fuzz builds it with its own nightly flags, and
+# including it would force the whole workspace onto that toolchain.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+pgprox-proto = { path = "../crates/pgprox-proto" }
+
+[[bin]]
+name = "frame_decode"
+path = "fuzz_targets/frame_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "message_decode"
+path = "fuzz_targets/message_decode.rs"
+test = false
+doc = false
+bench = false

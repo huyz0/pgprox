@@ -162,7 +162,7 @@ drivers. Between them that covers every message the codec claims to handle.
   outstanding; a `Sync` missing mid-sequence keeps the session held.
 - [x] `M1.8` COPY mode, both directions.
   Acceptance: a session in COPY is never released until the stream ends.
-- [ ] `M1.9` Fuzz targets for the decoder, with a committed corpus.
+- [~] `M1.9` Fuzz targets for the decoder, with a committed corpus.
   Acceptance: `cargo fuzz` runs both targets; any crash found becomes a unit
   test.
 - [x] `M1.10` `pgprox-tls`: rustls server and client config, FIPS feature gate,
