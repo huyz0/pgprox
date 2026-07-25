@@ -597,7 +597,7 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
   allowlist is replayed on acquire only when the target connection's value
   differs, `SET LOCAL` is never replayed, and a parameter outside the
   allowlist pins instead.
-- [ ] `M5.10` The prepared statement map: a global name derived from the SQL
+- [x] `M5.10` The prepared statement map: a global name derived from the SQL
   hash, the per-connection held set, and LRU eviction at a configured cap.
   Acceptance: two sessions preparing identical SQL share one global name, a
   connection that does not hold a statement reports it as needing replay, and

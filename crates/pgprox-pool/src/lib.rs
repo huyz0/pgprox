@@ -9,11 +9,15 @@
 //! a large fraction of sessions become unmovable.
 //!
 //! So the two halves of this crate pull in opposite directions and both matter:
-//! [`pin`] decides which sessions genuinely cannot be moved, and the statement
-//! map removes the largest reason they otherwise would be.
+//! [`pin`] decides which sessions genuinely cannot be moved, and [`statements`]
+//! removes the largest reason they otherwise would be.
 
 pub mod params;
 pub mod pin;
+pub mod statements;
 
 pub use params::{ParamChange, SessionParams};
 pub use pin::{PinReason, PinState, REPLAYABLE_PARAMETERS, pin_reason};
+pub use statements::{
+    ConnectionStatements, GlobalName, Preparation, SessionStatements, StatementConfig,
+};
