@@ -892,6 +892,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pgprox-observe"
+version = "0.1.0"
+dependencies = [
+ "pgprox-core",
+ "tokio",
+]
+
+[[package]]
 name = "pgprox-pool"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,19 @@
+[package]
+name = "pgprox-observe"
+description = "Metrics, tracing, log initialization and health endpoints."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+pgprox-core = { path = "../pgprox-core" }
+
+[dev-dependencies]
+pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

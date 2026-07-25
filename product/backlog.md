@@ -702,7 +702,7 @@ that already took sixty seconds to arrive.
 - [x] `M4.5` The drain overlay with a TTL, for the imperative path. Acceptance:
   a drain requested through the API expires on its own, and a drain in the
   config document does not.
-- [ ] `M4.6` `pgprox-observe` and the metric registry: every metric named in
+- [x] `M4.6` `pgprox-observe` and the metric registry: every metric named in
   one place, every one carrying `node`. Acceptance: a test enumerates the
   registry and fails on any label that is unbounded, with `tenant` named as the
   example.
