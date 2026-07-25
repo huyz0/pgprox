@@ -279,17 +279,33 @@ pub trait Observatory: Send + Sync + fmt::Debug {
     /// incomplete answer presented as complete is not.
     async fn clients(&self, scope: Scope) -> Result<Vec<ClientView>, AdminError>;
 
-    /// Puts this node into a mode, optionally expiring.
+    /// Drains this node for `ttl`, after which it returns to what the config
+    /// document says.
     ///
-    /// A `ttl` of [`None`] is the declarative form: it persists until changed.
-    /// A `ttl` of `Some` is the imperative one, which expires on its own,
-    /// because a node drained at 2am that stays drained forever is
-    /// indistinguishable from one somebody meant to drain.
+    /// The expiry is not optional, and that is the point. This is the
+    /// imperative path; the declarative one is the config document, which
+    /// persists because it is reviewed and survives a restart. A drain here
+    /// that never lapsed would be indistinguishable from one somebody meant to
+    /// make permanent, and the only way to tell would be to ask whoever ran it.
+    ///
+    /// An implementation may shorten an over-long `ttl` and reports what it
+    /// actually applied.
     ///
     /// # Errors
     ///
-    /// Fails when the mode cannot be written.
-    async fn set_mode(&self, mode: NodeMode, ttl: Option<Duration>) -> Result<(), AdminError>;
+    /// Fails when the drain cannot be written.
+    async fn drain(&self, ttl: Duration) -> Result<Duration, AdminError>;
+
+    /// Clears an imperative drain, returning to what the document says.
+    ///
+    /// Cannot undo a drain the document asked for: that would reverse a
+    /// reviewed change, and the next config poll would put it back, so the node
+    /// would oscillate rather than do either thing.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the overlay cannot be cleared.
+    async fn undrain(&self) -> Result<(), AdminError>;
 
     /// Closes idle connections in a pool, returning how many.
     ///
@@ -328,8 +344,11 @@ impl<T: Observatory + ?Sized> Observatory for Arc<T> {
     async fn clients(&self, scope: Scope) -> Result<Vec<ClientView>, AdminError> {
         (**self).clients(scope).await
     }
-    async fn set_mode(&self, mode: NodeMode, ttl: Option<Duration>) -> Result<(), AdminError> {
-        (**self).set_mode(mode, ttl).await
+    async fn drain(&self, ttl: Duration) -> Result<Duration, AdminError> {
+        (**self).drain(ttl).await
+    }
+    async fn undrain(&self) -> Result<(), AdminError> {
+        (**self).undrain().await
     }
     async fn reset_pool(&self, key: &PoolKey) -> Result<u32, AdminError> {
         (**self).reset_pool(key).await
@@ -361,7 +380,7 @@ mod fake {
         /// Peers this fake pretends it cannot reach during a fan-out.
         unreachable: bool,
         mode: NodeMode,
-        mode_expires: Option<Duration>,
+        drained_for: Option<Duration>,
         config: Arc<Config>,
         digests: BTreeMap<NodeId, ClusterDigest>,
     }
@@ -427,12 +446,18 @@ mod fake {
             self.lock().unreachable = unreachable;
         }
 
-        /// The mode this node was last put into, and when it expires.
+        /// The mode this node was last put into, and for how long.
+        ///
+        /// `None` for the duration means active: there is no such thing as a
+        /// drain without one.
         #[must_use]
         pub fn mode(&self) -> (NodeMode, Option<Duration>) {
             let state = self.lock();
-            (state.mode, state.mode_expires)
+            (state.mode, state.drained_for)
         }
+
+        /// The longest drain this fake will accept, so the clamp is testable.
+        pub const MAX_TTL: Duration = Duration::from_secs(4 * 60 * 60);
 
         /// Keeps only what this node owns, when the scope says so.
         fn narrow<T: Clone>(
@@ -552,10 +577,21 @@ mod fake {
             Ok(clients)
         }
 
-        async fn set_mode(&self, mode: NodeMode, ttl: Option<Duration>) -> Result<(), AdminError> {
+        async fn drain(&self, ttl: Duration) -> Result<Duration, AdminError> {
+            // Clamped rather than refused, as a real implementation does: a
+            // caller asking for a week wants the node drained, and refusing
+            // during an incident helps nobody.
+            let applied = ttl.min(Self::MAX_TTL);
             let mut state = self.lock();
-            state.mode = mode;
-            state.mode_expires = ttl;
+            state.mode = NodeMode::Draining;
+            state.drained_for = Some(applied);
+            Ok(applied)
+        }
+
+        async fn undrain(&self) -> Result<(), AdminError> {
+            let mut state = self.lock();
+            state.mode = NodeMode::Active;
+            state.drained_for = None;
             Ok(())
         }
 
@@ -708,27 +744,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_mode_can_be_set_with_or_without_an_expiry() {
-        // The declarative form persists; the imperative one expires, because a
-        // node drained at 2am that stays drained forever is indistinguishable
-        // from one somebody meant to drain.
+    async fn a_drain_through_this_contract_always_expires() {
+        // The expiry is not optional, which is what stops this API and the
+        // config document meaning different things by the same absence. The
+        // declarative form is the document; this one is the incident tool.
         let observatory = FakeObservatory::new(node(1));
         assert_eq!(observatory.mode(), (NodeMode::Active, None));
 
-        observatory
-            .set_mode(NodeMode::Draining, Some(Duration::from_secs(600)))
-            .await
-            .unwrap();
+        let applied = observatory.drain(Duration::from_secs(600)).await.unwrap();
+        assert_eq!(applied, Duration::from_secs(600));
         assert_eq!(
             observatory.mode(),
             (NodeMode::Draining, Some(Duration::from_secs(600)))
         );
+    }
 
-        observatory
-            .set_mode(NodeMode::Draining, None)
+    #[tokio::test]
+    async fn an_over_long_drain_is_shortened_and_says_so() {
+        // A caller asking for a week wants the node drained, and refusing
+        // during an incident helps nobody. Returning what was applied is how
+        // they find out they got something shorter.
+        let observatory = FakeObservatory::new(node(1));
+        let applied = observatory
+            .drain(Duration::from_secs(86_400 * 7))
             .await
             .unwrap();
-        assert_eq!(observatory.mode(), (NodeMode::Draining, None));
+
+        assert_eq!(applied, FakeObservatory::MAX_TTL);
+        assert_eq!(observatory.mode().1, Some(FakeObservatory::MAX_TTL));
+    }
+
+    #[tokio::test]
+    async fn undraining_returns_the_node_to_the_document() {
+        let observatory = FakeObservatory::new(node(1));
+        observatory.drain(Duration::from_secs(600)).await.unwrap();
+
+        observatory.undrain().await.unwrap();
+        assert_eq!(observatory.mode(), (NodeMode::Active, None));
+    }
+
+    #[test]
+    fn the_fake_reports_the_configuration_it_was_given() {
+        // Exercised through pgprox-admin's tests, which do not count toward
+        // this crate's coverage, so it is covered here too.
+        let observatory = FakeObservatory::new(node(1));
+        assert_eq!(observatory.config().max_client_conns, 10_000);
+
+        observatory.set_config(Config {
+            max_client_conns: 250,
+            ..Config::default()
+        });
+        assert_eq!(observatory.config().max_client_conns, 250);
     }
 
     #[test]
@@ -891,7 +957,8 @@ mod tests {
         assert!(observatory.clients(Scope::Cluster).await.is_ok());
         assert_eq!(observatory.config().max_client_conns, 10_000);
         assert_eq!(observatory.stats(Scope::Cluster).client_conns, 0);
-        assert!(observatory.set_mode(NodeMode::Active, None).await.is_ok());
+        assert!(observatory.drain(Duration::from_secs(60)).await.is_ok());
+        assert!(observatory.undrain().await.is_ok());
         assert!(observatory.reset_pool(&key("a")).await.is_ok());
         assert!(observatory.tenant(&TenantId::new("nobody")).is_none());
         assert_eq!(observatory.tenants(Scope::Cluster).len(), 0);

@@ -123,10 +123,17 @@ impl DrainState {
 
     /// Sets an overlay, returning when it expires.
     ///
-    /// A `ttl` of [`None`] takes the configured default. Anything longer than
-    /// `max_ttl` is clamped rather than refused: a caller asking for a week
-    /// wants the node drained, and refusing outright during an incident helps
-    /// nobody. The clamp is reported by the returned instant.
+    /// A `ttl` of [`None`] takes the configured default, which is still an
+    /// expiry. There is deliberately no way to ask for an overlay that never
+    /// lapses: that is what the config document is for, and
+    /// [`pgprox_core::admin::Observatory::drain`] takes a plain `Duration` for
+    /// the same reason. The two used to disagree about what `None` meant, one
+    /// reading it as "forever" and the other as "the default", which would have
+    /// produced a drain that silently expired when the API said it would not.
+    ///
+    /// Anything longer than `max_ttl` is clamped rather than refused: a caller
+    /// asking for a week wants the node drained, and refusing outright during
+    /// an incident helps nobody. The clamp is visible in the returned instant.
     pub fn set(&mut self, mode: NodeMode, ttl: Option<Duration>, now: Instant) -> Instant {
         let ttl = ttl
             .unwrap_or(self.config.default_ttl)
@@ -172,7 +179,7 @@ impl DrainState {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use pgprox_core::config::NodeOverride;
@@ -351,6 +358,27 @@ mod tests {
             "a shorter TTL did not replace a longer one"
         );
         assert_eq!(second, now + Duration::from_secs(60));
+    }
+
+    #[test]
+    fn there_is_no_way_to_set_an_overlay_that_never_expires() {
+        // The ambiguity that would have bitten at M6: this API and
+        // Observatory::drain must not disagree about what an absent TTL means.
+        // Every path through `set` produces an expiry.
+        let config = DrainConfig::default();
+        let mut state = DrainState::new("pgprox-2", config);
+        let now = Instant::now();
+
+        for ttl in [None, Some(Duration::from_secs(1)), Some(Duration::MAX)] {
+            state.set(NodeMode::Draining, ttl, now);
+            let remaining = state
+                .remaining(now)
+                .unwrap_or_else(|| panic!("{ttl:?} produced an overlay with no expiry"));
+            assert!(
+                remaining <= config.max_ttl,
+                "{ttl:?} produced an overlay lasting {remaining:?}"
+            );
+        }
     }
 
     #[test]

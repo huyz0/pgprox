@@ -36,7 +36,6 @@ use pgprox_core::admin::{
     AdminError, ClientView, ClusterView, Observatory, PoolView, Scope, ServerView, Stats,
     TenantView,
 };
-use pgprox_core::cluster::NodeMode;
 use pgprox_core::ids::{PoolKey, ServerId, TenantId};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -301,9 +300,10 @@ pub async fn config(State(observatory): State<Shared>) -> Json<ConfigBody> {
 pub struct DrainRequest {
     /// How long the drain should last, in milliseconds.
     ///
-    /// Omitted takes the configured default. There is no way to ask for no
-    /// expiry at all: a drain that never lapses belongs in the config document,
-    /// where it is reviewed and survives a restart. See ADR 0006.
+    /// Omitted takes the default. There is no way to ask for no expiry at all,
+    /// which is why the contract takes a `Duration` rather than an `Option`: a
+    /// drain that never lapses belongs in the config document, where it is
+    /// reviewed and survives a restart. See ADR 0006.
     #[serde(default)]
     pub ttl_ms: Option<u64>,
 }
@@ -313,6 +313,13 @@ pub struct DrainRequest {
 pub struct AcceptedBody {
     /// What happened, for a human reading a terminal.
     pub result: String,
+    /// How long a drain will last, in milliseconds.
+    ///
+    /// The applied value, which may be shorter than the one asked for. A caller
+    /// that requested a week and got four hours finds out here rather than when
+    /// the node comes back.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
 }
 
 /// What a pool reset returned.
@@ -347,13 +354,12 @@ pub async fn drain(
     // with no body is what an operator types under pressure.
     let ttl = body
         .and_then(|Json(request)| request.ttl_ms)
-        .map(Duration::from_millis);
+        .map_or(DEFAULT_DRAIN_TTL, Duration::from_millis);
 
-    observatory
-        .set_mode(NodeMode::Draining, Some(ttl.unwrap_or(DEFAULT_DRAIN_TTL)))
-        .await?;
+    let applied = observatory.drain(ttl).await?;
     Ok(Json(AcceptedBody {
         result: "draining".to_owned(),
+        ttl_ms: Some(u64::try_from(applied.as_millis()).unwrap_or(u64::MAX)),
     }))
 }
 
@@ -370,9 +376,10 @@ pub async fn drain(
     ),
 )]
 pub async fn undrain(State(observatory): State<Shared>) -> Result<Json<AcceptedBody>, ApiError> {
-    observatory.set_mode(NodeMode::Active, None).await?;
+    observatory.undrain().await?;
     Ok(Json(AcceptedBody {
         result: "active".to_owned(),
+        ttl_ms: None,
     }))
 }
 

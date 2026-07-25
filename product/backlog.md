@@ -746,6 +746,10 @@ that already took sixty seconds to arrive.
   and `SHOW` cannot drift into different answers, was nowhere checked. Worse,
   `SHOW SERVERS` and `GET /v1/servers` share a word and mean different things,
   and nothing said so.
+- [x] `M4.19` Remove the drain contract's ambiguous `Option`. Found reviewing
+  M4: `Observatory::set_mode(mode, None)` documented "persists until changed"
+  while `DrainState::set(mode, None, now)` applied the default TTL. The same
+  absence meant opposite things in two APIs M6 has to wire together.
 - [ ] `M4.15` Close M4.
 
 ## M6 and later
