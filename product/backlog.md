@@ -173,7 +173,7 @@ drivers. Between them that covers every message the codec claims to handle.
   codec in testcontainers.
   Acceptance: startup, simple query, extended query, and COPY all complete
   against both versions.
-- [ ] `M1.12` Server-side conformance harness: a minimal server built on the
+- [x] `M1.12` Server-side conformance harness: a minimal server built on the
   codec that real drivers can connect to.
   Acceptance: `psql` completes a session against it.
 - [ ] `M1.13` Driver matrix: pgx, asyncpg, JDBC, npgsql against the harness.
