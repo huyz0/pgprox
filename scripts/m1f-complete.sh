@@ -9,17 +9,33 @@ echo "M1F: full protocol coverage"
 echo
 
 # --- Group A: message surface -------------------------------------------------
-for item in EMPTY_QUERY_RESPONSE PARAMETER_DESCRIPTION FUNCTION_CALL; do
-  grep -qs "$item" "$PROTO/frame.rs" && ok "Tag::$item" || fail "Tag::$item missing"
+# Anchored on the constant definition, not the name appearing somewhere.
+for item in EMPTY_QUERY_RESPONSE PARAMETER_DESCRIPTION FUNCTION_CALL \
+            FUNCTION_CALL_RESPONSE; do
+  if grep -qsE "pub const $item: Self = Self\(b'.'\)" "$PROTO/frame.rs"; then
+    ok "Tag::$item"
+  else
+    fail "Tag::$item is not defined"
+  fi
 done
-grep -qs 'ParameterDescription' "$PROTO/backend.rs" \
-  && ok "ParameterDescription decoded" || fail "ParameterDescription not decoded"
+grep -qsE 'Tag::PARAMETER_DESCRIPTION =>' "$PROTO/backend.rs" \
+  && ok "ParameterDescription decoded" || fail "ParameterDescription has no decode arm"
 
-# Error fields: three of about twenty today. Named, not counted, so adding an
-# unrelated field cannot satisfy this.
-for field in detail hint position schema table column constraint routine; do
-  grep -qsi "$field" "$PROTO/backend.rs" \
-    && ok "error field: $field" || fail "error field not extracted: $field"
+# Error fields, matched on the assignment rather than the word.
+#
+# The first version grepped case-insensitively for the field name, which matches
+# the doc comments as readily as the code: deleting `fields.detail = value` left
+# five other occurrences of "detail" and the gate still passed. That is the third
+# time a gate here has matched prose, so these now anchor on syntax that only
+# appears when the field is genuinely wired up.
+for field in detail hint position internal_position internal_query context \
+             schema table column datatype constraint file line routine \
+             severity_nonlocalized; do
+  if grep -qsE "fields\.$field = value" "$PROTO/backend.rs"; then
+    ok "error field: $field"
+  else
+    fail "error field not assigned: $field"
+  fi
 done
 
 # --- Group B: SCRAM -----------------------------------------------------------
@@ -28,9 +44,13 @@ if [[ -f "$PROTO/scram.rs" ]] || [[ -f crates/pgprox-auth/src/scram.rs ]]; then
 else
   fail "no SCRAM module; ADR 0002 chose it and admin tooling cannot connect without it"
 fi
-grep -rqs 'RFC 5802\|rfc5802\|7677' crates/ \
-  && ok "SCRAM tested against published vectors" \
-  || fail "SCRAM not tested against RFC 5802/7677 vectors"
+# An actual asserted vector, not a mention of the RFC in a comment.
+if grep -qsE 'assert_eq!\(\s*$' crates/pgprox-auth/src/scram.rs \
+   && grep -qs 'dHzbZapWIk4jUhN' crates/pgprox-auth/src/scram.rs; then
+  ok "SCRAM asserted against the RFC 7677 vector"
+else
+  fail "SCRAM does not assert the published RFC 7677 proof"
+fi
 
 # --- Group C: protocol 3.2 ----------------------------------------------------
 # Mentioning the constant is not supporting it. negotiate_version must return
@@ -52,7 +72,8 @@ else
 fi
 
 # --- Group E: startup and session --------------------------------------------
-grep -qs 'options' "$PROTO/startup.rs" \
+# The function, not the word, which appears throughout the module's prose.
+grep -qsE 'pub fn options\(' "$PROTO/startup.rs" \
   && ok "startup options parsed" || fail "startup options parameter not parsed"
 
 # --- Group F: coverage is measured, not claimed -------------------------------
