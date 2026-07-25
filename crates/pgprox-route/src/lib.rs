@@ -15,6 +15,8 @@
 
 pub mod classify;
 pub mod hints;
+pub mod replica;
 
 pub use classify::{begins_read_only_transaction, classify};
 pub use hints::{RouteAssignment, parse_route_assignment, statement_hint};
+pub use replica::{ReplicaConfig, Replicas, Watermark};

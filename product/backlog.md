@@ -577,7 +577,7 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
   leading `/* pgprox:replica */` comment for one statement. Acceptance: a hint
   can admit an `Unknown` statement to a replica and can never admit a `Write`
   or one behind the session watermark.
-- [ ] `M5.5` Replica state tracking: replayed LSN and health per replica, read
+- [x] `M5.5` Replica state tracking: replayed LSN and health per replica, read
   by the router with no await, plus the session write watermark. Acceptance: a
   replica behind the watermark is never eligible, and a session that has never
   written accepts any healthy replica.
