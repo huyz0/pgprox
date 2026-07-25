@@ -303,17 +303,17 @@ this is the largest single gap.
 
 pgdog carries a whole logical-decoding subtree. We only track the mode.
 
-- [ ] `M1F.17` Decide scope and record an ADR. Physical replication passthrough
+- [x] `M1F.17` Decide scope and record an ADR. Physical replication passthrough
   is cheap; logical decoding message types are a large surface that a
   connection proxy may not need at all. Do not build Group D before this.
 - [ ] `M1F.18` `CopyBothResponse` session semantics: a replication connection
   never returns to the pool and must be pinned for life.
-- [ ] `M1F.19` Standby status update and keepalive passthrough, if M1F.17 says
+- [~] `M1F.19` Standby status update and keepalive passthrough, if M1F.17 says
   yes.
 
 ### Group E: startup and session parameters
 
-- [ ] `M1F.20` `options` startup parameter parsing, including the
+- [x] `M1F.20` `options` startup parameter parsing, including the
   `-c name=value` form. It carries `search_path`, which is part of the cache key
   and therefore correctness-relevant.
 - [ ] `M1F.21` The replayable session-parameter allowlist as a real type, with

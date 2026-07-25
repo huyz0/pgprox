@@ -65,6 +65,46 @@ impl Startup<'_> {
         self.param("database").or_else(|| self.user())
     }
 
+    /// Parses the `options` parameter into individual `-c name=value` settings.
+    ///
+    /// libpq packs runtime settings here, and `search_path` is among them. That
+    /// makes this correctness-relevant rather than cosmetic: `search_path` is
+    /// part of the query cache key, because the same SQL resolves to different
+    /// tables under different paths. See ADR 0007 and the cache module.
+    ///
+    /// The format is space-separated, with backslash escaping a literal space,
+    /// and both `-c name=value` and a bare `name=value` are accepted because
+    /// libpq emits both.
+    #[must_use]
+    pub fn options(&self) -> Vec<(String, String)> {
+        let Some(raw) = self.param("options") else {
+            return Vec::new();
+        };
+
+        let mut out = Vec::new();
+        for token in split_escaped(raw) {
+            // Strip a leading -c, which may be joined or already separated by
+            // the splitter above.
+            let setting = token.strip_prefix("-c").unwrap_or(&token).trim().to_owned();
+            if setting.is_empty() || setting == "-c" {
+                continue;
+            }
+            if let Some((name, value)) = setting.split_once('=') {
+                out.push((name.trim().to_owned(), value.to_owned()));
+            }
+        }
+        out
+    }
+
+    /// Looks up one runtime setting from `options`.
+    #[must_use]
+    pub fn option(&self, name: &str) -> Option<String> {
+        self.options()
+            .into_iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v)
+    }
+
     /// Looks up a startup parameter.
     #[must_use]
     pub fn param(&self, name: &str) -> Option<&str> {
@@ -110,6 +150,36 @@ pub fn negotiate_version(requested: i32) -> VersionResponse {
         return VersionResponse::Accept;
     }
     VersionResponse::Negotiate { minor: 0 }
+}
+
+/// Splits on unescaped spaces, honouring backslash escapes.
+///
+/// libpq allows a value to contain a space by escaping it, so a naive
+/// `split_whitespace` would cut a `search_path` of `"a, b"` in half and yield a
+/// setting nobody sent.
+fn split_escaped(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+
+    for ch in input.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == ' ' {
+            if !current.is_empty() {
+                out.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
 }
 
 /// Why a startup packet could not be decoded.
@@ -236,6 +306,92 @@ mod tests {
         assert_eq!(parsed.database(), Some("tenant_acme"));
         assert_eq!(parsed.param("application_name"), Some("psql"));
         assert_eq!(parsed.param("nonexistent"), None);
+    }
+
+    #[test]
+    fn options_are_parsed_into_settings() {
+        let body = startup_body(
+            PROTOCOL_3_0,
+            &[
+                ("user", "acme_app"),
+                (
+                    "options",
+                    "-c search_path=tenant_a -c statement_timeout=5000",
+                ),
+            ],
+        );
+        let parsed = decode(&body).unwrap();
+
+        assert_eq!(
+            parsed.options(),
+            vec![
+                ("search_path".to_owned(), "tenant_a".to_owned()),
+                ("statement_timeout".to_owned(), "5000".to_owned()),
+            ]
+        );
+        assert_eq!(parsed.option("search_path").as_deref(), Some("tenant_a"));
+        assert_eq!(parsed.option("nonexistent"), None);
+    }
+
+    #[test]
+    fn an_escaped_space_does_not_split_a_value() {
+        // libpq escapes spaces in values. A naive split would cut a search_path
+        // of "a, b" in half and yield a setting nobody sent, which would then
+        // become part of a cache key.
+        let body = startup_body(
+            PROTOCOL_3_0,
+            &[
+                ("user", "u"),
+                ("options", r"-c search_path=tenant_a,\ tenant_b"),
+            ],
+        );
+        assert_eq!(
+            decode(&body).unwrap().option("search_path").as_deref(),
+            Some("tenant_a, tenant_b")
+        );
+    }
+
+    #[test]
+    fn a_bare_setting_without_dash_c_is_accepted() {
+        // libpq emits both forms.
+        let body = startup_body(
+            PROTOCOL_3_0,
+            &[("user", "u"), ("options", "search_path=public")],
+        );
+        assert_eq!(
+            decode(&body).unwrap().option("search_path").as_deref(),
+            Some("public")
+        );
+    }
+
+    #[test]
+    fn a_value_containing_an_equals_sign_keeps_it() {
+        // Only the first = separates; the rest belongs to the value.
+        let body = startup_body(PROTOCOL_3_0, &[("user", "u"), ("options", "-c foo=a=b=c")]);
+        assert_eq!(
+            decode(&body).unwrap().option("foo").as_deref(),
+            Some("a=b=c")
+        );
+    }
+
+    #[test]
+    fn a_startup_without_options_yields_nothing_rather_than_failing() {
+        let body = startup_body(PROTOCOL_3_0, &[("user", "u")]);
+        assert!(decode(&body).unwrap().options().is_empty());
+    }
+
+    #[test]
+    fn malformed_options_are_skipped_rather_than_rejected() {
+        // A token with no = is not a setting. Refusing the whole connection
+        // over one would be a worse failure than ignoring it.
+        let body = startup_body(
+            PROTOCOL_3_0,
+            &[("user", "u"), ("options", "-c junk -c search_path=ok -c")],
+        );
+        assert_eq!(
+            decode(&body).unwrap().options(),
+            vec![("search_path".to_owned(), "ok".to_owned())]
+        );
     }
 
     #[test]
