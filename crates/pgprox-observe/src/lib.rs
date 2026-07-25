@@ -20,6 +20,6 @@ pub mod spans;
 pub mod tenants;
 
 pub use health::{Health, HealthConfig, Probe, Reason};
-pub use metrics::{ALL, Kind, Label, MAX_LABEL_VALUES, Metric};
+pub use metrics::{ALL, Kind, Label, MAX_LABEL_VALUES, Metric, describe_all};
 pub use spans::{REDACTED, Span, is_recordable, may_record_query, redact};
 pub use tenants::{AllowlistError, MAX_ALLOWLISTED, OTHER, TenantAllowlist};

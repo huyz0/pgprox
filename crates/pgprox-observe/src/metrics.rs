@@ -255,6 +255,15 @@ pub const CONFIG_RELOAD_TOTAL: Metric = Metric {
     labels: &[RESULT],
 };
 
+/// The metadata for every metric, in registry order.
+///
+/// What an exporter emits before its samples. Deterministic, so a diff of two
+/// nodes' `/metrics` output differs only where the numbers do.
+#[must_use]
+pub fn describe_all() -> String {
+    ALL.iter().map(Metric::describe).collect()
+}
+
 /// Everything the proxy exports.
 ///
 /// The list the cardinality test walks, and the list an operator can read to
@@ -275,6 +284,30 @@ pub const ALL: &[Metric] = &[
 ];
 
 impl Metric {
+    /// The `HELP` and `TYPE` lines Prometheus expects before the samples.
+    ///
+    /// The registry renders its own metadata so an exporter is built from it
+    /// rather than beside it. Without this, whoever wires the exporter types
+    /// every name a second time at the call site, and the registry becomes a
+    /// description of what somebody intended rather than of what is exported.
+    ///
+    /// ```
+    /// use pgprox_observe::metrics::WAIT_SECONDS;
+    ///
+    /// let described = WAIT_SECONDS.describe();
+    /// assert!(described.starts_with("# HELP pgprox_wait_seconds "));
+    /// assert!(described.contains("\n# TYPE pgprox_wait_seconds histogram\n"));
+    /// ```
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!(
+            "# HELP {name} {help}\n# TYPE {name} {kind}\n",
+            name = self.name,
+            help = self.help,
+            kind = self.kind.as_str(),
+        )
+    }
+
     /// Every label, `node` included.
     ///
     /// `node` is not in [`Metric::labels`] because repeating it twelve times
@@ -480,6 +513,52 @@ mod tests {
         assert_eq!(Kind::Gauge.as_str(), "gauge");
         assert_eq!(Kind::Counter.as_str(), "counter");
         assert_eq!(Kind::Histogram.as_str(), "histogram");
+    }
+
+    #[test]
+    fn the_registry_renders_its_own_metadata() {
+        // So an exporter is built from the registry rather than beside it. If
+        // it cannot, whoever wires the exporter types every name a second time
+        // and the registry describes an intention rather than reality.
+        let described = describe_all();
+
+        for metric in ALL {
+            assert!(
+                described.contains(&format!("# HELP {metric} ")),
+                "{metric} has no HELP line"
+            );
+            assert!(
+                described.contains(&format!("# TYPE {metric} {}", metric.kind.as_str())),
+                "{metric} has no TYPE line, or the wrong one"
+            );
+        }
+    }
+
+    #[test]
+    fn the_metadata_is_well_formed_exposition() {
+        // A malformed HELP line makes Prometheus reject the whole scrape, so
+        // one bad metric takes out every other one on the node.
+        for line in describe_all().lines() {
+            assert!(
+                line.starts_with("# HELP ") || line.starts_with("# TYPE "),
+                "unexpected line in the metadata: {line:?}"
+            );
+            assert!(
+                !line[7..].trim().is_empty(),
+                "an empty metadata line: {line:?}"
+            );
+            assert!(
+                !line.contains('\n'),
+                "a help text with a newline in it would end the line early: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_metadata_is_deterministic() {
+        // So a diff of two nodes' /metrics output differs only where the
+        // numbers do.
+        assert_eq!(describe_all(), describe_all());
     }
 
     #[test]

@@ -15,6 +15,10 @@ Metrics, tracing, log initialization, health endpoints.
 - Declare metrics in `metrics.rs`, never at the call site. A metric declared
   where it is incremented cannot be enumerated, so nobody can answer what the
   proxy exports and the cardinality rule cannot be checked at all.
+- **Build the exporter from the registry**, using `describe_all`. Typing a
+  metric name at the exporter as well as here makes the registry a description
+  of what somebody intended rather than of what is exported, and the two drift
+  the first time a name changes.
 - Every metric carries a `node` label. `pgprox_cluster_view_hash` exists so a
   mismatch across pods surfaces split brain directly.
 - **Nothing may make `/readyz` fail transiently** except drain. A flapping

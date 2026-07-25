@@ -737,6 +737,10 @@ that already took sixty seconds to arrive.
   so a caller had to know to call both and the first one to forget the
   not-a-`SHOW` case would break every client that sends a query. The same
   shape as the three gaps M5's reviews found.
+- [x] `M4.17` Let the metric registry render its own metadata. Found reviewing
+  M4: the registry declared names, kinds and help text and could produce none
+  of it, so an exporter would have to type every name again at the call site,
+  which is the second source the registry exists to remove.
 - [ ] `M4.15` Close M4.
 
 ## M6 and later
