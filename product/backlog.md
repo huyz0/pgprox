@@ -138,7 +138,7 @@ drivers. Between them that covers every message the codec claims to handle.
   length prefix, incomplete-frame handling.
   Acceptance: a frame split across arbitrary byte boundaries reassembles; a
   length larger than the configured maximum is an error, never an allocation.
-- [ ] `M1.3` Backend messages we inspect: `ReadyForQuery`, `ErrorResponse`,
+- [x] `M1.3` Backend messages we inspect: `ReadyForQuery`, `ErrorResponse`,
   `ParameterStatus`, `CommandComplete`, `BackendKeyData`, `NotificationResponse`,
   the `Authentication*` family.
   Acceptance: each decodes from real bytes; everything else passes through as

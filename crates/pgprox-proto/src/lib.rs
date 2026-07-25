@@ -14,6 +14,10 @@
 //! against a maximum. Nothing here allocates at all: frames borrow from the
 //! caller's buffer.
 
+pub mod backend;
 pub mod frame;
+pub mod read;
 
+pub use backend::{BackendMessage, TxStatus};
 pub use frame::{DEFAULT_MAX_FRAME, DecodeError, Decoded, Frame, Tag};
+pub use read::{FieldError, Reader};
