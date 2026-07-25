@@ -435,10 +435,10 @@ found in staging.
 - [x] `M3.5` Lease lifecycle: request, grant, renew, expire, release.
   Acceptance: an unreachable node's leases expire without anyone acting, and a
   lease is never counted after its expiry.
-- [ ] `M3.6` Tenant reservations with use-it-or-lose-it decay.
+- [x] `M3.6` Tenant reservations with use-it-or-lose-it decay.
   Acceptance: a home node holding an unused reservation loses it after the
   configured rounds, and a non-home node can then claim it.
-- [ ] `M3.7` Shed decisions and their guard rails: idle threshold, per-tenant
+- [x] `M3.7` Shed decisions and their guard rails: idle threshold, per-tenant
   rate limit, settle window after a membership change, never toward a draining
   node, never a pinned or in-transaction session, global kill switch.
   Acceptance: each guard rail refuses a shed that would otherwise happen.

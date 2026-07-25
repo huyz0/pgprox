@@ -16,9 +16,13 @@
 
 pub mod lease;
 pub mod quota;
+pub mod reservation;
+pub mod shed;
 
 pub use lease::{LeaseConfig, LeaseLedger};
 pub use quota::{NodeAllowance, QuotaSplit, split};
+pub use reservation::{ReservationConfig, Reservations, TenantEntitlement};
+pub use shed::{ShedConfig, ShedCtx, ShedDecision, ShedRefusal};
 
 // Compiled during this crate's own tests so the coverage gate measures it, and
 // available to downstream crates only when they ask. Same pattern as the fakes
