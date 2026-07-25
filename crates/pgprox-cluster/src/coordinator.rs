@@ -40,6 +40,10 @@
 //! At the bottom of this file, over the simulation: randomized schedules with
 //! partitions, leader loss and simultaneous restarts, asserting after every step
 //! that the sum of what every node believes it may open never exceeds the cap.
+//! The gossip goes through [`crate::sim::Network`], so it is dropped, delayed
+//! and reordered on the way. That is not decoration: stale liveness produced the
+//! hardest of the three breaches, and a network that delivers everything at once
+//! and in order is the case least likely to produce it.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -478,7 +482,7 @@ impl NodeCoordinator {
 mod tests {
     use super::*;
     use crate::digest::VersionedDigest;
-    use crate::sim::Rng;
+    use crate::sim::{Network, NetworkFaults, Rng};
     use std::time::Duration;
 
     const CAP: u32 = 100;
@@ -594,19 +598,79 @@ mod tests {
         nodes[index] = fresh;
     }
 
+    /// One gossip round over a real network, which may lose or reorder it.
+    ///
+    /// A node hears from itself directly rather than through the network: it
+    /// does not send itself UDP, and modelling it as if it did would let a
+    /// dropped packet make a healthy node look dead to itself.
+    fn gossip_over(
+        nodes: &mut [NodeCoordinator],
+        network: &mut Network<VersionedDigest>,
+        version: u64,
+        step: Duration,
+        now: Instant,
+    ) {
+        let ids: Vec<NodeId> = nodes.iter().map(NodeCoordinator::node).collect();
+        for (index, c) in nodes.iter_mut().enumerate() {
+            let mut own = VersionedDigest {
+                digest: c.digest(),
+                version,
+            };
+            own.digest.node = ids[index];
+            c.gossip(own.clone(), now);
+            for peer in &ids {
+                if *peer != ids[index] {
+                    network.send(ids[index], *peer, own.clone());
+                }
+            }
+        }
+
+        for envelope in network.advance(step) {
+            let Some(target) = nodes.iter_mut().find(|c| c.node() == envelope.to) else {
+                continue;
+            };
+            target.gossip(envelope.message, now);
+        }
+
+        for c in nodes.iter_mut() {
+            c.observe(now);
+        }
+    }
+
     #[test]
     fn guaranteed_plus_leased_never_exceeds_the_cap() {
         // The milestone. Randomized schedules over sustained partitions, leader
-        // loss and simultaneous restarts, asserted after every step.
+        // loss and simultaneous restarts, asserted after every step, with the
+        // gossip carried by a network that drops, delays and reorders it.
+        //
+        // The loss matters as much as the partitions. Stale liveness is what
+        // produced the hardest of the three breaches this test found, and a
+        // network that delivers everything immediately and in order is the case
+        // least likely to produce it.
+        const STEP: Duration = Duration::from_millis(500);
+
+        let mut granted_total = 0_u64;
+        let mut leased_high_water = 0_u32;
+        let mut delivered_total = 0_usize;
+        let mut dropped_total = 0_usize;
+
         for seed in 0..500_u64 {
             let mut rng = Rng::new(seed);
+            let mut network = Network::new(
+                seed,
+                NetworkFaults {
+                    drop_percent: 15,
+                    max_delay_ms: 400,
+                    reorder_percent: 20,
+                },
+            );
             let mut now = Instant::now();
             let mut nodes = cluster(FLEET, now);
-            let mut faults = Faults::default();
+            let mut split_at: Option<usize> = None;
             let mut version = 1_u64;
 
             for step in 0..80 {
-                now += Duration::from_millis(500);
+                now += STEP;
                 version += 1;
 
                 // Faults change occasionally, so most steps run under whatever
@@ -616,10 +680,24 @@ mod tests {
                         // A partition at a random point, the degenerate
                         // all-on-one-side cases included.
                         let at = usize::try_from(rng.below(u64::from(FLEET) + 1)).unwrap();
-                        faults.split_at = Some(at);
+                        let ids: Vec<NodeId> = nodes.iter().map(NodeCoordinator::node).collect();
+                        network.partition(&ids[..at], &ids[at..]);
+                        split_at = Some(at);
                     }
-                    1 => faults.split_at = None,
-                    2 => faults.leader_loss = !faults.leader_loss,
+                    1 => {
+                        network.heal();
+                        split_at = None;
+                    }
+                    2 => {
+                        // Leader loss: the lowest node stops taking work, so
+                        // leadership moves to the next one up.
+                        let mode = if nodes[0].digest().mode == NodeMode::Active {
+                            NodeMode::Draining
+                        } else {
+                            NodeMode::Active
+                        };
+                        nodes[0].set_mode(mode);
+                    }
                     3 => {
                         // Simultaneous restarts, up to the whole fleet.
                         let count = usize::try_from(rng.below(u64::from(FLEET)) + 1).unwrap();
@@ -630,7 +708,7 @@ mod tests {
                     _ => {}
                 }
 
-                deliver(&mut nodes, faults, version, now);
+                gossip_over(&mut nodes, &mut network, version, STEP, now);
 
                 // Everyone asks for more than they could possibly be owed, from
                 // whichever node will answer. Greed is the point: a rule that
@@ -640,6 +718,7 @@ mod tests {
                     let want = u32::try_from(rng.below(60)).unwrap();
                     for responder in 0..nodes.len() {
                         if let Ok(lease) = nodes[responder].request(&server(), holder, want, now) {
+                            granted_total += 1;
                             nodes[asker].accept(lease);
                             break;
                         }
@@ -647,13 +726,42 @@ mod tests {
                 }
 
                 let total = total_permitted(&nodes, now);
+                leased_high_water = leased_high_water.max(
+                    nodes
+                        .iter()
+                        .map(|c| c.allowance(&server(), now).leased)
+                        .fold(0_u32, u32::saturating_add),
+                );
                 assert!(
                     total <= CAP,
-                    "seed {seed} step {step} under {faults:?}: \
+                    "seed {seed} step {step}, split at {split_at:?}: \
                      nodes believe they may open {total}, cap is {CAP}"
                 );
             }
+
+            let (delivered, dropped) = network.stats();
+            delivered_total += delivered;
+            dropped_total += dropped;
         }
+
+        // A schedule under which nothing is ever granted would satisfy the
+        // invariant and prove nothing. These are the guards that the test is
+        // testing something: leases were handed out, and the free pool was
+        // actually pressed against rather than nibbled at.
+        assert!(
+            granted_total > 1_000,
+            "only {granted_total} grants in 500 seeds"
+        );
+        assert_eq!(
+            leased_high_water,
+            CAP - CAP / 2,
+            "the free pool was never fully taken up, so the cap was never approached"
+        );
+        assert!(
+            dropped_total > delivered_total / 20,
+            "the network lost {dropped_total} of {} messages, so loss was not exercised",
+            delivered_total + dropped_total
+        );
     }
 
     #[test]

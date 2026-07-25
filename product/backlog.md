@@ -467,7 +467,7 @@ found in staging.
   modules are correct pure functions with nothing able to feed them.
   Acceptance: a peer decays a home node's reservation from gossip alone, and a
   caller can assemble a `ShedCtx` without inventing any field.
-- [ ] `M3.14` Drive the invariant property test through `sim::Network`, so
+- [x] `M3.14` Drive the invariant property test through `sim::Network`, so
   gossip is dropped, delayed and reordered rather than delivered directly.
   Found reviewing M3: the schedules partition, but every message that is not
   partitioned away arrives immediately and in order, which is the case least
