@@ -27,7 +27,7 @@ early produces tasks that are wrong by the time they are reached.
 - [x] `M-1.5` Standards, part three: `contracts.md` and `behavior.md`.
   Acceptance: `behavior.md` carries the commit-granularity rule and the
   escalation conditions verbatim enough that an autonomous turn can follow it.
-- [ ] `M-1.6` Product docs: `mission.md` and `architecture.md`. Acceptance:
+- [x] `M-1.6` Product docs: `mission.md` and `architecture.md`. Acceptance:
   `architecture.md` states the crate dependency rule (everything depends on
   `pgprox-core` and nothing else in the workspace, with `pgprox-session` and
   `bin/pgprox` as the two stated exceptions).
@@ -50,7 +50,7 @@ early produces tasks that are wrong by the time they are reached.
 - [ ] `M-1.13` Skills, part two: `contract-change`, `crate-review`, `adr`.
 - [ ] `M-1.14` Skills, part three: `hot-path`, `wire-debug`, `skill-forge`.
 - [ ] `M-1.15` Skill discovery symlink and per-crate `AGENTS.md` stubs for the
-  eleven planned crates.
+  twelve planned crates.
 - [ ] `M-1.16` `scripts/m-1-complete.sh`, the milestone completion condition.
   Acceptance: exits zero on a complete M-1 and non-zero with a useful message on
   each individual failure.
