@@ -117,7 +117,7 @@ below is types plus tests plus fake where one applies.
 - [x] `M0.14` Cache contract stub: `QueryCache` and its fake.
   Acceptance: the trait compiles and has a fake; no implementation beyond that,
   since this is M9 work.
-- [ ] `M0.15` Public surface. `lib.rs` re-exports only, `#![warn(missing_docs)]`
+- [x] `M0.15` Public surface. `lib.rs` re-exports only, `#![warn(missing_docs)]`
   satisfied, crate-level docs.
   Acceptance: `scripts/m0-complete.sh` exits zero.
 

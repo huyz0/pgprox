@@ -14,12 +14,12 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | Milestone | Name | State |
 | --- | --- | --- |
 | M-1 | AI development system | complete |
-| M0 | Contracts and quality gates | ready |
-| M1 | Protocol and TLS (track A) | blocked by M0 |
-| M2 | Auth and sidecar (track B) | blocked by M0 |
-| M3 | Cluster (track C) | blocked by M0 |
-| M4 | Operations (track D) | blocked by M0 |
-| M5 | Pooling and routing (track E) | blocked by M0 |
+| M0 | Contracts and quality gates | complete |
+| M1 | Protocol and TLS (track A) | ready |
+| M2 | Auth and sidecar (track B) | ready |
+| M3 | Cluster (track C) | ready |
+| M4 | Operations (track D) | ready |
+| M5 | Pooling and routing (track E) | ready |
 | M6 | Integration | blocked by M1, M5 |
 | M7 | Scale and performance | blocked by M6 |
 | M8 | FIPS and release | blocked by M7 |
@@ -42,7 +42,7 @@ skill validated by `skill-forge`, `pre-commit` hooks installed and firing,
 `scripts/check-drift.sh` clean, and the second-tool portability check recorded
 in `product/decisions/`.
 
-## M0: contracts and quality gates
+## M0: contracts and quality gates (complete)
 
 `pgprox-core` complete with a tested fake for every trait, plus the entire
 quality apparatus enforcing on a nearly empty codebase.
