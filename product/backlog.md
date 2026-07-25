@@ -357,7 +357,7 @@ rather than remembered.
   the handshake were dropped and the session appeared to close. The relay has
   the same hazard at every stage boundary.
   Acceptance: `crates/pgprox-session/AGENTS.md` states it.
-- [ ] `M1F.30` Prepare the protocol 3.2 contract change as a spec rather than
+- [x] `M1F.30` Prepare the protocol 3.2 contract change as a spec rather than
   starting it. 256-bit cancel keys change `ConnId` and `BackendKeyData`, which
   touches every crate holding one, and `standards/contracts.md` requires
   stopping before a cross-track change rather than discovering the blast radius
