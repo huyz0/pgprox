@@ -1,0 +1,610 @@
+//! The grant cache.
+//!
+//! Wraps any [`CredentialResolver`] and adds three things a raw client does not
+//! have: caching, singleflight, and negative caching.
+//!
+//! # Why the key is a hash
+//!
+//! Entries are keyed by `sha256(token) || startup_database`, never by the
+//! tenant claim. Keying by tenant would let a revoked token keep working as
+//! long as some other valid token for the same tenant was cached, which is a
+//! revocation bypass rather than a cache optimisation. Hashing rather than
+//! storing the token means a memory dump of the keys is not a credential dump.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+use pgprox_core::auth::{AuthError, AuthRequest, CredentialResolver, Grant};
+use pgprox_core::clock::Clock;
+use pgprox_core::error::AuthRejection;
+use sha2::{Digest, Sha256};
+use tokio::sync::broadcast;
+
+use crate::jwt;
+
+/// How the cache is tuned.
+#[derive(Clone, Copy, Debug)]
+pub struct CacheConfig {
+    /// Upper bound on a positive entry's lifetime, whatever the sidecar says.
+    pub max_ttl: Duration,
+
+    /// How long a refusal is remembered.
+    ///
+    /// Deliberately much shorter than `max_ttl`. A refusal can be reversed by
+    /// something outside this process, such as a tenant being re-enabled, and a
+    /// long negative TTL means that fix appears not to work.
+    pub negative_ttl: Duration,
+
+    /// Most entries held before the cache stops admitting new ones.
+    pub capacity: usize,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            max_ttl: Duration::from_secs(300),
+            negative_ttl: Duration::from_secs(5),
+            capacity: 100_000,
+        }
+    }
+}
+
+/// The key an entry is stored under.
+///
+/// `Debug` prints the hash, which is safe: it is what is stored, and it is not
+/// reversible to the token.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+struct CacheKey {
+    token_hash: [u8; 32],
+    database: String,
+}
+
+impl CacheKey {
+    fn new(token: &str, database: &str) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(token.as_bytes());
+        Self {
+            token_hash: hasher.finalize().into(),
+            database: database.to_owned(),
+        }
+    }
+}
+
+/// What is remembered about a token.
+#[derive(Clone, Debug)]
+enum Outcome {
+    /// Boxed because a `Grant` dwarfs an `AuthRejection`, and an unboxed enum
+    /// would make every negative entry as large as a positive one.
+    Resolved(Box<Grant>),
+    Refused(AuthRejection),
+}
+
+#[derive(Clone, Debug)]
+struct Entry {
+    outcome: Outcome,
+    expires_at: Instant,
+}
+
+/// A [`CredentialResolver`] that caches, collapses, and remembers refusals.
+pub struct CachingResolver<R> {
+    inner: R,
+    clock: Arc<dyn Clock>,
+    config: CacheConfig,
+    entries: Mutex<HashMap<CacheKey, Entry>>,
+    /// Lookups currently in flight, so concurrent callers for the same key
+    /// wait rather than each making their own call.
+    inflight: Mutex<HashMap<CacheKey, broadcast::Sender<()>>>,
+}
+
+impl<R> std::fmt::Debug for CachingResolver<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachingResolver")
+            .field("config", &self.config)
+            .field(
+                "entries",
+                &self.entries.lock().map(|e| e.len()).unwrap_or(0),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R: CredentialResolver> CachingResolver<R> {
+    /// Wraps a resolver.
+    #[must_use]
+    pub fn new(inner: R, clock: Arc<dyn Clock>, config: CacheConfig) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            clock,
+            config,
+            entries: Mutex::new(HashMap::new()),
+            inflight: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// How many entries are held, expired ones included.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lock_entries().len()
+    }
+
+    /// Whether the cache holds nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Drops every entry. Used when configuration changes invalidate them.
+    pub fn clear(&self) {
+        self.lock_entries().clear();
+    }
+
+    fn lock_entries(&self) -> std::sync::MutexGuard<'_, HashMap<CacheKey, Entry>> {
+        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn lock_inflight(&self) -> std::sync::MutexGuard<'_, HashMap<CacheKey, broadcast::Sender<()>>> {
+        self.inflight.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Reads a live entry, dropping it if it has expired.
+    fn lookup(&self, key: &CacheKey) -> Option<Outcome> {
+        let now = self.clock.now();
+        let mut entries = self.lock_entries();
+        match entries.get(key) {
+            Some(entry) if entry.expires_at > now => Some(entry.outcome.clone()),
+            Some(_) => {
+                entries.remove(key);
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn store(&self, key: CacheKey, outcome: Outcome, ttl: Duration) {
+        // A zero TTL means "do not cache", which is what an already-expired
+        // token produces. Storing it would be harmless but pointless, and it
+        // would let an expired token occupy capacity.
+        if ttl.is_zero() {
+            return;
+        }
+
+        let mut entries = self.lock_entries();
+        if entries.len() >= self.config.capacity && !entries.contains_key(&key) {
+            // Refuse rather than evict. An eviction policy is a decision that
+            // needs measurement, and admitting past capacity is the one option
+            // that is definitely wrong.
+            return;
+        }
+        entries.insert(
+            key,
+            Entry {
+                outcome,
+                expires_at: self.clock.now() + ttl,
+            },
+        );
+    }
+
+    /// Performs the underlying call and stores whatever it produced.
+    async fn resolve_and_store(
+        &self,
+        key: CacheKey,
+        request: AuthRequest,
+    ) -> Result<Grant, AuthError> {
+        let result = self.inner.resolve(request).await;
+
+        match &result {
+            Ok(grant) => {
+                let ttl = grant.effective_ttl(self.clock.wall(), self.config.max_ttl);
+                self.store(key, Outcome::Resolved(Box::new(grant.clone())), ttl);
+            }
+            // Only a refusal is remembered. An unavailable sidecar is a
+            // transient condition, and caching it would keep every tenant
+            // locked out for the negative TTL after it recovers.
+            Err(AuthError::Refused(reason)) => {
+                self.store(key, Outcome::Refused(*reason), self.config.negative_ttl);
+            }
+            Err(_) => {}
+        }
+
+        result
+    }
+}
+
+#[async_trait::async_trait]
+impl<R: CredentialResolver> CredentialResolver for CachingResolver<R> {
+    async fn resolve(&self, request: AuthRequest) -> Result<Grant, AuthError> {
+        // Rejected before any cache work: a token with a banned algorithm must
+        // not occupy an entry, and refusing costs one base64 decode.
+        if let Err(reason) = jwt::check_algorithm(request.token.expose()) {
+            return Err(AuthError::Refused(reason));
+        }
+
+        let key = CacheKey::new(request.token.expose(), &request.startup_database);
+
+        loop {
+            if let Some(outcome) = self.lookup(&key) {
+                return match outcome {
+                    Outcome::Resolved(grant) => Ok(*grant),
+                    Outcome::Refused(reason) => Err(AuthError::Refused(reason)),
+                };
+            }
+
+            // Claim the key, or find someone already holding it. Both happen
+            // under one lock so two callers cannot both decide they are first.
+            let waiter = {
+                let mut inflight = self.lock_inflight();
+                if let Some(tx) = inflight.get(&key) {
+                    Some(tx.subscribe())
+                } else {
+                    let (tx, _) = broadcast::channel(1);
+                    inflight.insert(key.clone(), tx);
+                    None
+                }
+            };
+
+            if let Some(mut rx) = waiter {
+                // Someone else is fetching. Wait, then loop and re-read the
+                // cache rather than trusting them to have succeeded: a failure
+                // is not cached, and this caller must then try as leader itself.
+                let _ = rx.recv().await;
+                continue;
+            }
+
+            let result = self.resolve_and_store(key.clone(), request).await;
+
+            // Wake the waiters whatever happened, so a failure does not leave
+            // them blocked until their own timeouts fire.
+            if let Some(tx) = self.lock_inflight().remove(&key) {
+                let _ = tx.send(());
+            }
+            return result;
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use pgprox_core::auth::{Backend, ClaimSet, FakeCredentialResolver, PoolHints, TlsMode};
+    use pgprox_core::clock::FakeClock;
+    use pgprox_core::ids::{ServerId, TenantId};
+    use pgprox_core::secret::SecretString;
+    use std::time::SystemTime;
+
+    /// A token with a valid header, so the allowlist check passes.
+    fn token(marker: &str) -> String {
+        format!(
+            "{}.{}.{}",
+            URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#),
+            URL_SAFE_NO_PAD.encode(format!(r#"{{"sub":"{marker}"}}"#)),
+            URL_SAFE_NO_PAD.encode("signature")
+        )
+    }
+
+    fn grant(ttl: Duration, expires_at: Option<SystemTime>) -> Grant {
+        Grant {
+            tenant: TenantId::new("acme"),
+            primary: Backend {
+                server: ServerId::new("db-1", 5432),
+                database: Arc::from("tenant_acme"),
+                user: Arc::from("acme_app"),
+                password: SecretString::new("hunter2"),
+                tls: TlsMode::Verified,
+            },
+            replicas: vec![],
+            pool: PoolHints::default(),
+            ttl,
+            claims: ClaimSet {
+                subject: None,
+                expires_at,
+                issued_at: None,
+            },
+        }
+    }
+
+    fn request(token: &str, database: &str) -> AuthRequest {
+        AuthRequest {
+            token: SecretString::new(token),
+            startup_database: database.into(),
+            startup_user: "acme_app".into(),
+            client_addr: "10.0.0.1".parse().unwrap(),
+        }
+    }
+
+    struct Fixture {
+        cache: Arc<CachingResolver<Arc<FakeCredentialResolver>>>,
+        inner: Arc<FakeCredentialResolver>,
+        clock: FakeClock,
+    }
+
+    fn fixture(config: CacheConfig) -> Fixture {
+        let inner = Arc::new(FakeCredentialResolver::new());
+        let clock = FakeClock::new();
+        let cache = CachingResolver::new(
+            Arc::clone(&inner),
+            Arc::new(clock.clone()) as Arc<dyn Clock>,
+            config,
+        );
+        Fixture {
+            cache,
+            inner,
+            clock,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_hit_avoids_the_underlying_call() {
+        let f = fixture(CacheConfig::default());
+        let tok = token("a");
+        f.inner.insert(&tok, grant(Duration::from_secs(60), None));
+
+        for _ in 0..5 {
+            f.cache.resolve(request(&tok, "tenant_acme")).await.unwrap();
+        }
+        assert_eq!(f.inner.call_count(), 1, "cache did not hold the grant");
+    }
+
+    #[tokio::test]
+    async fn the_same_token_for_a_different_database_is_a_different_entry() {
+        // The database is part of the key because a token's grant depends on
+        // which database was asked for.
+        let f = fixture(CacheConfig::default());
+        let tok = token("a");
+        f.inner.insert(&tok, grant(Duration::from_secs(60), None));
+
+        f.cache.resolve(request(&tok, "db_one")).await.unwrap();
+        f.cache.resolve(request(&tok, "db_two")).await.unwrap();
+        assert_eq!(f.inner.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_entry_expires_on_the_injected_clock() {
+        let f = fixture(CacheConfig::default());
+        let tok = token("a");
+        f.inner.insert(&tok, grant(Duration::from_secs(30), None));
+
+        f.cache.resolve(request(&tok, "db")).await.unwrap();
+        assert_eq!(f.inner.call_count(), 1);
+
+        f.clock.advance(Duration::from_secs(31));
+        f.cache.resolve(request(&tok, "db")).await.unwrap();
+        assert_eq!(f.inner.call_count(), 2, "expired entry was still served");
+    }
+
+    #[tokio::test]
+    async fn the_configured_cap_beats_a_generous_sidecar_ttl() {
+        let f = fixture(CacheConfig {
+            max_ttl: Duration::from_secs(10),
+            ..CacheConfig::default()
+        });
+        let tok = token("a");
+        f.inner.insert(&tok, grant(Duration::from_secs(3600), None));
+
+        f.cache.resolve(request(&tok, "db")).await.unwrap();
+        f.clock.advance(Duration::from_secs(11));
+        f.cache.resolve(request(&tok, "db")).await.unwrap();
+
+        assert_eq!(f.inner.call_count(), 2, "local cap did not apply");
+    }
+
+    #[tokio::test]
+    async fn token_expiry_beats_both_other_limits() {
+        // The revocation case: a token expiring sooner than either limit must
+        // not keep working because the cache had a longer opinion.
+        let f = fixture(CacheConfig::default());
+        let tok = token("a");
+        let expires = f.clock.wall() + Duration::from_secs(5);
+        f.inner
+            .insert(&tok, grant(Duration::from_secs(3600), Some(expires)));
+
+        f.cache.resolve(request(&tok, "db")).await.unwrap();
+        f.clock.advance(Duration::from_secs(6));
+        f.cache.resolve(request(&tok, "db")).await.unwrap();
+
+        assert_eq!(f.inner.call_count(), 2, "expired token stayed cached");
+    }
+
+    #[tokio::test]
+    async fn an_already_expired_token_is_never_cached() {
+        let f = fixture(CacheConfig::default());
+        let tok = token("a");
+        let expired = f.clock.wall() - Duration::from_secs(1);
+        f.inner
+            .insert(&tok, grant(Duration::from_secs(3600), Some(expired)));
+
+        f.cache.resolve(request(&tok, "db")).await.unwrap();
+        assert!(f.cache.is_empty(), "an expired token occupied an entry");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_is_remembered_briefly() {
+        let f = fixture(CacheConfig::default());
+        let tok = token("unknown");
+
+        for _ in 0..5 {
+            assert!(f.cache.resolve(request(&tok, "db")).await.is_err());
+        }
+        assert_eq!(f.inner.call_count(), 1, "refusal was retried every time");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_is_forgotten_sooner_than_a_grant() {
+        // A refusal can be reversed by something outside this process. A long
+        // negative TTL makes that fix appear not to work.
+        let config = CacheConfig {
+            negative_ttl: Duration::from_secs(5),
+            max_ttl: Duration::from_secs(300),
+            ..CacheConfig::default()
+        };
+        assert!(config.negative_ttl < config.max_ttl);
+
+        let f = fixture(config);
+        let tok = token("later-valid");
+        assert!(f.cache.resolve(request(&tok, "db")).await.is_err());
+
+        // The tenant is re-enabled elsewhere.
+        f.inner.insert(&tok, grant(Duration::from_secs(60), None));
+        assert!(
+            f.cache.resolve(request(&tok, "db")).await.is_err(),
+            "negative entry should still be held"
+        );
+
+        f.clock.advance(Duration::from_secs(6));
+        assert!(
+            f.cache.resolve(request(&tok, "db")).await.is_ok(),
+            "negative entry outlived its TTL"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unavailable_sidecar_is_not_cached() {
+        // Caching this would keep every tenant locked out for the negative TTL
+        // after the sidecar recovers, turning a blip into an outage.
+        let f = fixture(CacheConfig::default());
+        let tok = token("a");
+        f.inner.insert(&tok, grant(Duration::from_secs(60), None));
+        f.inner.set_unavailable(true);
+
+        assert!(f.cache.resolve(request(&tok, "db")).await.is_err());
+        assert!(f.cache.is_empty(), "an outage was cached");
+
+        f.inner.set_unavailable(false);
+        assert!(
+            f.cache.resolve(request(&tok, "db")).await.is_ok(),
+            "recovery was blocked by a cached failure"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_lookups_of_a_cold_key_make_one_call() {
+        // The reconnect storm this exists to survive.
+        let f = fixture(CacheConfig::default());
+        let tok = token("a");
+        f.inner.insert(&tok, grant(Duration::from_secs(60), None));
+
+        let mut handles = Vec::new();
+        for _ in 0..64 {
+            let cache = Arc::clone(&f.cache);
+            let tok = tok.clone();
+            handles.push(tokio::spawn(async move {
+                cache.resolve(request(&tok, "db")).await
+            }));
+        }
+        for handle in handles {
+            handle.await.unwrap().unwrap();
+        }
+
+        assert_eq!(
+            f.inner.call_count(),
+            1,
+            "singleflight collapsed nothing: {} calls",
+            f.inner.call_count()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn waiters_are_woken_when_the_leader_fails() {
+        // A failure that is not cached must still release the waiters, or they
+        // block until their own timeouts fire.
+        let f = fixture(CacheConfig::default());
+        let tok = token("a");
+        f.inner.set_unavailable(true);
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let cache = Arc::clone(&f.cache);
+            let tok = tok.clone();
+            handles.push(tokio::spawn(async move {
+                cache.resolve(request(&tok, "db")).await
+            }));
+        }
+        for handle in handles {
+            assert!(handle.await.unwrap().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_banned_algorithm_is_refused_without_reaching_the_resolver() {
+        let f = fixture(CacheConfig::default());
+        let bad = format!(
+            "{}.{}.{}",
+            URL_SAFE_NO_PAD.encode(r#"{"alg":"none"}"#),
+            URL_SAFE_NO_PAD.encode("{}"),
+            URL_SAFE_NO_PAD.encode("")
+        );
+
+        let err = f.cache.resolve(request(&bad, "db")).await.unwrap_err();
+        assert!(
+            matches!(err, AuthError::Refused(AuthRejection::AlgorithmNotAllowed)),
+            "{err:?}"
+        );
+        assert_eq!(f.inner.call_count(), 0, "the sidecar was called anyway");
+        assert!(f.cache.is_empty(), "a banned token occupied an entry");
+    }
+
+    #[tokio::test]
+    async fn the_cache_refuses_to_grow_past_capacity() {
+        let f = fixture(CacheConfig {
+            capacity: 3,
+            ..CacheConfig::default()
+        });
+        for i in 0..10 {
+            let tok = token(&format!("tenant-{i}"));
+            f.inner.insert(&tok, grant(Duration::from_secs(60), None));
+            f.cache.resolve(request(&tok, "db")).await.unwrap();
+        }
+        assert_eq!(f.cache.len(), 3, "cache grew past its capacity");
+    }
+
+    #[tokio::test]
+    async fn clearing_drops_everything() {
+        let f = fixture(CacheConfig::default());
+        let tok = token("a");
+        f.inner.insert(&tok, grant(Duration::from_secs(60), None));
+        f.cache.resolve(request(&tok, "db")).await.unwrap();
+        assert!(!f.cache.is_empty());
+
+        f.cache.clear();
+        assert!(f.cache.is_empty());
+        f.cache.resolve(request(&tok, "db")).await.unwrap();
+        assert_eq!(f.inner.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn debug_never_reveals_a_token() {
+        let f = fixture(CacheConfig::default());
+        let tok = token("secret-marker");
+        f.inner.insert(&tok, grant(Duration::from_secs(60), None));
+        f.cache.resolve(request(&tok, "db")).await.unwrap();
+
+        let rendered = format!("{:?}", f.cache);
+        assert!(!rendered.contains(&tok), "token leaked: {rendered}");
+        assert!(rendered.contains("entries"));
+    }
+
+    #[test]
+    fn the_key_is_a_hash_rather_than_the_token() {
+        // A memory dump of the keys must not be a credential dump.
+        let key = CacheKey::new("super-secret-token", "db");
+        let rendered = format!("{key:?}");
+        assert!(!rendered.contains("super-secret-token"), "{rendered}");
+
+        // Same inputs, same key; different token, different key.
+        assert_eq!(key, CacheKey::new("super-secret-token", "db"));
+        assert_ne!(key, CacheKey::new("another-token", "db"));
+        assert_ne!(key, CacheKey::new("super-secret-token", "other"));
+    }
+
+    #[test]
+    fn the_default_negative_ttl_is_shorter_than_the_positive_cap() {
+        let config = CacheConfig::default();
+        assert!(
+            config.negative_ttl < config.max_ttl,
+            "a refusal outliving a grant makes a reversal look broken"
+        );
+    }
+}

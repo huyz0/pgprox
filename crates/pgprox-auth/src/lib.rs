@@ -10,6 +10,8 @@
 //! validators that disagree about whether a token is valid is a vulnerability
 //! rather than redundancy. See ADR 0003.
 
+pub mod cache;
 pub mod jwt;
 
+pub use cache::{CacheConfig, CachingResolver};
 pub use jwt::{ALLOWED_ALGORITHMS, check_algorithm};

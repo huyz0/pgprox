@@ -91,8 +91,12 @@ impl fmt::Display for Backend {
 }
 
 /// Per-tenant pool tuning, supplied by the sidecar alongside the credentials.
+///
+/// Not `#[non_exhaustive]`: `pgprox-auth` builds these from the sidecar's
+/// response, and the attribute would make them unconstructable outside this
+/// crate. Adding a field is therefore a breaking change here, which is the
+/// trade the `contract-change` skill exists to manage.
 #[derive(Clone, Debug, Default)]
-#[non_exhaustive]
 pub struct PoolHints {
     /// Cap on upstream connections for this tenant, if the sidecar sets one.
     pub max_upstream: Option<u32>,
@@ -108,7 +112,6 @@ pub struct PoolHints {
 /// crate does not implement a second validator, because two validators that
 /// disagree about token validity is a vulnerability rather than redundancy.
 #[derive(Clone, Debug, Default)]
-#[non_exhaustive]
 pub struct ClaimSet {
     /// The `sub` claim, if present.
     pub subject: Option<String>,
@@ -146,7 +149,6 @@ impl fmt::Debug for AuthRequest {
 
 /// What the sidecar returns for a valid token.
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub struct Grant {
     /// The tenant this token belongs to.
     pub tenant: TenantId,

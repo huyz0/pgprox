@@ -201,13 +201,13 @@ field numbers may still change.
 - [ ] `M2.3` gRPC client over a Unix domain socket, implementing
   `CredentialResolver`. Acceptance: a `Grant` round-trips proto to Rust with the
   password arriving as a `SecretString`.
-- [ ] `M2.4` Grant cache keyed by `sha256(token) || startup_db`.
+- [x] `M2.4` Grant cache keyed by `sha256(token) || startup_db`.
   Acceptance: a hit avoids the RPC, the key is a hash rather than the token, and
   the TTL is the earliest of grant TTL, token expiry, and configured cap.
-- [ ] `M2.5` Singleflight on the resolve path.
+- [x] `M2.5` Singleflight on the resolve path.
   Acceptance: N concurrent lookups of the same cold key produce exactly one
   underlying call, asserted against the fake's call counter.
-- [ ] `M2.6` Negative caching for refusals.
+- [x] `M2.6` Negative caching for refusals.
   Acceptance: a refused token is not retried on every reconnect, and the
   negative TTL is shorter than the positive one so a revocation reversal is not
   stuck behind it.
