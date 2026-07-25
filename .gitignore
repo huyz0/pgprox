@@ -1,0 +1,13 @@
+/target
+/target-coverage
+**/*.rs.bk
+*.profraw
+*.profdata
+/coverage
+perf.data*
+flamegraph.svg
+callgrind.out.*
+dhat-heap.json
+.env
+*.pem
+*.key
