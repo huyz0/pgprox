@@ -169,7 +169,7 @@ drivers. Between them that covers every message the codec claims to handle.
   certificate loading.
   Acceptance: a FIPS build asserts `fips()` on both configs and refuses to start
   otherwise; there is no way to configure skip-verification.
-- [ ] `M1.11` Client-side conformance: drive real Postgres 17 and 18 with the
+- [x] `M1.11` Client-side conformance: drive real Postgres 17 and 18 with the
   codec in testcontainers.
   Acceptance: startup, simple query, extended query, and COPY all complete
   against both versions.

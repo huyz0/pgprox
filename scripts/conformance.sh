@@ -54,15 +54,46 @@ for crate in pgprox-proto pgprox-tls; do
   fi
 done
 
+# --- Postgres lifecycle ------------------------------------------------------
+# The harness owns the container, not the tests. nextest runs each test in its
+# own process, so tests starting their own would mean one container per test and
+# a name collision between them.
+PG_CONTAINER=""
+
+start_postgres() {
+  local major="$1"
+  PG_CONTAINER="pgprox-conformance-$major-$$"
+  docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+  docker run -d --rm --name "$PG_CONTAINER" \
+    -e POSTGRES_HOST_AUTH_METHOD=trust \
+    -e POSTGRES_DB=conformance \
+    -P "postgres:$major-alpine" >/dev/null || return 1
+  docker port "$PG_CONTAINER" 5432/tcp | head -1 | sed 's/.*://'
+}
+
+stop_postgres() {
+  [[ -n "$PG_CONTAINER" ]] && docker rm -f "$PG_CONTAINER" >/dev/null 2>&1
+  PG_CONTAINER=""
+}
+
+# Containers must not outlive a failed or interrupted run.
+trap stop_postgres EXIT INT TERM
+
 # --- client side: our codec against real Postgres ----------------------------
 for version in "${VERSIONS[@]}"; do
-  if PGPROX_PG_MAJOR="$version" \
+  if ! PG_PORT="$(start_postgres "$version")" || [[ -z "$PG_PORT" ]]; then
+    fail "could not start Postgres $version"
+    continue
+  fi
+
+  if PGPROX_PG_MAJOR="$version" PGPROX_PG_PORT="$PG_PORT" \
      cargo nextest run -p pgprox-proto --features integration \
        --run-ignored all -E 'test(conformance_client)' >/dev/null 2>&1; then
     ok "client side vs Postgres $version"
   else
-    fail "client side vs Postgres $version"
+    fail "client side vs Postgres $version (re-run with PGPROX_PG_PORT=$PG_PORT for output)"
   fi
+  stop_postgres
 done
 
 # --- server side: real drivers against our harness ---------------------------
