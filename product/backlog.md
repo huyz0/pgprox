@@ -335,6 +335,31 @@ pgdog carries a whole logical-decoding subtree. We only track the mode.
 - [ ] `M1F.25` Corpus seeding from the references: extract their protocol test
   fixtures into the fuzz corpus, so their accumulated edge cases become ours.
 
+### Group H: raised by reviewing the first M1F round
+
+Found by reviewing the work rather than by a gate, which is why they are listed
+rather than remembered.
+
+- [ ] `M1F.27` A shared Docker readiness helper. The M1.11 probe bug, accepting
+  any message as ready including the `57P03` a starting container sends, was
+  reproduced verbatim in `scram_live.rs`. The same mistake twice means the fix
+  belongs in one place rather than in whoever writes the next probe.
+  Acceptance: one helper, both suites use it, and a test asserts it rejects a
+  57P03 as not-ready.
+- [ ] `M1F.28` Correct M1F.12's ordering. It says wire SCRAM into the auth path,
+  but there is no auth path until `pgprox-session` exists at M6. It is blocked,
+  not merely undone, and the backlog should say which.
+- [ ] `M1F.29` Record the buffered-handoff hazard where M6 will read it. In
+  `scram_live` a helper owned its read buffer locally, so bytes pulled in past
+  the handshake were dropped and the session appeared to close. The relay has
+  the same hazard at every stage boundary.
+  Acceptance: `crates/pgprox-session/AGENTS.md` states it.
+- [ ] `M1F.30` Prepare the protocol 3.2 contract change as a spec rather than
+  starting it. 256-bit cancel keys change `ConnId` and `BackendKeyData`, which
+  touches every crate holding one, and `standards/contracts.md` requires
+  stopping before a cross-track change rather than discovering the blast radius
+  mid-edit.
+
 ### Group G: close
 
 - [ ] `M1F.26` Close M1F. Acceptance: `scripts/m1f-complete.sh` exits zero.
