@@ -110,11 +110,11 @@ below is types plus tests plus fake where one applies.
   fake.
   Acceptance: the fake publishes a new config to watchers; invalid config is
   rejected with a message naming the offending field.
-- [ ] `M0.13` Route contract: `RouteCtx`, `RouteTarget`, `StmtClass`, `Router`,
+- [x] `M0.13` Route contract: `RouteCtx`, `RouteTarget`, `StmtClass`, `Router`,
   and the fake.
   Acceptance: an unknown statement class routes to primary; a replica behind the
   session watermark is not eligible.
-- [ ] `M0.14` Cache contract stub: `QueryCache` and its fake.
+- [x] `M0.14` Cache contract stub: `QueryCache` and its fake.
   Acceptance: the trait compiles and has a fake; no implementation beyond that,
   since this is M9 work.
 - [ ] `M0.15` Public surface. `lib.rs` re-exports only, `#![warn(missing_docs)]`

@@ -16,20 +16,24 @@
 
 pub mod auth;
 pub mod buf;
+pub mod cache;
 pub mod clock;
 pub mod cluster;
 pub mod config;
 pub mod error;
 pub mod ids;
 pub mod pool;
+pub mod route;
 pub mod secret;
 
 pub use auth::{AuthRequest, Backend, ClaimSet, Grant, PoolHints, PoolMode, TlsMode};
 pub use buf::{BufferSlab, PooledBuf};
+pub use cache::{CacheKey, CachedResult, QueryCache};
 pub use clock::{Clock, SystemClock};
 pub use cluster::{ClusterCoordinator, ClusterDigest, MembershipView, NodeMode, QuotaLease};
 pub use config::{Config, ConfigError, ConfigSource, NodeOverride, ServerConfig};
 pub use error::{AuthRejection, ClientError, SqlState};
 pub use ids::{ConnId, Lsn, NodeId, PoolKey, ServerId, TenantId};
 pub use pool::{PoolError, PoolStats, ReleaseOutcome, UpstreamGuard, UpstreamPool};
+pub use route::{ReplicaState, RouteCtx, RouteHint, RouteTarget, Router, StmtClass};
 pub use secret::SecretString;
