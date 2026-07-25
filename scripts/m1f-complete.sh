@@ -33,8 +33,16 @@ grep -rqs 'RFC 5802\|rfc5802\|7677' crates/ \
   || fail "SCRAM not tested against RFC 5802/7677 vectors"
 
 # --- Group C: protocol 3.2 ----------------------------------------------------
-grep -qs 'PROTOCOL_3_2' "$PROTO/startup.rs" && grep -qs 'Accept' "$PROTO/startup.rs" \
-  && ok "3.2 referenced in negotiation" || fail "3.2 still only negotiated down"
+# Mentioning the constant is not supporting it. negotiate_version must return
+# Accept for 3.2, which today it does not: it answers Negotiate { minor: 0 }.
+# The first version of this check grepped for the name and passed on a test
+# import, which is the same false positive the M1R gate had.
+if grep -qs 'fn negotiate_version' "$PROTO/startup.rs" \
+   && grep -A20 'fn negotiate_version' "$PROTO/startup.rs" | grep -qs 'minor == 2\|SUPPORTED_MINOR'; then
+  ok "3.2 is accepted, not negotiated down"
+else
+  fail "3.2 still only negotiated down (mentioning the constant is not support)"
+fi
 
 # --- Group D: replication scope decision -------------------------------------
 if compgen -G 'product/decisions/*replication*' >/dev/null; then
