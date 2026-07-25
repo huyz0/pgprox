@@ -13,8 +13,12 @@ repository.workspace = true
 test-fakes = []
 
 [dependencies]
+async-trait.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true

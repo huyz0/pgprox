@@ -95,7 +95,7 @@ below is types plus tests plus fake where one applies.
   Acceptance: formatting a `Backend` reveals host and database but never the
   password; `Grant` TTL clamps to the earliest of grant TTL, token expiry, and
   configured cap.
-- [ ] `M0.9` `CredentialResolver` trait and its fake.
+- [x] `M0.9` `CredentialResolver` trait and its fake.
   Acceptance: the fake resolves configured tenants, returns a typed error for
   unknown ones, and records call counts so singleflight can be tested against it.
 - [ ] `M0.10` Pool contract: `PoolStats`, `UpstreamGuard`, `PoolError`,

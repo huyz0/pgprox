@@ -192,6 +192,140 @@ impl Grant {
     }
 }
 
+/// Why credential resolution failed.
+#[derive(Clone, Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum AuthError {
+    /// The sidecar refused the token.
+    #[error("token refused: {0:?}")]
+    Refused(crate::error::AuthRejection),
+    /// The sidecar could not be reached.
+    #[error("credential sidecar unavailable: {reason}")]
+    Unavailable {
+        /// Operator-facing detail. Never shown to a client.
+        reason: String,
+    },
+    /// The sidecar answered, but the answer did not make sense.
+    #[error("credential sidecar returned an unusable grant: {reason}")]
+    Malformed {
+        /// What was wrong with the response.
+        reason: String,
+    },
+}
+
+impl From<AuthError> for crate::error::ClientError {
+    fn from(err: AuthError) -> Self {
+        match err {
+            AuthError::Refused(reason) => Self::AuthRefused(reason),
+            // A malformed grant is our problem, not the client's, and from the
+            // client's side it is indistinguishable from the sidecar being
+            // down. Both map to the same wire error.
+            AuthError::Unavailable { .. } | AuthError::Malformed { .. } => Self::SidecarUnavailable,
+        }
+    }
+}
+
+/// Resolves a client's token into the credentials for its database.
+///
+/// Implemented by `pgprox-auth` against the sidecar. The sidecar owns token
+/// validation; implementations here must not add a second validator.
+#[async_trait::async_trait]
+pub trait CredentialResolver: Send + Sync + fmt::Debug {
+    /// Resolves a token, or explains why it cannot be.
+    async fn resolve(&self, request: AuthRequest) -> Result<Grant, AuthError>;
+}
+
+#[async_trait::async_trait]
+impl<T: CredentialResolver + ?Sized> CredentialResolver for Arc<T> {
+    async fn resolve(&self, request: AuthRequest) -> Result<Grant, AuthError> {
+        (**self).resolve(request).await
+    }
+}
+
+/// An in-memory [`CredentialResolver`] for tests.
+///
+/// Behaves like the real thing rather than recording calls: it resolves tokens
+/// it knows, refuses ones it does not, and can be told to fail so callers'
+/// error paths are reachable. The call counter exists so singleflight and cache
+/// behaviour can be asserted, which is the property most worth testing in
+/// anything that wraps a resolver.
+#[cfg(any(test, feature = "test-fakes"))]
+#[derive(Debug, Default)]
+pub struct FakeCredentialResolver {
+    grants: std::sync::Mutex<std::collections::HashMap<String, Grant>>,
+    calls: std::sync::atomic::AtomicUsize,
+    unavailable: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(any(test, feature = "test-fakes"))]
+impl FakeCredentialResolver {
+    /// An empty resolver that refuses everything.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Teaches the resolver a token.
+    #[must_use]
+    pub fn with_grant(self, token: impl Into<String>, grant: Grant) -> Self {
+        self.insert(token, grant);
+        self
+    }
+
+    /// Teaches the resolver a token after construction.
+    pub fn insert(&self, token: impl Into<String>, grant: Grant) {
+        self.lock_grants().insert(token.into(), grant);
+    }
+
+    /// Forgets a token, so a previously valid one starts being refused. Models
+    /// revocation.
+    pub fn revoke(&self, token: &str) {
+        self.lock_grants().remove(token);
+    }
+
+    /// Makes every subsequent call fail as if the sidecar were down.
+    pub fn set_unavailable(&self, unavailable: bool) {
+        self.unavailable
+            .store(unavailable, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// How many times [`CredentialResolver::resolve`] has been called.
+    ///
+    /// Use this to assert that a cache actually caches and that a singleflight
+    /// actually collapses concurrent lookups.
+    #[must_use]
+    pub fn call_count(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn lock_grants(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Grant>> {
+        self.grants
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+#[cfg(any(test, feature = "test-fakes"))]
+#[async_trait::async_trait]
+impl CredentialResolver for FakeCredentialResolver {
+    async fn resolve(&self, request: AuthRequest) -> Result<Grant, AuthError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        if self.unavailable.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(AuthError::Unavailable {
+                reason: "fake resolver set unavailable".into(),
+            });
+        }
+
+        self.lock_grants()
+            .get(request.token.expose())
+            .cloned()
+            .ok_or(AuthError::Refused(
+                crate::error::AuthRejection::TokenRejected,
+            ))
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -221,6 +355,15 @@ mod tests {
                 expires_at,
                 issued_at: None,
             },
+        }
+    }
+
+    fn auth_request(token: &str) -> AuthRequest {
+        AuthRequest {
+            token: SecretString::new(token),
+            startup_database: "tenant_acme".into(),
+            startup_user: "acme_app".into(),
+            client_addr: "10.0.0.7".parse().unwrap(),
         }
     }
 
@@ -347,5 +490,104 @@ mod tests {
         assert!(hints.max_upstream.is_none());
         assert!(hints.statement_timeout.is_none());
         assert!(ClaimSet::default().subject.is_none());
+    }
+
+    #[tokio::test]
+    async fn fake_resolver_resolves_a_known_token() {
+        let resolver = FakeCredentialResolver::new()
+            .with_grant("good-token", grant(Duration::from_secs(60), None));
+
+        let g = resolver.resolve(auth_request("good-token")).await.unwrap();
+        assert_eq!(g.tenant, TenantId::new("acme"));
+        assert_eq!(resolver.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn fake_resolver_refuses_an_unknown_token() {
+        // The fake must actually refuse, not record a call and return success.
+        // A mock that only records lets a caller's error path go untested.
+        let resolver = FakeCredentialResolver::new();
+        let err = resolver.resolve(auth_request("nope")).await.unwrap_err();
+        assert!(matches!(err, AuthError::Refused(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn fake_resolver_models_revocation() {
+        let resolver =
+            FakeCredentialResolver::new().with_grant("tok", grant(Duration::from_secs(60), None));
+        assert!(resolver.resolve(auth_request("tok")).await.is_ok());
+
+        resolver.revoke("tok");
+        assert!(
+            resolver.resolve(auth_request("tok")).await.is_err(),
+            "a revoked token must stop working"
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_resolver_can_be_made_unavailable() {
+        let resolver =
+            FakeCredentialResolver::new().with_grant("tok", grant(Duration::from_secs(60), None));
+        resolver.set_unavailable(true);
+
+        let err = resolver.resolve(auth_request("tok")).await.unwrap_err();
+        assert!(matches!(err, AuthError::Unavailable { .. }), "got {err:?}");
+
+        resolver.set_unavailable(false);
+        assert!(resolver.resolve(auth_request("tok")).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn call_count_makes_caching_testable() {
+        // This counter is why the fake exists in this shape: a cache or a
+        // singleflight wrapped around a resolver is only testable if the number
+        // of underlying calls is observable.
+        let resolver =
+            FakeCredentialResolver::new().with_grant("tok", grant(Duration::from_secs(60), None));
+
+        for _ in 0..3 {
+            resolver.resolve(auth_request("tok")).await.unwrap();
+        }
+        assert_eq!(resolver.call_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn resolver_works_through_an_arc() {
+        let resolver: Arc<dyn CredentialResolver> = Arc::new(
+            FakeCredentialResolver::new().with_grant("tok", grant(Duration::from_secs(60), None)),
+        );
+        assert!(resolver.resolve(auth_request("tok")).await.is_ok());
+    }
+
+    #[test]
+    fn auth_errors_map_to_the_right_client_error() {
+        use crate::error::{AuthRejection, ClientError};
+
+        let refused: ClientError = AuthError::Refused(AuthRejection::TokenExpired).into();
+        assert!(matches!(refused, ClientError::AuthRefused(_)));
+
+        // A malformed grant is our bug, not the client's, and is
+        // indistinguishable from the sidecar being down from their side.
+        let malformed: ClientError = AuthError::Malformed {
+            reason: "no primary backend".into(),
+        }
+        .into();
+        assert!(matches!(malformed, ClientError::SidecarUnavailable));
+
+        let unavailable: ClientError = AuthError::Unavailable {
+            reason: "connection refused".into(),
+        }
+        .into();
+        assert!(matches!(unavailable, ClientError::SidecarUnavailable));
+    }
+
+    #[test]
+    fn auth_error_detail_stays_out_of_the_client_message() {
+        use crate::error::ClientError;
+        let client: ClientError = AuthError::Unavailable {
+            reason: "dial unix /var/run/sidecar.sock: connection refused".into(),
+        }
+        .into();
+        assert!(!client.client_message().contains("sidecar.sock"));
     }
 }
