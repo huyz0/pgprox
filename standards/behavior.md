@@ -14,8 +14,15 @@ so a bad turn costs one revert instead of a bisect through half a milestone. It
 is also why the backlog decomposes only the current milestone: tasks written
 three milestones ahead are wrong by the time they are reached.
 
-Commit on a branch named for the milestone (`m-1/ai-dev-system`). Never commit
-to the default branch. Never push unless asked.
+Commit directly to `main`. No feature branches. This only works because every
+commit is green and every commit is small, which is exactly what the rule above
+guarantees; the hooks are what make it true rather than aspirational. A bad
+commit is reverted, not merged around.
+
+Never push unless asked.
+
+The commit subject starts with the backlog task ID (`M-1.7: add ADRs`),
+enforced by the `commit-msg` hook, so history stays traceable to the plan.
 
 ## The cycle
 

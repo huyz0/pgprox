@@ -180,7 +180,7 @@ scripts/check-coverage.sh <crate>    the 95% gate
 scripts/check-drift.sh               derived vendor files match canonical source
 ```
 
-- **Git hooks** via `lefthook` (a single YAML config, no Python runtime, works
+- **Git hooks** via `pre-commit` (the widest-known framework, large ecosystem of ready hooks, works
   identically on every machine and in every editor). This is the binding layer:
   whatever wrote the code, agent or human, it passes through here.
 - **CI** runs the same scripts, so a bypassed hook cannot ship.
@@ -213,7 +213,7 @@ is a command that exits zero. So every milestone in the roadmap carries an
 executable completion condition:
 
 ```
-M-1  scripts/check-drift.sh passes, lefthook installed, every skill validated
+M-1  scripts/check-drift.sh passes, pre-commit hooks installed, every skill validated
      by skill-forge, and the second-tool portability check recorded
 M0   cargo llvm-cov nextest --fail-under-lines 95 passes on every crate, every
      pgprox-core trait has a fake with its own tests, cargo deny check is clean
@@ -651,7 +651,7 @@ autonomously and this is not optional bookkeeping.
 **M-1. The AI development system.** No Rust yet. Standards, product docs, the
 first ADRs (one per row of the decisions table), root and per-crate `AGENTS.md`
 with their `CLAUDE.md` imports, the eight skills in Agent Skills format, the
-`scripts/` enforcement set, and `lefthook` plus CI wiring. Validate it two ways:
+`scripts/` enforcement set, and `pre-commit` plus CI wiring. Validate it two ways:
 have an agent build something small and throwaway under the system to confirm the
 checks actually fire and the standards actually get followed, and run the same
 exercise on a second tool (Codex CLI or Cursor) to confirm portability is real
@@ -906,7 +906,7 @@ build and the 100k-connection scale run happen pre-release.
 - MSRV pinned in `Cargo.toml` and verified in CI, since the FIPS toolchain
   constrains what the build image can carry.
 
-Tooling in M-1: `lefthook`. Tooling in M0: `cargo-nextest`, `cargo-llvm-cov`,
+Tooling in M-1: `pre-commit`. Tooling in M0: `cargo-nextest`, `cargo-llvm-cov`,
 `cargo-deny`, `cargo-audit`, `cargo-fuzz`, `cargo-mutants`, `gitleaks`, `mold`.
 Tooling in M7:
 `iai-callgrind`, `criterion`, `dhat-rs`, `samply`, `pprof-rs`, and

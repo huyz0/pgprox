@@ -53,13 +53,18 @@ for s in check-fmt check-crate check-coverage check-drift; do
   fi
 done
 
-[[ -f lefthook.yml ]] && ok "lefthook.yml" || fail "lefthook.yml missing"
+[[ -f .pre-commit-config.yaml ]] && ok ".pre-commit-config.yaml" \
+  || fail ".pre-commit-config.yaml missing"
 
-if [[ -d .git/hooks ]] && grep -rqs lefthook .git/hooks 2>/dev/null; then
-  ok "lefthook hooks installed"
-else
-  fail "lefthook hooks not installed (run: lefthook install)"
-fi
+installed=0
+for h in pre-commit commit-msg pre-push; do
+  if [[ -f ".git/hooks/$h" ]] && grep -qs pre-commit ".git/hooks/$h"; then
+    installed=$((installed + 1))
+  else
+    fail "git hook not installed: $h  (run: pre-commit install)"
+  fi
+done
+(( installed == 3 )) && ok "pre-commit hooks installed (pre-commit, commit-msg, pre-push)"
 
 if compgen -G ".github/workflows/*.yml" >/dev/null; then
   # CI must call the scripts, not reimplement the checks, or the two drift.

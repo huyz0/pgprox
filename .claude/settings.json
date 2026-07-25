@@ -1,7 +1,7 @@
 {
   "$comment": [
     "Agent hooks are an accelerator, not the enforcement layer. Every command",
-    "here calls a script in scripts/, the same script lefthook and CI call, so",
+    "here calls a script in scripts/, the same script the pre-commit framework and CI call, so",
     "no check is implemented twice. A developer on a tool without hook support",
     "works under identical rules with slower feedback, never weaker rules.",
     "In-session feedback matters because it lets an agent fix a clippy failure",

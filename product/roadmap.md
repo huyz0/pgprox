@@ -38,7 +38,7 @@ scripts/m-1-complete.sh
 
 Checks: every standards file present and non-empty, `AGENTS.md` and its
 `CLAUDE.md` import in place at root and in each planned crate directory, every
-skill validated by `skill-forge`, `lefthook` installed with hooks firing,
+skill validated by `skill-forge`, `pre-commit` hooks installed and firing,
 `scripts/check-drift.sh` clean, and the second-tool portability check recorded
 in `product/decisions/`.
 

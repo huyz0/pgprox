@@ -38,7 +38,7 @@ early produces tasks that are wrong by the time they are reached.
   `check-coverage.sh`, `check-drift.sh`. Acceptance: each runs and exits
   correctly on the current (Rust-free) tree, meaning they no-op cleanly rather
   than failing when there are no crates yet.
-- [x] `M-1.9` `lefthook.yml` calling the scripts, plus install instructions.
+- [x] `M-1.9` `.pre-commit-config.yaml` calling the scripts, plus install instructions.
   Acceptance: hooks fire on a test commit and block on a seeded violation.
 - [x] `M-1.10` CI workflow running the same scripts. Acceptance: workflow file
   validates and calls `scripts/` rather than reimplementing the checks.

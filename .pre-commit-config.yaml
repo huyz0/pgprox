@@ -1,0 +1,88 @@
+# Git hooks. This is the binding enforcement layer: whatever wrote the code,
+# agent or human, on whatever editor, it passes through here.
+#
+# Agent hooks (.claude/settings.json and equivalents) call these same scripts
+# for faster in-session feedback. They are an accelerator, never a second
+# implementation, so a developer on a tool without hook support works under the
+# same rules with slower feedback.
+#
+# Install once:  pre-commit install
+# (installs pre-commit, commit-msg, and pre-push hooks in one go)
+
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+default_stages: [pre-commit]
+
+repos:
+  # Generic hygiene. Cheap, and catches the class of mistake that is annoying
+  # to find later: a broken YAML in the CI workflow, a stray merge marker, a
+  # private key committed by accident.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$'   # trailing double-space is meaningful in Markdown
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-executables-have-shebangs
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: detect-private-key
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+
+  # Everything below calls a script in scripts/. CI calls the same scripts. A
+  # check implemented in two places drifts, and the version that matters is
+  # whichever one the developer did not run.
+  - repo: local
+    hooks:
+      - id: drift
+        name: derived files match canonical source
+        entry: scripts/check-drift.sh
+        language: script
+        pass_filenames: false
+        always_run: true
+        # Runs on every commit rather than only when AGENTS.md changes, because
+        # a symlink can break without any tracked file being touched.
+
+      - id: fmt
+        name: cargo fmt
+        entry: scripts/check-fmt.sh
+        language: script
+        pass_filenames: false
+        files: '\.rs$'
+
+      - id: clippy
+        name: cargo clippy
+        entry: scripts/check-crate.sh
+        language: script
+        pass_filenames: false
+        files: '\.rs$'
+
+      - id: coverage
+        name: coverage gate (95% per crate)
+        entry: scripts/check-coverage.sh
+        language: script
+        pass_filenames: false
+        files: '\.rs$'
+        # Tier 1 alone carries the 95% number, so coverage never waits on
+        # Docker. Budget for the whole pre-commit run is 2 minutes; see
+        # standards/testing.md for what keeps it there.
+
+      - id: task-id
+        name: commit subject references a backlog task
+        entry: scripts/check-commit-msg.sh
+        language: script
+        stages: [commit-msg]
+
+      - id: coverage-full
+        name: coverage gate, whole workspace
+        entry: scripts/check-coverage.sh
+        language: script
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
