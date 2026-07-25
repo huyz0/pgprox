@@ -40,6 +40,7 @@
 //! - [`StmtClass::Unknown`] is the default and never reaches a replica.
 //! - Nothing holding a credential derives `Debug`.
 
+pub mod admin;
 pub mod auth;
 pub mod buf;
 pub mod cache;

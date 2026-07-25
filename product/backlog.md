@@ -646,7 +646,95 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
   decision is a declared hot path.
 - [x] `M5.14` Close M5.
 
-## M4 and later
+## M4: operations (track D)
+
+`pgprox-config` decides what the node should be doing, `pgprox-observe` says
+what it is doing, and `pgprox-admin` lets a human or an agent ask and change it.
+
+`pgprox-core` already provides `Config` with validation, `ConfigError`, the
+`ConfigSource` trait and a fake that validates on publish. M4 builds the
+providers behind that trait and the two surfaces that read the result.
+
+The property that shapes all three:
+
+> An operator or an agent hits any pod and gets the whole cluster's truth.
+
+Aggregates answer from the local gossip digest at no cost, so hitting the wrong
+pod is never wrong. Only drill-downs fan out. See ADR 0007.
+
+### Two decisions taken before writing code
+
+**`pgprox-admin` needs a data source and is not allowed one.** The admin API
+reports pools, tenants, clients and cluster state, which live in
+`pgprox-cluster`, `pgprox-pool` and `pgprox-session`.
+`scripts/check-layering.sh` allows only `pgprox-session` and `bin/pgprox` to
+compose crates, and `pgprox-core` has nothing admin-shaped in it. The same
+situation as ADR 0011 in M5, and it resolves the same way: a new
+`pgprox_core::admin` module with an `Observatory` trait and its DTOs, which the
+composition root implements by fanning in, and `pgprox-admin` renders. Purely
+additive, so it breaks nothing, and both consumers are unbuilt so there is no
+rework. `M4.1` does it under the `contract-change` skill.
+
+**Config is polled, not watched by an event API.** The rule is to watch the
+directory rather than the file, because a ConfigMap update swaps a symlink. A
+poll re-reads the directory every time and so satisfies that by construction,
+where an event watcher has to be pointed at the right inode to begin with. It
+also needs no new dependency, and kubelet propagates a ConfigMap change on the
+order of a minute, so an event watcher would be reacting instantly to something
+that already took sixty seconds to arrive.
+
+- [x] `M4.1` Define M4: this decomposition, `scripts/m4-complete.sh`, and the
+  `pgprox_core::admin` contract with its fake. Acceptance: the gate script runs
+  and reports what is missing rather than passing vacuously, and the fake
+  serves a snapshot without any other crate existing.
+- [ ] `M4.2` `pgprox-config` and the config document: parsing into `Config`,
+  with the document format chosen and its dependency cleared by
+  `scripts/check-deps.sh`. Acceptance: a malformed document names the field
+  that is wrong, and a document that parses but fails `Config::validate` is
+  rejected with the same error a caller would get from the fake.
+- [ ] `M4.3` The file provider, polling the mount directory. Acceptance: a
+  ConfigMap-style symlink swap is picked up, which is the case an event watcher
+  pointed at the file misses entirely.
+- [ ] `M4.4` Hot reload semantics: validate then swap, never publish an invalid
+  configuration, and keep serving the last good one. Acceptance: a broken
+  document reaching the directory leaves watchers on the previous config and
+  surfaces the error, rather than taking the node down or serving nothing.
+- [ ] `M4.5` The drain overlay with a TTL, for the imperative path. Acceptance:
+  a drain requested through the API expires on its own, and a drain in the
+  config document does not.
+- [ ] `M4.6` `pgprox-observe` and the metric registry: every metric named in
+  one place, every one carrying `node`. Acceptance: a test enumerates the
+  registry and fails on any label that is unbounded, with `tenant` named as the
+  example.
+- [ ] `M4.7` Span and log conventions, with redaction. Acceptance: a span name
+  is stable and low cardinality with the tenant in an attribute, and a
+  credential cannot reach a log line, a span attribute or a metric label.
+- [ ] `M4.8` Health endpoints. Acceptance: `/healthz` reports the process is
+  alive, `/readyz` fails only for drain, and no load-related condition can make
+  it flap.
+- [ ] `M4.9` The per-tenant series allowlist. Acceptance: a tenant on the
+  allowlist gets its own series and one off it is aggregated, and the allowlist
+  has a configured ceiling so it cannot become the unbounded label by degrees.
+- [ ] `M4.10` `pgprox-admin` and the read endpoints over the `Observatory`.
+  Acceptance: an aggregate answers from the local view with no fan-out,
+  `?scope=local` narrows it, and no response contains a credential or an
+  upstream hostname.
+- [ ] `M4.11` The write endpoints: drain, undrain, and pool reset. Acceptance:
+  a drain through the API writes the same desired state the config document
+  would, carrying the TTL from `M4.5`.
+- [ ] `M4.12` The OpenAPI document, generated from the handlers. Acceptance:
+  the generated document validates, and it describes every route the router
+  actually serves rather than a hand-written list that can drift.
+- [ ] `M4.13` The `SHOW` parser. Acceptance: `SHOW POOLS`, `SHOW SERVERS`,
+  `SHOW CLIENTS`, `SHOW PEERS`, `SHOW QUOTA`, `SHOW TENANTS`, `SHOW CONFIG` and
+  `SHOW STATS` each parse, each has a `SHOW LOCAL` form, and an unknown `SHOW`
+  is an error rather than an empty result.
+- [ ] `M4.14` `SHOW` result rendering, PgBouncer-compatible where the command
+  exists there. Acceptance: the columns of the shared subset match PgBouncer's
+  names and order, so an existing dashboard keeps working.
+- [ ] `M4.15` Close M4.
+
+## M6 and later
 
 Not yet decomposed. See [roadmap.md](roadmap.md). The `next-task` skill
 decomposes the next milestone when the current one closes.
