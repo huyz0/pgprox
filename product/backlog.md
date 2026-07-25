@@ -102,7 +102,7 @@ below is types plus tests plus fake where one applies.
   `UpstreamPool`, and the fake.
   Acceptance: the fake actually tracks acquisitions and actually refuses past
   its cap, rather than recording calls.
-- [ ] `M0.11` Cluster contract: `MembershipView`, `QuotaLease`, `ClusterDigest`,
+- [x] `M0.11` Cluster contract: `MembershipView`, `QuotaLease`, `ClusterDigest`,
   `ClusterCoordinator`, and the fake.
   Acceptance: the fake's `home_node` is stable under rendezvous hashing and
   rehomes only tenants of a departed node; leases expire on the injected clock.

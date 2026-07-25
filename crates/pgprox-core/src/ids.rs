@@ -72,6 +72,12 @@ impl NodeId {
     }
 }
 
+impl Default for NodeId {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
 impl fmt::Display for NodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "node-{}", self.0)
