@@ -5,10 +5,12 @@
 //! visible in whatever the config lives in rather than being a side effect
 //! somebody ran once. See ADR 0006.
 //!
-//! [`document`] owns the file format, the provider owns where the file comes
+//! [`document`] owns the file format, [`provider`] owns where the file comes
 //! from, and validation happens once in the shared path so every provider
 //! behaves identically.
 
 pub mod document;
+pub mod provider;
 
 pub use document::{ConfigDocument, parse};
+pub use provider::{FileConfig, FileSource};

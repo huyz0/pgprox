@@ -692,7 +692,7 @@ that already took sixty seconds to arrive.
   `scripts/check-deps.sh`. Acceptance: a malformed document names the field
   that is wrong, and a document that parses but fails `Config::validate` is
   rejected with the same error a caller would get from the fake.
-- [ ] `M4.3` The file provider, polling the mount directory. Acceptance: a
+- [x] `M4.3` The file provider, polling the mount directory. Acceptance: a
   ConfigMap-style symlink swap is picked up, which is the case an event watcher
   pointed at the file misses entirely.
 - [ ] `M4.4` Hot reload semantics: validate then swap, never publish an invalid
