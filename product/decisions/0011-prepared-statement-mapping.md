@@ -48,10 +48,20 @@ This ships in the MVP, in `pgprox-pool`, alongside the pool itself.
 - The LRU cap is a correctness knob, not a performance one. Set too low it
   causes constant re-preparation; set too high it grows backend memory across
   thousands of connections.
-- `pgprox-pool` gains a dependency on parsing enough of the extended query
-  protocol to rewrite names, so `pgprox-proto` must expose that without
-  `pgprox-pool` depending on the full codec. This is a contract question settled
-  in M0.
+- The mapping and the rewriting live in different crates, and neither depends on
+  the other. `pgprox-pool` owns the mapping: SQL hash to global name, which
+  connection holds which name, and the LRU. That is a data structure over
+  strings and hashes with no protocol knowledge in it. `pgprox-proto` owns the
+  rewriting, and already decodes `Parse` and `Bind` with their statement names.
+  `pgprox-session` joins the two, which is what a composer is for.
+
+  This paragraph originally said `pgprox-pool` would gain a dependency on
+  `pgprox-proto` and that M0 had settled how. It was wrong twice: M0 settled
+  nothing of the sort, and `scripts/check-layering.sh` forbids the dependency
+  outright, since only `pgprox-session` and `bin/pgprox` may compose crates.
+  Corrected in M5.1 before any code was written against it. The split above
+  needs no contract change, which is the sign that the layering rule was right
+  and the consequence was the thing at fault.
 
 ## Alternatives rejected
 

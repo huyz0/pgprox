@@ -516,7 +516,106 @@ freezes it at v1. Field numbers are stable; a breaking change means `auth.v2`.
   Acceptance: `cargo nextest run -p pgprox-auth --features integration` passes.
 - [x] `M2.10` Close M2.
 
-## M3 and later
+## M5: pooling and routing (track E)
+
+`pgprox-pool` multiplexes many client sessions onto few upstream connections.
+`pgprox-route` decides whether a statement may go to a replica. Together they
+are what makes the 100k-downstream to 5k-upstream ratio real rather than
+aspirational.
+
+`pgprox-core` already provides the `UpstreamPool` trait, `UpstreamGuard` with
+its discard-by-default release, `PoolStats`, `PoolError`, the `Router` trait and
+`route::decide`, which is the routing rule as a pure function. This milestone
+builds the implementations behind them.
+
+`pgprox-proto` already provides `SessionState`, which answers "may this
+connection be released" from the transaction status, the extended-query
+sequence and COPY. M5 does not reimplement that. What M5 adds is *pinning*,
+which is a different question: not "is this moment safe" but "has this session
+used a feature that makes every moment unsafe from now on".
+
+The two properties everything serves:
+
+> No DML-bearing statement is ever classified read-only.
+
+> A connection is released only at a genuine transaction boundary, and one
+> released mid-transaction is closed rather than returned.
+
+A misclassification is a stale read, which is a correctness bug from the
+tenant's side. A wrong release hands one client a connection sitting inside
+another's transaction. Both are proven by property test, and the classifier is
+fuzzed because it parses SQL arriving from the internet.
+
+### Layering note
+
+ADR 0011 states as a consequence that `pgprox-pool` gains a dependency on
+`pgprox-proto` in order to rewrite statement names, and that M0 settled how.
+M0 did not, and the dependency is forbidden by `scripts/check-layering.sh`,
+which allows only `pgprox-session` and `bin/pgprox` to compose crates.
+
+Resolved without a contract change, because the work splits along the existing
+boundary rather than across it. `pgprox-pool` owns the *mapping*: SQL hash to
+global name, which connection holds which name, and the LRU. That is a data
+structure over strings and hashes and needs no protocol knowledge at all.
+`pgprox-proto` owns the *rewriting*, and already decodes `Parse` and `Bind`
+with their statement names. `pgprox-session` joins them at M6, which is exactly
+what a composer is for. ADR 0011 is amended in `M5.1` to say so.
+
+- [ ] `M5.1` Define M5: this decomposition, `scripts/m5-complete.sh`, and the
+  ADR 0011 amendment above. Acceptance: the gate script runs and reports what
+  is missing rather than passing vacuously.
+- [ ] `M5.2` `pgprox-route` and the statement classifier: a token-prefix scan
+  from SQL text to `StmtClass`. Acceptance: a property test finds no
+  DML-bearing statement classified read-only, and `WITH ... INSERT`,
+  `SELECT ... FOR UPDATE`, `SELECT ... FOR SHARE` and `EXPLAIN ANALYZE` are all
+  writes.
+- [ ] `M5.3` Volatile function detection, and `BEGIN READ ONLY` marking a whole
+  transaction replica-eligible. Acceptance: a `SELECT` calling a volatile
+  function classifies as `Unknown` rather than `ReadOnly`, and an unrecognised
+  construct does the same.
+- [ ] `M5.4` Explicit route overrides: `SET pgprox.route` for the session and a
+  leading `/* pgprox:replica */` comment for one statement. Acceptance: a hint
+  can admit an `Unknown` statement to a replica and can never admit a `Write`
+  or one behind the session watermark.
+- [ ] `M5.5` Replica state tracking: replayed LSN and health per replica, read
+  by the router with no await, plus the session write watermark. Acceptance: a
+  replica behind the watermark is never eligible, and a session that has never
+  written accepts any healthy replica.
+- [ ] `M5.6` The `Router` implementation over `route::decide`, with the target
+  fixed at the transaction's first statement. Acceptance: the second statement
+  of a transaction goes where the first did, whatever its own class.
+- [ ] `M5.7` A fuzz target for the classifier. Acceptance: it builds and runs a
+  short seeded corpus without panicking, and the invariant is asserted inside
+  the target rather than only outside it.
+- [ ] `M5.8` `pgprox-pool` and pin detection: `LISTEN`/`UNLISTEN`, session
+  advisory locks, temp tables, `WITH HOLD` cursors, SQL-level `PREPARE`, and
+  `SET` outside the replayable allowlist. Acceptance: every trigger is
+  detected and carries a distinct reason for `pgprox_pin_total{reason}`, and
+  the `_xact_` advisory lock variants do not pin.
+- [ ] `M5.9` Session parameter tracking and replay: the allowlist, `SET`,
+  `SET LOCAL`, `RESET` and `RESET ALL`. Acceptance: a parameter in the
+  allowlist is replayed on acquire only when the target connection's value
+  differs, `SET LOCAL` is never replayed, and a parameter outside the
+  allowlist pins instead.
+- [ ] `M5.10` The prepared statement map: a global name derived from the SQL
+  hash, the per-connection held set, and LRU eviction at a configured cap.
+  Acceptance: two sessions preparing identical SQL share one global name, a
+  connection that does not hold a statement reports it as needing replay, and
+  eviction never reports a statement as held after it is evicted.
+- [ ] `M5.11` The pool itself: acquire with a deadline, release through the
+  guard, per-key pools, and the limit. Acceptance: a guard dropped without a
+  clean release closes the connection rather than returning it, and acquiring
+  past the limit waits rather than opening.
+- [ ] `M5.12` Waiters and backpressure: queueing at the limit, deadline
+  expiry, and `PoolStats::waiting`. Acceptance: a waiter is woken by a release
+  rather than by polling, and one that misses its deadline gets
+  `PoolError::Timeout` and stops occupying a slot.
+- [ ] `M5.13` Idle reap with `min_pool` of zero. Acceptance: an idle connection
+  is closed after its configured idle time, and a pool that goes quiet drops
+  to zero connections without anyone asking.
+- [ ] `M5.14` Close M5.
+
+## M4 and later
 
 Not yet decomposed. See [roadmap.md](roadmap.md). The `next-task` skill
 decomposes the next milestone when the current one closes.
