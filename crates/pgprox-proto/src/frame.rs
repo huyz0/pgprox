@@ -71,6 +71,8 @@ impl Tag {
     pub const FLUSH: Self = Self(b'H');
     /// `f`, the frontend failing a COPY.
     pub const COPY_FAIL: Self = Self(b'f');
+    /// `F`, a fast-path function call. Relayed, never parsed. See ADR 0013.
+    pub const FUNCTION_CALL: Self = Self(b'F');
 
     // Backend, server to client. Several tags are reused across directions,
     // which is why decoding is always direction-aware.
@@ -114,6 +116,8 @@ impl Tag {
     /// client asks how many parameters its statement takes and refuses to bind
     /// a different number. See ADR 0011.
     pub const PARAMETER_DESCRIPTION: Self = Self(b't');
+    /// `V`, the result of a fast-path function call.
+    pub const FUNCTION_CALL_RESPONSE: Self = Self(b'V');
     /// `n`, no data.
     pub const NO_DATA: Self = Self(b'n');
     /// `s`, portal suspended.

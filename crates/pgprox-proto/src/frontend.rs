@@ -90,6 +90,13 @@ pub enum FrontendMessage<'a> {
     ///
     /// The body is deliberately not exposed: it carries the JWT.
     Password,
+    /// `F`, a fast-path function call.
+    ///
+    /// The payload is deliberately not exposed. There is no SQL to classify, so
+    /// it always routes to the primary, and parsing an OID would mean keeping a
+    /// function table in step with every extension a tenant installs. See
+    /// ADR 0013.
+    FunctionCall,
     /// `d`, a chunk of COPY data.
     CopyData,
     /// `c`, the end of a COPY stream.
@@ -168,6 +175,7 @@ pub fn decode<'a>(frame: &Frame<'a>) -> Result<FrontendMessage<'a>, FrontendErro
         Tag::FLUSH => FrontendMessage::Flush,
         Tag::TERMINATE => FrontendMessage::Terminate,
         Tag::PASSWORD => FrontendMessage::Password,
+        Tag::FUNCTION_CALL => FrontendMessage::FunctionCall,
         Tag::COPY_DATA => FrontendMessage::CopyData,
         Tag::COPY_DONE => FrontendMessage::CopyDone,
         Tag::COPY_FAIL => FrontendMessage::CopyFail,
@@ -332,6 +340,22 @@ mod tests {
         ] {
             assert!(!msg.starts_extended_sequence(), "{msg:?} should not be");
         }
+    }
+
+    #[test]
+    fn a_function_call_is_recognised_without_being_parsed() {
+        // Recognised so it can be routed deliberately; unparsed so no OID table
+        // has to track a tenant's extensions. See ADR 0013.
+        let decoded = decode(&frame(Tag::FUNCTION_CALL, b"\x00\x00\x04\xd2payload")).unwrap();
+        assert_eq!(decoded, FrontendMessage::FunctionCall);
+        assert!(!format!("{decoded:?}").contains("payload"));
+    }
+
+    #[test]
+    fn a_function_call_is_not_an_extended_sequence() {
+        // It is answered by a ReadyForQuery of its own, like a simple query,
+        // rather than by a Sync.
+        assert!(!FrontendMessage::FunctionCall.starts_extended_sequence());
     }
 
     #[test]

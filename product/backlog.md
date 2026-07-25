@@ -249,7 +249,7 @@ nothing. They are not gaps.
 - [x] `M1F.2` `ParameterDescription` (`t`) decoder. Encoded by the harness,
   never decoded. M5's statement mapping needs the parameter count to rewrite a
   `Describe` response.
-- [ ] `M1F.3` `FunctionCall` (`F`) and `FunctionCallResponse` (`V`). Legacy
+- [x] `M1F.3` `FunctionCall` (`F`) and `FunctionCallResponse` (`V`). Legacy
   fast-path, still reachable. pgdog models it as `fastpath`. Decide explicitly
   whether to support or refuse it, and record the choice; refusing silently is
   the option that is definitely wrong.
