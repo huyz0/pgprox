@@ -635,6 +635,10 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
   is SQL and which is data is one rule, and the same argument that puts
   `route::decide` in core puts this there. Acceptance: one implementation, both
   crates on it, and the E-string case pins.
+- [x] `M5.18` The replica poller loop. Named in M5's scope in the roadmap and
+  missed on the first pass: `Replicas` was built but nothing wrote to it.
+  `ReplicaWatch` polls through a `ReplicaProbe` trait, which is where the SQL
+  against each replica lives, in the same shape as the pool's `Connector`.
 - [ ] `M5.14` Close M5.
 
 ## M4 and later
