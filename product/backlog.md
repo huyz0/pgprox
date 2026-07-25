@@ -21,7 +21,7 @@ early produces tasks that are wrong by the time they are reached.
 - [x] `M-1.3` Standards, part one: `rust-style.md`, `error-handling.md`,
   `async-concurrency.md`. Acceptance: each states rules that are checkable, and
   names the lint or script that enforces it where one exists.
-- [ ] `M-1.4` Standards, part two: `testing.md`, `observability.md`,
+- [x] `M-1.4` Standards, part two: `testing.md`, `observability.md`,
   `security.md`. Acceptance: `testing.md` matches the three tiers and the hot
   path discipline in the plan without restating the plan.
 - [ ] `M-1.5` Standards, part three: `contracts.md` and `behavior.md`.
