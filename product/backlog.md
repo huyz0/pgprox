@@ -121,7 +121,67 @@ below is types plus tests plus fake where one applies.
   satisfied, crate-level docs.
   Acceptance: `scripts/m0-complete.sh` exits zero.
 
-## M1 and later
+## M1: protocol and TLS (track A)
+
+`pgprox-proto` is the wire codec in both directions, and `pgprox-tls` is the
+rustls setup shared by the listener and upstream connections.
+
+Scope note worth stating up front: the proxy binary does not exist until M6, so
+the conformance suite cannot test "the proxy". It tests the codec from both
+sides. As a client, driving real Postgres 17 and 18. As a server, accepting real
+drivers. Between them that covers every message the codec claims to handle.
+
+- [x] `M1.1` Define M1: this decomposition, and `scripts/conformance.sh`.
+  Acceptance: the script exits non-zero now, naming what is missing, and reports
+  which drivers ran versus were skipped rather than silently narrowing.
+- [ ] `M1.2` `pgprox-proto` crate and frame primitives: message type byte,
+  length prefix, incomplete-frame handling.
+  Acceptance: a frame split across arbitrary byte boundaries reassembles; a
+  length larger than the configured maximum is an error, never an allocation.
+- [ ] `M1.3` Backend messages we inspect: `ReadyForQuery`, `ErrorResponse`,
+  `ParameterStatus`, `CommandComplete`, `BackendKeyData`, `NotificationResponse`,
+  the `Authentication*` family.
+  Acceptance: each decodes from real bytes; everything else passes through as
+  opaque frames without being parsed.
+- [ ] `M1.4` Frontend messages we inspect: `Query`, `Parse`, `Bind`, `Execute`,
+  `Sync`, `Describe`, `Close`, `Terminate`.
+  Acceptance: statement and portal names are readable, which is what prepared
+  statement mapping needs.
+- [ ] `M1.5` Encoding: `ErrorResponse` from a `ClientError`, `Authentication*`,
+  `ParameterStatus`, `BackendKeyData`, `ReadyForQuery`,
+  `NegotiateProtocolVersion`.
+  Acceptance: an encoded `ErrorResponse` carries the SQLSTATE from the mapping
+  and is accepted by a real driver.
+- [ ] `M1.6` Startup dispatch: `SSLRequest`, `GSSENCRequest`, `CancelRequest`,
+  `StartupMessage`, and protocol version negotiation.
+  Acceptance: a client asking for 3.2 gets 3.2 or a `NegotiateProtocolVersion`
+  down to 3.0; a `CancelRequest` yields the encoded node and counter.
+- [ ] `M1.7` Session state machine: transaction status tracking and
+  extended-query sequence tracking.
+  Acceptance: release is permitted only at `ReadyForQuery('I')` with no sequence
+  outstanding; a `Sync` missing mid-sequence keeps the session held.
+- [ ] `M1.8` COPY mode, both directions.
+  Acceptance: a session in COPY is never released until the stream ends.
+- [ ] `M1.9` Fuzz targets for the decoder, with a committed corpus.
+  Acceptance: `cargo fuzz` runs both targets; any crash found becomes a unit
+  test.
+- [ ] `M1.10` `pgprox-tls`: rustls server and client config, FIPS feature gate,
+  certificate loading.
+  Acceptance: a FIPS build asserts `fips()` on both configs and refuses to start
+  otherwise; there is no way to configure skip-verification.
+- [ ] `M1.11` Client-side conformance: drive real Postgres 17 and 18 with the
+  codec in testcontainers.
+  Acceptance: startup, simple query, extended query, and COPY all complete
+  against both versions.
+- [ ] `M1.12` Server-side conformance harness: a minimal server built on the
+  codec that real drivers can connect to.
+  Acceptance: `psql` completes a session against it.
+- [ ] `M1.13` Driver matrix: pgx, asyncpg, JDBC, npgsql against the harness.
+  Acceptance: each completes startup, a simple query, and a named prepared
+  statement; skipped drivers are reported, never silently dropped.
+- [ ] `M1.14` Close M1. Acceptance: `scripts/conformance.sh 17 18` exits zero.
+
+## M2 and later
 
 Not yet decomposed. See [roadmap.md](roadmap.md). The `next-task` skill
 decomposes the next milestone when the current one closes.
