@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use pgprox_core::cluster::{ClusterDigest, Member, MembershipView, NodeMode};
+use pgprox_core::cluster::{ClusterDigest, NodeMode};
 use pgprox_core::ids::{NodeId, ServerId};
 
 /// A digest with the version that orders it against others from the same node.
@@ -99,24 +99,12 @@ impl DigestStore {
         self.latest.remove(&node);
     }
 
-    /// The membership view these digests imply.
-    ///
-    /// Sorted by node ID, which `MembershipView::new` also does, so two nodes
-    /// holding the same digests build the same view regardless of insertion
-    /// order.
-    #[must_use]
-    pub fn membership(&self, local: NodeId) -> MembershipView {
-        let mut members: Vec<Member> = self
-            .latest
-            .values()
-            .map(|v| Member {
-                id: v.digest.node,
-                mode: v.digest.mode,
-            })
-            .collect();
-        members.sort_by_key(|m| m.id);
-        MembershipView::new(local, members)
-    }
+    // No `membership` here on purpose. A view built from digests alone counts a
+    // node that has been silent for an hour, and the coordinator's whole safety
+    // argument rests on the view being liveness-filtered. One source of the
+    // view, in `crate::membership::Membership`, means a caller cannot pick the
+    // wrong one. Same reasoning as `pgprox_core::route::decide`: two
+    // implementations of a rule is two chances to get it wrong.
 
     /// Total upstream connections every known node reports holding for a
     /// server.
@@ -267,8 +255,9 @@ mod tests {
     }
 
     #[test]
-    fn the_membership_view_is_the_same_whatever_the_insertion_order() {
-        // MembershipView sorts, and this asserts the store does not undo that.
+    fn the_store_is_the_same_whatever_the_insertion_order() {
+        // Two nodes that have heard the same things must agree, whatever order
+        // gossip delivered them in, or they will disagree about the leader.
         let mut forwards = DigestStore::new();
         for n in [3_u16, 1, 4, 2] {
             forwards.merge(digest(n, 1, 0));
@@ -278,15 +267,16 @@ mod tests {
             backwards.merge(digest(n, 1, 0));
         }
 
-        let a = forwards.membership(node(1));
-        let b = backwards.membership(node(1));
-        assert_eq!(a.members(), b.members());
-        assert_eq!(a.leader(), b.leader());
-        assert_eq!(a.leader(), Some(node(1)), "lowest live node ID");
+        assert_eq!(forwards.view_hash(), backwards.view_hash());
+        for n in 1..=4_u16 {
+            assert_eq!(forwards.get(node(n)), backwards.get(node(n)));
+        }
     }
 
     #[test]
-    fn a_draining_node_is_reflected_in_the_view() {
+    fn a_draining_node_is_kept_with_its_mode() {
+        // The store records what a node said about itself. Whether that node
+        // still counts is a liveness question, answered elsewhere.
         let mut store = DigestStore::new();
         store.merge(digest(1, 1, 0));
 
@@ -294,9 +284,8 @@ mod tests {
         draining.digest.mode = NodeMode::Draining;
         store.merge(draining);
 
-        let view = store.membership(node(1));
-        assert_eq!(view.active_count(), 1, "a draining node counted as active");
-        assert_eq!(view.members().len(), 2, "it vanished from membership");
+        assert_eq!(store.len(), 2, "a draining node vanished from the store");
+        assert_eq!(store.get(node(2)).map(|d| d.mode), Some(NodeMode::Draining));
     }
 
     #[test]
@@ -390,9 +379,7 @@ mod tests {
         assert_eq!(store.cluster_clients(), 0);
         assert_eq!(store.cluster_usage(&ServerId::new("db-1", 5432)), 0);
         assert_eq!(store.view_hash(), 0);
-
-        // No members means no leader, rather than a panic.
-        assert_eq!(store.membership(node(1)).leader(), None);
+        assert_eq!(store.get(node(1)), None);
     }
 
     #[test]

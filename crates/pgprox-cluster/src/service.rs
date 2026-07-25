@@ -345,6 +345,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_caller_can_build_a_shed_ctx_without_inventing_a_field() {
+        // The acceptance criterion for the digest change. Every cluster-side
+        // field has a source; the rest is session state the caller already has.
+        // If this stops compiling, an input was added to ShedCtx that nothing
+        // can supply, which is the state the digest change was fixing.
+        use crate::shed::{ShedConfig, ShedCtx, ShedDecision, decide};
+
+        let (coordinator, clock) = serving();
+        // A tenant this node does not home, so there is somewhere to send it.
+        let view = coordinator.membership();
+        let tenant = (0..1_000)
+            .map(|i| TenantId::new(format!("tenant-{i}")))
+            .find(|t| view.home_node(t) == Some(node(3)))
+            .unwrap();
+
+        // Keep gossiping while the settle window elapses. Letting time pass in
+        // silence would age every peer out and leave the tenant with no home,
+        // which is correct behaviour and the wrong setup.
+        for round in 13..=90_u64 {
+            for peer in 1..=3 {
+                coordinator.gossip(digest_for(peer, round));
+            }
+            clock.advance(Duration::from_secs(1));
+        }
+        coordinator.tick();
+        let placement = coordinator.placement(&tenant, 10);
+
+        let ctx = ShedCtx {
+            // From the cluster layer.
+            on_home_node: placement.on_home_node,
+            home_has_headroom: placement.home_has_headroom,
+            home_draining: placement.home_draining,
+            since_membership_change: placement.since_membership_change,
+            // From the session, which this crate cannot and should not see.
+            idle_for: Duration::from_secs(60),
+            pinned: false,
+            in_transaction: false,
+            recent_sheds: 0,
+        };
+
+        assert!(!ctx.on_home_node);
+        assert!(ctx.home_has_headroom, "an idle home reported no headroom");
+        assert_eq!(
+            decide(&ShedConfig::default(), &ctx),
+            ShedDecision::Shed,
+            "an idle client away from its home was not shed"
+        );
+    }
+
+    #[tokio::test]
     async fn a_tracked_tenant_decays_and_a_forgotten_one_stops() {
         let (coordinator, clock) = serving();
         let tenant = TenantId::new("tenant-1");

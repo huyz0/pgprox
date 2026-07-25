@@ -467,6 +467,10 @@ found in staging.
   modules are correct pure functions with nothing able to feed them.
   Acceptance: a peer decays a home node's reservation from gossip alone, and a
   caller can assemble a `ShedCtx` without inventing any field.
+- [x] `M3.15` One source of the membership view. `DigestStore::membership` built
+  a view with no liveness filtering, so a caller could pick a leader from nodes
+  silent for an hour while the coordinator used a filtered one. Removed, so
+  `Membership::view` is the only way to get a view.
 - [x] `M3.14` Drive the invariant property test through `sim::Network`, so
   gossip is dropped, delayed and reordered rather than delivered directly.
   Found reviewing M3: the schedules partition, but every message that is not
