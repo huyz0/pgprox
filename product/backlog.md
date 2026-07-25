@@ -732,6 +732,11 @@ that already took sixty seconds to arrive.
 - [x] `M4.14` `SHOW` result rendering, PgBouncer-compatible where the command
   exists there. Acceptance: the columns of the shared subset match PgBouncer's
   names and order, so an existing dashboard keeps working.
+- [x] `M4.16` A single `SHOW` entry point. Found reviewing M4: `show::parse`
+  produced a command and `rows::render` consumed one, and nothing joined them,
+  so a caller had to know to call both and the first one to forget the
+  not-a-`SHOW` case would break every client that sends a query. The same
+  shape as the three gaps M5's reviews found.
 - [ ] `M4.15` Close M4.
 
 ## M6 and later

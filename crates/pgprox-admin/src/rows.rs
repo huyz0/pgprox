@@ -182,6 +182,46 @@ pub const fn columns_for(target: ShowTarget) -> &'static [&'static str] {
     }
 }
 
+/// What a statement turned out to be.
+#[derive(Clone, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum Handled {
+    /// A `SHOW` this proxy answered.
+    Answered(Rows),
+    /// Not a `SHOW`, so it is somebody's query and belongs upstream.
+    ///
+    /// Distinct from an error, because relaying it is the correct and common
+    /// outcome rather than a failure.
+    Relay,
+    /// A `SHOW` aimed at this proxy that missed, to be reported to the client.
+    Rejected(crate::show::ShowError),
+}
+
+/// Parses a statement and answers it if it is a `SHOW`.
+///
+/// The entry point a session reaches for. Parsing and rendering are separate
+/// functions because they are separately testable, but a caller wanting one
+/// without the other is a caller about to reimplement this, and the three
+/// outcomes below are exactly the three a session has to distinguish.
+///
+/// # Errors
+///
+/// Whatever the [`Observatory`] returned. A statement that is not a `SHOW`, or
+/// is one this proxy does not have, is not an error here: those are
+/// [`Handled::Relay`] and [`Handled::Rejected`], because the caller does
+/// something different with each.
+pub async fn handle(
+    observatory: &dyn Observatory,
+    sql: &str,
+) -> Result<Handled, pgprox_core::admin::AdminError> {
+    let command = match crate::show::parse(sql) {
+        Ok(command) => command,
+        Err(crate::show::ShowError::NotShow) => return Ok(Handled::Relay),
+        Err(err) => return Ok(Handled::Rejected(err)),
+    };
+    Ok(Handled::Answered(render(observatory, command).await?))
+}
+
 /// Renders a command.
 ///
 /// # Errors
@@ -739,6 +779,89 @@ mod tests {
         assert!(rows.is_empty());
         assert_eq!(rows.columns.len(), POOLS.len());
         assert_eq!(rows.get(0, "database"), None);
+    }
+
+    #[tokio::test]
+    async fn a_show_is_parsed_and_answered_in_one_step() {
+        // The entry point a session reaches for. Without it a caller has to
+        // know to call parse and then render, and the first one to forget the
+        // NotShow case breaks every client that sends a SELECT.
+        let fake = observatory();
+        let handled = handle(fake.as_ref(), "SHOW POOLS").await.unwrap();
+
+        let Handled::Answered(rows) = handled else {
+            panic!("a SHOW was not answered: {handled:?}");
+        };
+        assert_eq!(rows.get(0, "database"), Some("tenant_acme"));
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_query_is_relayed_rather_than_answered_or_refused() {
+        // The common case by far. Treating it as an error would break every
+        // client that ever sends a query, which is all of them.
+        let fake = observatory();
+        for sql in ["SELECT 1", "INSERT INTO t VALUES (1)", "BEGIN"] {
+            assert_eq!(
+                handle(fake.as_ref(), sql).await.unwrap(),
+                Handled::Relay,
+                "{sql}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_show_this_proxy_does_not_have_is_rejected_rather_than_relayed() {
+        // Relaying `SHOW MEM` would have the server answer a question about
+        // itself that the operator asked about the proxy.
+        let fake = observatory();
+        let handled = handle(fake.as_ref(), "SHOW MEM").await.unwrap();
+
+        let Handled::Rejected(err) = handled else {
+            panic!("an unknown SHOW was not rejected: {handled:?}");
+        };
+        assert!(err.to_string().contains("MEM"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn show_local_narrows_through_the_entry_point_too() {
+        let fake = observatory();
+        fake.set_pools(vec![
+            PoolView {
+                node: node(1),
+                key: PoolKey::new(ServerId::new("db-1", 5432), "a", "a"),
+                stats: PoolStats::default(),
+            },
+            PoolView {
+                node: node(2),
+                key: PoolKey::new(ServerId::new("db-1", 5432), "b", "b"),
+                stats: PoolStats::default(),
+            },
+        ]);
+
+        let Handled::Answered(cluster) = handle(fake.as_ref(), "SHOW POOLS").await.unwrap() else {
+            panic!("not answered");
+        };
+        let Handled::Answered(local) = handle(fake.as_ref(), "SHOW LOCAL POOLS").await.unwrap()
+        else {
+            panic!("not answered");
+        };
+
+        assert_eq!(cluster.len(), 2);
+        assert_eq!(local.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_partial_fan_out_reaches_the_caller_as_an_error() {
+        // The one outcome that is a genuine error rather than a routing
+        // decision, so it must not be swallowed into one of the other two.
+        let fake = observatory();
+        fake.set_unreachable(true);
+
+        let err = handle(fake.as_ref(), "SHOW CLIENTS").await.unwrap_err();
+        assert!(
+            matches!(err, pgprox_core::admin::AdminError::Partial { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]
