@@ -706,7 +706,7 @@ that already took sixty seconds to arrive.
   one place, every one carrying `node`. Acceptance: a test enumerates the
   registry and fails on any label that is unbounded, with `tenant` named as the
   example.
-- [ ] `M4.7` Span and log conventions, with redaction. Acceptance: a span name
+- [x] `M4.7` Span and log conventions, with redaction. Acceptance: a span name
   is stable and low cardinality with the tenant in an attribute, and a
   credential cannot reach a log line, a span attribute or a metric label.
 - [ ] `M4.8` Health endpoints. Acceptance: `/healthz` reports the process is

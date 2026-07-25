@@ -15,5 +15,7 @@
 //! which are pull-based and cost nothing when nobody is looking. See ADR 0007.
 
 pub mod metrics;
+pub mod spans;
 
 pub use metrics::{ALL, Kind, Label, MAX_LABEL_VALUES, Metric};
+pub use spans::{REDACTED, Span, is_recordable, may_record_query, redact};
