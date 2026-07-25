@@ -73,11 +73,6 @@ pub enum PinReason {
     /// The allowlist is replayed on acquire; anything else is not, and a
     /// session that moved would silently lose the setting.
     UnreplayableSet,
-    /// A `COPY` stream is in progress.
-    ///
-    /// Naturally pinned until the stream ends. Included so the reason is
-    /// reportable, since an operator seeing a held connection wants to know.
-    Copy,
     /// The session asked for it, through `SET pgprox.pin = on`.
     ///
     /// An escape hatch for a tenant using something this list has not learned
@@ -97,7 +92,6 @@ impl PinReason {
             Self::WithHold => "with_hold",
             Self::Prepare => "prepare",
             Self::UnreplayableSet => "unreplayable_set",
-            Self::Copy => "copy",
             Self::Requested => "requested",
         }
     }
@@ -180,11 +174,6 @@ impl PinState {
     /// listening. If one arrives, this connection is the one registered.
     pub fn observe_notification(&mut self) -> Option<PinReason> {
         self.pin(PinReason::Listen).then_some(PinReason::Listen)
-    }
-
-    /// Records that a `COPY` stream has begun.
-    pub fn observe_copy(&mut self) -> Option<PinReason> {
-        self.pin(PinReason::Copy).then_some(PinReason::Copy)
     }
 }
 
@@ -726,10 +715,17 @@ mod tests {
     }
 
     #[test]
-    fn a_copy_stream_pins_with_its_own_reason() {
+    fn a_copy_stream_is_not_a_pin_reason() {
+        // A COPY holds the connection while it runs and releases it when it
+        // ends, which is what pgprox_proto::session::HoldReason::Copy models.
+        // Nothing here may say the same thing, because a pin never clears and
+        // a session that once ran a COPY would keep its connection for life.
         let mut state = PinState::new();
-        assert_eq!(state.observe_copy(), Some(PinReason::Copy));
-        assert_eq!(state.reason(), Some(PinReason::Copy));
+        state.observe_statement("COPY t FROM STDIN", REPLAYABLE_PARAMETERS);
+        assert!(
+            !state.is_pinned(),
+            "COPY pinned a session permanently; that belongs to HoldReason"
+        );
     }
 
     #[test]
@@ -743,7 +739,6 @@ mod tests {
             PinReason::WithHold,
             PinReason::Prepare,
             PinReason::UnreplayableSet,
-            PinReason::Copy,
             PinReason::Requested,
         ];
         let mut labels: Vec<&str> = all.iter().map(|r| r.as_str()).collect();

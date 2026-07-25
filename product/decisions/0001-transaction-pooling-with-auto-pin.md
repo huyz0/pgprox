@@ -26,8 +26,12 @@ only on `I`, with no extended-query sequence outstanding, and only when unpinned
 Not the SQL text, not a heuristic.
 
 Pin triggers: `LISTEN`/`UNLISTEN`, session-scoped advisory locks, temp tables,
-`WITH HOLD` cursors, SQL-level `PREPARE`, `SET` outside the replayable
-allowlist, and `COPY` in progress.
+`WITH HOLD` cursors, SQL-level `PREPARE`, and `SET` outside the replayable
+allowlist.
+
+`COPY` is not among them. A pin never clears, and a COPY stream ends, so a
+session that once ran one would hold its connection for life. It is a hold
+while it runs, which is what the release signal above already covers.
 
 Session parameters inside the allowlist are recorded and replayed on acquire
 rather than pinning.
