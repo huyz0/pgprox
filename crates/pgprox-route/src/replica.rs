@@ -129,11 +129,25 @@ impl Replicas {
     /// Anything unpolled, stale, promoted or failed reports as unhealthy, so a
     /// caller cannot accidentally treat missing data as a healthy replica at
     /// LSN zero.
+    ///
+    /// Allocates. On the route decision, which is a declared hot path taken per
+    /// statement for autocommit workloads, use [`Self::fill_states`] with a
+    /// buffer the caller keeps.
     #[must_use]
     pub fn states(&self, now: Instant) -> Vec<ReplicaState> {
-        (0..self.observations.len())
-            .map(|index| self.state(index, now))
-            .collect()
+        let mut out = Vec::with_capacity(self.observations.len());
+        self.fill_states(&mut out, now);
+        out
+    }
+
+    /// Writes the state of every replica into `out`, replacing its contents.
+    ///
+    /// The allocation-free form. A router holding one buffer for the life of a
+    /// session pays for it once rather than once per statement, which is what
+    /// the hot-path budget for the route decision is about.
+    pub fn fill_states(&self, out: &mut Vec<ReplicaState>, now: Instant) {
+        out.clear();
+        out.extend((0..self.observations.len()).map(|index| self.state(index, now)));
     }
 
     /// The state of one replica.
@@ -425,6 +439,31 @@ mod tests {
         watermark.reset();
         assert!(!watermark.is_set());
         assert_eq!(Watermark::default(), Watermark::new());
+    }
+
+    #[test]
+    fn filling_a_buffer_matches_allocating_a_fresh_one() {
+        // The allocation-free form is on the route decision's hot path, so it
+        // must not be a second implementation that can drift from the first.
+        let now = Instant::now();
+        let mut replicas = Replicas::new(3, config());
+        replicas.observe(0, Lsn::new(500), true, now);
+        replicas.observe(2, Lsn::new(700), false, now);
+
+        let mut buffer = vec![
+            ReplicaState {
+                replayed: Lsn::new(9_999),
+                healthy: true,
+            };
+            9
+        ];
+        replicas.fill_states(&mut buffer, now);
+        assert_eq!(
+            buffer,
+            replicas.states(now),
+            "the buffered form disagreed with the allocating one"
+        );
+        assert_eq!(buffer.len(), 3, "the buffer kept its previous contents");
     }
 
     #[test]

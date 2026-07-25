@@ -59,6 +59,12 @@ pub struct SessionRouter {
     /// Whether the open transaction promised the server it would not write.
     read_only_transaction: bool,
     pinned: bool,
+    /// Scratch for replica states, reused across statements.
+    ///
+    /// The route decision is a declared hot path, and for an autocommit
+    /// workload it runs per statement rather than per transaction. One buffer
+    /// per session costs one allocation for the session's whole life.
+    states: Vec<ReplicaState>,
 }
 
 impl SessionRouter {
@@ -108,8 +114,15 @@ impl SessionRouter {
 
     /// Ends the session's routing state, as a new client on a reused
     /// connection needs.
+    ///
+    /// Keeps the states buffer, since its capacity is the point of having it
+    /// and its contents are overwritten before every read.
     pub fn reset(&mut self) {
-        *self = Self::new();
+        let states = std::mem::take(&mut self.states);
+        *self = Self {
+            states,
+            ..Self::new()
+        };
     }
 
     /// Records that a transaction has ended, freeing the fixed target.
@@ -183,7 +196,8 @@ impl SessionRouter {
             hint: statement_hint(sql).unwrap_or(self.hint),
         };
 
-        let target = decide(&ctx, &replicas.states(now));
+        replicas.fill_states(&mut self.states, now);
+        let target = decide(&ctx, &self.states);
 
         // Fix the target if this statement opened a transaction, or if one was
         // already open by the time the status byte said so.
@@ -503,6 +517,44 @@ mod tests {
         let mut router = SessionRouter::new();
         route(&mut router, "SELECT * FROM t", false);
         assert_eq!(router.fixed_target(), None);
+    }
+
+    #[test]
+    fn routing_reuses_its_states_buffer_across_statements() {
+        // The route decision is a declared hot path, and for an autocommit
+        // workload it runs per statement rather than per transaction. The
+        // buffer's capacity surviving is what makes that allocation-free after
+        // the first statement.
+        let (replicas, now) = replicas(1_000);
+        let mut router = SessionRouter::new();
+
+        router.route("SELECT 1", false, &replicas, now);
+        let capacity = router.states.capacity();
+        assert!(capacity > 0, "nothing was buffered");
+
+        for _ in 0..100 {
+            router.route("SELECT 1", false, &replicas, now);
+        }
+        assert_eq!(
+            router.states.capacity(),
+            capacity,
+            "the buffer was reallocated per statement"
+        );
+        assert_eq!(router.states.len(), 1, "stale entries survived a refill");
+    }
+
+    #[test]
+    fn resetting_a_session_keeps_the_buffer_it_paid_for() {
+        // A pooled client connection handed to a new client should not pay for
+        // the allocation again; the contents are overwritten before any read.
+        let (replicas, now) = replicas(1_000);
+        let mut router = SessionRouter::new();
+        router.route("SELECT 1", false, &replicas, now);
+        let capacity = router.states.capacity();
+
+        router.reset();
+        assert_eq!(router.states.capacity(), capacity);
+        assert_eq!(router.watermark().get(), None, "reset did not reset");
     }
 
     #[test]

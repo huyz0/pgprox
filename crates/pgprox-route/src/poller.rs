@@ -95,8 +95,19 @@ impl ReplicaWatch {
         self.lock().states(now)
     }
 
-    /// A snapshot of the tracker itself, for a caller that wants to route
-    /// against a fixed view rather than re-reading per statement.
+    /// Runs `f` against the tracker without copying it.
+    ///
+    /// How a router reads the watch. The lock is held for the call, so `f` must
+    /// not await and must not be slow; deciding a route is neither.
+    pub fn with_replicas<T>(&self, f: impl FnOnce(&Replicas) -> T) -> T {
+        f(&self.lock())
+    }
+
+    /// A copy of the tracker, for a caller that wants a fixed view rather than
+    /// one that can move between statements.
+    ///
+    /// Copies. [`Self::with_replicas`] is the one to reach for on the route
+    /// decision's hot path.
     #[must_use]
     pub fn snapshot(&self) -> Replicas {
         self.lock().clone()
