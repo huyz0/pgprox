@@ -58,7 +58,70 @@ early produces tasks that are wrong by the time they are reached.
   under Codex CLI or Cursor and record the result as an ADR. Acceptance: the ADR
   states what worked, what did not, and what was changed as a result.
 
-## M0 and later
+## M0: contracts and quality gates
+
+`pgprox-core` holds the traits and types every other crate depends on, plus a
+working fake for each. It is what lets five tracks run in parallel from M1.
+
+Sizing note: the coverage gate is 95% per crate, so a task that adds a trait
+without its fake and tests leaves the tree red and is half a task. Every entry
+below is types plus tests plus fake where one applies.
+
+- [ ] `M0.1` Define M0: this decomposition, and `scripts/m0-complete.sh`.
+  Acceptance: the script exits non-zero now, naming each thing that is missing.
+- [ ] `M0.2` Workspace skeleton. Root `Cargo.toml` with `[workspace.lints]`,
+  `rustfmt.toml`, `deny.toml`, `.cargo/config.toml`.
+  Acceptance: `cargo metadata` succeeds, `scripts/check-fmt.sh` passes,
+  `cargo deny check` passes.
+- [ ] `M0.3` `pgprox-core` crate and the ID newtypes: `TenantId`, `NodeId`,
+  `ServerId`, `ConnId`, `Lsn`, `PoolKey`.
+  Acceptance: a swapped pair of IDs fails to compile; `Lsn` orders correctly
+  across the 32-bit boundary; `ConnId` round-trips its node ID.
+- [ ] `M0.4` `SecretString`.
+  Acceptance: `Debug` and `Display` print no part of the secret; the value is
+  reachable only through `expose()`; memory is zeroed on drop.
+- [ ] `M0.5` Error taxonomy and the SQLSTATE mapping.
+  Acceptance: every client-visible error maps to the code in the table in
+  `standards/error-handling.md`; no error variant can carry a credential.
+- [ ] `M0.6` `Clock` trait, `SystemClock`, and `FakeClock`.
+  Acceptance: `FakeClock` advances only when told, and a test using it completes
+  without sleeping.
+- [ ] `M0.7` Buffer slab.
+  Acceptance: a borrowed buffer returns to the slab on drop; the slab bounds
+  total outstanding buffers rather than allocating without limit; borrowing from
+  a warm slab does not allocate.
+- [ ] `M0.8` Auth DTOs: `Backend`, `Grant`, `AuthRequest`, `PoolHints`,
+  `ClaimSet`.
+  Acceptance: formatting a `Backend` reveals host and database but never the
+  password; `Grant` TTL clamps to the earliest of grant TTL, token expiry, and
+  configured cap.
+- [ ] `M0.9` `CredentialResolver` trait and its fake.
+  Acceptance: the fake resolves configured tenants, returns a typed error for
+  unknown ones, and records call counts so singleflight can be tested against it.
+- [ ] `M0.10` Pool contract: `PoolStats`, `UpstreamGuard`, `PoolError`,
+  `UpstreamPool`, and the fake.
+  Acceptance: the fake actually tracks acquisitions and actually refuses past
+  its cap, rather than recording calls.
+- [ ] `M0.11` Cluster contract: `MembershipView`, `QuotaLease`, `ClusterDigest`,
+  `ClusterCoordinator`, and the fake.
+  Acceptance: the fake's `home_node` is stable under rendezvous hashing and
+  rehomes only tenants of a departed node; leases expire on the injected clock.
+- [ ] `M0.12` Config contract: `Config`, `NodeMode`, `ConfigSource`, and the
+  fake.
+  Acceptance: the fake publishes a new config to watchers; invalid config is
+  rejected with a message naming the offending field.
+- [ ] `M0.13` Route contract: `RouteCtx`, `RouteTarget`, `StmtClass`, `Router`,
+  and the fake.
+  Acceptance: an unknown statement class routes to primary; a replica behind the
+  session watermark is not eligible.
+- [ ] `M0.14` Cache contract stub: `QueryCache` and its fake.
+  Acceptance: the trait compiles and has a fake; no implementation beyond that,
+  since this is M9 work.
+- [ ] `M0.15` Public surface. `lib.rs` re-exports only, `#![warn(missing_docs)]`
+  satisfied, crate-level docs.
+  Acceptance: `scripts/m0-complete.sh` exits zero.
+
+## M1 and later
 
 Not yet decomposed. See [roadmap.md](roadmap.md). The `next-task` skill
 decomposes the next milestone when the current one closes.
