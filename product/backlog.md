@@ -729,7 +729,7 @@ that already took sixty seconds to arrive.
   `SHOW CLIENTS`, `SHOW PEERS`, `SHOW QUOTA`, `SHOW TENANTS`, `SHOW CONFIG` and
   `SHOW STATS` each parse, each has a `SHOW LOCAL` form, and an unknown `SHOW`
   is an error rather than an empty result.
-- [ ] `M4.14` `SHOW` result rendering, PgBouncer-compatible where the command
+- [x] `M4.14` `SHOW` result rendering, PgBouncer-compatible where the command
   exists there. Acceptance: the columns of the shared subset match PgBouncer's
   names and order, so an existing dashboard keeps working.
 - [ ] `M4.15` Close M4.

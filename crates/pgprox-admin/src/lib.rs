@@ -18,8 +18,10 @@
 
 pub mod api;
 pub mod openapi;
+pub mod rows;
 pub mod show;
 
 pub use api::{ApiError, Shared, read_routes, routes, write_routes};
 pub use openapi::{ApiDoc, document};
+pub use rows::{Rows, columns_for, render};
 pub use show::{ShowCommand, ShowError, ShowTarget};
