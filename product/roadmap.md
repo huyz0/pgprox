@@ -20,7 +20,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M1F | Full protocol coverage | complete |
 | M2 | Auth and sidecar (track B) | complete |
 | M3 | Cluster (track C) | complete |
-| M4 | Operations (track D) | ready |
+| M4 | Operations (track D) | complete |
 | M5 | Pooling and routing (track E) | complete |
 | M6 | Integration | ready |
 | M7 | Scale and performance | blocked by M6 |

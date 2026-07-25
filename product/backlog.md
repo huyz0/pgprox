@@ -750,7 +750,7 @@ that already took sixty seconds to arrive.
   M4: `Observatory::set_mode(mode, None)` documented "persists until changed"
   while `DrainState::set(mode, None, now)` applied the default TTL. The same
   absence meant opposite things in two APIs M6 has to wire together.
-- [ ] `M4.15` Close M4.
+- [x] `M4.15` Close M4.
 
 ## M6 and later
 
