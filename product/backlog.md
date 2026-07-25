@@ -709,7 +709,7 @@ that already took sixty seconds to arrive.
 - [x] `M4.7` Span and log conventions, with redaction. Acceptance: a span name
   is stable and low cardinality with the tenant in an attribute, and a
   credential cannot reach a log line, a span attribute or a metric label.
-- [ ] `M4.8` Health endpoints. Acceptance: `/healthz` reports the process is
+- [x] `M4.8` Health endpoints. Acceptance: `/healthz` reports the process is
   alive, `/readyz` fails only for drain, and no load-related condition can make
   it flap.
 - [ ] `M4.9` The per-tenant series allowlist. Acceptance: a tenant on the
