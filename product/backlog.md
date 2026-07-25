@@ -45,10 +45,10 @@ early produces tasks that are wrong by the time they are reached.
 - [x] `M-1.11` Claude Code hooks as accelerator, calling identical scripts.
   Acceptance: `.claude/settings.json` hooks reference `scripts/`, no check is
   implemented twice.
-- [ ] `M-1.12` Skills, part one: `spec`, `tdd`, `next-task`. Acceptance: Agent
+- [x] `M-1.12` Skills, part one: `spec`, `tdd`, `next-task`. Acceptance: Agent
   Skills format, vendor-neutral bodies, no `.claude/` paths.
-- [ ] `M-1.13` Skills, part two: `contract-change`, `crate-review`, `adr`.
-- [ ] `M-1.14` Skills, part three: `hot-path`, `wire-debug`, `skill-forge`.
+- [x] `M-1.13` Skills, part two: `contract-change`, `crate-review`, `adr`.
+- [x] `M-1.14` Skills, part three: `hot-path`, `wire-debug`, `skill-forge`.
 - [ ] `M-1.15` Skill discovery symlink and per-crate `AGENTS.md` stubs for the
   twelve planned crates.
 - [x] `M-1.16` `scripts/m-1-complete.sh`, the milestone completion condition.
