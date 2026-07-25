@@ -46,12 +46,25 @@ Shape decisions worth keeping:
   module has a `SecretString` or a password field, there is a `compile_fail`
   doctest saying so, and a test asserts the rendered forms contain nothing that
   looks like one.
+- **A drain through this contract always expires**, so `drain` takes a
+  `Duration` rather than an `Option<Duration>` and `undrain` is its own method.
+  The first attempt had one `set_mode` with an optional TTL, where `None` meant
+  "persists until changed"; `pgprox-config`'s `DrainState` used the same
+  `Option` to mean "take the default". The same absence meant opposite things in
+  two APIs the composition root has to wire together, which would have shown up
+  at M6 as a drain behaving differently from what the API reported. Removing the
+  option removed the disagreement. `drain` returns what was applied, because an
+  over-long request is clamped rather than refused and the caller should learn
+  that then rather than when the node comes back.
 
 ## Consequences
 
 - The HTTP surface and the `SHOW` surface read the same data by construction
   rather than by discipline, so the two cannot drift into giving different
-  answers to the same question.
+  answers to the same question. `crates/pgprox-admin/tests/surfaces_agree.rs`
+  checks it rather than leaving it as a claim, and pins which pairs actually
+  correspond: `SHOW SERVERS` is `PgBouncer`'s socket view, and the `SHOW` form
+  of `GET /v1/servers` is `SHOW QUOTA`.
 - `bin/pgprox` gains a real responsibility beyond wiring: it is where the
   fan-in lives. That is the correct place for it, and it is worth saying out
   loud because it means M6 is not purely mechanical.
