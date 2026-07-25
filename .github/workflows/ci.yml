@@ -35,6 +35,7 @@ jobs:
 
       - run: scripts/check-fmt.sh
       - run: scripts/check-drift.sh
+      - run: scripts/check-layering.sh
       - run: scripts/check-crate.sh
       - run: scripts/check-coverage.sh
 

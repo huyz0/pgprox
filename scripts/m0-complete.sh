@@ -72,14 +72,10 @@ if [[ -d "$CORE" ]]; then
 fi
 
 # --- no sideways dependencies ------------------------------------------------
-# pgprox-core depends on no other workspace crate. If it does, the thing that
-# lets five tracks run in parallel is gone.
-if [[ -f crates/pgprox-core/Cargo.toml ]]; then
-  if grep -qE '^\s*pgprox-' crates/pgprox-core/Cargo.toml; then
-    fail "pgprox-core depends on another workspace crate"
-  else
-    ok "pgprox-core has no workspace dependencies"
-  fi
-fi
+# Delegated, so the rule has one implementation. This used to check only
+# pgprox-core, which left every other crate free to depend sideways.
+./scripts/check-layering.sh >/dev/null 2>&1 \
+  && ok "crate dependency rule" \
+  || fail "crate dependency rule (run: scripts/check-layering.sh)"
 
 finish

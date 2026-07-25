@@ -363,6 +363,18 @@ rather than remembered.
   stopping before a cross-track change rather than discovering the blast radius
   mid-edit.
 
+### Group I: raised by the second review round
+
+- [x] `M1F.31` `pgprox-testkit` is absent from the crate map in
+  `product/architecture.md`. A crate map that omits a crate is worse than none,
+  because it is trusted.
+- [x] `M1F.32` Enforce the crate dependency rule for every crate, not only
+  `pgprox-core`. `standards/contracts.md` calls it the thing that makes parallel
+  tracks possible, and `m0-complete.sh` checks exactly one crate. Today
+  `pgprox-auth` could depend on `pgprox-proto` and nothing would notice.
+  Acceptance: a script rejects a seeded sideways dependency, and rejects
+  `pgprox-testkit` appearing as a runtime dependency of anything.
+
 ### Group G: close
 
 - [ ] `M1F.26` Close M1F. Acceptance: `scripts/m1f-complete.sh` exits zero.

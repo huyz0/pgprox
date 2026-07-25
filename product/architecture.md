@@ -35,6 +35,7 @@ not left to review.
 | `pgprox-session` | Per-client state machine, relay loop | M6 |
 | `pgprox-cache` | Query cache, trait stub until M9 | M9 |
 | `bin/pgprox` | Composition root. Five lines in `main.rs`, logic in a lib target. | M6 |
+| `pgprox-testkit` | Test scaffolding: container readiness classification. Never a runtime dependency. | M1F |
 
 ## Layering inside a crate
 

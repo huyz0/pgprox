@@ -56,6 +56,13 @@ repos:
         pass_filenames: false
         files: '(AGENTS\.md|SKILL\.md|^scripts/|\.pre-commit-config\.yaml)$'
 
+      - id: layering
+        name: crate dependency rule
+        entry: scripts/check-layering.sh
+        language: script
+        pass_filenames: false
+        files: 'Cargo\.toml$'
+
       - id: fmt
         name: cargo fmt
         entry: scripts/check-fmt.sh
