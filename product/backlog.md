@@ -257,7 +257,7 @@ nothing. They are not gaps.
   twenty are extracted. Add detail, hint, position, internal position, internal
   query, where, schema, table, column, datatype, constraint, file, line,
   routine. Acceptance: a real Postgres error round-trips every field it sent.
-- [ ] `M1F.5` `Tag` completeness audit. Assert every code in the Postgres
+- [x] `M1F.5` `Tag` completeness audit. Assert every code in the Postgres
   protocol appendix has a constant and a stated policy, so a future message
   cannot be silently unhandled. Acceptance: a test enumerates them.
 

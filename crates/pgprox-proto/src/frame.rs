@@ -871,4 +871,179 @@ mod tests {
             );
         }
     }
+
+    /// Every message code in the Postgres 3.0 protocol, with the direction it
+    /// flows and the name Postgres gives it.
+    ///
+    /// Transcribed from the protocol appendix rather than from our own
+    /// constants, so this list is an independent statement of what exists. A
+    /// test derived from our own code could only ever agree with itself.
+    const PROTOCOL_MESSAGES: &[(Direction, u8, &str)] = &[
+        // Frontend, client to server.
+        (Direction::Frontend, b'B', "Bind"),
+        (Direction::Frontend, b'C', "Close"),
+        (Direction::Frontend, b'd', "CopyData"),
+        (Direction::Frontend, b'c', "CopyDone"),
+        (Direction::Frontend, b'f', "CopyFail"),
+        (Direction::Frontend, b'D', "Describe"),
+        (Direction::Frontend, b'E', "Execute"),
+        (Direction::Frontend, b'H', "Flush"),
+        (Direction::Frontend, b'F', "FunctionCall"),
+        (Direction::Frontend, b'P', "Parse"),
+        (Direction::Frontend, b'p', "PasswordMessage/SASL"),
+        (Direction::Frontend, b'Q', "Query"),
+        (Direction::Frontend, b'S', "Sync"),
+        (Direction::Frontend, b'X', "Terminate"),
+        // Backend, server to client.
+        (Direction::Backend, b'R', "Authentication"),
+        (Direction::Backend, b'K', "BackendKeyData"),
+        (Direction::Backend, b'2', "BindComplete"),
+        (Direction::Backend, b'3', "CloseComplete"),
+        (Direction::Backend, b'C', "CommandComplete"),
+        (Direction::Backend, b'd', "CopyData"),
+        (Direction::Backend, b'c', "CopyDone"),
+        (Direction::Backend, b'G', "CopyInResponse"),
+        (Direction::Backend, b'H', "CopyOutResponse"),
+        (Direction::Backend, b'W', "CopyBothResponse"),
+        (Direction::Backend, b'D', "DataRow"),
+        (Direction::Backend, b'I', "EmptyQueryResponse"),
+        (Direction::Backend, b'E', "ErrorResponse"),
+        (Direction::Backend, b'V', "FunctionCallResponse"),
+        (Direction::Backend, b'v', "NegotiateProtocolVersion"),
+        (Direction::Backend, b'n', "NoData"),
+        (Direction::Backend, b'N', "NoticeResponse"),
+        (Direction::Backend, b'A', "NotificationResponse"),
+        (Direction::Backend, b't', "ParameterDescription"),
+        (Direction::Backend, b'S', "ParameterStatus"),
+        (Direction::Backend, b'1', "ParseComplete"),
+        (Direction::Backend, b's', "PortalSuspended"),
+        (Direction::Backend, b'Z', "ReadyForQuery"),
+        (Direction::Backend, b'T', "RowDescription"),
+    ];
+
+    #[test]
+    fn every_protocol_message_has_a_named_constant() {
+        // A message with no constant is indistinguishable from an unknown one,
+        // so nothing can route it deliberately. This is the audit that stops a
+        // future addition being silently unhandled.
+        let defined: std::collections::HashSet<u8> = [
+            Tag::QUERY,
+            Tag::PARSE,
+            Tag::BIND,
+            Tag::EXECUTE,
+            Tag::DESCRIBE,
+            Tag::CLOSE,
+            Tag::SYNC,
+            Tag::TERMINATE,
+            Tag::PASSWORD,
+            Tag::FLUSH,
+            Tag::COPY_FAIL,
+            Tag::FUNCTION_CALL,
+            Tag::AUTHENTICATION,
+            Tag::BACKEND_KEY_DATA,
+            Tag::READY_FOR_QUERY,
+            Tag::ROW_DESCRIPTION,
+            Tag::DATA_ROW,
+            Tag::COMMAND_COMPLETE,
+            Tag::EMPTY_QUERY_RESPONSE,
+            Tag::ERROR_RESPONSE,
+            Tag::NOTICE_RESPONSE,
+            Tag::PARAMETER_STATUS,
+            Tag::NOTIFICATION_RESPONSE,
+            Tag::NEGOTIATE_PROTOCOL_VERSION,
+            Tag::PARSE_COMPLETE,
+            Tag::BIND_COMPLETE,
+            Tag::CLOSE_COMPLETE,
+            Tag::NO_DATA,
+            Tag::PORTAL_SUSPENDED,
+            Tag::PARAMETER_DESCRIPTION,
+            Tag::FUNCTION_CALL_RESPONSE,
+            Tag::COPY_IN_RESPONSE,
+            Tag::COPY_OUT_RESPONSE,
+            Tag::COPY_BOTH_RESPONSE,
+            Tag::COPY_DATA,
+            Tag::COPY_DONE,
+        ]
+        .into_iter()
+        .map(Tag::get)
+        .collect();
+
+        let missing: Vec<&str> = PROTOCOL_MESSAGES
+            .iter()
+            .filter(|(_, code, _)| !defined.contains(code))
+            .map(|(_, _, name)| *name)
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "protocol messages with no constant: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn every_protocol_message_has_a_stated_inspect_policy() {
+        // inspect_policy is total, so this cannot fail by omission. It exists to
+        // record the answers, so a change to any of them shows up as a diff on
+        // this list rather than as behaviour nobody noticed.
+        let mut inspected = Vec::new();
+        for (direction, code, name) in PROTOCOL_MESSAGES {
+            if inspect_policy(*direction, Tag(*code)) != Inspect::None {
+                inspected.push(*name);
+            }
+        }
+        inspected.sort_unstable();
+
+        assert_eq!(
+            inspected,
+            vec![
+                "Authentication",
+                "BackendKeyData",
+                "Bind",
+                "Close",
+                "CommandComplete",
+                "CopyBothResponse",
+                "CopyDone",
+                "CopyDone",
+                "CopyInResponse",
+                "CopyOutResponse",
+                "Describe",
+                "EmptyQueryResponse",
+                "ErrorResponse",
+                "Execute",
+                "Flush",
+                "NegotiateProtocolVersion",
+                "NoticeResponse",
+                "NotificationResponse",
+                "ParameterDescription",
+                "ParameterStatus",
+                "Parse",
+                "Query",
+                "ReadyForQuery",
+                "Sync",
+                "Terminate",
+            ],
+            "an inspect policy changed; confirm the memory cost is still bounded"
+        );
+    }
+
+    #[test]
+    fn bulk_messages_are_absent_from_the_inspected_set() {
+        // The ones that must never be buffered, stated positively so the list
+        // above cannot quietly grow to include them.
+        for (direction, code, name) in [
+            (Direction::Backend, b'D', "DataRow"),
+            (Direction::Backend, b'd', "CopyData"),
+            (Direction::Frontend, b'd', "CopyData"),
+            (Direction::Backend, b'T', "RowDescription"),
+            (Direction::Frontend, b'p', "PasswordMessage"),
+            (Direction::Frontend, b'F', "FunctionCall"),
+            (Direction::Backend, b'V', "FunctionCallResponse"),
+        ] {
+            assert_eq!(
+                inspect_policy(direction, Tag(code)),
+                Inspect::None,
+                "{name} is being buffered"
+            );
+        }
+    }
 }
