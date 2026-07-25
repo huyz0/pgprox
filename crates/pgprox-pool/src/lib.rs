@@ -14,10 +14,12 @@
 
 pub mod params;
 pub mod pin;
+pub mod pool;
 pub mod statements;
 
 pub use params::{ParamChange, SessionParams};
 pub use pin::{PinReason, PinState, REPLAYABLE_PARAMETERS, pin_reason};
+pub use pool::{Acquired, Connection, Pool, PoolConfig};
 pub use statements::{
     ConnectionStatements, GlobalName, Preparation, SessionStatements, StatementConfig,
 };

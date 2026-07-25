@@ -602,7 +602,7 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
   Acceptance: two sessions preparing identical SQL share one global name, a
   connection that does not hold a statement reports it as needing replay, and
   eviction never reports a statement as held after it is evicted.
-- [ ] `M5.11` The pool itself: acquire with a deadline, release through the
+- [x] `M5.11` The pool itself: acquire with a deadline, release through the
   guard, per-key pools, and the limit. Acceptance: a guard dropped without a
   clean release closes the connection rather than returning it, and acquiring
   past the limit waits rather than opening.
