@@ -20,10 +20,12 @@
 //! and the crate's `AGENTS.md` says so at length.
 
 pub mod auth;
+pub mod relay;
 pub mod state;
 
 pub use auth::{
     Progress, SCRAM_SHA_256, SaslProgress, ScramAuth, ScramChallenge, ScramConfig,
     StaticCredentials, TokenAuth,
 };
+pub use relay::{ClientAction, ClientOutcome, Relay, ServerOutcome};
 pub use state::{Action, Credential, Handshake, HandshakeConfig, Reply, StartupInfo, TlsPosture};

@@ -799,7 +799,7 @@ rule already allows `pgprox-proto`.
   condition into a mechanism documented as never clearing. Acceptance: a
   session that runs a `COPY` to completion is releasable afterwards, and there
   is one place that says why a connection is held during one.
-- [ ] `M6.6` The relay step: one client frame in, actions out, with the release
+- [x] `M6.6` The relay step: one client frame in, actions out, with the release
   decision taken from `ReadyForQuery` rather than from the SQL text.
   Acceptance: a connection is never released mid-transaction, never with an
   extended-query sequence outstanding, and never while pinned.

@@ -11,6 +11,8 @@ publish.workspace = true
 [dependencies]
 pgprox-core = { path = "../pgprox-core" }
 pgprox-proto = { path = "../pgprox-proto" }
+pgprox-pool = { path = "../pgprox-pool" }
+pgprox-route = { path = "../pgprox-route" }
 
 [dev-dependencies]
 pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }

@@ -969,7 +969,9 @@ name = "pgprox-session"
 version = "0.1.0"
 dependencies = [
  "pgprox-core",
+ "pgprox-pool",
  "pgprox-proto",
+ "pgprox-route",
  "proptest",
 ]
 
