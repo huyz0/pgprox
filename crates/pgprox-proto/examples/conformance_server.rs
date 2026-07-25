@@ -99,8 +99,14 @@ fn read_more(sock: &mut TcpStream, buf: &mut Vec<u8>) -> std::io::Result<()> {
 }
 
 fn serve(mut sock: TcpStream, conn: ConnId) -> std::io::Result<()> {
-    sock.set_nodelay(true)?;
     let mut buf = Vec::new();
+    serve_startup(&mut sock, conn, &mut buf)?;
+    serve_queries(&mut sock, &mut buf)
+}
+
+/// Handles everything up to the first `ReadyForQuery`.
+fn serve_startup(sock: &mut TcpStream, conn: ConnId, buf: &mut Vec<u8>) -> std::io::Result<()> {
+    sock.set_nodelay(true)?;
 
     // Startup phase. A client may send SSLRequest or GSSENCRequest first, and
     // each gets a single-byte answer before the real startup packet arrives.
@@ -108,7 +114,7 @@ fn serve(mut sock: TcpStream, conn: ConnId) -> std::io::Result<()> {
     // Only the version is kept from the decoded packet. Holding the whole
     // Startup would borrow from a buffer that goes out of scope each iteration.
     let version = loop {
-        let body = read_untagged(&mut sock, &mut buf)?;
+        let body = read_untagged(sock, buf)?;
         match startup::decode(&body).map_err(|e| std::io::Error::other(e.to_string()))? {
             // 'N' declines without failing the connection. Drivers configured
             // for "prefer" fall back to plaintext, which is what this harness
@@ -163,19 +169,29 @@ fn serve(mut sock: TcpStream, conn: ConnId) -> std::io::Result<()> {
     encode::backend_key_data(&mut out, conn);
     encode::ready_for_query(&mut out, TxStatus::Idle);
     sock.write_all(&out)?;
+    Ok(())
+}
 
+/// Answers messages until the client goes away.
+fn serve_queries(sock: &mut TcpStream, buf: &mut Vec<u8>) -> std::io::Result<()> {
     // Query phase.
     //
     // Statement name to parameter count. A driver asks how many parameters a
     // statement takes and refuses to bind a different number, so answering a
     // fixed count breaks every query whose placeholder count differs. asyncpg
     // found this immediately.
-    let mut statements: HashMap<String, usize> = HashMap::new();
+    let mut statements: HashMap<String, StmtInfo> = HashMap::new();
+    // Portal name to the statement it was bound to. Execute names a portal, not
+    // a statement, so without this the harness cannot tell which SQL is running
+    // and answers every extended query identically. Four drivers found that.
+    let mut portals: HashMap<String, String> = HashMap::new();
     // Whether the current portal asked for binary results.
     let mut binary_results = false;
+    // Which statement the current Execute is running.
+    let mut executing_large = false;
 
     loop {
-        let (tag, body) = match read_tagged(&mut sock, &mut buf) {
+        let (tag, body) = match read_tagged(sock, buf) {
             Ok(v) => v,
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(e) => return Err(e),
@@ -188,40 +204,77 @@ fn serve(mut sock: TcpStream, conn: ConnId) -> std::io::Result<()> {
         match msg {
             FrontendMessage::Terminate => return Ok(()),
 
-            FrontendMessage::Query { .. } => {
+            FrontendMessage::Query { sql } => {
                 // The simple query protocol is always text.
-                row_description(&mut out, false);
-                data_row(&mut out, false);
-                command_complete(&mut out, "SELECT 1");
+                if sql.contains("pgprox_large") {
+                    large_row_description(&mut out);
+                    for _ in 0..LARGE_RESULT_ROWS {
+                        large_data_row(&mut out);
+                    }
+                    command_complete(&mut out, &format!("SELECT {LARGE_RESULT_ROWS}"));
+                } else {
+                    row_description(&mut out, false);
+                    data_row(&mut out, false);
+                    command_complete(&mut out, "SELECT 1");
+                }
                 encode::ready_for_query(&mut out, TxStatus::Idle);
             }
 
             // The extended query path. Every modern driver uses it, and its
             // messages are answered individually rather than as one block.
             FrontendMessage::Parse { statement, sql } => {
-                statements.insert(statement.to_owned(), count_placeholders(sql));
+                statements.insert(
+                    statement.to_owned(),
+                    StmtInfo {
+                        params: count_placeholders(sql),
+                        large: sql.contains("pgprox_large"),
+                    },
+                );
                 simple(&mut out, Tag::PARSE_COMPLETE);
             }
-            FrontendMessage::Bind { .. } => {
+            FrontendMessage::Bind { portal, statement } => {
                 // The result format codes live past the fields the decoder
                 // exposes, and they are not optional to honour: asyncpg asks
                 // for binary and then fails to decode a text answer.
                 binary_results = bind_wants_binary(&body);
+                portals.insert(portal.to_owned(), statement.to_owned());
+                executing_large = statements.get(statement).is_some_and(|info| info.large);
                 simple(&mut out, Tag::BIND_COMPLETE);
             }
             FrontendMessage::Close { .. } => simple(&mut out, Tag::CLOSE_COMPLETE),
             FrontendMessage::Describe { target, name } => match target {
                 // Describing a statement yields its parameter types first.
                 frontend::Target::Statement => {
-                    let params = statements.get(name).copied().unwrap_or(0);
-                    parameter_description(&mut out, params);
-                    row_description(&mut out, binary_results);
+                    let info = statements.get(name).copied().unwrap_or_default();
+                    parameter_description(&mut out, info.params);
+                    if info.large {
+                        large_row_description(&mut out);
+                    } else {
+                        row_description(&mut out, binary_results);
+                    }
                 }
-                _ => row_description(&mut out, binary_results),
+                _ => {
+                    if executing_large {
+                        large_row_description(&mut out);
+                    } else {
+                        row_description(&mut out, binary_results);
+                    }
+                }
             },
-            FrontendMessage::Execute { .. } => {
-                data_row(&mut out, binary_results);
-                command_complete(&mut out, "SELECT 1");
+            FrontendMessage::Execute { portal, .. } => {
+                let large = portals
+                    .get(portal)
+                    .and_then(|name| statements.get(name))
+                    .is_some_and(|info| info.large);
+                if large {
+                    for _ in 0..LARGE_RESULT_ROWS {
+                        large_data_row(&mut out);
+                    }
+                    command_complete(&mut out, &format!("SELECT {LARGE_RESULT_ROWS}"));
+                } else {
+                    data_row(&mut out, binary_results);
+                    command_complete(&mut out, "SELECT 1");
+                }
             }
             // Flush asks for buffered output without ending the sequence, so
             // it gets nothing here: this harness never buffers.
@@ -311,6 +364,13 @@ fn parameter_description(out: &mut Vec<u8>, count: usize) {
     write_tagged(out, Tag(b't'), &body);
 }
 
+/// What the harness remembers about a prepared statement.
+#[derive(Clone, Copy, Debug, Default)]
+struct StmtInfo {
+    params: usize,
+    large: bool,
+}
+
 /// Counts the distinct `$N` placeholders in a statement.
 ///
 /// Crude, and enough for a harness: it takes the highest N rather than parsing
@@ -339,6 +399,15 @@ fn count_placeholders(sql: &str) -> usize {
     highest
 }
 
+/// How many rows the harness answers with, and how wide each value is.
+///
+///
+/// Drivers previously only ever asked for one small row, so nothing exercised a
+/// response larger than a single TCP segment. See `PGPROX_DEPTH_LARGE_RESULT` in
+/// the driver scripts.
+const LARGE_RESULT_ROWS: usize = 2_000;
+const LARGE_RESULT_WIDTH: usize = 4_096;
+
 /// `D`: one column holding the integer 1, encoded as the client asked.
 fn data_row(out: &mut Vec<u8>, binary: bool) {
     let value: Vec<u8> = if binary {
@@ -357,6 +426,28 @@ fn command_complete(out: &mut Vec<u8>, tag: &str) {
     let mut body = tag.as_bytes().to_vec();
     body.push(0);
     write_tagged(out, Tag::COMMAND_COMPLETE, &body);
+}
+
+/// `T`: one wide `text` column, for the large-result path.
+fn large_row_description(out: &mut Vec<u8>) {
+    let mut body = 1_i16.to_be_bytes().to_vec();
+    body.extend_from_slice(b"payload\0");
+    body.extend_from_slice(&0_i32.to_be_bytes());
+    body.extend_from_slice(&0_i16.to_be_bytes());
+    body.extend_from_slice(&25_i32.to_be_bytes()); // text
+    body.extend_from_slice(&(-1_i16).to_be_bytes());
+    body.extend_from_slice(&(-1_i32).to_be_bytes());
+    body.extend_from_slice(&0_i16.to_be_bytes());
+    write_tagged(out, Tag::ROW_DESCRIPTION, &body);
+}
+
+/// `D`: one wide text value.
+fn large_data_row(out: &mut Vec<u8>) {
+    let value = vec![b'x'; LARGE_RESULT_WIDTH];
+    let mut body = 1_i16.to_be_bytes().to_vec();
+    body.extend_from_slice(&i32::try_from(value.len()).unwrap().to_be_bytes());
+    body.extend_from_slice(&value);
+    write_tagged(out, Tag::DATA_ROW, &body);
 }
 
 fn write_tagged(out: &mut Vec<u8>, tag: Tag, body: &[u8]) {

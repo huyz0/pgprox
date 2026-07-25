@@ -52,6 +52,31 @@ func main() {
 		os.Exit(1)
 	}
 
+	// PGPROX_DEPTH_PREPARED_REUSE: pgx caches by SQL text, so running the
+	// same statement repeatedly reuses one server-side prepare.
+	for i := 0; i < 5; i++ {
+		if err := conn.QueryRow(ctx, "SELECT 1").Scan(&n); err != nil {
+			fmt.Fprintln(os.Stderr, "prepared reuse:", err)
+			os.Exit(1)
+		}
+	}
+
+	// PGPROX_DEPTH_LARGE_RESULT: more than one TCP segment of rows.
+	rows, err := conn.Query(ctx, "SELECT pgprox_large")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "large result:", err)
+		os.Exit(1)
+	}
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	rows.Close()
+	if count < 2000 {
+		fmt.Fprintf(os.Stderr, "large result gave %d rows\n", count)
+		os.Exit(1)
+	}
+
 	fmt.Println("pgx: ok")
 }
 GO

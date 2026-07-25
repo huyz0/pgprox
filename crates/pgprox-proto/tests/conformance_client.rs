@@ -32,7 +32,9 @@ use std::time::{Duration, Instant};
 
 use pgprox_proto::backend::{self, AuthRequest, BackendMessage, TxStatus};
 use pgprox_proto::encode::PROTOCOL_3_0;
+use pgprox_proto::frame::Direction;
 use pgprox_proto::frame::{DEFAULT_MAX_FRAME, Decoded, Frame, Tag, decode};
+use pgprox_proto::relay::FrameRelay;
 use pgprox_proto::session::SessionState;
 
 /// A Postgres the tests can connect to.
@@ -405,6 +407,10 @@ fn conformance_client_extended_query_sequence() {
 fn conformance_client_copy_out_holds_the_session() {
     let pg = Postgres::start(&major());
     let mut conn = pg.connect();
+    // Idempotent: the suite shares one container per version, and a test that
+    // only passes against a pristine database is a test that fails the second
+    // time anyone runs it by hand.
+    conn.query("DROP TABLE IF EXISTS copy_src").unwrap();
     conn.query("CREATE TABLE copy_src (n int)").unwrap();
     conn.query("INSERT INTO copy_src SELECT generate_series(1, 100)")
         .unwrap();
@@ -566,6 +572,352 @@ fn conformance_client_reports_the_server_version_it_connected_to() {
         version.starts_with(&expected),
         "asked for Postgres {expected} but connected to {version}"
     );
+}
+
+impl Conn {
+    /// Relays every byte of the next response through [`FrameRelay`], returning
+    /// the tags seen, the total bytes relayed, and peak bytes buffered.
+    ///
+    /// This is the shape the proxy will use: bytes stream through, and only
+    /// what the inspect policy asks for is ever held.
+    fn relay_until_ready(&mut self) -> std::io::Result<(Vec<Tag>, usize, usize)> {
+        let mut relay = FrameRelay::new(Direction::Backend);
+        let mut tags = Vec::new();
+        let mut relayed = 0_usize;
+        let mut peak = 0_usize;
+        let mut pending: Vec<u8> = Vec::new();
+
+        loop {
+            if pending.is_empty() {
+                let mut chunk = [0_u8; 16 * 1024];
+                let n = self.sock.read(&mut chunk)?;
+                if n == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "server closed",
+                    ));
+                }
+                pending.extend_from_slice(&chunk[..n]);
+            }
+
+            let mut window = pending.as_slice();
+            let mut done = false;
+            while !window.is_empty() {
+                let outcome = relay.push(window).expect("real Postgres must relay");
+                peak = peak.max(relay.buffered());
+                if outcome.consumed == 0 {
+                    break;
+                }
+                relayed += outcome.consumed;
+                window = &window[outcome.consumed..];
+
+                if let Some(completed) = outcome.completed {
+                    tags.push(completed.header.tag);
+                    if completed.header.tag == Tag::READY_FOR_QUERY {
+                        done = true;
+                        break;
+                    }
+                }
+            }
+            let left = window.len();
+            pending.drain(..pending.len() - left);
+            if done {
+                return Ok((tags, relayed, peak));
+            }
+        }
+    }
+
+    /// Sends a simple query and relays its response.
+    fn relay_query(&mut self, sql: &str) -> std::io::Result<(Vec<Tag>, usize, usize)> {
+        let mut body = sql.as_bytes().to_vec();
+        body.push(0);
+        self.send(Tag::QUERY, &body)?;
+        self.relay_until_ready()
+    }
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn conformance_client_relays_a_large_value_that_the_old_cap_rejected() {
+    // The bug M1R fixes. An 80 MiB row is a legitimate answer that the previous
+    // 64 MiB frame cap refused outright.
+    let pg = Postgres::start(&major());
+    let mut conn = pg.connect();
+
+    let (tags, relayed, peak) = conn
+        .relay_query("SELECT repeat('x', 80*1024*1024)")
+        .unwrap();
+
+    assert!(tags.contains(&Tag::DATA_ROW), "no row came back");
+    assert!(
+        relayed > 80 * 1024 * 1024,
+        "only {relayed} bytes relayed for an 80 MiB value"
+    );
+    // The whole point: streaming, not buffering.
+    assert!(
+        peak < 1024 * 1024,
+        "buffered {peak} bytes relaying an 80 MiB row"
+    );
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn conformance_client_handles_a_null_value() {
+    // A NULL is length -1 in a DataRow, which is the one field length that is
+    // not a byte count.
+    let pg = Postgres::start(&major());
+    let mut conn = pg.connect();
+
+    let (tags, _, _) = conn.relay_query("SELECT NULL::int, 1, NULL::text").unwrap();
+    assert!(tags.contains(&Tag::DATA_ROW));
+    assert!(conn.state.is_releasable());
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn conformance_client_handles_a_multi_statement_simple_query() {
+    // Several statements in one Query yield several CommandCompletes and a
+    // single ReadyForQuery. A relay that assumed one-per-query would desync.
+    let pg = Postgres::start(&major());
+    let mut conn = pg.connect();
+
+    let (tags, _, _) = conn.relay_query("SELECT 1; SELECT 2; SELECT 3").unwrap();
+    let completes = tags.iter().filter(|t| **t == Tag::COMMAND_COMPLETE).count();
+    let readys = tags.iter().filter(|t| **t == Tag::READY_FOR_QUERY).count();
+
+    assert_eq!(completes, 3, "expected three CommandCompletes: {tags:?}");
+    assert_eq!(readys, 1, "expected exactly one ReadyForQuery: {tags:?}");
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn conformance_client_handles_an_empty_query() {
+    // An empty statement yields EmptyQueryResponse instead of CommandComplete.
+    let pg = Postgres::start(&major());
+    let mut conn = pg.connect();
+
+    let (tags, _, _) = conn.relay_query(";").unwrap();
+    assert!(
+        tags.contains(&Tag(b'I')),
+        "expected EmptyQueryResponse: {tags:?}"
+    );
+    assert!(conn.state.is_releasable());
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn conformance_client_handles_copy_in() {
+    // The direction the earlier suite never touched: client to server.
+    let pg = Postgres::start(&major());
+    let mut conn = pg.connect();
+    conn.query("DROP TABLE IF EXISTS copy_in_target").unwrap();
+    conn.query("CREATE TABLE copy_in_target (n int)").unwrap();
+
+    let mut body = b"COPY copy_in_target FROM STDIN".to_vec();
+    body.push(0);
+    conn.send(Tag::QUERY, &body).unwrap();
+
+    // Wait for the server to say it is ready to receive.
+    let mut saw_copy_in = false;
+    while !saw_copy_in {
+        let bytes = conn.next_frame_bytes().unwrap();
+        let Decoded::Frame(frame, _) = decode(&bytes, DEFAULT_MAX_FRAME).unwrap() else {
+            unreachable!()
+        };
+        let msg = backend::decode(&frame).unwrap();
+        conn.state.on_backend(&msg);
+        if matches!(msg, BackendMessage::CopyInResponse) {
+            saw_copy_in = true;
+        }
+    }
+    assert!(!conn.state.is_releasable(), "released during COPY IN");
+
+    for n in 1..=500 {
+        conn.send(Tag::COPY_DATA, format!("{n}\n").as_bytes())
+            .unwrap();
+    }
+    conn.send(Tag::COPY_DONE, &[]).unwrap();
+    conn.state
+        .on_frontend(&pgprox_proto::FrontendMessage::CopyDone);
+
+    conn.read_until_ready().unwrap();
+    assert!(conn.state.is_releasable(), "COPY IN never ended");
+
+    let (tags, _, _) = conn
+        .relay_query("SELECT count(*) FROM copy_in_target")
+        .unwrap();
+    assert!(tags.contains(&Tag::DATA_ROW));
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn conformance_client_sends_a_binary_parameter() {
+    // Binary parameter input, which the earlier suite only ever received.
+    let pg = Postgres::start(&major());
+    let mut conn = pg.connect();
+
+    let mut parse = Vec::new();
+    cstr(&mut parse, "");
+    cstr(&mut parse, "SELECT $1::int4 + 1");
+    parse.extend_from_slice(&0_i16.to_be_bytes());
+    conn.send(Tag::PARSE, &parse).unwrap();
+
+    let mut bind = Vec::new();
+    cstr(&mut bind, "");
+    cstr(&mut bind, "");
+    bind.extend_from_slice(&1_i16.to_be_bytes()); // one format code
+    bind.extend_from_slice(&1_i16.to_be_bytes()); // binary
+    bind.extend_from_slice(&1_i16.to_be_bytes()); // one parameter
+    bind.extend_from_slice(&4_i32.to_be_bytes());
+    bind.extend_from_slice(&41_i32.to_be_bytes()); // the value, big endian
+    bind.extend_from_slice(&1_i16.to_be_bytes()); // one result format
+    bind.extend_from_slice(&1_i16.to_be_bytes()); // binary
+    conn.send(Tag::BIND, &bind).unwrap();
+
+    let mut execute = Vec::new();
+    cstr(&mut execute, "");
+    execute.extend_from_slice(&0_i32.to_be_bytes());
+    conn.send(Tag::EXECUTE, &execute).unwrap();
+    conn.send(Tag::SYNC, &[]).unwrap();
+
+    let tags = conn.read_until_ready().unwrap();
+    assert!(
+        tags.contains(&Tag::DATA_ROW),
+        "binary bind failed: {tags:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn conformance_client_survives_an_error_mid_result_stream() {
+    // An error after rows have already been sent. A relay that assumed a clean
+    // run of rows to CommandComplete would desync here.
+    let pg = Postgres::start(&major());
+    let mut conn = pg.connect();
+
+    let mut body =
+        b"SELECT CASE WHEN i < 5 THEN i ELSE 1/0 END FROM generate_series(1, 10) i".to_vec();
+    body.push(0);
+    conn.send(Tag::QUERY, &body).unwrap();
+
+    let mut rows = 0;
+    let mut error_code = None;
+    loop {
+        let bytes = conn.next_frame_bytes().unwrap();
+        let Decoded::Frame(frame, _) = decode(&bytes, DEFAULT_MAX_FRAME).unwrap() else {
+            unreachable!()
+        };
+        let msg = backend::decode(&frame).unwrap();
+        conn.state.on_backend(&msg);
+
+        if frame.tag() == Tag::DATA_ROW {
+            rows += 1;
+        }
+        if let BackendMessage::ErrorResponse(fields) = msg {
+            error_code = Some(fields.code.to_owned());
+        }
+        if matches!(msg, BackendMessage::ReadyForQuery(_)) {
+            break;
+        }
+    }
+
+    assert_eq!(
+        error_code.as_deref(),
+        Some("22012"),
+        "expected division by zero"
+    );
+    assert!(conn.state.is_releasable(), "the session did not recover");
+    let _ = rows;
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn conformance_client_handles_pipelined_extended_queries() {
+    // Three sequences sent without waiting, which is what a pipelining driver
+    // does and what the earlier suite never exercised.
+    let pg = Postgres::start(&major());
+    let mut conn = pg.connect();
+
+    for i in 0..3 {
+        let mut parse = Vec::new();
+        cstr(&mut parse, &format!("p{i}"));
+        cstr(&mut parse, "SELECT 1");
+        parse.extend_from_slice(&0_i16.to_be_bytes());
+        conn.send(Tag::PARSE, &parse).unwrap();
+
+        let mut bind = Vec::new();
+        cstr(&mut bind, "");
+        cstr(&mut bind, &format!("p{i}"));
+        bind.extend_from_slice(&0_i16.to_be_bytes());
+        bind.extend_from_slice(&0_i16.to_be_bytes());
+        bind.extend_from_slice(&0_i16.to_be_bytes());
+        conn.send(Tag::BIND, &bind).unwrap();
+
+        let mut execute = Vec::new();
+        cstr(&mut execute, "");
+        execute.extend_from_slice(&0_i32.to_be_bytes());
+        conn.send(Tag::EXECUTE, &execute).unwrap();
+        conn.send(Tag::SYNC, &[]).unwrap();
+    }
+
+    // Three Syncs mean three ReadyForQuery messages, and the session must stay
+    // held until the last one.
+    let mut readys = 0;
+    while readys < 3 {
+        let bytes = conn.next_frame_bytes().unwrap();
+        let Decoded::Frame(frame, _) = decode(&bytes, DEFAULT_MAX_FRAME).unwrap() else {
+            unreachable!()
+        };
+        let msg = backend::decode(&frame).unwrap();
+        conn.state.on_backend(&msg);
+        if matches!(msg, BackendMessage::ReadyForQuery(_)) {
+            readys += 1;
+        }
+    }
+    assert_eq!(readys, 3);
+    assert!(conn.state.is_releasable());
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn conformance_client_receives_a_listen_notify() {
+    // NotificationResponse from a real server. Its arrival is what pins a
+    // session in the pool, so decoding it correctly is load-bearing for M5.
+    let pg = Postgres::start(&major());
+    let mut conn = pg.connect();
+
+    conn.query("LISTEN pgprox_test_channel").unwrap();
+
+    // Sent directly rather than through query(), because a self-notification
+    // arrives inside the NOTIFY response itself and read_until_ready would
+    // consume and discard it. That is exactly the mistake the proxy must not
+    // make: a discarded NotificationResponse is a lost pin signal.
+    let mut body = b"NOTIFY pgprox_test_channel, 'hello from the test'".to_vec();
+    body.push(0);
+    conn.send(Tag::QUERY, &body).unwrap();
+
+    let mut seen = None;
+    loop {
+        let bytes = conn.next_frame_bytes().unwrap();
+        let Decoded::Frame(frame, _) = decode(&bytes, DEFAULT_MAX_FRAME).unwrap() else {
+            unreachable!()
+        };
+        let msg = backend::decode(&frame).unwrap();
+        conn.state.on_backend(&msg);
+        if let BackendMessage::NotificationResponse {
+            channel, payload, ..
+        } = msg
+        {
+            seen = Some((channel.to_owned(), payload.to_owned()));
+        }
+        if matches!(msg, BackendMessage::ReadyForQuery(_)) {
+            break;
+        }
+    }
+
+    let (channel, payload) = seen.expect("no NotificationResponse arrived");
+    assert_eq!(channel, "pgprox_test_channel");
+    assert_eq!(payload, "hello from the test");
 }
 
 /// Keeps `Frame` referenced so the import list stays honest if tests change.

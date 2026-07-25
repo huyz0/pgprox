@@ -51,6 +51,31 @@ public class JdbcCheck {
                     }
                 }
             }
+
+            // PGPROX_DEPTH_PREPARED_REUSE: the JDBC driver only switches to a
+            // server-side prepare after prepareThreshold executions, so this
+            // loop is what actually exercises reuse.
+            try (PreparedStatement ps = conn.prepareStatement("SELECT 1")) {
+                for (int i = 0; i < 10; i++) {
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next() || rs.getInt(1) != 1) {
+                            System.err.println("prepared reuse failed");
+                            System.exit(1);
+                        }
+                    }
+                }
+            }
+
+            // PGPROX_DEPTH_LARGE_RESULT
+            try (Statement st = conn.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT pgprox_large")) {
+                int count = 0;
+                while (rs.next()) { count++; }
+                if (count < 2000) {
+                    System.err.println("large result gave " + count + " rows");
+                    System.exit(1);
+                }
+            }
         }
         System.out.println("jdbc: ok");
     }

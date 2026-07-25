@@ -49,6 +49,33 @@ await using (var cmd = new NpgsqlCommand("SELECT 1", conn))
     _ = await cmd.ExecuteScalarAsync();
 }
 
+// PGPROX_DEPTH_PREPARED_REUSE
+await using (var cmd = new NpgsqlCommand("SELECT 1", conn))
+{
+    await cmd.PrepareAsync();
+    for (var i = 0; i < 5; i++)
+    {
+        if (Convert.ToInt32(await cmd.ExecuteScalarAsync()) != 1)
+        {
+            Console.Error.WriteLine("prepared reuse failed");
+            return 1;
+        }
+    }
+}
+
+// PGPROX_DEPTH_LARGE_RESULT
+await using (var cmd = new NpgsqlCommand("SELECT pgprox_large", conn))
+await using (var reader = await cmd.ExecuteReaderAsync())
+{
+    var count = 0;
+    while (await reader.ReadAsync()) { count++; }
+    if (count < 2000)
+    {
+        Console.Error.WriteLine($"large result gave {count} rows");
+        return 1;
+    }
+}
+
 Console.WriteLine("npgsql: ok");
 return 0;
 CS

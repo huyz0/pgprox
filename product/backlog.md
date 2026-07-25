@@ -213,15 +213,15 @@ pipelining, no multi-statement query, no error mid-stream.
 - [x] `M1R.4` Split the size caps. Acceptance: a 100 MiB `DataRow` passes
   through, an oversized message we must parse is refused, and the two limits are
   separately configurable.
-- [ ] `M1R.5` Move the conformance server and client onto the relay. Acceptance:
+- [x] `M1R.5` Move the conformance server and client onto the relay. Acceptance:
   the existing suite still passes, now streaming.
-- [ ] `M1R.6` Breadth: values above the old cap, NULLs, multi-statement simple
+- [x] `M1R.6` Breadth: values above the old cap, NULLs, multi-statement simple
   query, empty query.
-- [ ] `M1R.7` Breadth: COPY IN, binary parameter input, error mid-result-stream.
-- [ ] `M1R.8` Breadth: pipelining, LISTEN/NOTIFY from a real server.
-- [ ] `M1R.9` Driver depth: prepared statement reuse and a large result per
+- [x] `M1R.7` Breadth: COPY IN, binary parameter input, error mid-result-stream.
+- [x] `M1R.8` Breadth: pipelining, LISTEN/NOTIFY from a real server.
+- [x] `M1R.9` Driver depth: prepared statement reuse and a large result per
   driver, rather than `SELECT 1` five times.
-- [ ] `M1R.10` Close M1R.
+- [x] `M1R.10` Close M1R.
 
 ## M2: auth and sidecar (track B)
 

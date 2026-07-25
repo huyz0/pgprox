@@ -35,6 +35,20 @@ async def main() -> int:
         if again != 1:
             print(f"second query returned {again!r}", file=sys.stderr)
             return 1
+
+        # PGPROX_DEPTH_PREPARED_REUSE: one statement, executed repeatedly, so a
+        # cached Parse is reused rather than re-sent.
+        stmt = await conn.prepare("SELECT 1")
+        for _ in range(5):
+            if await stmt.fetchval() != 1:
+                print("prepared reuse failed", file=sys.stderr)
+                return 1
+
+        # PGPROX_DEPTH_LARGE_RESULT: more than one TCP segment of rows.
+        rows = await conn.fetch("SELECT pgprox_large")
+        if len(rows) < 2000:
+            print(f"large result gave {len(rows)} rows", file=sys.stderr)
+            return 1
     finally:
         await conn.close()
 

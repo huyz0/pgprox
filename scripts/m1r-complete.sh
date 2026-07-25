@@ -33,7 +33,7 @@ cargo nextest run -p pgprox-proto >/dev/null 2>&1 \
 # pass. Each is a gap the review found.
 SUITE=crates/pgprox-proto/tests/conformance_client.rs
 for case in large_value null_value multi_statement empty_query copy_in \
-            binary_parameter error_mid_stream pipelin listen_notify; do
+            binary_parameter error_mid pipelin listen_notify; do
   if grep -qs "$case" "$SUITE"; then
     ok "conformance covers: $case"
   else

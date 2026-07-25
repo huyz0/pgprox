@@ -16,7 +16,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M-1 | AI development system | complete |
 | M0 | Contracts and quality gates | complete |
 | M1 | Protocol and TLS (track A) | complete |
-| M1R | Protocol revision: streaming and test breadth | in progress |
+| M1R | Protocol revision: streaming and test breadth | complete |
 | M2 | Auth and sidecar (track B) | complete |
 | M3 | Cluster (track C) | ready |
 | M4 | Operations (track D) | ready |
@@ -72,7 +72,7 @@ client against real Postgres in Docker, and as a server via the harness in
 `crates/pgprox-proto/examples/conformance_server.rs`. Drivers whose toolchain is
 missing are reported as skipped, never silently dropped.
 
-## M1R: protocol revision
+## M1R: protocol revision (complete)
 
 Raised by review after M2: the codec cannot stream, its size cap rejects
 legitimate large results, and the conformance suite is narrow. See
