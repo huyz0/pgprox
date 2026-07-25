@@ -181,6 +181,48 @@ drivers. Between them that covers every message the codec claims to handle.
   statement; skipped drivers are reported, never silently dropped.
 - [x] `M1.14` Close M1. Acceptance: `scripts/conformance.sh 17 18` exits zero.
 
+## M1R: protocol revision (streaming and test breadth)
+
+Raised by review after M2. Named M1R rather than M1.5 because `M1.5` is already
+a task ID and IDs are stable.
+
+Three findings, in order of severity.
+
+**The codec cannot stream.** `decode` returns `Incomplete` until an entire frame
+is buffered, so a relay built on it must accumulate a whole message before
+forwarding a byte. That contradicts ADR 0008: a single large `DataRow` forces up
+to 64 MiB of buffering, and a few concurrent large results blow the 500 MB
+target the whole design rests on.
+
+**And the cap is an outright bug.** `DEFAULT_MAX_FRAME` applies to every frame
+including server `DataRow`s. Postgres field values reach 1 GB, so a legitimate
+`SELECT` of a 100 MB `bytea` is rejected by our own decoder.
+
+**The tests are narrow.** Every conformance test and all five drivers exercise
+`SELECT 1`, `SELECT $1`, `generate_series` to 50 rows, and one COPY OUT of 100
+small rows. Nothing larger than ~100 bytes, no NULLs, no COPY IN, no
+pipelining, no multi-statement query, no error mid-stream.
+
+- [x] `M1R.1` Define M1R: this decomposition and `scripts/m1r-complete.sh`.
+- [ ] `M1R.2` `decode_header` and the per-direction inspect policy. Acceptance:
+  a header decodes from exactly five bytes; every tag has a stated policy; the
+  policy for `DataRow` and `CopyData` is forward-without-inspection.
+- [ ] `M1R.3` `FrameRelay`, the streaming state machine. Acceptance: a 100 MiB
+  body relays with bounded memory; bytes are emitted before the body ends; a
+  prefix-inspected message yields its prefix without buffering the rest.
+- [ ] `M1R.4` Split the size caps. Acceptance: a 100 MiB `DataRow` passes
+  through, an oversized message we must parse is refused, and the two limits are
+  separately configurable.
+- [ ] `M1R.5` Move the conformance server and client onto the relay. Acceptance:
+  the existing suite still passes, now streaming.
+- [ ] `M1R.6` Breadth: values above the old cap, NULLs, multi-statement simple
+  query, empty query.
+- [ ] `M1R.7` Breadth: COPY IN, binary parameter input, error mid-result-stream.
+- [ ] `M1R.8` Breadth: pipelining, LISTEN/NOTIFY from a real server.
+- [ ] `M1R.9` Driver depth: prepared statement reuse and a large result per
+  driver, rather than `SELECT 1` five times.
+- [ ] `M1R.10` Close M1R.
+
 ## M2: auth and sidecar (track B)
 
 `pgprox-auth` turns a client's token into the credentials for its database, by

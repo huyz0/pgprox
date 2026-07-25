@@ -16,6 +16,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M-1 | AI development system | complete |
 | M0 | Contracts and quality gates | complete |
 | M1 | Protocol and TLS (track A) | complete |
+| M1R | Protocol revision: streaming and test breadth | in progress |
 | M2 | Auth and sidecar (track B) | complete |
 | M3 | Cluster (track C) | ready |
 | M4 | Operations (track D) | ready |
@@ -70,6 +71,20 @@ psql, pgx, asyncpg, JDBC, and npgsql. The codec is tested from both sides: as a
 client against real Postgres in Docker, and as a server via the harness in
 `crates/pgprox-proto/examples/conformance_server.rs`. Drivers whose toolchain is
 missing are reported as skipped, never silently dropped.
+
+## M1R: protocol revision
+
+Raised by review after M2: the codec cannot stream, its size cap rejects
+legitimate large results, and the conformance suite is narrow. See
+[backlog.md](backlog.md) for the findings in full.
+
+```bash
+scripts/m1r-complete.sh
+```
+
+Checks: a header-only decode and a relay state machine exist, the inspect cap is
+separate from the passthrough cap, and the conformance suite covers each gap the
+review named by name rather than by count.
 
 ## M2: auth and sidecar (complete)
 

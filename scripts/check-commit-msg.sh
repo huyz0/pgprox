@@ -20,7 +20,9 @@ if [[ "$subject" =~ ^(Merge|Revert|fixup!|squash!) ]]; then
   finish
 fi
 
-if [[ "$subject" =~ ^M-?[0-9]+\.[0-9]+: ]]; then
+# M-1.7, M0.3, M1.12, M1R.2: an optional leading dash for the pre-milestone and
+# an optional letter suffix for a revision milestone.
+if [[ "$subject" =~ ^M-?[0-9]+[A-Z]*\.[0-9]+: ]]; then
   ok "commit subject references ${subject%%:*}"
 else
   fail "commit subject must start with a backlog task ID, e.g. 'M-1.7: add ADRs'"
