@@ -23,7 +23,10 @@ pub mod session;
 pub mod startup;
 
 pub use backend::{BackendMessage, TxStatus};
-pub use frame::{DEFAULT_MAX_FRAME, DecodeError, Decoded, Frame, Tag};
+pub use frame::{
+    DEFAULT_MAX_FRAME, DEFAULT_MAX_INSPECT, DecodeError, Decoded, Direction, Frame, FrameHeader,
+    Inspect, Tag, decode_header, inspect_policy,
+};
 pub use frontend::{FrontendMessage, Target};
 pub use read::{FieldError, Reader};
 pub use session::{CopyDirection, HoldReason, SessionState};

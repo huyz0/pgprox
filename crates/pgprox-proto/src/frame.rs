@@ -20,13 +20,28 @@ use std::fmt;
 /// prefix since it counts itself.
 pub const LEN_PREFIX: usize = 4;
 
-/// Largest message accepted by default, 64 MiB.
+/// Largest message the proxy will relay, 1 GiB.
 ///
-/// Postgres itself caps messages at 1 GB. This is far lower because a proxy
-/// holding 100k connections cannot afford a per-connection buffer that large,
-/// and no legitimate frontend message approaches it. COPY data arrives in many
-/// small frames rather than one enormous one.
-pub const DEFAULT_MAX_FRAME: usize = 64 * 1024 * 1024;
+/// This matches Postgres's own limit, because it applies to bytes passing
+/// through rather than bytes held. A `DataRow` carrying a 500 MB `bytea` is a
+/// legitimate answer to a legitimate query, and an earlier 64 MiB value here
+/// meant this proxy refused queries real Postgres answers fine.
+pub const DEFAULT_MAX_FRAME: usize = 1024 * 1024 * 1024;
+
+/// Largest message body the proxy will buffer in order to read it.
+///
+/// Distinct from [`DEFAULT_MAX_FRAME`], and the distinction is the whole point.
+/// Bytes relayed are never held, so their limit can be generous. Bytes parsed
+/// are held per connection, so at 100k connections their limit must be small.
+///
+/// Everything the proxy inspects is small by nature: `ReadyForQuery` is one
+/// byte, an `ErrorResponse` is a few hundred, and the names in `Parse` and
+/// `Bind` sit at the front of the body. 1 MiB is generous for all of it.
+pub const DEFAULT_MAX_INSPECT: usize = 1024 * 1024;
+
+/// The inspect cap must stay below the relay cap. Checked at compile time, so
+/// swapping the two values cannot ship.
+const _: () = assert!(DEFAULT_MAX_INSPECT < DEFAULT_MAX_FRAME);
 
 /// A message type tag.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -195,6 +210,126 @@ pub enum DecodeError {
         /// The configured limit.
         max: usize,
     },
+}
+
+/// A message header: everything knowable from the first five bytes.
+///
+/// Reading this without the body is what lets the relay start forwarding before
+/// a message has finished arriving.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FrameHeader {
+    /// The message type.
+    pub tag: Tag,
+    /// Body length, excluding the tag and the length prefix.
+    pub body_len: usize,
+}
+
+impl FrameHeader {
+    /// Bytes this message occupies on the wire in total.
+    #[must_use]
+    pub const fn wire_len(&self) -> usize {
+        1 + LEN_PREFIX + self.body_len
+    }
+}
+
+/// Reads a tagged message header from the first five bytes of `buf`.
+///
+/// Returns [`None`] when fewer than five bytes have arrived. The body need not
+/// be present, which is the difference from [`decode`].
+///
+/// # Errors
+///
+/// Fails when the declared length is impossible or exceeds `max_frame`.
+pub fn decode_header(buf: &[u8], max_frame: usize) -> Result<Option<FrameHeader>, DecodeError> {
+    if buf.len() < 1 + LEN_PREFIX {
+        return Ok(None);
+    }
+    let declared = read_u32(&buf[1..]);
+    Ok(Some(FrameHeader {
+        tag: Tag(buf[0]),
+        body_len: check_length(declared, max_frame)?,
+    }))
+}
+
+/// Which side of the connection a message came from.
+///
+/// Several tags mean different things per direction: `C` is `Close` from a
+/// client and `CommandComplete` from a server, `D` is `Describe` or `DataRow`,
+/// `S` is `Sync` or `ParameterStatus`. A policy that ignored direction would
+/// buffer result rows in order to read them as `Describe` messages.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Direction {
+    /// Client to server.
+    Frontend,
+    /// Server to client.
+    Backend,
+}
+
+/// How much of a message the proxy needs to read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Inspect {
+    /// Relay it without reading it. The only option that is free.
+    None,
+    /// Read this many leading bytes, relaying the rest untouched.
+    ///
+    /// Used where the interesting fields sit at the front of an otherwise
+    /// unbounded body: `Bind` names precede parameter values that can be
+    /// hundreds of megabytes.
+    Prefix(usize),
+    /// Read the whole body, so it must be buffered.
+    ///
+    /// Only for messages that are small by construction.
+    Whole,
+}
+
+/// How much of a message this proxy needs to read, by direction and tag.
+///
+/// The default is [`Inspect::None`]. Anything not named here is relayed
+/// untouched, which is what keeps `DataRow` and `CopyData` off the buffering
+/// path entirely.
+#[must_use]
+pub fn inspect_policy(direction: Direction, tag: Tag) -> Inspect {
+    match direction {
+        Direction::Backend => match tag {
+            // Small by construction, and all carry state the proxy acts on.
+            Tag::READY_FOR_QUERY
+            | Tag::AUTHENTICATION
+            | Tag::PARAMETER_STATUS
+            | Tag::BACKEND_KEY_DATA
+            | Tag::COMMAND_COMPLETE
+            | Tag::NEGOTIATE_PROTOCOL_VERSION
+            | Tag::COPY_IN_RESPONSE
+            | Tag::COPY_OUT_RESPONSE
+            | Tag::COPY_BOTH_RESPONSE
+            | Tag::COPY_DONE => Inspect::Whole,
+
+            // All three have the fields we want at the front and an
+            // unbounded tail: a server can attach a long detail or hint to an
+            // error, and a NOTIFY payload is client-controlled.
+            Tag::ERROR_RESPONSE | Tag::NOTICE_RESPONSE | Tag::NOTIFICATION_RESPONSE => {
+                Inspect::Prefix(8 * 1024)
+            }
+
+            // DataRow lands here, which is the point.
+            _ => Inspect::None,
+        },
+        Direction::Frontend => match tag {
+            Tag::SYNC | Tag::FLUSH | Tag::TERMINATE | Tag::COPY_DONE => Inspect::Whole,
+
+            // The SQL is needed for classification and for statement mapping,
+            // but a generated statement can be enormous. Past the prefix it is
+            // treated as unclassifiable, which routes to the primary.
+            Tag::QUERY | Tag::PARSE => Inspect::Prefix(64 * 1024),
+
+            // Names first, then parameter values that can be huge.
+            Tag::BIND | Tag::EXECUTE | Tag::DESCRIBE | Tag::CLOSE => Inspect::Prefix(4 * 1024),
+
+            // CopyData, CopyFail, and Password land here. Password is
+            // deliberately among them: it carries the JWT, and a proxy that
+            // never copies it cannot leak it.
+            _ => Inspect::None,
+        },
+    }
 }
 
 /// What a decode attempt produced.
@@ -525,5 +660,190 @@ mod tests {
         let rendered = format!("{frame:?}");
         assert!(!rendered.contains("ssn"), "leaked in {rendered}");
         assert!(rendered.contains("body_len"));
+    }
+
+    #[test]
+    fn a_header_decodes_from_exactly_five_bytes() {
+        // The property the relay depends on: the body need not have arrived.
+        let mut bytes = vec![Tag::DATA_ROW.get()];
+        bytes.extend_from_slice(&1_000_004_u32.to_be_bytes());
+
+        let header = decode_header(&bytes, DEFAULT_MAX_FRAME).unwrap().unwrap();
+        assert_eq!(header.tag, Tag::DATA_ROW);
+        assert_eq!(header.body_len, 1_000_000);
+        assert_eq!(header.wire_len(), 1_000_005);
+
+        // decode, by contrast, still wants the whole thing.
+        assert!(matches!(
+            decode(&bytes, DEFAULT_MAX_FRAME).unwrap(),
+            Decoded::Incomplete { .. }
+        ));
+    }
+
+    #[test]
+    fn a_header_needs_all_five_bytes() {
+        let bytes = wire(Tag::QUERY, b"x");
+        for split in 0..=LEN_PREFIX {
+            assert_eq!(
+                decode_header(&bytes[..split], DEFAULT_MAX_FRAME).unwrap(),
+                None,
+                "reported a header from {split} bytes"
+            );
+        }
+        assert!(
+            decode_header(&bytes[..=LEN_PREFIX], DEFAULT_MAX_FRAME)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_header_enforces_the_same_length_rules() {
+        let mut huge = vec![Tag::DATA_ROW.get()];
+        huge.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert!(decode_header(&huge, DEFAULT_MAX_FRAME).is_err());
+
+        let mut tiny = vec![Tag::QUERY.get()];
+        tiny.extend_from_slice(&2_u32.to_be_bytes());
+        assert_eq!(
+            decode_header(&tiny, DEFAULT_MAX_FRAME).unwrap_err(),
+            DecodeError::LengthTooSmall { declared: 2 }
+        );
+    }
+
+    #[test]
+    fn the_relay_limit_matches_postgres_rather_than_a_buffer_size() {
+        // The bug this replaced: a 64 MiB cap here refused a legitimate SELECT
+        // of a 100 MB bytea, which real Postgres answers fine.
+        assert_eq!(DEFAULT_MAX_FRAME, 1024 * 1024 * 1024);
+
+        let mut hundred_mb = vec![Tag::DATA_ROW.get()];
+        hundred_mb.extend_from_slice(&(100 * 1024 * 1024_u32 + 4).to_be_bytes());
+        assert!(
+            decode_header(&hundred_mb, DEFAULT_MAX_FRAME).is_ok(),
+            "a 100 MB result row was refused"
+        );
+    }
+
+    #[test]
+    fn bulk_data_is_never_inspected() {
+        // The rule that keeps buffering off the hot path.
+        assert_eq!(
+            inspect_policy(Direction::Backend, Tag::DATA_ROW),
+            Inspect::None
+        );
+        assert_eq!(
+            inspect_policy(Direction::Backend, Tag::COPY_DATA),
+            Inspect::None
+        );
+        assert_eq!(
+            inspect_policy(Direction::Frontend, Tag::COPY_DATA),
+            Inspect::None
+        );
+        assert_eq!(
+            inspect_policy(Direction::Backend, Tag::ROW_DESCRIPTION),
+            Inspect::None
+        );
+    }
+
+    #[test]
+    fn a_password_message_is_never_copied() {
+        // It carries the JWT. A proxy that never copies it cannot leak it.
+        assert_eq!(
+            inspect_policy(Direction::Frontend, Tag::PASSWORD),
+            Inspect::None
+        );
+    }
+
+    #[test]
+    fn direction_disambiguates_reused_tags() {
+        // C is Close from a client and CommandComplete from a server; D is
+        // Describe or DataRow; S is Sync or ParameterStatus. A policy ignoring
+        // direction would buffer result rows to read them as Describe.
+        assert_eq!(
+            inspect_policy(Direction::Backend, Tag::DATA_ROW),
+            Inspect::None
+        );
+        assert!(matches!(
+            inspect_policy(Direction::Frontend, Tag::DESCRIBE),
+            Inspect::Prefix(_)
+        ));
+
+        assert_eq!(
+            inspect_policy(Direction::Backend, Tag::COMMAND_COMPLETE),
+            Inspect::Whole
+        );
+        assert!(matches!(
+            inspect_policy(Direction::Frontend, Tag::CLOSE),
+            Inspect::Prefix(_)
+        ));
+
+        assert_eq!(
+            inspect_policy(Direction::Backend, Tag::PARAMETER_STATUS),
+            Inspect::Whole
+        );
+        assert_eq!(
+            inspect_policy(Direction::Frontend, Tag::SYNC),
+            Inspect::Whole
+        );
+    }
+
+    #[test]
+    fn messages_with_unbounded_bodies_are_only_prefix_inspected() {
+        // Bind carries parameter values that can be hundreds of megabytes; the
+        // names are at the front. Whole would put that on the buffering path.
+        for tag in [Tag::BIND, Tag::EXECUTE, Tag::DESCRIBE, Tag::CLOSE] {
+            match inspect_policy(Direction::Frontend, tag) {
+                Inspect::Prefix(n) => assert!(n <= DEFAULT_MAX_INSPECT, "{tag} prefix {n} too big"),
+                other => unreachable!("{tag} is {other:?}, not a prefix"),
+            }
+        }
+        for tag in [Tag::QUERY, Tag::PARSE] {
+            assert!(matches!(
+                inspect_policy(Direction::Frontend, tag),
+                Inspect::Prefix(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn every_whole_inspected_message_is_small_by_construction() {
+        // Whole means buffered, and buffered at 100k connections means the
+        // message had better be bounded by the protocol itself.
+        let whole: Vec<Tag> = [
+            Tag::READY_FOR_QUERY,
+            Tag::AUTHENTICATION,
+            Tag::PARAMETER_STATUS,
+            Tag::BACKEND_KEY_DATA,
+            Tag::COMMAND_COMPLETE,
+            Tag::NEGOTIATE_PROTOCOL_VERSION,
+            Tag::COPY_IN_RESPONSE,
+            Tag::COPY_OUT_RESPONSE,
+            Tag::COPY_BOTH_RESPONSE,
+        ]
+        .into_iter()
+        .filter(|t| inspect_policy(Direction::Backend, *t) == Inspect::Whole)
+        .collect();
+        assert_eq!(whole.len(), 9, "a message changed policy without review");
+    }
+
+    #[test]
+    fn header_decoding_never_panics_on_arbitrary_input() {
+        let mut seed = 0xA5A5_1234_DEAD_C0DE_u64;
+        for _ in 0..20_000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let len = usize::try_from(seed % 12).unwrap();
+            let bytes: Vec<u8> = (0..len)
+                .map(|i| u8::try_from((seed >> (i % 8 * 8)) & 0xFF).unwrap())
+                .collect();
+            let _ = decode_header(&bytes, DEFAULT_MAX_FRAME);
+            let _ = inspect_policy(Direction::Backend, Tag(bytes.first().copied().unwrap_or(0)));
+            let _ = inspect_policy(
+                Direction::Frontend,
+                Tag(bytes.first().copied().unwrap_or(0)),
+            );
+        }
     }
 }

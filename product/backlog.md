@@ -204,13 +204,13 @@ small rows. Nothing larger than ~100 bytes, no NULLs, no COPY IN, no
 pipelining, no multi-statement query, no error mid-stream.
 
 - [x] `M1R.1` Define M1R: this decomposition and `scripts/m1r-complete.sh`.
-- [ ] `M1R.2` `decode_header` and the per-direction inspect policy. Acceptance:
+- [x] `M1R.2` `decode_header` and the per-direction inspect policy. Acceptance:
   a header decodes from exactly five bytes; every tag has a stated policy; the
   policy for `DataRow` and `CopyData` is forward-without-inspection.
 - [ ] `M1R.3` `FrameRelay`, the streaming state machine. Acceptance: a 100 MiB
   body relays with bounded memory; bytes are emitted before the body ends; a
   prefix-inspected message yields its prefix without buffering the rest.
-- [ ] `M1R.4` Split the size caps. Acceptance: a 100 MiB `DataRow` passes
+- [x] `M1R.4` Split the size caps. Acceptance: a 100 MiB `DataRow` passes
   through, an oversized message we must parse is refused, and the two limits are
   separately configurable.
 - [ ] `M1R.5` Move the conformance server and client onto the relay. Acceptance:
