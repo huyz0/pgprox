@@ -90,7 +90,7 @@ below is types plus tests plus fake where one applies.
   Acceptance: a borrowed buffer returns to the slab on drop; the slab bounds
   total outstanding buffers rather than allocating without limit; borrowing from
   a warm slab does not allocate.
-- [ ] `M0.8` Auth DTOs: `Backend`, `Grant`, `AuthRequest`, `PoolHints`,
+- [x] `M0.8` Auth DTOs: `Backend`, `Grant`, `AuthRequest`, `PoolHints`,
   `ClaimSet`.
   Acceptance: formatting a `Backend` reveals host and database but never the
   password; `Grant` TTL clamps to the earliest of grant TTL, token expiry, and
