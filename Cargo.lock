@@ -859,6 +859,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pgprox-cluster"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "pgprox-core",
+ "proptest",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "pgprox-core"
 version = "0.1.0"
 dependencies = [

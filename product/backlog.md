@@ -422,7 +422,7 @@ degradation, so it is proven by property test over a simulation rather than
 found in staging.
 
 - [x] `M3.1` Define M3: this decomposition and `scripts/m3-complete.sh`.
-- [ ] `M3.2` `pgprox-cluster` crate and the deterministic simulation: virtual
+- [x] `M3.2` `pgprox-cluster` crate and the deterministic simulation: virtual
   clock, an injectable network that can delay, drop, reorder and partition, and
   seeded scheduling. Acceptance: the same seed produces the same run twice.
 - [ ] `M3.3` Quota arithmetic as a pure function: guaranteed share per node from
