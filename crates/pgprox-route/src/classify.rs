@@ -300,39 +300,48 @@ fn matches_any(word: &str, set: &[&str]) -> bool {
 /// ```
 #[must_use]
 pub fn begins_read_only_transaction(sql: &str) -> bool {
-    let mut words = Vec::new();
+    // One pass, no allocation: this runs on the route decision's hot path, on
+    // every statement outside a transaction.
+    let mut first: Option<&str> = None;
+    let mut second: Option<&str> = None;
+    let mut previous: Option<&str> = None;
+    let mut read_only = false;
+
     for token in Lexer::new(sql) {
         match token {
-            Token::Word(word) => words.push(word),
             // Only the first statement can open the transaction.
             Token::Semicolon => break,
-            // Anything quoted is not a keyword, and a transaction-opening
-            // statement has none.
+            // A transaction-opening statement has no quoted text in it, so
+            // anything quoted means this is not one.
             Token::Quoted => return false,
             Token::Punct(_) => {}
+            Token::Word(word) => {
+                if first.is_none() {
+                    first = Some(word);
+                } else if second.is_none() {
+                    second = Some(word);
+                }
+                // `READ ONLY` as adjacent words. `READ WRITE` says the
+                // opposite, which is why this looks at the pair rather than
+                // for `read` alone.
+                if previous.is_some_and(|p| p.eq_ignore_ascii_case("read"))
+                    && word.eq_ignore_ascii_case("only")
+                {
+                    read_only = true;
+                }
+                previous = Some(word);
+            }
         }
     }
 
-    let opens = matches!(
-        words.first().map(|w| w.to_ascii_lowercase()).as_deref(),
-        Some("begin" | "start")
-    ) || matches!(
-        (
-            words.first().map(|w| w.to_ascii_lowercase()).as_deref(),
-            words.get(1).map(|w| w.to_ascii_lowercase()).as_deref(),
-        ),
-        (Some("set"), Some("transaction"))
-    );
-    if !opens {
-        return false;
-    }
+    let opens = first.is_some_and(|w| {
+        w.eq_ignore_ascii_case("begin")
+            || w.eq_ignore_ascii_case("start")
+            || (w.eq_ignore_ascii_case("set")
+                && second.is_some_and(|s| s.eq_ignore_ascii_case("transaction")))
+    });
 
-    // `READ ONLY` as adjacent words. `READ WRITE` says the opposite and must
-    // not be mistaken for it, which is why this looks at the pair rather than
-    // for the word `read` alone.
-    words
-        .windows(2)
-        .any(|pair| pair[0].eq_ignore_ascii_case("read") && pair[1].eq_ignore_ascii_case("only"))
+    opens && read_only
 }
 
 #[cfg(test)]

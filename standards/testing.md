@@ -98,6 +98,14 @@ The declared hot paths, with budgets, are:
 3. `ReadyForQuery` status handling and the pool release decision
 4. Warm-pool acquire
 5. Route decision: classification plus replica eligibility
+
+Two of these were written to be allocation-free in M5 and have not been
+measured. Warm-pool acquire moves a connection between two collections and
+touches no strings. The route decision iterates the shared lexer without
+lowercasing, and `SessionRouter` keeps a replica-states buffer for the life of
+the session rather than building one per statement. Both are claims until M7
+asserts them with `dhat`, and both are written down here so that assertion has
+something to check rather than a number to discover.
 6. Grant cache lookup on connect
 7. Gossip digest encode and decode
 
