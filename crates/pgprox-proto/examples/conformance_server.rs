@@ -20,6 +20,7 @@
     clippy::print_stderr
 )]
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
@@ -164,6 +165,15 @@ fn serve(mut sock: TcpStream, conn: ConnId) -> std::io::Result<()> {
     sock.write_all(&out)?;
 
     // Query phase.
+    //
+    // Statement name to parameter count. A driver asks how many parameters a
+    // statement takes and refuses to bind a different number, so answering a
+    // fixed count breaks every query whose placeholder count differs. asyncpg
+    // found this immediately.
+    let mut statements: HashMap<String, usize> = HashMap::new();
+    // Whether the current portal asked for binary results.
+    let mut binary_results = false;
+
     loop {
         let (tag, body) = match read_tagged(&mut sock, &mut buf) {
             Ok(v) => v,
@@ -179,27 +189,38 @@ fn serve(mut sock: TcpStream, conn: ConnId) -> std::io::Result<()> {
             FrontendMessage::Terminate => return Ok(()),
 
             FrontendMessage::Query { .. } => {
-                row_description(&mut out);
-                data_row(&mut out, b"1");
+                // The simple query protocol is always text.
+                row_description(&mut out, false);
+                data_row(&mut out, false);
                 command_complete(&mut out, "SELECT 1");
                 encode::ready_for_query(&mut out, TxStatus::Idle);
             }
 
             // The extended query path. Every modern driver uses it, and its
             // messages are answered individually rather than as one block.
-            FrontendMessage::Parse { .. } => simple(&mut out, Tag::PARSE_COMPLETE),
-            FrontendMessage::Bind { .. } => simple(&mut out, Tag::BIND_COMPLETE),
+            FrontendMessage::Parse { statement, sql } => {
+                statements.insert(statement.to_owned(), count_placeholders(sql));
+                simple(&mut out, Tag::PARSE_COMPLETE);
+            }
+            FrontendMessage::Bind { .. } => {
+                // The result format codes live past the fields the decoder
+                // exposes, and they are not optional to honour: asyncpg asks
+                // for binary and then fails to decode a text answer.
+                binary_results = bind_wants_binary(&body);
+                simple(&mut out, Tag::BIND_COMPLETE);
+            }
             FrontendMessage::Close { .. } => simple(&mut out, Tag::CLOSE_COMPLETE),
-            FrontendMessage::Describe { target, .. } => match target {
+            FrontendMessage::Describe { target, name } => match target {
                 // Describing a statement yields its parameter types first.
                 frontend::Target::Statement => {
-                    parameter_description(&mut out);
-                    row_description(&mut out);
+                    let params = statements.get(name).copied().unwrap_or(0);
+                    parameter_description(&mut out, params);
+                    row_description(&mut out, binary_results);
                 }
-                _ => row_description(&mut out),
+                _ => row_description(&mut out, binary_results),
             },
             FrontendMessage::Execute { .. } => {
-                data_row(&mut out, b"1");
+                data_row(&mut out, binary_results);
                 command_complete(&mut out, "SELECT 1");
             }
             // Flush asks for buffered output without ending the sequence, so
@@ -223,8 +244,53 @@ fn simple(out: &mut Vec<u8>, tag: Tag) {
     out.extend_from_slice(&4_u32.to_be_bytes());
 }
 
-/// `T`: one `int4` column named `n`.
-fn row_description(out: &mut Vec<u8>) {
+/// Reads the result format codes from a `Bind` body.
+///
+/// The layout past the two names is: parameter format codes, then parameters,
+/// then result format codes. Only the last matters here.
+fn bind_wants_binary(body: &[u8]) -> bool {
+    let mut r = pgprox_proto::Reader::new(body);
+    let Ok(_portal) = r.cstr("portal") else {
+        return false;
+    };
+    let Ok(_statement) = r.cstr("statement") else {
+        return false;
+    };
+
+    let Ok(param_formats) = r.i16("param_format_count") else {
+        return false;
+    };
+    for _ in 0..param_formats.max(0) {
+        if r.i16("param_format").is_err() {
+            return false;
+        }
+    }
+
+    let Ok(params) = r.i16("param_count") else {
+        return false;
+    };
+    for _ in 0..params.max(0) {
+        let Ok(len) = r.i32("param_len") else {
+            return false;
+        };
+        // -1 is SQL NULL, which carries no bytes.
+        let Ok(len) = usize::try_from(len) else {
+            continue;
+        };
+        if len > 0 && r.bytes(len, "param_value").is_err() {
+            return false;
+        }
+    }
+
+    let Ok(result_formats) = r.i16("result_format_count") else {
+        return false;
+    };
+    // Zero codes means text for every column; one code applies to all.
+    (0..result_formats.max(0)).any(|_| r.i16("result_format").is_ok_and(|f| f == 1))
+}
+
+/// `T`: one `int4` column named `n`, in text or binary format.
+fn row_description(out: &mut Vec<u8>, binary: bool) {
     let mut body = 1_i16.to_be_bytes().to_vec();
     body.extend_from_slice(b"n\0");
     body.extend_from_slice(&0_i32.to_be_bytes()); // table oid
@@ -232,22 +298,57 @@ fn row_description(out: &mut Vec<u8>) {
     body.extend_from_slice(&23_i32.to_be_bytes()); // int4
     body.extend_from_slice(&4_i16.to_be_bytes()); // type size
     body.extend_from_slice(&(-1_i32).to_be_bytes()); // type modifier
-    body.extend_from_slice(&0_i16.to_be_bytes()); // text format
+    body.extend_from_slice(&i16::from(binary).to_be_bytes());
     write_tagged(out, Tag::ROW_DESCRIPTION, &body);
 }
 
-/// `t`: one `int4` parameter.
-fn parameter_description(out: &mut Vec<u8>) {
-    let mut body = 1_i16.to_be_bytes().to_vec();
-    body.extend_from_slice(&23_i32.to_be_bytes());
+/// `t`: `count` parameters, all `int4`.
+fn parameter_description(out: &mut Vec<u8>, count: usize) {
+    let mut body = i16::try_from(count).unwrap_or(0).to_be_bytes().to_vec();
+    for _ in 0..count {
+        body.extend_from_slice(&23_i32.to_be_bytes());
+    }
     write_tagged(out, Tag(b't'), &body);
 }
 
-/// `D`: one column holding `value`.
-fn data_row(out: &mut Vec<u8>, value: &[u8]) {
+/// Counts the distinct `$N` placeholders in a statement.
+///
+/// Crude, and enough for a harness: it takes the highest N rather than parsing
+/// SQL, which is what Postgres reports too.
+fn count_placeholders(sql: &str) -> usize {
+    let bytes = sql.as_bytes();
+    let mut highest = 0_usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len() && bytes[end].is_ascii_digit() {
+                end += 1;
+            }
+            if end > start
+                && let Ok(n) = sql[start..end].parse::<usize>()
+            {
+                highest = highest.max(n);
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    highest
+}
+
+/// `D`: one column holding the integer 1, encoded as the client asked.
+fn data_row(out: &mut Vec<u8>, binary: bool) {
+    let value: Vec<u8> = if binary {
+        1_i32.to_be_bytes().to_vec()
+    } else {
+        b"1".to_vec()
+    };
     let mut body = 1_i16.to_be_bytes().to_vec();
     body.extend_from_slice(&i32::try_from(value.len()).unwrap().to_be_bytes());
-    body.extend_from_slice(value);
+    body.extend_from_slice(&value);
     write_tagged(out, Tag::DATA_ROW, &body);
 }
 

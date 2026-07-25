@@ -176,7 +176,7 @@ drivers. Between them that covers every message the codec claims to handle.
 - [x] `M1.12` Server-side conformance harness: a minimal server built on the
   codec that real drivers can connect to.
   Acceptance: `psql` completes a session against it.
-- [ ] `M1.13` Driver matrix: pgx, asyncpg, JDBC, npgsql against the harness.
+- [x] `M1.13` Driver matrix: pgx, asyncpg, JDBC, npgsql against the harness.
   Acceptance: each completes startup, a simple query, and a named prepared
   statement; skipped drivers are reported, never silently dropped.
 - [ ] `M1.14` Close M1. Acceptance: `scripts/conformance.sh 17 18` exits zero.
