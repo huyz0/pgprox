@@ -78,11 +78,11 @@ pub enum PinReason {
     /// Naturally pinned until the stream ends. Included so the reason is
     /// reportable, since an operator seeing a held connection wants to know.
     Copy,
-    /// The session asked for it, through `SET pgprox.pin`.
+    /// The session asked for it, through `SET pgprox.pin = on`.
     ///
-    /// An escape hatch for a tenant using something this list has not learned.
-    /// Better than the alternative, which is them discovering the gap as data
-    /// corruption.
+    /// An escape hatch for a tenant using something this list has not learned
+    /// yet. Better than the alternative, which is them discovering the gap as
+    /// another session's state appearing in theirs.
     Requested,
 }
 
@@ -299,7 +299,10 @@ fn set_pin_reason(words: &[String], allowlist: &[&str]) -> Option<PinReason> {
     }
 
     // The proxy's own settings never reach the server and change no server-side
-    // state, so they must not pin.
+    // state, so they must not pin. Except the one that asks to.
+    if name == PIN_PARAMETER {
+        return Some(PinReason::Requested);
+    }
     if name.starts_with("pgprox.") {
         return None;
     }
@@ -310,6 +313,29 @@ fn set_pin_reason(words: &[String], allowlist: &[&str]) -> Option<PinReason> {
 
     Some(PinReason::UnreplayableSet)
 }
+
+/// The parameter a session pins itself with.
+///
+/// `SET pgprox.pin = on`. A `pgprox.` name because Postgres accepts assignment
+/// to any dotted parameter it does not recognise, so the statement is valid SQL
+/// whether or not it went through a proxy, and an application can issue it
+/// unconditionally.
+///
+/// # The value is not read
+///
+/// Setting this parameter pins, whatever it is set to. That looks sloppy and is
+/// deliberate.
+///
+/// Unpinning is not offered: no statement proves a session has stopped needing
+/// its connection, and the whole reason a tenant reaches for this is that the
+/// proxy cannot see what makes theirs unmovable. So `= off` cannot mean what it
+/// appears to, and honouring it would be a promise this module cannot keep.
+/// Reading the value would also mean reading quoted text, and the scanner drops
+/// that on purpose so a row's contents can never pin a session.
+///
+/// Mentioning the parameter is therefore the request, and the only way to stop
+/// being pinned is to open a new connection.
+pub const PIN_PARAMETER: &str = "pgprox.pin";
 
 /// Whether a word names a session-scoped advisory lock function.
 fn is_session_advisory_lock(word: &str) -> bool {
@@ -614,11 +640,67 @@ mod tests {
     }
 
     #[test]
-    fn the_proxys_own_settings_never_pin() {
+    fn the_proxys_own_settings_never_pin_except_the_one_that_asks_to() {
         // They never reach the server and change no server-side state, so a
         // session that used one is still perfectly movable.
         assert_eq!(reason("SET pgprox.route = 'replica'"), None);
         assert_eq!(reason("SET pgprox.anything = 1"), None);
+    }
+
+    #[test]
+    fn a_session_can_pin_itself() {
+        // The escape hatch for a tenant using something this list has not
+        // learned yet. Without it they discover the gap as another session's
+        // state appearing in theirs.
+        for sql in [
+            "SET pgprox.pin = on",
+            "SET pgprox.pin = 'on'",
+            "SET pgprox.pin TO true",
+            "set PGPROX.PIN to YES",
+            "SET pgprox.pin = 1;",
+            "SELECT 1; SET pgprox.pin = on",
+        ] {
+            assert_eq!(reason(sql), Some(PinReason::Requested), "{sql:?}");
+        }
+    }
+
+    #[test]
+    fn setting_the_pin_parameter_to_anything_pins() {
+        // Including `off`, which looks wrong and is not. Unpinning is not
+        // offered, so honouring it would be a promise this module cannot keep,
+        // and reading the value would mean reading quoted text that the scanner
+        // drops on purpose so a row's contents cannot pin a session.
+        for sql in [
+            "SET pgprox.pin = off",
+            "SET pgprox.pin = false",
+            "SET pgprox.pin = maybe",
+        ] {
+            assert_eq!(reason(sql), Some(PinReason::Requested), "{sql:?}");
+        }
+    }
+
+    #[test]
+    fn the_pin_parameter_only_pins_when_it_is_set() {
+        // A statement that merely mentions it, or resets it, is not a request.
+        for sql in [
+            "SELECT * FROM t WHERE a = 'pgprox.pin'",
+            "RESET pgprox.pin",
+            "SET LOCAL pgprox.pin = on",
+        ] {
+            assert_eq!(reason(sql), None, "{sql:?}");
+        }
+    }
+
+    #[test]
+    fn a_requested_pin_is_as_permanent_as_any_other() {
+        let mut state = PinState::new();
+        assert_eq!(
+            state.observe_statement("SET pgprox.pin = on", REPLAYABLE_PARAMETERS),
+            Some(PinReason::Requested)
+        );
+        state.observe_statement("SET pgprox.pin = off", REPLAYABLE_PARAMETERS);
+        assert!(state.is_pinned(), "a session unpinned itself");
+        assert_eq!(state.reason(), Some(PinReason::Requested));
     }
 
     #[test]

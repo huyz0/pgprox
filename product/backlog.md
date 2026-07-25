@@ -613,6 +613,19 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
 - [x] `M5.13` Idle reap with `min_pool` of zero. Acceptance: an idle connection
   is closed after its configured idle time, and a pool that goes quiet drops
   to zero connections without anyone asking.
+- [x] `M5.15` Wire the reaper into `LivePool`. Found reviewing M5: `reap`
+  names connections to close and `Pool::close_idle` drops them from the idle
+  list, but nothing in the async layer calls either, so a `LivePool` never
+  closes an idle connection and its socket is never dropped. The whole of
+  M5.13 is unreachable from the only type a caller uses. Acceptance: a pool
+  left quiet past its idle timeout drops to zero connections and releases
+  their payloads.
+- [x] `M5.16` Implement or remove `SET pgprox.pin`. Found reviewing M5:
+  `PinReason::Requested` documents an escape hatch for a tenant using a feature
+  the pin list has not learned, and no code implements it. The `SET` path
+  explicitly skips `pgprox.` parameters, so the variant is unreachable.
+  Acceptance: the documented spelling pins the session, or the variant and its
+  claim are gone.
 - [ ] `M5.14` Close M5.
 
 ## M4 and later

@@ -39,6 +39,7 @@ use pgprox_core::pool::{
 use tokio::sync::Notify;
 
 use crate::pool::{Acquired, Pool, PoolConfig};
+use crate::reap::{ReapConfig, reap};
 
 /// Opens upstream connections.
 ///
@@ -149,6 +150,33 @@ impl<K: Connector + 'static> LivePool<K> {
             connections: HashMap::new(),
         });
         f(&mut entry.pool)
+    }
+
+    /// Closes idle connections that have outstayed their welcome.
+    ///
+    /// Called from a background task on a timer. Returns how many were closed,
+    /// which is what `pgprox_upstream_conns` moves by.
+    ///
+    /// Dropping the payload is the point: the reaper names connections and the
+    /// pool forgets them, but until the payload goes the socket is still open
+    /// and the upstream is still counting it against its cap.
+    pub fn reap_idle(&self, config: &ReapConfig) -> usize {
+        let now = self.clock.now();
+        let mut keyed = self.lock();
+        let mut closed = 0;
+
+        for entry in keyed.values_mut() {
+            for id in reap(&entry.pool, config, now).close {
+                // `close_idle` refuses if a client acquired it between the
+                // decision and here, which is the one race the reaper can lose.
+                if entry.pool.close_idle(id) {
+                    entry.connections.remove(&id);
+                    closed += 1;
+                }
+            }
+        }
+
+        closed
     }
 
     /// The open connection behind a guard, for the caller to actually use.
@@ -656,6 +684,71 @@ mod tests {
         let stats = pool.stats(&key());
         assert_eq!(stats.total(), 0);
         assert_eq!(stats.limit, 0);
+    }
+
+    #[tokio::test]
+    async fn a_quiet_pool_reaps_itself_and_lets_go_of_its_sockets() {
+        // The reaper names connections and the pool forgets them, but until the
+        // payload goes the socket is still open and the upstream is still
+        // counting it against its cap.
+        let (pool, clock) = pool(4);
+        let reaping = ReapConfig::default();
+
+        let mut guard = pool.acquire(&key(), never(&clock)).await.unwrap();
+        let id = guard.id();
+        guard.release_clean();
+        drop(guard);
+        assert_eq!(pool.stats(&key()).idle, 1);
+        assert_eq!(pool.with_connection(&key(), id, |c| *c), Some(1));
+
+        assert_eq!(
+            pool.reap_idle(&reaping),
+            0,
+            "a freshly idle connection was reaped"
+        );
+
+        clock.advance(reaping.idle_timeout);
+        assert_eq!(pool.reap_idle(&reaping), 1);
+        assert_eq!(pool.stats(&key()).total(), 0, "a quiet pool stayed open");
+        assert_eq!(
+            pool.with_connection(&key(), id, |c| *c),
+            None,
+            "a reaped connection's socket was kept open"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reaper_leaves_a_connection_in_use_alone() {
+        let (pool, clock) = pool(4);
+        let reaping = ReapConfig::default();
+        let guard = pool.acquire(&key(), never(&clock)).await.unwrap();
+
+        clock.advance(reaping.idle_timeout * 100);
+        assert_eq!(
+            pool.reap_idle(&reaping),
+            0,
+            "a connection in use was closed underneath its transaction"
+        );
+        assert_eq!(pool.stats(&key()).active, 1);
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn reaping_frees_room_for_a_caller_at_the_cap() {
+        // The reaper is not only housekeeping. A pool full of idle connections
+        // for tenants nobody is using is a pool that refuses the tenant who is.
+        let (pool, clock) = pool(1);
+        let reaping = ReapConfig::default();
+
+        let server = ServerId::new("db-1", 5432);
+        let quiet = PoolKey::new(server.clone(), "d", "quiet_role");
+        let mut guard = pool.acquire(&quiet, never(&clock)).await.unwrap();
+        guard.release_clean();
+        drop(guard);
+
+        clock.advance(reaping.idle_timeout);
+        assert_eq!(pool.reap_idle(&reaping), 1);
+        assert_eq!(pool.stats(&quiet).total(), 0);
     }
 
     #[tokio::test]
