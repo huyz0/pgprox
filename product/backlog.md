@@ -156,11 +156,11 @@ drivers. Between them that covers every message the codec claims to handle.
   `StartupMessage`, and protocol version negotiation.
   Acceptance: a client asking for 3.2 gets 3.2 or a `NegotiateProtocolVersion`
   down to 3.0; a `CancelRequest` yields the encoded node and counter.
-- [ ] `M1.7` Session state machine: transaction status tracking and
+- [x] `M1.7` Session state machine: transaction status tracking and
   extended-query sequence tracking.
   Acceptance: release is permitted only at `ReadyForQuery('I')` with no sequence
   outstanding; a `Sync` missing mid-sequence keeps the session held.
-- [ ] `M1.8` COPY mode, both directions.
+- [x] `M1.8` COPY mode, both directions.
   Acceptance: a session in COPY is never released until the stream ends.
 - [ ] `M1.9` Fuzz targets for the decoder, with a committed corpus.
   Acceptance: `cargo fuzz` runs both targets; any crash found becomes a unit

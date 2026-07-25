@@ -19,10 +19,12 @@ pub mod encode;
 pub mod frame;
 pub mod frontend;
 pub mod read;
+pub mod session;
 pub mod startup;
 
 pub use backend::{BackendMessage, TxStatus};
 pub use frame::{DEFAULT_MAX_FRAME, DecodeError, Decoded, Frame, Tag};
 pub use frontend::{FrontendMessage, Target};
 pub use read::{FieldError, Reader};
+pub use session::{CopyDirection, HoldReason, SessionState};
 pub use startup::{Startup, VersionResponse, negotiate_version};
