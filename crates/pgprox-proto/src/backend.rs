@@ -61,11 +61,11 @@ pub enum AuthRequest {
     CleartextPassword,
     /// 5, send an MD5-hashed password, with the salt supplied.
     Md5Password,
-    /// 10, begin SASL.
+    /// 10, begin SASL. The body lists the mechanisms the server offers.
     Sasl,
-    /// 11, a SASL challenge.
+    /// 11, a SASL challenge carrying the server-first message.
     SaslContinue,
-    /// 12, SASL succeeded.
+    /// 12, SASL succeeded, carrying the server-final message.
     SaslFinal,
     /// Any other subtype, kept so an unfamiliar method is reported rather than
     /// silently mishandled.
@@ -122,6 +122,11 @@ pub struct ErrorFields<'a> {
     /// `R`, the server routine reporting it.
     pub routine: &'a str,
 }
+
+/// The SASL mechanisms this proxy understands, most preferred first.
+///
+/// `SCRAM-SHA-256-PLUS` is deliberately absent. See ADR 0014.
+pub const SUPPORTED_SASL_MECHANISMS: &[&str] = &["SCRAM-SHA-256"];
 
 /// A decoded backend message.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -322,6 +327,39 @@ fn decode_error_fields<'a>(r: &mut Reader<'a>) -> Result<ErrorFields<'a>, Backen
     Ok(fields)
 }
 
+/// Reads the mechanism list from an `AuthenticationSASL` body.
+///
+/// The body is a run of null-terminated names ended by an empty one. Returns the
+/// first name this proxy supports, or [`None`] when the server offers nothing
+/// usable, which is a clearer failure than attempting a mechanism blindly.
+///
+/// # Errors
+///
+/// Fails when the list is unterminated or not UTF-8.
+pub fn select_sasl_mechanism(body: &[u8]) -> Result<Option<&str>, BackendError> {
+    let mut r = Reader::new(body);
+    // Skip the subtype the caller already read.
+    r.i32("auth_subtype")?;
+
+    let mut offered = Vec::new();
+    loop {
+        if r.is_empty() {
+            break;
+        }
+        let name = r.cstr("mechanism")?;
+        if name.is_empty() {
+            break;
+        }
+        offered.push(name);
+    }
+
+    // Server order is advisory; our preference decides, so a server listing a
+    // mechanism we would rather not use cannot force it.
+    Ok(SUPPORTED_SASL_MECHANISMS
+        .iter()
+        .find_map(|wanted| offered.iter().find(|o| *o == wanted).copied()))
+}
+
 /// Rebuilds the connection ID from a cancel key the proxy issued.
 ///
 /// The proxy hands clients its own `BackendKeyData`, so the key is ours to
@@ -411,6 +449,50 @@ mod tests {
             let decoded = decode(&frame(Tag::AUTHENTICATION, &body)).unwrap();
             assert_eq!(decoded, BackendMessage::Authentication(expected));
         }
+    }
+
+    #[test]
+    fn a_sasl_offer_yields_the_mechanism_we_support() {
+        let mut body = 10_i32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"SCRAM-SHA-256\x00\x00");
+        assert_eq!(select_sasl_mechanism(&body).unwrap(), Some("SCRAM-SHA-256"));
+    }
+
+    #[test]
+    fn our_preference_decides_rather_than_the_servers_order() {
+        // A server listing a mechanism we would rather not use must not be able
+        // to force it by putting it first.
+        let mut body = 10_i32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"SCRAM-SHA-256-PLUS\x00SCRAM-SHA-256\x00\x00");
+        assert_eq!(
+            select_sasl_mechanism(&body).unwrap(),
+            Some("SCRAM-SHA-256"),
+            "the server's first choice overrode ours"
+        );
+    }
+
+    #[test]
+    fn an_offer_with_nothing_usable_is_none_rather_than_a_guess() {
+        // Clearer than attempting a mechanism blindly and failing later with a
+        // confusing error.
+        let mut body = 10_i32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"GSSAPI\x00EXTERNAL\x00\x00");
+        assert_eq!(select_sasl_mechanism(&body).unwrap(), None);
+    }
+
+    #[test]
+    fn an_unterminated_mechanism_list_is_an_error() {
+        let mut body = 10_i32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"SCRAM-SHA-256");
+        assert!(select_sasl_mechanism(&body).is_err());
+    }
+
+    #[test]
+    fn channel_binding_is_not_offered() {
+        // ADR 0014: it needs the TLS exporter and interacts with the FIPS suite
+        // list. Absent deliberately, and stated here so it cannot creep in.
+        assert!(!SUPPORTED_SASL_MECHANISMS.contains(&"SCRAM-SHA-256-PLUS"));
+        assert_eq!(SUPPORTED_SASL_MECHANISMS, &["SCRAM-SHA-256"]);
     }
 
     #[test]

@@ -267,7 +267,7 @@ ADR 0002 chose SCRAM passthrough for non-JWT clients and it was never built, so
 admin tooling and migrations cannot connect. pgbouncer spends 1205 lines here;
 this is the largest single gap.
 
-- [ ] `M1F.6` SASL message framing: `AuthenticationSASL`,
+- [x] `M1F.6` SASL message framing: `AuthenticationSASL`,
   `AuthenticationSASLContinue`, `AuthenticationSASLFinal`, and the
   `SASLInitialResponse`/`SASLResponse` frontend forms.
 - [ ] `M1F.7` SCRAM client-first and server-first messages: nonce generation,
@@ -280,7 +280,7 @@ this is the largest single gap.
   Acceptance: RFC 5802 and RFC 7677 test vectors pass.
 - [ ] `M1F.10` `scram-sha-256` verifier parsing, for verifying a client against
   a stored verifier rather than a password.
-- [ ] `M1F.11` Channel binding (`SCRAM-SHA-256-PLUS`). Decide and record: it
+- [x] `M1F.11` Channel binding (`SCRAM-SHA-256-PLUS`). Decide and record: it
   requires the TLS exporter and interacts with the FIPS suite list. Refusing is
   acceptable; refusing without saying so is not.
 - [ ] `M1F.12` Wire SCRAM into the auth path as the non-JWT branch, selected by
