@@ -610,7 +610,7 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
   expiry, and `PoolStats::waiting`. Acceptance: a waiter is woken by a release
   rather than by polling, and one that misses its deadline gets
   `PoolError::Timeout` and stops occupying a slot.
-- [ ] `M5.13` Idle reap with `min_pool` of zero. Acceptance: an idle connection
+- [x] `M5.13` Idle reap with `min_pool` of zero. Acceptance: an idle connection
   is closed after its configured idle time, and a pool that goes quiet drops
   to zero connections without anyone asking.
 - [ ] `M5.14` Close M5.

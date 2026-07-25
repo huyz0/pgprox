@@ -16,12 +16,14 @@ pub mod live;
 pub mod params;
 pub mod pin;
 pub mod pool;
+pub mod reap;
 pub mod statements;
 
 pub use live::{Connector, LivePool};
 pub use params::{ParamChange, SessionParams};
 pub use pin::{PinReason, PinState, REPLAYABLE_PARAMETERS, pin_reason};
 pub use pool::{Acquired, Connection, Pool, PoolConfig};
+pub use reap::{ReapConfig, Reaping, is_expired, reap};
 pub use statements::{
     ConnectionStatements, GlobalName, Preparation, SessionStatements, StatementConfig,
 };

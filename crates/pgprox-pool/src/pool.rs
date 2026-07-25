@@ -309,6 +309,19 @@ impl Pool {
     pub fn idle(&self) -> impl Iterator<Item = &Connection> {
         self.idle.iter()
     }
+
+    /// Drops an idle connection, after the reaper has named it and the caller
+    /// has closed its socket.
+    ///
+    /// Only touches idle connections. A caller passing the id of one that has
+    /// since been checked out gets `false` rather than having it removed from
+    /// under a running transaction, which is the race between a reap decision
+    /// and a client arriving.
+    pub fn close_idle(&mut self, id: UpstreamId) -> bool {
+        let before = self.idle.len();
+        self.idle.retain(|connection| connection.id != id);
+        self.idle.len() != before
+    }
 }
 
 #[cfg(test)]
