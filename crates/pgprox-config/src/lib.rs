@@ -10,7 +10,9 @@
 //! behaves identically.
 
 pub mod document;
+pub mod drain;
 pub mod provider;
 
 pub use document::{ConfigDocument, parse};
+pub use drain::{DrainConfig, DrainState, ModeSource};
 pub use provider::{FileConfig, FileSource};

@@ -699,7 +699,7 @@ that already took sixty seconds to arrive.
   configuration, and keep serving the last good one. Acceptance: a broken
   document reaching the directory leaves watchers on the previous config and
   surfaces the error, rather than taking the node down or serving nothing.
-- [ ] `M4.5` The drain overlay with a TTL, for the imperative path. Acceptance:
+- [x] `M4.5` The drain overlay with a TTL, for the imperative path. Acceptance:
   a drain requested through the API expires on its own, and a drain in the
   config document does not.
 - [ ] `M4.6` `pgprox-observe` and the metric registry: every metric named in
