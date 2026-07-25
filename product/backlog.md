@@ -220,7 +220,7 @@ field numbers may still change.
   return a malformed grant so callers' error paths are reachable.
 - [x] `M2.9` Integration tests against the mock over a real socket.
   Acceptance: `cargo nextest run -p pgprox-auth --features integration` passes.
-- [ ] `M2.10` Close M2.
+- [x] `M2.10` Close M2.
 
 ## M3 and later
 

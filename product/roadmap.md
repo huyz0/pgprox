@@ -16,7 +16,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M-1 | AI development system | complete |
 | M0 | Contracts and quality gates | complete |
 | M1 | Protocol and TLS (track A) | complete |
-| M2 | Auth and sidecar (track B) | ready |
+| M2 | Auth and sidecar (track B) | complete |
 | M3 | Cluster (track C) | ready |
 | M4 | Operations (track D) | ready |
 | M5 | Pooling and routing (track E) | ready |
@@ -71,7 +71,7 @@ client against real Postgres in Docker, and as a server via the harness in
 `crates/pgprox-proto/examples/conformance_server.rs`. Drivers whose toolchain is
 missing are reported as skipped, never silently dropped.
 
-## M2: auth and sidecar
+## M2: auth and sidecar (complete)
 
 The `.proto` contract, tonic client over UDS, grant cache with singleflight,
 negative caching, and a mock sidecar binary.
