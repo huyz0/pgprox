@@ -1,7 +1,9 @@
 //! Checking the credential the handshake asked for.
 //!
-//! This is the token path: the client sent `AuthenticationCleartextPassword`'s
-//! answer, and that answer is a JWT. The static-user SCRAM path is separate.
+//! Two paths. [`TokenAuth`] is the ordinary one: the client answered
+//! `AuthenticationCleartextPassword` with a JWT. [`ScramAuth`] is how an admin
+//! client reaches the `SHOW` pseudo-database with a static credential and no
+//! sidecar involved.
 //!
 //! # Why resolution is an output rather than an await
 //!
@@ -21,6 +23,7 @@
 //! `Debug` of any type here can print it. `a_token_cannot_reach_a_log` asserts
 //! that rather than trusting it.
 
+use std::fmt;
 use std::net::IpAddr;
 use std::time::SystemTime;
 
@@ -148,6 +151,301 @@ impl TokenAuth {
         self.stage = Stage::Done;
         Progress::Fail(ClientError::AuthRefused(reason))
     }
+}
+
+/// A SCRAM challenge for one user: what `server-first-message` carries.
+///
+/// Both fields are already base64 where SCRAM says they are, so nothing here
+/// encodes or decodes. That is deliberate. See [`StaticCredentials`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScramChallenge {
+    /// The user's salt, base64 as it appears on the wire and in Postgres's own
+    /// `SCRAM-SHA-256$...` verifier string.
+    pub salt: String,
+    /// The iteration count.
+    pub iterations: u32,
+}
+
+/// Where a static user's credential lives, and who does the arithmetic.
+///
+/// The trait exists because `pgprox-session` may compose `pgprox-proto`,
+/// `pgprox-pool` and `pgprox-route`, and not `pgprox-auth`, which is where
+/// this project's HMAC and PBKDF2 live. Rather than widen that rule, the
+/// exchange is split: this crate owns the message sequence, and whoever
+/// implements this trait owns the crypto. The composition root, which may
+/// depend on everything, joins them.
+///
+/// A consequence worth stating: no base64 and no hashing appear in this crate
+/// at all, so there is no second implementation of either to drift from the
+/// first.
+pub trait StaticCredentials: Send + Sync + fmt::Debug {
+    /// The challenge for a user, or `None` if there is no such user.
+    ///
+    /// Returning `None` is safe: the caller substitutes a mock challenge so an
+    /// unknown user is indistinguishable from a wrong password. See
+    /// [`ScramConfig::mock_salt`].
+    fn challenge(&self, user: &str) -> Option<ScramChallenge>;
+
+    /// Verifies a proof, returning the base64 server signature if it is right.
+    ///
+    /// `auth_message` is the SCRAM `AuthMessage` this crate assembled. Both it
+    /// and `proof` are passed as they appear on the wire, so an implementation
+    /// needs no knowledge of the message format.
+    fn verify(&self, user: &str, auth_message: &str, proof: &str) -> Option<String>;
+}
+
+/// How the SCRAM exchange behaves.
+#[derive(Debug, Clone)]
+pub struct ScramConfig {
+    /// The salt offered for a user who does not exist.
+    ///
+    /// Postgres calls this a mock authentication and it is the reason
+    /// `SHOW USERS` is not available over an unauthenticated connection: an
+    /// unknown user that failed early, or failed with a different salt each
+    /// attempt, would answer "does this account exist" to anyone who asked.
+    /// It must be fixed for the process's lifetime and it is not a secret.
+    pub mock_salt: String,
+    /// The iteration count offered with the mock salt.
+    pub mock_iterations: u32,
+}
+
+/// How far the SCRAM exchange has got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScramStage {
+    /// Waiting for `SASLInitialResponse`.
+    AwaitingInitial,
+    /// Waiting for `SASLResponse` carrying the proof.
+    AwaitingProof,
+    /// Finished, one way or the other.
+    Done,
+}
+
+/// What the shell should send next in a SCRAM exchange.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaslProgress {
+    /// `AuthenticationSASLContinue` with this payload.
+    Continue(String),
+    /// `AuthenticationSASLFinal` with this payload, then `AuthenticationOk`.
+    Final(String),
+    /// Send an `ErrorResponse` and close.
+    Fail(ClientError),
+}
+
+/// The mechanism this proxy offers. Exactly one.
+///
+/// Not `SCRAM-SHA-256-PLUS`: channel binding ties the exchange to the TLS
+/// session, and the proxy terminates TLS itself, so the binding a client would
+/// verify is to the proxy rather than to the database. Offering it would state
+/// a guarantee that is not being made.
+pub const SCRAM_SHA_256: &str = "SCRAM-SHA-256";
+
+/// The base64 of a `n,,` gs2 header, which is what the client echoes in `c=`.
+///
+/// Hardcoded rather than computed, because computing it would mean a base64
+/// implementation in a crate that has deliberately avoided having one, to
+/// encode one of two constants.
+const GS2_NO_BINDING: &str = "biws";
+/// The same for a `y,,` header: a client that supports binding, talking to a
+/// server that did not offer it.
+const GS2_BINDING_NOT_OFFERED: &str = "eSws";
+
+/// The server side of a SCRAM-SHA-256 exchange.
+#[derive(Debug)]
+pub struct ScramAuth<C> {
+    credentials: C,
+    config: ScramConfig,
+    user: String,
+    server_nonce: String,
+    stage: ScramStage,
+    known: bool,
+    combined_nonce: String,
+    expected_channel_binding: &'static str,
+    client_first_bare: String,
+    server_first: String,
+}
+
+impl<C: StaticCredentials> ScramAuth<C> {
+    /// Starts an exchange.
+    ///
+    /// `server_nonce` is supplied rather than generated, because generating it
+    /// needs entropy and this crate's logic holds no I/O. The obligation to
+    /// make it unpredictable belongs to the caller, and this crate's
+    /// `AGENTS.md` says where.
+    #[must_use]
+    pub fn new(
+        credentials: C,
+        config: ScramConfig,
+        user: impl Into<String>,
+        server_nonce: impl Into<String>,
+    ) -> Self {
+        Self {
+            credentials,
+            config,
+            user: user.into(),
+            server_nonce: server_nonce.into(),
+            stage: ScramStage::AwaitingInitial,
+            known: false,
+            combined_nonce: String::new(),
+            expected_channel_binding: GS2_NO_BINDING,
+            client_first_bare: String::new(),
+            server_first: String::new(),
+        }
+    }
+
+    /// Whether the exchange has finished.
+    #[must_use]
+    pub const fn is_done(&self) -> bool {
+        matches!(self.stage, ScramStage::Done)
+    }
+
+    /// Feeds in the body of a `SASLInitialResponse`.
+    ///
+    /// The body is a mechanism name, a length, and the client's first message.
+    pub fn on_initial(&mut self, body: &[u8]) -> SaslProgress {
+        if !matches!(self.stage, ScramStage::AwaitingInitial) {
+            return self.violation("a second SASLInitialResponse arrived");
+        }
+
+        let Some((mechanism, payload)) = split_sasl_initial(body) else {
+            return self.violation("malformed SASLInitialResponse");
+        };
+        if mechanism != SCRAM_SHA_256 {
+            // Including SCRAM-SHA-256-PLUS, which was never offered. A client
+            // that picks a mechanism the server did not advertise is either
+            // broken or probing.
+            return self.violation("unsupported SASL mechanism");
+        }
+
+        let Some((header, bare)) = split_gs2(payload) else {
+            return self.violation("malformed SCRAM client-first-message");
+        };
+        self.expected_channel_binding = match header {
+            "n" => GS2_NO_BINDING,
+            "y" => GS2_BINDING_NOT_OFFERED,
+            // "p=..." asks for channel binding, which is not offered.
+            _ => return self.violation("channel binding was requested and is not offered"),
+        };
+
+        let Some(client_nonce) = field(bare, 'r') else {
+            return self.violation("SCRAM client-first-message has no nonce");
+        };
+        if client_nonce.is_empty() {
+            return self.violation("SCRAM client-first-message has an empty nonce");
+        }
+
+        // The user comes from the startup packet, not from the n= field.
+        // Postgres does the same, and libpq sends n= empty.
+        let challenge = self.credentials.challenge(&self.user);
+        self.known = challenge.is_some();
+        let challenge = challenge.unwrap_or_else(|| ScramChallenge {
+            salt: self.config.mock_salt.clone(),
+            iterations: self.config.mock_iterations,
+        });
+
+        bare.clone_into(&mut self.client_first_bare);
+        self.combined_nonce = format!("{client_nonce}{}", self.server_nonce);
+        self.server_first = format!(
+            "r={},s={},i={}",
+            self.combined_nonce, challenge.salt, challenge.iterations
+        );
+        self.stage = ScramStage::AwaitingProof;
+
+        SaslProgress::Continue(self.server_first.clone())
+    }
+
+    /// Feeds in the body of a `SASLResponse`, which carries the proof.
+    pub fn on_response(&mut self, body: &[u8]) -> SaslProgress {
+        if !matches!(self.stage, ScramStage::AwaitingProof) {
+            return self.violation("a SASLResponse arrived out of sequence");
+        }
+        self.stage = ScramStage::Done;
+
+        let Ok(message) = std::str::from_utf8(body) else {
+            return self.violation("SCRAM client-final-message is not UTF-8");
+        };
+
+        let Some(binding) = field(message, 'c') else {
+            return self.violation("SCRAM client-final-message has no channel binding");
+        };
+        if binding != self.expected_channel_binding {
+            // A client that echoes a different gs2 header than it sent is the
+            // shape of a downgrade attempt, so this is a violation rather than
+            // a failed password.
+            return self.violation("SCRAM channel binding does not match the client-first-message");
+        }
+
+        let Some(nonce) = field(message, 'r') else {
+            return self.violation("SCRAM client-final-message has no nonce");
+        };
+        if nonce != self.combined_nonce {
+            return self.violation("SCRAM nonce does not match");
+        }
+
+        let Some(proof) = field(message, 'p') else {
+            return self.violation("SCRAM client-final-message has no proof");
+        };
+
+        let without_proof = match message.rfind(",p=") {
+            Some(at) => &message[..at],
+            None => return self.violation("SCRAM client-final-message has no proof"),
+        };
+        let auth_message = format!(
+            "{},{},{}",
+            self.client_first_bare, self.server_first, without_proof
+        );
+
+        // The lookup result is consulted here rather than at the challenge, so
+        // an unknown user spends the same two round trips and fails with the
+        // same message as a wrong password.
+        let signature = if self.known {
+            self.credentials.verify(&self.user, &auth_message, proof)
+        } else {
+            None
+        };
+
+        match signature {
+            Some(signature) => SaslProgress::Final(format!("v={signature}")),
+            None => SaslProgress::Fail(ClientError::AuthRefused(AuthRejection::TokenRejected)),
+        }
+    }
+
+    fn violation(&mut self, what: &'static str) -> SaslProgress {
+        self.stage = ScramStage::Done;
+        SaslProgress::Fail(ClientError::ProtocolViolation(what))
+    }
+}
+
+/// Splits a `SASLInitialResponse` body into its mechanism and payload.
+///
+/// The body is a null-terminated mechanism name, a big-endian `i32` length,
+/// and that many bytes. A length of `-1` means no initial response, which
+/// SCRAM does not permit.
+fn split_sasl_initial(body: &[u8]) -> Option<(&str, &str)> {
+    let end = body.iter().position(|b| *b == 0)?;
+    let mechanism = std::str::from_utf8(&body[..end]).ok()?;
+    let rest = body.get(end + 1..)?;
+    let (len, payload) = rest.split_at_checked(4)?;
+    let len = usize::try_from(i32::from_be_bytes(len.try_into().ok()?)).ok()?;
+    std::str::from_utf8(payload.get(..len)?)
+        .ok()
+        .map(|payload| (mechanism, payload))
+}
+
+/// Splits a client-first-message into its gs2 flag and its bare part.
+///
+/// The header is `<flag>,<authzid>,` and the flag is what decides which
+/// channel binding the client will echo back.
+fn split_gs2(message: &str) -> Option<(&str, &str)> {
+    let (flag, rest) = message.split_once(',')?;
+    let (_authzid, bare) = rest.split_once(',')?;
+    Some((flag, bare))
+}
+
+/// Reads one `key=value` attribute out of a comma-separated SCRAM message.
+fn field(message: &str, key: char) -> Option<&str> {
+    message
+        .split(',')
+        .find_map(|part| part.strip_prefix(key)?.strip_prefix('='))
 }
 
 #[cfg(test)]
@@ -357,5 +655,326 @@ mod tests {
                 "the token appeared in a Debug rendering: {rendered}"
             );
         }
+    }
+
+    /// A credential store that knows one user and one proof.
+    ///
+    /// Behaves like the real thing rather than recording calls: it answers a
+    /// challenge, and it accepts exactly one proof for exactly one auth
+    /// message, so a machine that assembled the auth message wrongly fails.
+    #[derive(Debug)]
+    struct OneUser {
+        user: &'static str,
+        proof: &'static str,
+    }
+
+    impl StaticCredentials for OneUser {
+        fn challenge(&self, user: &str) -> Option<ScramChallenge> {
+            (user == self.user).then(|| ScramChallenge {
+                salt: "QSXCR+Q6sek8bf92".to_owned(),
+                iterations: 4096,
+            })
+        }
+
+        fn verify(&self, user: &str, auth_message: &str, proof: &str) -> Option<String> {
+            // The auth message is checked for shape rather than value: this
+            // fake has no crypto, and asserting the three parts are present is
+            // what catches a machine that assembled it out of order.
+            let parts: Vec<&str> = auth_message.split(',').collect();
+            (user == self.user
+                && proof == self.proof
+                && parts.iter().any(|p| p.starts_with("r="))
+                && auth_message.contains(",i=4096,")
+                && !auth_message.contains(",p="))
+            .then(|| "c2lnbmF0dXJl".to_owned())
+        }
+    }
+
+    fn scram() -> ScramAuth<OneUser> {
+        ScramAuth::new(
+            OneUser {
+                user: "pgprox_admin",
+                proof: "cHJvb2Y=",
+            },
+            ScramConfig {
+                mock_salt: "bW9ja3NhbHQ=".to_owned(),
+                mock_iterations: 4096,
+            },
+            "pgprox_admin",
+            "SERVERNONCE",
+        )
+    }
+
+    fn initial(mechanism: &str, payload: &str) -> Vec<u8> {
+        let mut body = mechanism.as_bytes().to_vec();
+        body.push(0);
+        body.extend_from_slice(&i32::try_from(payload.len()).unwrap().to_be_bytes());
+        body.extend_from_slice(payload.as_bytes());
+        body
+    }
+
+    #[test]
+    fn a_correct_proof_completes_the_exchange() {
+        let mut auth = scram();
+        let SaslProgress::Continue(server_first) =
+            auth.on_initial(&initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE"))
+        else {
+            panic!("a well-formed client-first-message was refused");
+        };
+        assert_eq!(
+            server_first,
+            "r=CLIENTNONCESERVERNONCE,s=QSXCR+Q6sek8bf92,i=4096"
+        );
+
+        let final_message = auth.on_response(b"c=biws,r=CLIENTNONCESERVERNONCE,p=cHJvb2Y=");
+        assert_eq!(
+            final_message,
+            SaslProgress::Final("v=c2lnbmF0dXJl".to_owned())
+        );
+        assert!(auth.is_done());
+    }
+
+    #[test]
+    fn a_wrong_proof_is_refused_as_an_authentication_failure() {
+        let mut auth = scram();
+        auth.on_initial(&initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE"));
+        assert_eq!(
+            auth.on_response(b"c=biws,r=CLIENTNONCESERVERNONCE,p=d3Jvbmc="),
+            SaslProgress::Fail(ClientError::AuthRefused(AuthRejection::TokenRejected))
+        );
+    }
+
+    #[test]
+    fn an_unknown_user_is_indistinguishable_from_a_wrong_password() {
+        // Postgres calls this mock authentication. A user that failed early,
+        // or that got a different salt each attempt, would answer "does this
+        // account exist" to anyone who asked.
+        let mut known = scram();
+        let mut unknown = ScramAuth::new(
+            OneUser {
+                user: "pgprox_admin",
+                proof: "cHJvb2Y=",
+            },
+            ScramConfig {
+                mock_salt: "bW9ja3NhbHQ=".to_owned(),
+                mock_iterations: 4096,
+            },
+            "nobody",
+            "SERVERNONCE",
+        );
+
+        let first = known.on_initial(&initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE"));
+        let other = unknown.on_initial(&initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE"));
+        assert!(
+            matches!(first, SaslProgress::Continue(_))
+                && matches!(other, SaslProgress::Continue(_)),
+            "an unknown user was told so before the proof: {other:?}"
+        );
+
+        let response = b"c=biws,r=CLIENTNONCESERVERNONCE,p=cHJvb2Y=";
+        assert_eq!(
+            unknown.on_response(response),
+            SaslProgress::Fail(ClientError::AuthRefused(AuthRejection::TokenRejected)),
+        );
+        assert!(
+            matches!(known.on_response(response), SaslProgress::Final(_)),
+            "the known user stopped working, so this proves nothing"
+        );
+    }
+
+    #[test]
+    fn the_mock_challenge_is_stable_across_attempts() {
+        // A salt that varied per attempt is the same oracle by another route.
+        let payload = initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE");
+        let mut first = ScramAuth::new(
+            OneUser {
+                user: "pgprox_admin",
+                proof: "cHJvb2Y=",
+            },
+            ScramConfig {
+                mock_salt: "bW9ja3NhbHQ=".to_owned(),
+                mock_iterations: 4096,
+            },
+            "nobody",
+            "SERVERNONCE",
+        );
+        let mut again = ScramAuth::new(
+            OneUser {
+                user: "pgprox_admin",
+                proof: "cHJvb2Y=",
+            },
+            ScramConfig {
+                mock_salt: "bW9ja3NhbHQ=".to_owned(),
+                mock_iterations: 4096,
+            },
+            "nobody",
+            "SERVERNONCE",
+        );
+        assert_eq!(first.on_initial(&payload), again.on_initial(&payload));
+    }
+
+    #[test]
+    fn channel_binding_is_refused_because_it_was_never_offered() {
+        // The proxy terminates TLS, so a binding the client verified would be
+        // to the proxy rather than to the database. Offering it would state a
+        // guarantee that is not being made.
+        let mut auth = scram();
+        assert!(matches!(
+            auth.on_initial(&initial(
+                SCRAM_SHA_256,
+                "p=tls-server-end-point,,n=,r=CLIENTNONCE"
+            )),
+            SaslProgress::Fail(ClientError::ProtocolViolation(_))
+        ));
+    }
+
+    #[test]
+    fn a_mechanism_that_was_not_offered_is_refused() {
+        let mut auth = scram();
+        assert!(matches!(
+            auth.on_initial(&initial("SCRAM-SHA-256-PLUS", "n,,n=,r=CLIENTNONCE")),
+            SaslProgress::Fail(ClientError::ProtocolViolation(_))
+        ));
+    }
+
+    #[test]
+    fn a_client_that_did_not_offer_binding_may_still_say_it_supports_it() {
+        // The y,, header: a client that knows about channel binding, talking
+        // to a server that did not advertise it. Its c= echo differs, and
+        // rejecting it would break every modern driver against a proxy that
+        // deliberately does not offer PLUS.
+        let mut auth = scram();
+        assert!(matches!(
+            auth.on_initial(&initial(SCRAM_SHA_256, "y,,n=,r=CLIENTNONCE")),
+            SaslProgress::Continue(_)
+        ));
+        assert!(matches!(
+            auth.on_response(b"c=eSws,r=CLIENTNONCESERVERNONCE,p=cHJvb2Y="),
+            SaslProgress::Final(_)
+        ));
+    }
+
+    #[test]
+    fn echoing_a_different_gs2_header_is_a_downgrade_attempt() {
+        let mut auth = scram();
+        auth.on_initial(&initial(SCRAM_SHA_256, "y,,n=,r=CLIENTNONCE"));
+        assert!(
+            matches!(
+                auth.on_response(b"c=biws,r=CLIENTNONCESERVERNONCE,p=cHJvb2Y="),
+                SaslProgress::Fail(ClientError::ProtocolViolation(_))
+            ),
+            "a client that changed its gs2 header between messages was accepted"
+        );
+    }
+
+    #[test]
+    fn a_nonce_that_does_not_carry_the_server_part_is_refused() {
+        // Without this the exchange is replayable: the server's nonce is the
+        // only thing making each one unique.
+        let mut auth = scram();
+        auth.on_initial(&initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE"));
+        assert!(matches!(
+            auth.on_response(b"c=biws,r=CLIENTNONCE,p=cHJvb2Y="),
+            SaslProgress::Fail(ClientError::ProtocolViolation(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_sasl_messages_are_refused_rather_than_guessed_at() {
+        for body in [
+            b"".as_slice(),
+            b"SCRAM-SHA-256".as_slice(),
+            b"SCRAM-SHA-256\0\0\0".as_slice(),
+        ] {
+            let mut auth = scram();
+            assert!(
+                matches!(
+                    auth.on_initial(body),
+                    SaslProgress::Fail(ClientError::ProtocolViolation(_))
+                ),
+                "a truncated SASLInitialResponse was accepted: {body:?}"
+            );
+        }
+
+        let mut truncated = scram();
+        let mut body = initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE");
+        body.truncate(body.len() - 4);
+        assert!(matches!(
+            truncated.on_initial(&body),
+            SaslProgress::Fail(ClientError::ProtocolViolation(_))
+        ));
+    }
+
+    #[test]
+    fn a_client_first_message_without_a_nonce_is_refused() {
+        for payload in ["n,,n=", "n,,n=,r=", "no-commas-here"] {
+            let mut auth = scram();
+            assert!(
+                matches!(
+                    auth.on_initial(&initial(SCRAM_SHA_256, payload)),
+                    SaslProgress::Fail(ClientError::ProtocolViolation(_))
+                ),
+                "{payload} was accepted as a client-first-message"
+            );
+        }
+    }
+
+    #[test]
+    fn a_client_final_message_missing_a_field_is_refused() {
+        for payload in [
+            "r=CLIENTNONCESERVERNONCE,p=cHJvb2Y=",
+            "c=biws,p=cHJvb2Y=",
+            "c=biws,r=CLIENTNONCESERVERNONCE",
+        ] {
+            let mut auth = scram();
+            auth.on_initial(&initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE"));
+            assert!(
+                matches!(
+                    auth.on_response(payload.as_bytes()),
+                    SaslProgress::Fail(ClientError::ProtocolViolation(_))
+                ),
+                "{payload} was accepted as a client-final-message"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_utf8_client_final_message_is_refused() {
+        let mut auth = scram();
+        auth.on_initial(&initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE"));
+        assert!(matches!(
+            auth.on_response(&[0xff, 0xfe]),
+            SaslProgress::Fail(ClientError::ProtocolViolation(_))
+        ));
+    }
+
+    #[test]
+    fn sasl_messages_out_of_sequence_are_refused() {
+        let mut early = scram();
+        assert!(matches!(
+            early.on_response(b"c=biws,r=x,p=y"),
+            SaslProgress::Fail(ClientError::ProtocolViolation(_))
+        ));
+
+        let mut twice = scram();
+        let payload = initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE");
+        twice.on_initial(&payload);
+        assert!(matches!(
+            twice.on_initial(&payload),
+            SaslProgress::Fail(ClientError::ProtocolViolation(_))
+        ));
+    }
+
+    #[test]
+    fn a_scram_failure_tells_the_client_exactly_what_a_bad_token_does() {
+        // Two authentication paths that answer differently are two oracles.
+        let mut auth = scram();
+        auth.on_initial(&initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE"));
+        let SaslProgress::Fail(err) =
+            auth.on_response(b"c=biws,r=CLIENTNONCESERVERNONCE,p=d3Jvbmc=")
+        else {
+            panic!("a wrong proof authenticated");
+        };
+        assert_eq!(err.client_message(), "authentication failed");
     }
 }
