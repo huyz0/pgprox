@@ -32,7 +32,6 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
 use pgprox_core::admin::{
     AdminError, ClientView, ClusterView, Observatory, PoolView, Scope, ServerView, Stats,
     TenantView,
@@ -413,39 +412,63 @@ pub async fn reset_pool(
 /// the two together.
 const DEFAULT_DRAIN_TTL: Duration = Duration::from_secs(30 * 60);
 
-/// The write half of the admin API.
+/// Declares a set of routes and the list of paths they serve, from one source.
 ///
-/// Split from the reads so a deployment can put them behind different access.
-/// Reading pool depths and draining a node are not the same privilege.
-pub fn write_routes() -> axum::Router<Shared> {
-    axum::Router::new()
-        .route("/v1/drain", post(drain))
-        .route("/v1/undrain", post(undrain))
-        .route(
-            "/v1/pools/{server}/{database}/{user}/reset",
-            post(reset_pool),
-        )
+/// The list is not maintained beside the router, it *is* the router: a path
+/// added here appears in both, and one added to the router alone cannot exist.
+/// That matters because the drift the `OpenAPI` tests look for is a route served
+/// with no annotation, and a hand-written list of paths would drift the same
+/// way the document does, leaving the comparison passing while both were wrong.
+macro_rules! declare_routes {
+    ($paths:ident, $router:ident, $($method:ident $path:literal => $handler:ident),* $(,)?) => {
+        /// The paths this half serves, in the spelling `OpenAPI` uses.
+        pub const $paths: &[&str] = &[$($path),*];
+
+        #[doc = "The routes this half serves."]
+        pub fn $router() -> axum::Router<Shared> {
+            axum::Router::new()
+                $(.route($path, axum::routing::$method($handler)))*
+        }
+    };
 }
+
+// The read half. Split from the writes so a deployment can expose it on a
+// surface with different access: reading pool depths and draining a node are
+// not the same privilege.
+declare_routes!(
+    READ_PATHS,
+    read_routes,
+    get "/v1/cluster" => cluster,
+    get "/v1/pools" => pools,
+    get "/v1/servers" => servers,
+    get "/v1/tenants" => tenants,
+    get "/v1/tenants/{id}" => tenant,
+    get "/v1/clients" => clients,
+    get "/v1/stats" => stats,
+    get "/v1/config" => config,
+);
+
+// The write half.
+declare_routes!(
+    WRITE_PATHS,
+    write_routes,
+    post "/v1/drain" => drain,
+    post "/v1/undrain" => undrain,
+    post "/v1/pools/{server}/{database}/{user}/reset" => reset_pool,
+);
 
 /// Every route.
 pub fn routes() -> axum::Router<Shared> {
     read_routes().merge(write_routes())
 }
 
-/// The read half of the admin API.
+/// Every path the admin API serves.
 ///
-/// Split from the writes so a deployment can expose this on a surface with
-/// different access than the one that can drain a node.
-pub fn read_routes() -> axum::Router<Shared> {
-    axum::Router::new()
-        .route("/v1/cluster", get(cluster))
-        .route("/v1/pools", get(pools))
-        .route("/v1/servers", get(servers))
-        .route("/v1/tenants", get(tenants))
-        .route("/v1/tenants/{id}", get(tenant))
-        .route("/v1/clients", get(clients))
-        .route("/v1/stats", get(stats))
-        .route("/v1/config", get(config))
+/// Derived from the routers rather than written beside them, so the `OpenAPI`
+/// tests compare the document against what is actually served.
+#[must_use]
+pub fn all_paths() -> Vec<&'static str> {
+    READ_PATHS.iter().chain(WRITE_PATHS).copied().collect()
 }
 
 // The response bodies. Separate from the `Observatory` DTOs so the wire format

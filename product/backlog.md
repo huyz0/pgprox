@@ -722,7 +722,7 @@ that already took sixty seconds to arrive.
 - [x] `M4.11` The write endpoints: drain, undrain, and pool reset. Acceptance:
   a drain through the API writes the same desired state the config document
   would, carrying the TTL from `M4.5`.
-- [ ] `M4.12` The OpenAPI document, generated from the handlers. Acceptance:
+- [x] `M4.12` The OpenAPI document, generated from the handlers. Acceptance:
   the generated document validates, and it describes every route the router
   actually serves rather than a hand-written list that can drift.
 - [ ] `M4.13` The `SHOW` parser. Acceptance: `SHOW POOLS`, `SHOW SERVERS`,
