@@ -569,7 +569,7 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
   DML-bearing statement classified read-only, and `WITH ... INSERT`,
   `SELECT ... FOR UPDATE`, `SELECT ... FOR SHARE` and `EXPLAIN ANALYZE` are all
   writes.
-- [ ] `M5.3` Volatile function detection, and `BEGIN READ ONLY` marking a whole
+- [x] `M5.3` Volatile function detection, and `BEGIN READ ONLY` marking a whole
   transaction replica-eligible. Acceptance: a `SELECT` calling a volatile
   function classifies as `Unknown` rather than `ReadOnly`, and an unrecognised
   construct does the same.

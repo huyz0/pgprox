@@ -9,12 +9,14 @@
 //!
 //! # How it decides
 //!
-//! Two conditions, both required for [`StmtClass::ReadOnly`]:
+//! Three conditions, all required for [`StmtClass::ReadOnly`]:
 //!
 //! 1. The **first** word is one of a short allowlist: `SELECT`, `WITH`,
 //!    `TABLE`, `VALUES`, `EXPLAIN`.
 //! 2. **No** word anywhere in the statement is on a denylist of things that
 //!    write, lock, or have side effects.
+//! 3. **No** word anywhere is the name of a function known to write, which is
+//!    the section below.
 //!
 //! The second condition is what handles the cases a first-token scan gets
 //! wrong, and it handles them without special-casing any of them:
@@ -24,7 +26,38 @@
 //!
 //! The asymmetry is deliberate. Adding a word to the denylist can only move
 //! statements from `ReadOnly` toward the primary, so an over-broad denylist
-//! costs throughput. Missing one costs correctness.
+//! costs throughput while a missing word costs correctness.
+//!
+//! That does not make an over-broad list free, and the denylist is shorter than
+//! it first looks because of it. A keyword that can only *start* a statement
+//! needs no entry: it is not on the allowlist, so it already classifies as
+//! `Unknown`, and that holds after a semicolon too. Meanwhile `comment`,
+//! `copy`, `call` and `share` are all legal unquoted column names, so an entry
+//! for each keeps real queries off replicas. Only words reachable *inside* a
+//! statement that leads with an allowlisted word are on the list, and each one
+//! names the construct that requires it.
+//!
+//! # Volatile functions
+//!
+//! A third condition downgrades to [`StmtClass::Unknown`] rather than to
+//! `Write`: a call to a function known to have side effects. `nextval` advances
+//! a sequence, `pg_advisory_lock` takes a lock, `txid_current` assigns a
+//! transaction ID. All of them write, and all of them fail outright on a
+//! replica in recovery.
+//!
+//! `Unknown` rather than `Write` because the distinction is real. A `Write` is
+//! a statement this scan understands to modify data; an `Unknown` is one it
+//! does not vouch for. They route identically today, and if that ever changes,
+//! a volatile call should follow the cautious branch rather than the confident
+//! one.
+//!
+//! The list covers functions that write. It does not try to cover every
+//! function marked `VOLATILE` in the catalogue, because `random()` and
+//! `clock_timestamp()` are volatile and harmless to route, and because a proxy
+//! cannot know what a tenant's own functions do. That last one is the honest
+//! limit of a lexical scan, recorded in ADR 0009: a tenant calling a
+//! write-performing function of their own from a `SELECT` gets it routed as a
+//! read. `SET pgprox.route = 'primary'` is the escape hatch.
 //!
 //! # Not a parser
 //!
@@ -45,59 +78,93 @@ const READ_FIRST_WORDS: &[&str] = &["select", "with", "table", "values", "explai
 
 /// Words that disqualify a statement from being a read, wherever they appear.
 ///
-/// Read this as "if any of these is a bare word outside a string, assume the
-/// worst". A word here that turns out to be harmless costs a replica read. A
-/// word missing from here that turns out to write costs a stale answer.
+/// Deliberately shorter than the list of things that write, because a word only
+/// needs to be here if it can appear *inside* a statement whose first word is
+/// on the allowlist. A keyword that can only start a statement is already
+/// handled: it is not on the allowlist, so it classifies as
+/// [`StmtClass::Unknown`] and goes to the primary. That holds after a semicolon
+/// too, since each statement gets its own first word and the results combine to
+/// the most restrictive.
+///
+/// So `DROP`, `GRANT`, `LISTEN`, `COPY`, `COMMENT` and the rest are absent on
+/// purpose. Keeping them would cost real reads: `comment`, `share`, `call` and
+/// `copy` are all legal unquoted column names, and `SELECT comment FROM posts`
+/// is a query somebody actually writes.
+///
+/// Each entry below names the construct that requires it. Removing one means
+/// showing that construct cannot occur.
 const WRITE_WORDS: &[&str] = &[
-    // Data modification, including inside a CTE.
-    "insert",
-    "update",
-    "delete",
-    "merge",
+    // Data-modifying CTEs: `WITH x AS (INSERT ... RETURNING *) SELECT ...`.
+    // These are also what `EXPLAIN INSERT`, `EXPLAIN UPDATE` and so on reach.
+    "insert", "update", "delete", "merge",
+    // Not reachable inside a read: `TRUNCATE` cannot appear in a CTE and
+    // `EXPLAIN TRUNCATE` is not valid, so the allowlist already routes it
+    // correctly. Kept because it costs nothing, nobody names a column
+    // `truncate`, and it makes the reported class accurate rather than merely
+    // safe. That distinction matters for `pgprox_query_duration_seconds{route}`
+    // and for anyone reading a log line.
     "truncate",
-    "upsert",
-    // Row locking. `FOR UPDATE` is caught by `update`; these cover the rest of
-    // the locking clause forms.
-    "share",
-    "lock",
-    // `SELECT ... INTO t` creates a table.
-    "into",
-    // `EXPLAIN ANALYZE` executes the plan for real. Plain `EXPLAIN` does not,
-    // which is why `explain` is an allowed first word and `analyze` is not.
-    "analyze",
-    "analyse",
-    // Schema changes.
-    "create",
-    "drop",
-    "alter",
-    "grant",
-    "revoke",
-    "comment",
+    // `EXPLAIN CREATE TABLE x AS SELECT ...` and `EXPLAIN CREATE MATERIALIZED
+    // VIEW ...` are both valid and both write. This is the entry most easily
+    // mistaken for redundant.
+    "create", // `EXPLAIN REFRESH MATERIALIZED VIEW ...`.
     "refresh",
-    "reindex",
-    "vacuum",
-    "reassign",
-    "import",
-    "security",
-    // Session and connection state.
-    "prepare",
-    "deallocate",
+    // `EXPLAIN EXECUTE stmt`, which runs a prepared statement that may be
+    // anything at all.
+    "execute", // `EXPLAIN DECLARE ... CURSOR`.
     "declare",
-    "discard",
-    "listen",
-    "unlisten",
-    "notify",
-    "copy",
-    // Anything that runs arbitrary code.
-    "call",
-    "do",
-    // Transaction control has no business being appended to a read, and if it
-    // is, the transaction's target was fixed by its first statement anyway.
-    "begin",
-    "commit",
-    "rollback",
-    "savepoint",
-    "checkpoint",
+    // The locking clause: `FOR UPDATE` is caught by `update` above, and these
+    // cover `FOR SHARE`, `FOR KEY SHARE` and `FOR NO KEY UPDATE`.
+    "share", // `SELECT ... INTO t` creates a table.
+    "into",
+    // `EXPLAIN ANALYZE` executes the plan for real, side effects and all. Plain
+    // `EXPLAIN` does not, which is why `explain` is an allowed first word.
+    "analyze", "analyse",
+];
+
+/// Functions that write, and so cannot run on a replica.
+///
+/// Matched on the bare name, so `nextval` and `pg_catalog.nextval` both hit:
+/// the scan yields `pg_catalog`, `nextval` and the parenthesis separately.
+///
+/// Not a list of every `VOLATILE` function. `random()` is volatile and
+/// perfectly safe to route; these are the ones with side effects.
+const WRITING_FUNCTIONS: &[&str] = &[
+    // Sequences.
+    "nextval",
+    "setval",
+    // Session and transaction-scoped locks. The `_xact_` variants write too,
+    // even though they do not pin the session.
+    "pg_advisory_lock",
+    "pg_advisory_lock_shared",
+    "pg_advisory_unlock",
+    "pg_advisory_unlock_all",
+    "pg_advisory_unlock_shared",
+    "pg_advisory_xact_lock",
+    "pg_advisory_xact_lock_shared",
+    "pg_try_advisory_lock",
+    "pg_try_advisory_lock_shared",
+    "pg_try_advisory_xact_lock",
+    "pg_try_advisory_xact_lock_shared",
+    // Assigns a real transaction ID, which a replica cannot do.
+    "txid_current",
+    "pg_current_xact_id",
+    // Writes WAL.
+    "pg_logical_emit_message",
+    "pg_create_restore_point",
+    // Replication and backup control.
+    "pg_switch_wal",
+    "pg_create_physical_replication_slot",
+    "pg_create_logical_replication_slot",
+    "pg_drop_replication_slot",
+    "pg_replication_slot_advance",
+    // Large objects live in a table.
+    "lo_create",
+    "lo_creat",
+    "lo_import",
+    "lo_unlink",
+    "lo_from_bytea",
+    "lo_put",
 ];
 
 /// Classifies a statement.
@@ -183,6 +250,9 @@ fn classify_one(scanner: &mut Scanner<'_>) -> (StmtClass, bool) {
                     // one, and a `;` inside a string must not be mistaken for a
                     // separator.
                     class = StmtClass::Write;
+                } else if class == StmtClass::ReadOnly && matches_any(word, WRITING_FUNCTIONS) {
+                    // Downgrades a read, never upgrades an already-known write.
+                    class = StmtClass::Unknown;
                 }
             }
         }
@@ -198,6 +268,62 @@ fn classify_one(scanner: &mut Scanner<'_>) -> (StmtClass, bool) {
 fn matches_any(word: &str, set: &[&str]) -> bool {
     set.iter()
         .any(|candidate| word.eq_ignore_ascii_case(candidate))
+}
+
+/// Whether a statement opens a transaction the server will refuse writes in.
+///
+/// `BEGIN READ ONLY`, `START TRANSACTION READ ONLY`, and the `SET TRANSACTION`
+/// form. A session that has said this has told the server to reject writes for
+/// the whole transaction, which is a stronger promise than the classifier can
+/// make about any individual statement, so the transaction as a whole becomes
+/// replica-eligible.
+///
+/// `READ WRITE` returns `false`, as does a bare `BEGIN`: the default is read
+/// write, and reading the absence of a mode as a promise would be exactly
+/// backwards.
+///
+/// ```
+/// use pgprox_route::classify::begins_read_only_transaction;
+///
+/// assert!(begins_read_only_transaction("BEGIN READ ONLY"));
+/// assert!(begins_read_only_transaction("START TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ ONLY"));
+/// assert!(!begins_read_only_transaction("BEGIN"));
+/// assert!(!begins_read_only_transaction("BEGIN READ WRITE"));
+/// ```
+#[must_use]
+pub fn begins_read_only_transaction(sql: &str) -> bool {
+    let mut scanner = Scanner::new(sql);
+    let mut words = Vec::new();
+    while let Some(piece) = scanner.next_piece() {
+        match piece {
+            Piece::Word(word) => words.push(word),
+            // Only the first statement can open the transaction, and anything
+            // quoted is not a keyword.
+            Piece::Semicolon => break,
+            Piece::Opaque => return false,
+        }
+    }
+
+    let opens = matches!(
+        words.first().map(|w| w.to_ascii_lowercase()).as_deref(),
+        Some("begin" | "start")
+    ) || matches!(
+        (
+            words.first().map(|w| w.to_ascii_lowercase()).as_deref(),
+            words.get(1).map(|w| w.to_ascii_lowercase()).as_deref(),
+        ),
+        (Some("set"), Some("transaction"))
+    );
+    if !opens {
+        return false;
+    }
+
+    // `READ ONLY` as adjacent words. `READ WRITE` says the opposite and must
+    // not be mistaken for it, which is why this looks at the pair rather than
+    // for the word `read` alone.
+    words
+        .windows(2)
+        .any(|pair| pair[0].eq_ignore_ascii_case("read") && pair[1].eq_ignore_ascii_case("only"))
 }
 
 /// One lexical unit the classifier cares about.
@@ -712,6 +838,182 @@ mod tests {
     }
 
     #[test]
+    fn explain_reaches_writing_statements_and_each_is_caught() {
+        // EXPLAIN accepts more than SELECT, and every one of these writes.
+        // This is the test that justifies `create`, `refresh`, `execute` and
+        // `declare` being on the denylist at all: without EXPLAIN they could
+        // only start a statement, where the allowlist would handle them.
+        for sql in [
+            "EXPLAIN CREATE TABLE x AS SELECT 1",
+            "EXPLAIN CREATE MATERIALIZED VIEW v AS SELECT 1",
+            "EXPLAIN REFRESH MATERIALIZED VIEW v",
+            "EXPLAIN EXECUTE stmt",
+            "EXPLAIN DECLARE c CURSOR FOR SELECT 1",
+            "EXPLAIN INSERT INTO t VALUES (1)",
+            "EXPLAIN UPDATE t SET a = 1",
+            "EXPLAIN DELETE FROM t",
+        ] {
+            assert_ne!(
+                classify(sql),
+                StmtClass::ReadOnly,
+                "{sql} was sent to a replica"
+            );
+        }
+    }
+
+    #[test]
+    fn a_statement_leading_keyword_is_caught_by_the_allowlist_not_the_denylist() {
+        // Why the denylist can stay short. These write, none of them is on the
+        // denylist, and all of them still stay off replicas because their first
+        // word is not on the allowlist. It holds after a semicolon too, since
+        // each statement gets its own first word.
+        for sql in [
+            "DROP TABLE t",
+            "GRANT SELECT ON t TO r",
+            "COMMENT ON TABLE t IS 'x'",
+            "LOCK TABLE t",
+            "COPY t FROM STDIN",
+            "CALL p()",
+            "VACUUM t",
+        ] {
+            assert_ne!(classify(sql), StmtClass::ReadOnly, "{sql}");
+            let chained = format!("SELECT 1; {sql}");
+            assert_ne!(
+                classify(&chained),
+                StmtClass::ReadOnly,
+                "{chained} was sent to a replica"
+            );
+        }
+    }
+
+    #[test]
+    fn a_column_named_after_a_non_reserved_keyword_still_reaches_replicas() {
+        // The cost of an over-broad denylist, made concrete. All of these are
+        // legal unquoted column names and all are queries somebody writes.
+        for sql in [
+            "SELECT comment FROM posts",
+            "SELECT copy FROM documents",
+            "SELECT call FROM logs",
+            "SELECT security FROM policies",
+            "SELECT import FROM batches",
+            "SELECT lock FROM resources",
+        ] {
+            assert_eq!(
+                classify(sql),
+                StmtClass::ReadOnly,
+                "{sql} was kept off replicas for no reason"
+            );
+        }
+    }
+
+    #[test]
+    fn a_select_calling_a_writing_function_is_unknown_rather_than_read_only() {
+        // These write, and all of them fail outright against a replica in
+        // recovery. Unknown rather than Write: the scan does not understand the
+        // statement to modify data, it declines to vouch for it.
+        for sql in [
+            "SELECT nextval('s')",
+            "SELECT setval('s', 1)",
+            "SELECT pg_advisory_lock(1)",
+            "SELECT pg_try_advisory_xact_lock(1)",
+            "SELECT txid_current()",
+            "SELECT pg_logical_emit_message(true, 'a', 'b')",
+            "SELECT lo_create(0)",
+        ] {
+            assert_eq!(classify(sql), StmtClass::Unknown, "{sql}");
+        }
+    }
+
+    #[test]
+    fn a_schema_qualified_writing_function_is_still_caught() {
+        // The scan yields `pg_catalog`, `nextval` and `(` separately, so
+        // matching the bare name covers the qualified form for free.
+        assert_eq!(
+            classify("SELECT pg_catalog.nextval('s')"),
+            StmtClass::Unknown
+        );
+    }
+
+    #[test]
+    fn a_writing_function_does_not_downgrade_a_known_write() {
+        // It must not turn a Write back into an Unknown. Both route to the
+        // primary today, but the two mean different things and the confident
+        // one should survive.
+        assert_eq!(
+            classify("INSERT INTO t VALUES (nextval('s'))"),
+            StmtClass::Write
+        );
+    }
+
+    #[test]
+    fn a_harmlessly_volatile_function_stays_read_only() {
+        // `random()` and `clock_timestamp()` are volatile in the catalogue and
+        // perfectly safe on a replica. Treating volatility itself as the signal
+        // would keep ordinary reads off replicas for no benefit.
+        for sql in [
+            "SELECT random()",
+            "SELECT clock_timestamp()",
+            "SELECT now()",
+            "SELECT * FROM t ORDER BY random() LIMIT 1",
+        ] {
+            assert_eq!(classify(sql), StmtClass::ReadOnly, "{sql}");
+        }
+    }
+
+    #[test]
+    fn a_column_named_like_a_writing_function_is_not_one() {
+        assert_eq!(classify("SELECT nextval_cache FROM t"), StmtClass::ReadOnly);
+        assert_eq!(
+            classify("SELECT * FROM t WHERE a = 'nextval'"),
+            StmtClass::ReadOnly
+        );
+    }
+
+    #[test]
+    fn a_read_only_transaction_is_recognised_in_its_several_spellings() {
+        for sql in [
+            "BEGIN READ ONLY",
+            "begin read only",
+            "BEGIN TRANSACTION READ ONLY",
+            "START TRANSACTION READ ONLY",
+            "START TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ ONLY",
+            "SET TRANSACTION READ ONLY",
+            "BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY",
+        ] {
+            assert!(begins_read_only_transaction(sql), "{sql}");
+        }
+    }
+
+    #[test]
+    fn the_absence_of_a_mode_is_not_a_promise_of_one() {
+        // The default is read write. Reading a bare BEGIN as read only would
+        // send a whole transaction's writes to a replica.
+        for sql in [
+            "BEGIN",
+            "BEGIN READ WRITE",
+            "START TRANSACTION",
+            "START TRANSACTION READ WRITE",
+            "BEGIN ISOLATION LEVEL SERIALIZABLE",
+            "SELECT 1",
+            "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+            "",
+            "'BEGIN READ ONLY'",
+        ] {
+            assert!(!begins_read_only_transaction(sql), "{sql:?}");
+        }
+    }
+
+    #[test]
+    fn only_the_first_statement_can_open_the_transaction() {
+        // A READ ONLY appearing after a semicolon belongs to a later statement
+        // and says nothing about the transaction this one opens.
+        assert!(!begins_read_only_transaction(
+            "BEGIN; SET TRANSACTION READ ONLY"
+        ));
+        assert!(begins_read_only_transaction("BEGIN READ ONLY; SELECT 1"));
+    }
+
+    #[test]
     fn case_and_whitespace_do_not_change_the_answer() {
         for sql in [
             "delete from t",
@@ -838,8 +1140,12 @@ mod properties {
         /// write and the feature would be worthless.
         #[test]
         fn an_ordinary_read_stays_replica_eligible(
-            column in "[a-z][a-z_]{0,12}",
-            table in "[a-z][a-z_]{0,12}",
+            // Prefixed, because an unprefixed generator produces identifiers
+            // like `do` and `lock`, which are reserved words that real SQL has
+            // to quote. The classifier is right to treat those as keywords, so
+            // generating them tests the generator rather than the classifier.
+            column in "col_[a-z_]{0,12}",
+            table in "tbl_[a-z_]{0,12}",
             lead in trivia(),
             mask in any::<u64>(),
         ) {

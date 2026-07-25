@@ -6,3 +6,5 @@
 # everyone who runs the test benefits from these saved cases.
 cc f0801f192f041975f3ecc236c892cd06bcc7231f7ac47586a56086a31a2416d9 # shrinks to strength = "UPDATE", wait = "", mask = 0
 cc 58c2146df975192eda10170a6b149b42c8426c21afb3e544827f16fed0848451 # shrinks to sql = " WITH x AS (insert into t values (1) RETURNING *) SELECT * FROM x"
+cc 0ebd32f06900d9b81ad1285b58e202b6b98847c00a93f7ed7b98ce86096aa65b # shrinks to column = "do", table = "a", lead = " ", mask = 0
+cc c0fd0bf148cbed74191665863b4c7ca3a24a16f7e3ba4a8d69b12e09b4658305 # shrinks to sql = " WITH x AS (truncate t RETURNING *) SELECT * FROM x"

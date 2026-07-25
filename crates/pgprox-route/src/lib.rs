@@ -15,4 +15,4 @@
 
 pub mod classify;
 
-pub use classify::classify;
+pub use classify::{begins_read_only_transaction, classify};
