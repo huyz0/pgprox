@@ -449,7 +449,16 @@ found in staging.
 - [x] `M3.10` The invariant, as a property test over randomized schedules
   including partitions, leader loss and simultaneous restarts. Acceptance: a
   failing seed is committed as a regression case.
-- [ ] `M3.11` Close M3.
+- [x] `M3.11` Close M3.
+- [ ] `M3.12` Forward a quota request to the leader over the gossip transport.
+  Deferred out of M3 deliberately: `pgprox-cluster` needs no socket to be
+  tested, and the invariant is a property of the quota rules rather than of a
+  message-passing layer. Until this lands, a node that is not the leader gets
+  `NoLeader` and falls back to its guaranteed share, which is the safe
+  direction but leaves the free pool usable only by the leader. Blocked on the
+  gossip transport, so it belongs with M4 or M6 rather than here. Acceptance:
+  a non-leader obtains a lease, and the invariant property test still holds
+  with the hop in the loop.
 
 ## M2: auth and sidecar (track B)
 

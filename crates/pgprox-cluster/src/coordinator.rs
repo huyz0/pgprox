@@ -44,7 +44,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use pgprox_core::cluster::{MembershipView, QuotaError, QuotaLease};
+use pgprox_core::cluster::{ClusterDigest, MembershipView, NodeMode, QuotaError, QuotaLease};
 use pgprox_core::ids::{NodeId, ServerId};
 
 use crate::digest::{DigestStore, MergeOutcome, VersionedDigest};
@@ -140,6 +140,10 @@ pub struct NodeCoordinator {
     held: HashMap<ServerId, QuotaLease>,
     /// Configured caps.
     caps: HashMap<ServerId, u32>,
+    /// What this node reports about itself.
+    mode: NodeMode,
+    client_conns: u32,
+    upstream_conns: Vec<(ServerId, u32)>,
 }
 
 impl NodeCoordinator {
@@ -154,6 +158,9 @@ impl NodeCoordinator {
             ledgers: HashMap::new(),
             held: HashMap::new(),
             caps: HashMap::new(),
+            mode: NodeMode::Active,
+            client_conns: 0,
+            upstream_conns: Vec::new(),
         }
     }
 
@@ -298,9 +305,43 @@ impl NodeCoordinator {
         self.held.insert(lease.server().clone(), lease);
     }
 
+    /// Returns a lease before it expires.
+    ///
+    /// Only clears the holder's own record. The ledger reclaims the capacity on
+    /// expiry regardless, so a release that never reaches the leader costs one
+    /// TTL of headroom rather than correctness.
+    pub fn release(&mut self, server: &ServerId) {
+        self.held.remove(server);
+        if let Some(ledger) = self.ledgers.get_mut(server) {
+            ledger.release(self.local);
+        }
+    }
+
     /// Drops every lease this node holds, as a restart would.
     pub fn forget_leases(&mut self) {
         self.held.clear();
+    }
+
+    /// Sets whether this node is taking work.
+    pub fn set_mode(&mut self, mode: NodeMode) {
+        self.mode = mode;
+    }
+
+    /// Records what this node is currently serving, for the next digest.
+    pub fn report(&mut self, client_conns: u32, upstream_conns: Vec<(ServerId, u32)>) {
+        self.client_conns = client_conns;
+        self.upstream_conns = upstream_conns;
+    }
+
+    /// What this node tells its peers about itself.
+    #[must_use]
+    pub fn digest(&self) -> ClusterDigest {
+        ClusterDigest {
+            node: self.local,
+            mode: self.mode,
+            client_conns: self.client_conns,
+            upstream_conns: self.upstream_conns.clone(),
+        }
     }
 }
 
@@ -310,7 +351,6 @@ mod tests {
     use super::*;
     use crate::digest::VersionedDigest;
     use crate::sim::Rng;
-    use pgprox_core::cluster::{ClusterDigest, NodeMode};
     use std::time::Duration;
 
     const CAP: u32 = 100;
