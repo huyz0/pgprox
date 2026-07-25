@@ -606,7 +606,7 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
   guard, per-key pools, and the limit. Acceptance: a guard dropped without a
   clean release closes the connection rather than returning it, and acquiring
   past the limit waits rather than opening.
-- [ ] `M5.12` Waiters and backpressure: queueing at the limit, deadline
+- [x] `M5.12` Waiters and backpressure: queueing at the limit, deadline
   expiry, and `PoolStats::waiting`. Acceptance: a waiter is woken by a release
   rather than by polling, and one that misses its deadline gets
   `PoolError::Timeout` and stops occupying a slot.

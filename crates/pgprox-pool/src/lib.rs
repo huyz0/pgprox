@@ -12,11 +12,13 @@
 //! [`pin`] decides which sessions genuinely cannot be moved, and [`statements`]
 //! removes the largest reason they otherwise would be.
 
+pub mod live;
 pub mod params;
 pub mod pin;
 pub mod pool;
 pub mod statements;
 
+pub use live::{Connector, LivePool};
 pub use params::{ParamChange, SessionParams};
 pub use pin::{PinReason, PinState, REPLAYABLE_PARAMETERS, pin_reason};
 pub use pool::{Acquired, Connection, Pool, PoolConfig};

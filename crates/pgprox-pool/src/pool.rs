@@ -26,7 +26,7 @@
 //! tested exhaustively without a Postgres anywhere.
 //!
 //! The async [`pgprox_core::pool::UpstreamPool`] implementation wraps this and
-//! adds the waiting, in `crate::live`.
+//! adds the waiting, in [`crate::live`].
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;

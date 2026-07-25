@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 pgprox-core = { path = "../pgprox-core" }
 async-trait.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
 pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
