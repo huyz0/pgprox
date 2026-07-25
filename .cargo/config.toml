@@ -1,0 +1,16 @@
+# Link time dominates a many-crate workspace, and the pre-commit budget is two
+# minutes. A fast linker is close to free.
+#
+# mold is not installed on this machine, so the flag is left commented rather
+# than set to something that would break the build for anyone without it.
+# Install mold, then uncomment:
+#
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[alias]
+# Convenience wrappers so the documented commands stay short. The scripts in
+# scripts/ remain the enforcement path; these are for interactive use.
+lint = "clippy --all-targets --all-features -- -D warnings"
+cov = "llvm-cov nextest --lib --bins"

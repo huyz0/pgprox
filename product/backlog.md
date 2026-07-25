@@ -67,13 +67,13 @@ Sizing note: the coverage gate is 95% per crate, so a task that adds a trait
 without its fake and tests leaves the tree red and is half a task. Every entry
 below is types plus tests plus fake where one applies.
 
-- [ ] `M0.1` Define M0: this decomposition, and `scripts/m0-complete.sh`.
+- [x] `M0.1` Define M0: this decomposition, and `scripts/m0-complete.sh`.
   Acceptance: the script exits non-zero now, naming each thing that is missing.
-- [ ] `M0.2` Workspace skeleton. Root `Cargo.toml` with `[workspace.lints]`,
+- [x] `M0.2` Workspace skeleton. Root `Cargo.toml` with `[workspace.lints]`,
   `rustfmt.toml`, `deny.toml`, `.cargo/config.toml`.
   Acceptance: `cargo metadata` succeeds, `scripts/check-fmt.sh` passes,
   `cargo deny check` passes.
-- [ ] `M0.3` `pgprox-core` crate and the ID newtypes: `TenantId`, `NodeId`,
+- [x] `M0.3` `pgprox-core` crate and the ID newtypes: `TenantId`, `NodeId`,
   `ServerId`, `ConnId`, `Lsn`, `PoolKey`.
   Acceptance: a swapped pair of IDs fails to compile; `Lsn` orders correctly
   across the 32-bit boundary; `ConnId` round-trips its node ID.

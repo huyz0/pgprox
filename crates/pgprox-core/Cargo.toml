@@ -1,0 +1,19 @@
+[package]
+name = "pgprox-core"
+description = "Contracts shared by every pgprox crate: traits, DTOs, errors, IDs, and fakes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Fakes are available to downstream crates only when they ask, but always
+# compiled during this crate's own tests so they are covered by the gate.
+test-fakes = []
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

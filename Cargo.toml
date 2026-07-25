@@ -1,0 +1,63 @@
+[workspace]
+resolver = "3"
+members = ["crates/pgprox-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "Apache-2.0"
+repository = "https://github.com/pgprox/pgprox"
+
+[workspace.dependencies]
+thiserror = "2"
+
+[workspace.lints.rust]
+# No unsafe anywhere. If the buffer slab or the codec appears to need it, that
+# is a design review, not a local allow. See standards/rust-style.md.
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+# A proxy fails in front of a customer's database. An invariant you are certain
+# of is either encodable in the type or worth a real error.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+# Allowed from pedantic, each with a reason. Keep this list short; every entry
+# is a rule we decided not to follow, and it should be defensible.
+#
+# module_name_repetitions: `pool::PoolError` reads better than `pool::Error` at
+#   the call site, where the module is rarely in scope.
+# missing_errors_doc / missing_panics_doc: the error type is in the signature
+#   and says more than prose would. Panics are denied outright anyway.
+# must_use_candidate: too noisy on a contracts crate that is nearly all types.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+
+[profile.test]
+# The simulation and property tests are compute-bound. Unoptimized builds cost
+# more in run time than they save in compile time. See standards/testing.md.
+opt-level = 1
+
+[profile.dev]
+opt-level = 0
+debug = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"

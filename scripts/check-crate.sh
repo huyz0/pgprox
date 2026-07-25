@@ -37,4 +37,14 @@ else
   fail "clippy ($label)"
 fi
 
+# Doctests are not part of the nextest run that the coverage gate uses, so
+# without this they are never executed by anything. That matters here because
+# compile_fail doctests are how type-level guarantees are proven: an ID newtype
+# that silently became interchangeable with another would go unnoticed.
+if cargo test --doc "${scope[@]}" >/dev/null 2>&1; then
+  ok "doctests ($label)"
+else
+  fail "doctests ($label): run 'cargo test --doc' for detail"
+fi
+
 finish
