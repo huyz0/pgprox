@@ -15,7 +15,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | --- | --- | --- |
 | M-1 | AI development system | complete |
 | M0 | Contracts and quality gates | complete |
-| M1 | Protocol and TLS (track A) | ready |
+| M1 | Protocol and TLS (track A) | complete |
 | M2 | Auth and sidecar (track B) | ready |
 | M3 | Cluster (track C) | ready |
 | M4 | Operations (track D) | ready |
@@ -56,7 +56,7 @@ Checks: workspace builds, `cargo fmt --all --check` clean, `cargo clippy
 --fail-under-lines 95` passing per crate, `cargo deny check` clean, and every
 public trait in `pgprox-core` having a fake with its own tests.
 
-## M1: protocol and TLS
+## M1: protocol and TLS (complete)
 
 Frame codec both directions, startup and auth flows, extended query, COPY,
 protocol negotiation, cancellation.
@@ -65,8 +65,11 @@ protocol negotiation, cancellation.
 scripts/conformance.sh 17 18
 ```
 
-Checks: the conformance suite passes against Postgres 17 and 18 in
-testcontainers, driven by psql, pgx, asyncpg, JDBC, and npgsql.
+Checks: the conformance suite passes against Postgres 17 and 18, driven by
+psql, pgx, asyncpg, JDBC, and npgsql. The codec is tested from both sides: as a
+client against real Postgres in Docker, and as a server via the harness in
+`crates/pgprox-proto/examples/conformance_server.rs`. Drivers whose toolchain is
+missing are reported as skipped, never silently dropped.
 
 ## M2: auth and sidecar
 
