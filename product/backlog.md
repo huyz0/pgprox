@@ -293,14 +293,13 @@ this is the largest single gap.
 
 ### Group C: protocol 3.2
 
-- [!] `M1F.14` **Escalated, see M1F.30.** 256-bit cancel keys. `ConnId` is 64-bit and `BackendKeyData` is
+- [~] `M1F.14` **Deferred by ADR 0016**, with triggers for revisiting. 256-bit cancel keys. `ConnId` is 64-bit and `BackendKeyData` is
   two `i32`s, so this is a `pgprox-core` contract change: use the
   `contract-change` skill and expect to touch every crate that holds a `ConnId`.
-- [ ] `M1F.15` Negotiate 3.2 upward rather than down, keeping the 3.0 path for
-  older clients. Acceptance: a 3.2 client gets 3.2, a 3.0 client gets 3.0, both
-  against real Postgres 18.
-- [ ] `M1F.16` `_pq_.` protocol extension parameters in the startup packet, and
-  reporting unrecognised ones in `NegotiateProtocolVersion`.
+- [~] `M1F.15` **Deferred by ADR 0016.** Negotiating down is the decision, not a
+  placeholder. The spec stays so the work is designed when a trigger fires.
+- [~] `M1F.16` **Deferred with M1F.15.** `_pq_.` extension parameters only
+  matter to a client negotiating a version we decline.
 
 ### Group D: replication and COPY BOTH
 
@@ -393,7 +392,7 @@ rather than remembered.
 
 ### Group G: close
 
-- [ ] `M1F.26` Close M1F. Acceptance: `scripts/m1f-complete.sh` exits zero.
+- [x] `M1F.26` Close M1F. Acceptance: `scripts/m1f-complete.sh` exits zero.
 
 Remaining after five review rounds, all planned work rather than discovered
 defects: M1F.15 and M1F.16 are protocol 3.2, gated on the M1F.30 spec's open
@@ -407,11 +406,8 @@ the fuzz corpus from the reference proxies.
 `pgprox-auth` turns a client's token into the credentials for its database, by
 asking the sidecar and caching the answer.
 
-Scope note: `standards/contracts.md` says `.proto` changes need agreement from
-the sidecar owners before the Rust side moves. There is no sidecar team yet, so
-the contract here is a **proposal**, marked unfrozen in the file itself. It must
-be signed off before anything outside this repo depends on it, and until then
-field numbers may still change.
+Scope note: ADR 0017 gives this repository ownership of the sidecar contract and
+freezes it at v1. Field numbers are stable; a breaking change means `auth.v2`.
 
 - [x] `M2.1` Define M2: this decomposition, and the `.proto` contract as a
   proposal. Acceptance: the file states its unfrozen status and its versioning

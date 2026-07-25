@@ -17,7 +17,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M0 | Contracts and quality gates | complete |
 | M1 | Protocol and TLS (track A) | complete |
 | M1R | Protocol revision: streaming and test breadth | complete |
-| M1F | Full protocol coverage | ready |
+| M1F | Full protocol coverage | complete |
 | M2 | Auth and sidecar (track B) | complete |
 | M3 | Cluster (track C) | ready |
 | M4 | Operations (track D) | ready |
@@ -86,6 +86,18 @@ scripts/m1r-complete.sh
 Checks: a header-only decode and a relay state machine exist, the inspect cap is
 separate from the passthrough cap, and the conformance suite covers each gap the
 review named by name rather than by count.
+
+## M1F: full protocol coverage (complete)
+
+Measured against pgdog, pgbouncer and odyssey rather than guessed at.
+
+```bash
+scripts/m1f-complete.sh
+```
+
+Checks: the message surface, SCRAM against published vectors, the frozen sidecar
+contract, and that protocol 3.2 and replication scope are recorded decisions
+rather than omissions.
 
 ## M2: auth and sidecar (complete)
 

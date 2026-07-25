@@ -2,18 +2,15 @@ syntax = "proto3";
 
 // Credential resolution for pgprox.
 //
-// STATUS: PROPOSAL, NOT FROZEN.
+// STATUS: FROZEN. Owned by this repository. See ADR 0017.
 //
-// standards/contracts.md requires agreement from the sidecar owners before the
-// Rust side depends on this. No sidecar team exists yet, so field numbers here
-// may still change. Once anything outside this repository implements it, the
-// rules below apply and this notice comes out.
-//
-// Versioning rules, from the moment this is signed off:
+// Versioning rules, in force:
 //   - Field numbers are never reused, even for a removed field.
 //   - Fields are never removed, only deprecated.
 //   - Anything optional in the proto is genuinely optional in the Rust type.
 //   - Breaking changes get a new package version (auth.v2), not an edit here.
+//
+// A change here is a spec change first; use the contract-change skill.
 
 package pgprox.auth.v1;
 

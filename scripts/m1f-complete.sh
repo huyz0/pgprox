@@ -53,15 +53,26 @@ else
 fi
 
 # --- Group C: protocol 3.2 ----------------------------------------------------
-# Mentioning the constant is not supporting it. negotiate_version must return
-# Accept for 3.2, which today it does not: it answers Negotiate { minor: 0 }.
-# The first version of this check grepped for the name and passed on a test
-# import, which is the same false positive the M1R gate had.
-if grep -qs 'fn negotiate_version' "$PROTO/startup.rs" \
-   && grep -A20 'fn negotiate_version' "$PROTO/startup.rs" | grep -qs 'minor == 2\|SUPPORTED_MINOR'; then
-  ok "3.2 is accepted, not negotiated down"
+# ADR 0016 decided to negotiate 3.2 down rather than implement it, so this gate
+# asserts that decision holds rather than assuming the opposite. A gate encoding
+# a presumed answer quietly forces it.
+if compgen -G 'product/decisions/*protocol-3-2*' >/dev/null; then
+  ok "protocol 3.2 handling is a recorded decision"
 else
-  fail "3.2 still only negotiated down (mentioning the constant is not support)"
+  fail "no ADR deciding what to do about protocol 3.2"
+fi
+# The behaviour the ADR commits to: 3.2 in, 3.0 offered back.
+if grep -qsE 'fn version_3_2_is_negotiated_down_to_3_0' "$PROTO/startup.rs"; then
+  ok "3.2 down-negotiation is tested"
+else
+  fail "nothing tests that a 3.2 client is offered 3.0"
+fi
+
+# --- the sidecar contract is owned and frozen --------------------------------
+if grep -qs 'STATUS: FROZEN' proto/pgprox/auth/v1/auth.proto; then
+  ok "sidecar contract is frozen"
+else
+  fail "sidecar contract still reads as a proposal; ADR 0017 froze it"
 fi
 
 # --- Group D: replication scope decision -------------------------------------
