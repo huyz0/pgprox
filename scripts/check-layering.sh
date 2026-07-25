@@ -86,4 +86,31 @@ fi
 
 (( violations == 0 )) && ok "every crate depends only on pgprox-core"
 
+# --- #[non_exhaustive] belongs on enums, not on constructible DTOs ------------
+#
+# The attribute makes a struct unconstructable outside its own crate. On an enum
+# describing external state that is the point; on a DTO a downstream crate
+# assembles it is a compile error waiting for whoever writes that crate.
+#
+# It happened three times in pgprox-core (Grant, Member, ClusterDigest) before
+# anyone automated it, each discovered only when a second crate tried to build
+# the type.
+if [[ -d crates/pgprox-core/src ]]; then
+  bad_structs=0
+  while read -r location; do
+    [[ -n "$location" ]] || continue
+    file="${location%%:*}"
+    line="${location##*:}"
+    # The declaration on the line after the attribute.
+    decl="$(sed -n "$((line + 1))p" "$file")"
+    if [[ "$decl" =~ ^pub\ struct ]]; then
+      name="$(awk '{print $3}' <<< "$decl" | tr -d '{')"
+      fail "pgprox-core::$name is a #[non_exhaustive] struct; downstream crates cannot build it"
+      bad_structs=$((bad_structs + 1))
+    fi
+  done < <(grep -rn '^#\[non_exhaustive\]' crates/pgprox-core/src | cut -d: -f1,2)
+
+  (( bad_structs == 0 )) && ok "no #[non_exhaustive] structs in pgprox-core"
+fi
+
 finish

@@ -109,7 +109,6 @@ impl Drop for UpstreamGuard {
 
 /// A point-in-time view of one pool.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[non_exhaustive]
 pub struct PoolStats {
     /// Connections currently checked out.
     pub active: u32,

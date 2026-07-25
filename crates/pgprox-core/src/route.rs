@@ -83,7 +83,6 @@ impl ReplicaState {
 
 /// Everything the router needs to decide.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[non_exhaustive]
 pub struct RouteCtx {
     /// What the statement does.
     pub class: StmtClass,

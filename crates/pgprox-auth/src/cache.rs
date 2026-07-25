@@ -101,10 +101,7 @@ impl<R> std::fmt::Debug for CachingResolver<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CachingResolver")
             .field("config", &self.config)
-            .field(
-                "entries",
-                &self.entries.lock().map(|e| e.len()).unwrap_or(0),
-            )
+            .field("entries", &self.entries.lock().map_or(0, |e| e.len()))
             .finish_non_exhaustive()
     }
 }

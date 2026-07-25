@@ -37,7 +37,6 @@ pub struct ServerConfig {
 
 /// What a node should be doing.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-#[non_exhaustive]
 pub struct NodeOverride {
     /// Active, or draining.
     pub mode: NodeMode,

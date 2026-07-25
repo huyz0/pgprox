@@ -442,7 +442,7 @@ found in staging.
   rate limit, settle window after a membership change, never toward a draining
   node, never a pinned or in-transaction session, global kill switch.
   Acceptance: each guard rail refuses a shed that would otherwise happen.
-- [ ] `M3.8` Gossip digest encoding, and merging a peer's digest into the local
+- [x] `M3.8` Gossip digest encoding, and merging a peer's digest into the local
   view. Acceptance: a digest round-trips, and merging is order-independent so
   two nodes converge regardless of delivery order.
 - [ ] `M3.9` The `ClusterCoordinator` implementation, wiring the above together.

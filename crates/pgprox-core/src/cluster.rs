@@ -205,8 +205,12 @@ impl QuotaLease {
 }
 
 /// What one node tells its peers about itself.
+///
+/// Not `#[non_exhaustive]`: `pgprox-cluster` builds these from gossip. This is
+/// the third DTO here to have carried that attribute wrongly, after `Grant` in
+/// M0 and `Member` in M3, so `scripts/check-layering.sh` now rejects it on any
+/// struct whose fields are all public.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-#[non_exhaustive]
 pub struct ClusterDigest {
     /// Which node this describes.
     pub node: NodeId,

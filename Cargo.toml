@@ -50,7 +50,12 @@ print_stderr = "deny"
 # missing_errors_doc / missing_panics_doc: the error type is in the signature
 #   and says more than prose would. Panics are denied outright anyway.
 # must_use_candidate: too noisy on a contracts crate that is nearly all types.
+# duration_suboptimal_units: suggests Duration::from_mins and from_hours, which
+#   are newer than our pinned MSRV. Adopting them would raise the floor for a
+#   readability gain, and the FIPS build image is the reason the floor is pinned
+#   at all. Revisit when MSRV moves for a real reason.
 module_name_repetitions = "allow"
+duration_suboptimal_units = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"

@@ -608,12 +608,17 @@ mod tests {
 
     #[test]
     fn derivation_is_deterministic_for_the_same_inputs() {
-        let a = ScramKeys::derive(b"pw", b"salt", 100).unwrap();
-        let b = ScramKeys::derive(b"pw", b"salt", 100).unwrap();
-        assert!(a == b);
+        // Both sides Debug as "[redacted]", so the message carries the meaning
+        // rather than the values. That is the redaction working, not a gap.
+        let first = ScramKeys::derive(b"pw", b"salt", 100).unwrap();
+        let repeated = ScramKeys::derive(b"pw", b"salt", 100).unwrap();
+        assert_eq!(first, repeated, "the same inputs derived different keys");
 
-        let different = ScramKeys::derive(b"pw", b"other-salt", 100).unwrap();
-        assert!(a != different, "the salt did not affect derivation");
+        let salted_differently = ScramKeys::derive(b"pw", b"other-salt", 100).unwrap();
+        assert_ne!(
+            first, salted_differently,
+            "the salt did not affect derivation"
+        );
     }
 
     #[test]
