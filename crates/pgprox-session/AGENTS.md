@@ -21,6 +21,19 @@ tests and mutation testing.
 - Drain, shed, and socket-pressure eviction share one path for closing a client
   cleanly: wait for `ReadyForQuery('I')`, send `57P01`, close.
 
+## The cancel key must be random
+
+A `CancelRequest` is unauthenticated by design: it arrives on a fresh connection
+carrying nothing but the key. The key is therefore a bearer token, and anyone
+holding it can cancel that query.
+
+When this crate creates a `ConnId`, fill its 48-bit secret from a CSPRNG. A
+counter would let any client derive its neighbours' keys by adding one, turning
+"cancel your own query" into "cancel anyone's".
+
+`pgprox-core` cannot enforce this: it performs no I/O and has no entropy source.
+The obligation lands here, where connections are actually made.
+
 ## The hazard that has already bitten twice
 
 **A read can pull in bytes past the stage you are in, and dropping them loses

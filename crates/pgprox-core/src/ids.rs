@@ -130,13 +130,14 @@ const CONN_COUNTER_BITS: u32 = 48;
 const CONN_COUNTER_MASK: u64 = (1 << CONN_COUNTER_BITS) - 1;
 
 impl ConnId {
-    /// Builds a connection identifier from its owning node and a counter.
+    /// Builds a connection identifier from its owning node and a secret.
     ///
-    /// The counter is truncated to 48 bits, which wraps after 2.8e14
-    /// connections on a single node.
+    /// `secret` is truncated to 48 bits. It must be random: see the type-level
+    /// documentation for why a counter here is a security defect rather than a
+    /// style choice.
     #[must_use]
-    pub const fn new(node: NodeId, counter: u64) -> Self {
-        Self(((node.0 as u64) << CONN_COUNTER_BITS) | (counter & CONN_COUNTER_MASK))
+    pub const fn new(node: NodeId, secret: u64) -> Self {
+        Self(((node.0 as u64) << CONN_COUNTER_BITS) | (secret & CONN_COUNTER_MASK))
     }
 
     /// The node that owns this connection.
@@ -145,10 +146,20 @@ impl ConnId {
         NodeId((self.0 >> CONN_COUNTER_BITS) as u16)
     }
 
-    /// The per-node counter.
+    /// The per-connection secret.
     #[must_use]
-    pub const fn counter(self) -> u64 {
+    pub const fn secret(self) -> u64 {
         self.0 & CONN_COUNTER_MASK
+    }
+
+    /// Deprecated name for [`ConnId::secret`].
+    ///
+    /// Kept so the rename is additive rather than a breaking change, and named
+    /// so a caller reading "counter" is told what it should be instead.
+    #[must_use]
+    #[deprecated(note = "a cancel key is a bearer token; use secret() and fill it randomly")]
+    pub const fn counter(self) -> u64 {
+        self.secret()
     }
 
     /// The raw value, as sent to the client in `BackendKeyData`.
@@ -166,7 +177,7 @@ impl ConnId {
 
 impl fmt::Display for ConnId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{:x}", self.node(), self.counter())
+        write!(f, "{}/{:x}", self.node(), self.secret())
     }
 }
 
@@ -310,7 +321,7 @@ mod tests {
             for counter in [0_u64, 1, 999_999, CONN_COUNTER_MASK] {
                 let id = ConnId::new(NodeId::new(node), counter);
                 assert_eq!(id.node().get(), node, "node lost for {node}/{counter}");
-                assert_eq!(id.counter(), counter, "counter lost for {node}/{counter}");
+                assert_eq!(id.secret(), counter, "counter lost for {node}/{counter}");
                 assert_eq!(ConnId::from_raw(id.raw()), id, "raw round-trip failed");
             }
         }
@@ -322,7 +333,7 @@ mod tests {
         // node bits, or a cancel request would be forwarded to the wrong pod.
         let id = ConnId::new(NodeId::new(7), CONN_COUNTER_MASK + 1);
         assert_eq!(id.node().get(), 7);
-        assert_eq!(id.counter(), 0);
+        assert_eq!(id.secret(), 0);
     }
 
     #[test]

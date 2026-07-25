@@ -386,6 +386,11 @@ rather than remembered.
   version by design, so the ban needs `allow-wildcard-paths`, not a version
   invented for a local path.
 
+- [x] `M1F.36` The 3.0 cancel key's low 48 bits are described as a "counter",
+  and a cancel key is a bearer token. A sequence number is not a secret. Making
+  it random needs no protocol change and no contract change, so it should not
+  wait behind M1F.30. State the requirement where the connection is created.
+
 ### Group G: close
 
 - [ ] `M1F.26` Close M1F. Acceptance: `scripts/m1f-complete.sh` exits zero.
