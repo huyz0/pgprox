@@ -561,7 +561,7 @@ structure over strings and hashes and needs no protocol knowledge at all.
 with their statement names. `pgprox-session` joins them at M6, which is exactly
 what a composer is for. ADR 0011 is amended in `M5.1` to say so.
 
-- [ ] `M5.1` Define M5: this decomposition, `scripts/m5-complete.sh`, and the
+- [x] `M5.1` Define M5: this decomposition, `scripts/m5-complete.sh`, and the
   ADR 0011 amendment above. Acceptance: the gate script runs and reports what
   is missing rather than passing vacuously.
 - [x] `M5.2` `pgprox-route` and the statement classifier: a token-prefix scan
@@ -644,7 +644,7 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
   workload that runs per statement rather than per transaction. The only way to
   feed it from a `ReplicaWatch` was `snapshot`, which copies. The route
   decision is a declared hot path.
-- [ ] `M5.14` Close M5.
+- [x] `M5.14` Close M5.
 
 ## M4 and later
 

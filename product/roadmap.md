@@ -21,8 +21,8 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M2 | Auth and sidecar (track B) | complete |
 | M3 | Cluster (track C) | complete |
 | M4 | Operations (track D) | ready |
-| M5 | Pooling and routing (track E) | ready |
-| M6 | Integration | blocked by M1, M5 |
+| M5 | Pooling and routing (track E) | complete |
+| M6 | Integration | ready |
 | M7 | Scale and performance | blocked by M6 |
 | M8 | FIPS and release | blocked by M7 |
 | M9 | Query cache (post-MVP) | blocked by M8 |
