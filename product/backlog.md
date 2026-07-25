@@ -181,7 +181,48 @@ drivers. Between them that covers every message the codec claims to handle.
   statement; skipped drivers are reported, never silently dropped.
 - [x] `M1.14` Close M1. Acceptance: `scripts/conformance.sh 17 18` exits zero.
 
-## M2 and later
+## M2: auth and sidecar (track B)
+
+`pgprox-auth` turns a client's token into the credentials for its database, by
+asking the sidecar and caching the answer.
+
+Scope note: `standards/contracts.md` says `.proto` changes need agreement from
+the sidecar owners before the Rust side moves. There is no sidecar team yet, so
+the contract here is a **proposal**, marked unfrozen in the file itself. It must
+be signed off before anything outside this repo depends on it, and until then
+field numbers may still change.
+
+- [x] `M2.1` Define M2: this decomposition, and the `.proto` contract as a
+  proposal. Acceptance: the file states its unfrozen status and its versioning
+  rules; field numbers are assigned and never reused.
+- [ ] `M2.2` `pgprox-auth` crate with tonic codegen wired into the build.
+  Acceptance: the workspace builds, generated code is excluded from coverage,
+  and nothing hand-edits it.
+- [ ] `M2.3` gRPC client over a Unix domain socket, implementing
+  `CredentialResolver`. Acceptance: a `Grant` round-trips proto to Rust with the
+  password arriving as a `SecretString`.
+- [ ] `M2.4` Grant cache keyed by `sha256(token) || startup_db`.
+  Acceptance: a hit avoids the RPC, the key is a hash rather than the token, and
+  the TTL is the earliest of grant TTL, token expiry, and configured cap.
+- [ ] `M2.5` Singleflight on the resolve path.
+  Acceptance: N concurrent lookups of the same cold key produce exactly one
+  underlying call, asserted against the fake's call counter.
+- [ ] `M2.6` Negative caching for refusals.
+  Acceptance: a refused token is not retried on every reconnect, and the
+  negative TTL is shorter than the positive one so a revocation reversal is not
+  stuck behind it.
+- [ ] `M2.7` Algorithm allowlist on the JWT header.
+  Acceptance: `none` and the `HS*` family are rejected before the sidecar is
+  called; the six approved algorithms pass. The proxy still does not verify
+  signatures.
+- [ ] `M2.8` Mock sidecar binary.
+  Acceptance: it starts, serves over UDS, and can be told to refuse, stall, and
+  return a malformed grant so callers' error paths are reachable.
+- [ ] `M2.9` Integration tests against the mock over a real socket.
+  Acceptance: `cargo nextest run -p pgprox-auth --features integration` passes.
+- [ ] `M2.10` Close M2.
+
+## M3 and later
 
 Not yet decomposed. See [roadmap.md](roadmap.md). The `next-task` skill
 decomposes the next milestone when the current one closes.
