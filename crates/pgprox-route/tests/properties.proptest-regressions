@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9d409f96bfcec687959f91ae5e3d4eb7fd33080f6f9236eb2327b46b7e9cba3b # shrinks to sql = "SELECT -- INSERT", cut = 16
+cc 60ea525859b5a8d89534dcf75c66ce9e52b05549248db003ecad713999c7a25e # shrinks to sql = "/* INSERT */ SELECT"
+cc c56b7ffe9da5d0fd384cdbc6666eafada20e66bb444a3da956624c1efed235d1 # shrinks to sql = "SELECT $1 INSERT $$"
+cc 96d2917442c5d3208ae663794c9e32f35ce963b24ba5a103985ecb5bb1228d72 # shrinks to sql = "SELECT $1 INSERT $$", cut = 18

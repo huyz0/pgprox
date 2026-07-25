@@ -584,7 +584,7 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
 - [x] `M5.6` The `Router` implementation over `route::decide`, with the target
   fixed at the transaction's first statement. Acceptance: the second statement
   of a transaction goes where the first did, whatever its own class.
-- [ ] `M5.7` A fuzz target for the classifier. Acceptance: it builds and runs a
+- [x] `M5.7` A fuzz target for the classifier. Acceptance: it builds and runs a
   short seeded corpus without panicking, and the invariant is asserted inside
   the target rather than only outside it.
 - [ ] `M5.8` `pgprox-pool` and pin detection: `LISTEN`/`UNLISTEN`, session

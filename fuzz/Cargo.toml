@@ -14,6 +14,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 pgprox-proto = { path = "../crates/pgprox-proto" }
+pgprox-core = { path = "../crates/pgprox-core" }
+pgprox-route = { path = "../crates/pgprox-route" }
 
 [[bin]]
 name = "frame_decode"
@@ -25,6 +27,13 @@ bench = false
 [[bin]]
 name = "message_decode"
 path = "fuzz_targets/message_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "classify"
+path = "fuzz_targets/classify.rs"
 test = false
 doc = false
 bench = false

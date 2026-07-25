@@ -1,5 +1,9 @@
 /target
 /target-coverage
+# cargo-fuzz builds into its own directory, since fuzz/ is a separate workspace.
+/fuzz/target
+/fuzz/artifacts
+/fuzz/coverage
 **/*.rs.bk
 *.profraw
 *.profdata

@@ -13,6 +13,7 @@ rustup toolchain install nightly
 cargo install cargo-fuzz
 cargo +nightly fuzz run frame_decode -- -max_total_time=60
 cargo +nightly fuzz run message_decode -- -max_total_time=60
+cargo +nightly fuzz run classify -- -max_total_time=60
 ```
 
 Short runs gate pull requests; long runs happen nightly. See
@@ -25,9 +26,13 @@ the development machine where they were written, so they are correct by
 inspection only. Running them is outstanding and belongs in CI, where the
 toolchain can be provisioned.
 
-What does run today, on stable, is in `crates/pgprox-proto/tests/properties.rs`:
-proptest generates structured and semi-structured input and asserts the same
-no-panic and consumed-length properties. That is weaker than coverage-guided
+What does run today, on stable, is in `crates/pgprox-proto/tests/properties.rs`
+and `crates/pgprox-route/tests/properties.rs`: proptest generates structured and
+semi-structured input and asserts the same properties. The route one carries the
+same differential oracle as the `classify` target, and it has already earned its
+place: it found a dollar-quote tag validation bug that classified
+`SELECT $1 INSERT $$` as a replica-eligible read. That is weaker than
+coverage-guided
 fuzzing, which is why it is not a replacement.
 
 ## Corpus

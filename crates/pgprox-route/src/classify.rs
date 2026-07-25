@@ -66,6 +66,10 @@
 //! *lexical structure* though, because that is what decides whether a word is
 //! SQL or the contents of a string literal, and mistaking one for the other in
 //! the wrong direction is how a write gets called a read.
+//!
+//! That is not hypothetical. `SELECT $1 INSERT $$` was classified read-only
+//! because `$1 INSERT $` was accepted as a dollar-quote tag and swallowed the
+//! rest of the statement. See [`is_dollar_tag`].
 
 use pgprox_core::route::StmtClass;
 
@@ -504,30 +508,49 @@ impl<'a> Scanner<'a> {
 
     /// Skips a dollar-quoted string, returning whether one was there.
     ///
-    /// The tag matters: `$$ ... $$` and `$body$ ... $body$` are different
-    /// delimiters, and a `$$` inside a `$body$` string does not end it.
+    /// The tag matters twice over. It decides where the string ends, since
+    /// `$$` inside `$body$ ... $body$` is data rather than a delimiter. And it
+    /// decides whether this is dollar quoting at all: a tag follows the rules
+    /// for an unquoted identifier, so `$1` is a parameter placeholder and
+    /// `$1 INSERT $` is not a tag at all.
+    ///
+    /// Getting that validation wrong is how `SELECT $1 INSERT $$` came to be
+    /// classified read-only. An over-eager tag swallowed the rest of the
+    /// statement as a string body, and the `INSERT` vanished. Found by the
+    /// differential property test in `tests/properties.rs`.
     fn skip_dollar_quoted(&mut self) -> bool {
-        let bytes = self.rest.as_bytes();
-        let Some(tag_end) = bytes[1..].iter().position(|b| *b == b'$') else {
+        let after = &self.rest[1..];
+        let Some(offset) = after.find('$') else {
             return false;
         };
-        let tag = &self.rest[..=tag_end + 1];
-        // A tag must be an identifier, so `$1$` is not dollar quoting.
-        if tag[1..tag.len() - 1]
-            .chars()
-            .any(|c| c.is_ascii_digit() && tag.len() == 3)
-        {
+        if !is_dollar_tag(&after[..offset]) {
             return false;
         }
 
-        let body = &self.rest[tag.len()..];
-        let end = body.find(tag).map_or(self.rest.len(), |i| {
-            // Past the closing tag.
-            tag.len() + i + tag.len()
-        });
+        // The `$`, the tag body, and the closing `$`.
+        let tag = &self.rest[..offset + 2];
+        let body_at = tag.len();
+        let end = self.rest[body_at..]
+            .find(tag)
+            .map_or(self.rest.len(), |i| body_at + i + tag.len());
         self.advance(end);
         true
     }
+}
+
+/// Whether the text between two dollar signs is a valid tag.
+///
+/// Postgres: a tag follows the rules for an unquoted identifier, except that it
+/// cannot contain a dollar sign. Empty is valid, which is `$$`.
+fn is_dollar_tag(inner: &str) -> bool {
+    let mut chars = inner.chars();
+    let Some(first) = chars.next() else {
+        // `$$`, the untagged form.
+        return true;
+    };
+    // A leading digit is what makes `$1` a placeholder rather than a tag.
+    (first.is_alphabetic() || first == '_' || !first.is_ascii())
+        && chars.all(|c| c.is_alphanumeric() || c == '_' || !c.is_ascii())
 }
 
 /// Whether a character can appear in a bare word.
@@ -767,6 +790,36 @@ mod tests {
             classify("SELECT $body$ a $$ b $body$; DELETE FROM t"),
             StmtClass::Write
         );
+    }
+
+    #[test]
+    fn an_invalid_dollar_tag_does_not_swallow_the_statement() {
+        // The regression. `$1 INSERT $` was accepted as a dollar-quote tag, so
+        // the rest of the statement became a string body and the INSERT
+        // vanished: `SELECT $1 INSERT $$` classified read-only. A tag follows
+        // the rules for an unquoted identifier, and this one starts with a
+        // digit and contains spaces. Found by the differential property test.
+        assert_eq!(classify("SELECT $1 INSERT $$"), StmtClass::Write);
+        assert_eq!(classify("SELECT $2 DELETE $$"), StmtClass::Write);
+        assert_eq!(
+            classify("SELECT $ INSERT $"),
+            StmtClass::Write,
+            "a tag with only a space swallowed the statement"
+        );
+    }
+
+    #[test]
+    fn a_valid_dollar_tag_is_still_dollar_quoting() {
+        // The fix must not go the other way and stop recognising real tags,
+        // which would expose their contents as SQL.
+        for sql in [
+            "SELECT $$ DELETE FROM t $$",
+            "SELECT $body$ DELETE FROM t $body$",
+            "SELECT $_x9$ DELETE FROM t $_x9$",
+            "SELECT $tag2$ DELETE FROM t $tag2$",
+        ] {
+            assert_eq!(classify(sql), StmtClass::ReadOnly, "{sql}");
+        }
     }
 
     #[test]
