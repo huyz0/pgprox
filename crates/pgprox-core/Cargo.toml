@@ -15,10 +15,12 @@ test-fakes = []
 [dependencies]
 async-trait.workspace = true
 thiserror.workspace = true
+# sync only: watch channels are runtime-agnostic and pull in no reactor.
+tokio = { workspace = true, features = ["sync"] }
 zeroize.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync"] }
 
 [lints]
 workspace = true

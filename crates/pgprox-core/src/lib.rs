@@ -18,6 +18,7 @@ pub mod auth;
 pub mod buf;
 pub mod clock;
 pub mod cluster;
+pub mod config;
 pub mod error;
 pub mod ids;
 pub mod pool;
@@ -27,6 +28,7 @@ pub use auth::{AuthRequest, Backend, ClaimSet, Grant, PoolHints, PoolMode, TlsMo
 pub use buf::{BufferSlab, PooledBuf};
 pub use clock::{Clock, SystemClock};
 pub use cluster::{ClusterCoordinator, ClusterDigest, MembershipView, NodeMode, QuotaLease};
+pub use config::{Config, ConfigError, ConfigSource, NodeOverride, ServerConfig};
 pub use error::{AuthRejection, ClientError, SqlState};
 pub use ids::{ConnId, Lsn, NodeId, PoolKey, ServerId, TenantId};
 pub use pool::{PoolError, PoolStats, ReleaseOutcome, UpstreamGuard, UpstreamPool};

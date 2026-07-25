@@ -106,7 +106,7 @@ below is types plus tests plus fake where one applies.
   `ClusterCoordinator`, and the fake.
   Acceptance: the fake's `home_node` is stable under rendezvous hashing and
   rehomes only tenants of a departed node; leases expire on the injected clock.
-- [ ] `M0.12` Config contract: `Config`, `NodeMode`, `ConfigSource`, and the
+- [x] `M0.12` Config contract: `Config`, `NodeMode`, `ConfigSource`, and the
   fake.
   Acceptance: the fake publishes a new config to watchers; invalid config is
   rejected with a message naming the offending field.
