@@ -108,6 +108,18 @@ pub enum BackendMessage<'a> {
         /// The secret needed to cancel.
         secret: i32,
     },
+    /// `t`, the parameter types a described statement expects.
+    ///
+    /// The count is what matters: a driver asks and then refuses to bind a
+    /// different number, which is how a wrong answer here surfaces. The type
+    /// OIDs are borrowed rather than copied, since a proxy forwards them
+    /// unchanged.
+    ParameterDescription {
+        /// How many parameters the statement takes.
+        count: usize,
+        /// The raw big-endian OID list, `count` entries of four bytes.
+        oids: &'a [u8],
+    },
     /// `I`, the statement was empty.
     ///
     /// Postgres sends this *instead of* `CommandComplete`, so a proxy tracking
@@ -196,6 +208,21 @@ pub fn decode<'a>(frame: &Frame<'a>) -> Result<BackendMessage<'a>, BackendError>
             tag: r.cstr("command_tag")?,
         },
         Tag::EMPTY_QUERY_RESPONSE => BackendMessage::EmptyQueryResponse,
+        Tag::PARAMETER_DESCRIPTION => {
+            let declared = r.i16("parameter_count")?;
+            // A negative count is malformed rather than "none": trusting it
+            // would make the OID slice length nonsense.
+            let count = usize::try_from(declared).map_err(|_| {
+                BackendError::Field(FieldError::OutOfRange {
+                    what: "parameter_count",
+                    value: i64::from(declared),
+                })
+            })?;
+            BackendMessage::ParameterDescription {
+                count,
+                oids: r.bytes(count * 4, "parameter_oids")?,
+            }
+        }
         Tag::ERROR_RESPONSE => BackendMessage::ErrorResponse(decode_error_fields(&mut r)?),
         Tag::NOTICE_RESPONSE => BackendMessage::NoticeResponse(decode_error_fields(&mut r)?),
         Tag::NOTIFICATION_RESPONSE => BackendMessage::NotificationResponse {
@@ -410,6 +437,63 @@ mod tests {
     }
 
     #[test]
+    fn parameter_description_yields_its_count_and_oids() {
+        // int4, then text.
+        let mut body = 2_i16.to_be_bytes().to_vec();
+        body.extend_from_slice(&23_i32.to_be_bytes());
+        body.extend_from_slice(&25_i32.to_be_bytes());
+
+        let BackendMessage::ParameterDescription { count, oids } =
+            decode(&frame(Tag::PARAMETER_DESCRIPTION, &body)).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(count, 2);
+        assert_eq!(oids.len(), 8, "the OID list should be four bytes each");
+    }
+
+    #[test]
+    fn a_statement_with_no_parameters_describes_as_zero() {
+        // The common case, and the one asyncpg refuses to bind against if the
+        // count is wrong.
+        let body = 0_i16.to_be_bytes();
+        let BackendMessage::ParameterDescription { count, oids } =
+            decode(&frame(Tag::PARAMETER_DESCRIPTION, &body)).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(count, 0);
+        assert!(oids.is_empty());
+    }
+
+    #[test]
+    fn a_parameter_description_shorter_than_its_count_is_an_error() {
+        // Claiming three parameters and supplying one OID must not read past
+        // the body.
+        let mut body = 3_i16.to_be_bytes().to_vec();
+        body.extend_from_slice(&23_i32.to_be_bytes());
+        assert!(decode(&frame(Tag::PARAMETER_DESCRIPTION, &body)).is_err());
+    }
+
+    #[test]
+    fn a_negative_parameter_count_is_an_error() {
+        // Malformed rather than "none": trusting it makes the OID slice length
+        // nonsense.
+        let body = (-1_i16).to_be_bytes();
+        let err = decode(&frame(Tag::PARAMETER_DESCRIPTION, &body)).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                BackendError::Field(FieldError::OutOfRange {
+                    what: "parameter_count",
+                    value: -1
+                })
+            ),
+            "reported as {err:?}, which sends an operator looking for a short read"
+        );
+    }
+
+    #[test]
     fn command_complete_carries_its_tag() {
         let decoded = decode(&frame(Tag::COMMAND_COMPLETE, b"SELECT 3\0")).unwrap();
         assert_eq!(decoded, BackendMessage::CommandComplete { tag: "SELECT 3" });
@@ -542,6 +626,7 @@ mod tests {
             Tag::NOTICE_RESPONSE,
             Tag::NOTIFICATION_RESPONSE,
             Tag::NEGOTIATE_PROTOCOL_VERSION,
+            Tag::PARAMETER_DESCRIPTION,
             Tag::DATA_ROW,
         ];
 
@@ -554,7 +639,7 @@ mod tests {
             let body: Vec<u8> = (0..len)
                 .map(|i| u8::try_from((seed >> (i % 8 * 8)) & 0xFF).unwrap())
                 .collect();
-            let tag = tags[usize::try_from(seed % 10).unwrap()];
+            let tag = tags[usize::try_from(seed % 11).unwrap()];
 
             let _ = decode(&frame(tag, &body));
         }

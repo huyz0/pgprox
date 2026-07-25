@@ -108,6 +108,12 @@ impl Tag {
     pub const BIND_COMPLETE: Self = Self(b'2');
     /// `3`, close complete.
     pub const CLOSE_COMPLETE: Self = Self(b'3');
+    /// `t`, the parameter types of a described statement.
+    ///
+    /// Needed to rewrite a `Describe` response under statement mapping: a
+    /// client asks how many parameters its statement takes and refuses to bind
+    /// a different number. See ADR 0011.
+    pub const PARAMETER_DESCRIPTION: Self = Self(b't');
     /// `n`, no data.
     pub const NO_DATA: Self = Self(b'n');
     /// `s`, portal suspended.
@@ -304,6 +310,7 @@ pub fn inspect_policy(direction: Direction, tag: Tag) -> Inspect {
             | Tag::BACKEND_KEY_DATA
             | Tag::COMMAND_COMPLETE
             | Tag::EMPTY_QUERY_RESPONSE
+            | Tag::PARAMETER_DESCRIPTION
             | Tag::NEGOTIATE_PROTOCOL_VERSION
             | Tag::COPY_IN_RESPONSE
             | Tag::COPY_OUT_RESPONSE
@@ -827,11 +834,13 @@ mod tests {
             Tag::COPY_IN_RESPONSE,
             Tag::COPY_OUT_RESPONSE,
             Tag::COPY_BOTH_RESPONSE,
+            Tag::EMPTY_QUERY_RESPONSE,
+            Tag::PARAMETER_DESCRIPTION,
         ]
         .into_iter()
         .filter(|t| inspect_policy(Direction::Backend, *t) == Inspect::Whole)
         .collect();
-        assert_eq!(whole.len(), 9, "a message changed policy without review");
+        assert_eq!(whole.len(), 11, "a message changed policy without review");
         assert_eq!(
             inspect_policy(Direction::Backend, Tag::EMPTY_QUERY_RESPONSE),
             Inspect::Whole,

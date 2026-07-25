@@ -246,7 +246,7 @@ nothing. They are not gaps.
 - [x] `M1F.1` `EmptyQueryResponse` (`I`). No `Tag` constant exists at all. An
   empty statement yields this instead of `CommandComplete`, so anything counting
   completions is wrong today.
-- [ ] `M1F.2` `ParameterDescription` (`t`) decoder. Encoded by the harness,
+- [x] `M1F.2` `ParameterDescription` (`t`) decoder. Encoded by the harness,
   never decoded. M5's statement mapping needs the parameter count to rewrite a
   `Describe` response.
 - [ ] `M1F.3` `FunctionCall` (`F`) and `FunctionCallResponse` (`V`). Legacy

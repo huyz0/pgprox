@@ -19,6 +19,18 @@ pub enum FieldError {
     /// A null-terminated string had no terminator.
     #[error("unterminated string in message body")]
     Unterminated,
+    /// A count or length field held a value the protocol does not allow.
+    ///
+    /// Distinct from `Truncated`, which means the body ended early. Reporting a
+    /// negative count as truncation sends an operator looking for a short read
+    /// that never happened.
+    #[error("field {what} is out of range: {value}")]
+    OutOfRange {
+        /// Which field.
+        what: &'static str,
+        /// The value the peer sent.
+        value: i64,
+    },
     /// A string field was not valid UTF-8.
     ///
     /// Postgres sends text in the connection encoding, which for everything
@@ -199,6 +211,16 @@ mod tests {
             r.cstr("value").unwrap_err(),
             FieldError::NotUtf8 { what: "value" }
         );
+    }
+
+    #[test]
+    fn an_out_of_range_error_names_the_value() {
+        let err = FieldError::OutOfRange {
+            what: "parameter_count",
+            value: -1,
+        };
+        assert!(err.to_string().contains("parameter_count"), "{err}");
+        assert!(err.to_string().contains("-1"), "{err}");
     }
 
     #[test]
