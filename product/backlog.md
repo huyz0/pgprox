@@ -49,7 +49,7 @@ early produces tasks that are wrong by the time they are reached.
   Skills format, vendor-neutral bodies, no `.claude/` paths.
 - [x] `M-1.13` Skills, part two: `contract-change`, `crate-review`, `adr`.
 - [x] `M-1.14` Skills, part three: `hot-path`, `wire-debug`, `skill-forge`.
-- [ ] `M-1.15` Skill discovery symlink and per-crate `AGENTS.md` stubs for the
+- [x] `M-1.15` Skill discovery symlink and per-crate `AGENTS.md` stubs for the
   twelve planned crates.
 - [x] `M-1.16` `scripts/m-1-complete.sh`, the milestone completion condition.
   Acceptance: exits zero on a complete M-1 and non-zero with a useful message on
