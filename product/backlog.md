@@ -573,7 +573,7 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
   transaction replica-eligible. Acceptance: a `SELECT` calling a volatile
   function classifies as `Unknown` rather than `ReadOnly`, and an unrecognised
   construct does the same.
-- [ ] `M5.4` Explicit route overrides: `SET pgprox.route` for the session and a
+- [x] `M5.4` Explicit route overrides: `SET pgprox.route` for the session and a
   leading `/* pgprox:replica */` comment for one statement. Acceptance: a hint
   can admit an `Unknown` statement to a replica and can never admit a `Write`
   or one behind the session watermark.
