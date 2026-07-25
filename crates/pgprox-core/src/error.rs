@@ -76,7 +76,9 @@ pub enum AuthRejection {
 /// Variants carry the detail an operator needs. None of them can carry a
 /// credential, which is a property of the type rather than of the code that
 /// builds it.
-#[derive(Clone, Debug, thiserror::Error)]
+// PartialEq and Eq because callers assert on the error a state machine chose,
+// and matches! with a wildcard body would pass on the wrong variant's payload.
+#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ClientError {
     /// This node is draining and is no longer accepting work.

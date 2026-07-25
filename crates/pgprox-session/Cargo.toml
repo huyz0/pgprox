@@ -1,0 +1,20 @@
+[package]
+name = "pgprox-session"
+description = "The per-client state machine and the relay loop."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+pgprox-core = { path = "../pgprox-core" }
+pgprox-proto = { path = "../pgprox-proto" }
+
+[dev-dependencies]
+pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
+proptest.workspace = true
+
+[lints]
+workspace = true

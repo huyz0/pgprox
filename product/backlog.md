@@ -777,7 +777,7 @@ rule already allows `pgprox-proto`.
 - [x] `M6.1` Define M6: this decomposition and `scripts/m6-complete.sh`.
   Acceptance: the gate script runs against the current tree and reports what is
   missing, rather than passing vacuously.
-- [ ] `M6.2` `pgprox-session` and the client state machine: startup through
+- [x] `M6.2` `pgprox-session` and the client state machine: startup through
   `ReadyForQuery`, sans-I/O, as a pure function of state and event. Acceptance:
   a client that skips `SSLRequest` under `require_tls` gets an `ErrorResponse`
   saying why rather than a closed socket, and no step touches a socket.

@@ -965,6 +965,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pgprox-session"
+version = "0.1.0"
+dependencies = [
+ "pgprox-core",
+ "pgprox-proto",
+ "proptest",
+]
+
+[[package]]
 name = "pgprox-testkit"
 version = "0.1.0"
 
