@@ -19,6 +19,7 @@ pub mod encode;
 pub mod frame;
 pub mod frontend;
 pub mod read;
+pub mod relay;
 pub mod session;
 pub mod startup;
 
@@ -29,5 +30,6 @@ pub use frame::{
 };
 pub use frontend::{FrontendMessage, Target};
 pub use read::{FieldError, Reader};
+pub use relay::{Completed, FrameRelay, RelayOutcome};
 pub use session::{CopyDirection, HoldReason, SessionState};
 pub use startup::{Startup, VersionResponse, negotiate_version};

@@ -207,7 +207,7 @@ pipelining, no multi-statement query, no error mid-stream.
 - [x] `M1R.2` `decode_header` and the per-direction inspect policy. Acceptance:
   a header decodes from exactly five bytes; every tag has a stated policy; the
   policy for `DataRow` and `CopyData` is forward-without-inspection.
-- [ ] `M1R.3` `FrameRelay`, the streaming state machine. Acceptance: a 100 MiB
+- [x] `M1R.3` `FrameRelay`, the streaming state machine. Acceptance: a 100 MiB
   body relays with bounded memory; bytes are emitted before the body ends; a
   prefix-inspected message yields its prefix without buffering the rest.
 - [x] `M1R.4` Split the size caps. Acceptance: a 100 MiB `DataRow` passes
