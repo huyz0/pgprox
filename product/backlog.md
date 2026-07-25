@@ -14,7 +14,7 @@ early produces tasks that are wrong by the time they are reached.
 
 - [x] `M-1.1` Repository bootstrap. `git init`, `.gitignore`, plan copied to
   `product/plan.md`, roadmap with executable completion conditions, this file.
-- [ ] `M-1.2` Root context. `AGENTS.md` as the canonical instruction file,
+- [x] `M-1.2` Root context. `AGENTS.md` as the canonical instruction file,
   `CLAUDE.md` importing it. Root file stays an index and links out.
   Acceptance: both files exist, `CLAUDE.md` is the one-line import, `AGENTS.md`
   links every standards file.
