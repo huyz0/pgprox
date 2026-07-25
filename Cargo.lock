@@ -896,6 +896,7 @@ name = "pgprox-observe"
 version = "0.1.0"
 dependencies = [
  "pgprox-core",
+ "thiserror",
  "tokio",
 ]
 

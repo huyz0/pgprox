@@ -712,7 +712,7 @@ that already took sixty seconds to arrive.
 - [x] `M4.8` Health endpoints. Acceptance: `/healthz` reports the process is
   alive, `/readyz` fails only for drain, and no load-related condition can make
   it flap.
-- [ ] `M4.9` The per-tenant series allowlist. Acceptance: a tenant on the
+- [x] `M4.9` The per-tenant series allowlist. Acceptance: a tenant on the
   allowlist gets its own series and one off it is aggregated, and the allowlist
   has a configured ceiling so it cannot become the unbounded label by degrees.
 - [ ] `M4.10` `pgprox-admin` and the read endpoints over the `Observatory`.
