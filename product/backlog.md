@@ -86,7 +86,7 @@ below is types plus tests plus fake where one applies.
 - [x] `M0.6` `Clock` trait, `SystemClock`, and `FakeClock`.
   Acceptance: `FakeClock` advances only when told, and a test using it completes
   without sleeping.
-- [ ] `M0.7` Buffer slab.
+- [x] `M0.7` Buffer slab.
   Acceptance: a borrowed buffer returns to the slab on drop; the slab bounds
   total outstanding buffers rather than allocating without limit; borrowing from
   a warm slab does not allocate.
