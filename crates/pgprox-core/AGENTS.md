@@ -20,5 +20,11 @@ and stop and escalate if the change touches more than one track.
   signature breaks everyone at once.
 - `#[non_exhaustive]` on public enums describing external state.
 - Nothing here derives `Debug` on a type holding a credential.
+- A rule that two crates must agree on lives here, even when it is not a
+  contract. `route::decide` and `sql::Lexer` are both here for that reason:
+  two implementations of a rule are two chances to get it wrong, and the second
+  one is always the one nobody remembers to fix. `sql` earned its place after
+  `pgprox-pool` and `pgprox-route` grew separate scanners that disagreed about
+  where an `E'...'` string ends.
 
 See [contracts.md](../../standards/contracts.md).

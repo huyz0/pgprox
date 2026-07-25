@@ -18,6 +18,9 @@ classified read-only. This crate parses untrusted SQL, so it is fuzzed.
 - Classification is a fast token-prefix scan, not a full SQL parser. It must
   handle `WITH` CTEs containing DML, `SELECT ... FOR UPDATE`/`FOR SHARE`,
   `EXPLAIN ANALYZE`, and volatile function calls.
+- **Do not write another SQL scanner.** `pgprox_core::sql` decides which text is
+  SQL and which is data. This crate and `pgprox-pool` once had one each, and
+  they disagreed about where an `E'...'` string ends.
 - Route target is decided once per transaction, at the first statement. A
   transaction spanning two servers has no coherent semantics.
 - A replica is eligible only if its replayed LSN is at or past the session's

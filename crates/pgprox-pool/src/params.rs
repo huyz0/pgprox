@@ -294,41 +294,14 @@ fn split_name(input: &str) -> (&str, &str) {
 }
 
 /// Strips leading comments and whitespace.
+///
+/// Delegates to [`pgprox_core::sql`], which owns where comments end. This
+/// module used to carry a third copy of that logic; see that module's docs for
+/// what having two of them cost.
 fn strip_leading_trivia(sql: &str) -> &str {
-    let mut rest = sql;
-    loop {
-        let trimmed = rest.trim_start();
-        if trimmed.len() != rest.len() {
-            rest = trimmed;
-            continue;
-        }
-        if rest.starts_with("--") {
-            rest = rest.find('\n').map_or("", |i| &rest[i + 1..]);
-            continue;
-        }
-        if rest.starts_with("/*") {
-            let bytes = rest.as_bytes();
-            let mut depth = 0_u32;
-            let mut i = 0;
-            while i < bytes.len() {
-                if bytes[i..].starts_with(b"/*") {
-                    depth += 1;
-                    i += 2;
-                } else if bytes[i..].starts_with(b"*/") {
-                    depth -= 1;
-                    i += 2;
-                    if depth == 0 {
-                        break;
-                    }
-                } else {
-                    i += 1;
-                }
-            }
-            rest = &rest[i.min(rest.len())..];
-            continue;
-        }
-        return rest;
-    }
+    let mut lexer = pgprox_core::sql::Lexer::new(sql);
+    lexer.skip_trivia();
+    lexer.rest()
 }
 
 /// Strips one layer of quotes from a value.

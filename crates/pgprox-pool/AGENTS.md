@@ -15,6 +15,10 @@ Upstream pools, lifecycle, idle reap, pinning, prepared statement mapping.
   what makes tenant fan-out across nodes collapse on its own.
 - Pin triggers are recorded by reason for `pgprox_pin_total{reason}`. A rising
   pin rate is the early warning that multiplexing is degrading.
+- **Do not write another SQL scanner.** `pgprox_core::sql` decides which text is
+  SQL and which is data. This crate once had its own, which did not honour
+  backslash escapes inside `E'...'`, and a missed pin hands one client another
+  client's state.
 
 Warm-pool acquire is a declared hot path. Use the `hot-path` skill before
 touching it.

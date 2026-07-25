@@ -72,6 +72,7 @@
 //! rest of the statement. See the dollar-quote tag validation below.
 
 use pgprox_core::route::StmtClass;
+use pgprox_core::sql::{Lexer, Token};
 
 /// Statements that may be reads, by their first word.
 ///
@@ -187,7 +188,7 @@ const WRITING_FUNCTIONS: &[&str] = &[
 /// ```
 #[must_use]
 pub fn classify(sql: &str) -> StmtClass {
-    let mut scanner = Scanner::new(sql);
+    let mut scanner = Lexer::new(sql);
     let mut worst = None;
 
     loop {
@@ -222,24 +223,27 @@ const fn combine(a: StmtClass, b: StmtClass) -> StmtClass {
 /// Classifies up to the next statement separator.
 ///
 /// Returns the class and whether another statement follows.
-fn classify_one(scanner: &mut Scanner<'_>) -> (StmtClass, bool) {
+fn classify_one(scanner: &mut Lexer<'_>) -> (StmtClass, bool) {
     let mut first = true;
     let mut class = StmtClass::Unknown;
 
-    while let Some(piece) = scanner.next_piece() {
-        match piece {
-            Piece::Semicolon => {
+    while let Some(token) = scanner.next() {
+        match token {
+            Token::Semicolon => {
                 // An empty statement, as in a trailing semicolon, contributes
                 // nothing rather than counting as an unclassifiable one.
                 let class = if first { StmtClass::ReadOnly } else { class };
                 return (class, scanner.has_more());
             }
-            Piece::Opaque => {
+            Token::Quoted => {
                 // A quoted identifier or a string. It is never a keyword, but
                 // it does mean this statement has started.
                 first = false;
             }
-            Piece::Word(word) => {
+            // Punctuation says nothing about what a statement does, and must
+            // not count as its start: `(SELECT 1)` leads with a parenthesis.
+            Token::Punct(_) => {}
+            Token::Word(word) => {
                 if first {
                     first = false;
                     class = if matches_any(word, READ_FIRST_WORDS) {
@@ -296,15 +300,16 @@ fn matches_any(word: &str, set: &[&str]) -> bool {
 /// ```
 #[must_use]
 pub fn begins_read_only_transaction(sql: &str) -> bool {
-    let mut scanner = Scanner::new(sql);
     let mut words = Vec::new();
-    while let Some(piece) = scanner.next_piece() {
-        match piece {
-            Piece::Word(word) => words.push(word),
-            // Only the first statement can open the transaction, and anything
-            // quoted is not a keyword.
-            Piece::Semicolon => break,
-            Piece::Opaque => return false,
+    for token in Lexer::new(sql) {
+        match token {
+            Token::Word(word) => words.push(word),
+            // Only the first statement can open the transaction.
+            Token::Semicolon => break,
+            // Anything quoted is not a keyword, and a transaction-opening
+            // statement has none.
+            Token::Quoted => return false,
+            Token::Punct(_) => {}
         }
     }
 
@@ -328,246 +333,6 @@ pub fn begins_read_only_transaction(sql: &str) -> bool {
     words
         .windows(2)
         .any(|pair| pair[0].eq_ignore_ascii_case("read") && pair[1].eq_ignore_ascii_case("only"))
-}
-
-/// One lexical unit the classifier cares about.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Piece<'a> {
-    /// A bare word, which may be a keyword.
-    Word(&'a str),
-    /// A string literal or quoted identifier. Never a keyword.
-    Opaque,
-    /// A statement separator.
-    Semicolon,
-}
-
-/// Splits SQL into the pieces the classifier reasons about.
-///
-/// Everything it skips, comments and quoted text, it skips because that text is
-/// not SQL. Getting that wrong in the direction of skipping too much is the
-/// dangerous one: consuming past the end of a string would swallow the
-/// statement after it, and `E'\''; DELETE FROM t` would look like one harmless
-/// read. That case has its own test.
-struct Scanner<'a> {
-    rest: &'a str,
-}
-
-impl<'a> Scanner<'a> {
-    const fn new(sql: &'a str) -> Self {
-        Self { rest: sql }
-    }
-
-    /// Whether any input remains.
-    fn has_more(&self) -> bool {
-        !self.rest.is_empty()
-    }
-
-    /// The next piece, skipping whitespace, comments and punctuation.
-    fn next_piece(&mut self) -> Option<Piece<'a>> {
-        loop {
-            self.skip_trivia();
-            let mut chars = self.rest.char_indices();
-            let (_, first) = chars.next()?;
-
-            match first {
-                ';' => {
-                    self.advance(1);
-                    return Some(Piece::Semicolon);
-                }
-                '\'' => {
-                    self.skip_single_quoted(false);
-                    return Some(Piece::Opaque);
-                }
-                '"' => {
-                    self.skip_double_quoted();
-                    return Some(Piece::Opaque);
-                }
-                '$' => {
-                    if self.skip_dollar_quoted() {
-                        return Some(Piece::Opaque);
-                    }
-                    // A parameter placeholder like `$1`, or a stray `$`.
-                    self.advance(first.len_utf8());
-                }
-                c if is_word_char(c) => {
-                    let end = self
-                        .rest
-                        .find(|c: char| !is_word_char(c))
-                        .unwrap_or(self.rest.len());
-                    let word = &self.rest[..end];
-                    self.advance(end);
-
-                    // `E'...'` and `U&'...'` are strings whose introducer looks
-                    // like a word. Consume the string with the introducer, so
-                    // its backslash escapes are honoured rather than leaving a
-                    // dangling quote for the next round.
-                    if self.rest.starts_with('\'') && is_string_introducer(word) {
-                        self.skip_single_quoted(word.eq_ignore_ascii_case("e"));
-                        return Some(Piece::Opaque);
-                    }
-                    return Some(Piece::Word(word));
-                }
-                other => {
-                    // Operators, parentheses, commas. None of them changes the
-                    // classification, and skipping them is what lets
-                    // `(INSERT ...)` still yield `insert` as a word.
-                    self.advance(other.len_utf8());
-                }
-            }
-        }
-    }
-
-    fn advance(&mut self, bytes: usize) {
-        self.rest = &self.rest[bytes.min(self.rest.len())..];
-    }
-
-    /// Skips whitespace and both comment forms.
-    fn skip_trivia(&mut self) {
-        loop {
-            let trimmed = self.rest.trim_start();
-            if trimmed.len() != self.rest.len() {
-                self.rest = trimmed;
-                continue;
-            }
-            if self.rest.starts_with("--") {
-                let end = self.rest.find('\n').map_or(self.rest.len(), |i| i + 1);
-                self.advance(end);
-                continue;
-            }
-            if self.rest.starts_with("/*") {
-                self.skip_block_comment();
-                continue;
-            }
-            return;
-        }
-    }
-
-    /// Skips a block comment, which nests in Postgres.
-    fn skip_block_comment(&mut self) {
-        let bytes = self.rest.as_bytes();
-        let mut depth = 0_u32;
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i..].starts_with(b"/*") {
-                depth += 1;
-                i += 2;
-            } else if bytes[i..].starts_with(b"*/") {
-                depth -= 1;
-                i += 2;
-                if depth == 0 {
-                    break;
-                }
-            } else {
-                i += 1;
-            }
-        }
-        // An unterminated comment consumes the rest, which is what the server
-        // does with it too.
-        self.advance(i);
-    }
-
-    /// Skips a single-quoted string.
-    ///
-    /// `''` is always an escaped quote. A backslash escapes the next character
-    /// only in an `E'...'` string, which is why the caller says which it is:
-    /// treating `'\''` as terminated in a plain string, or unterminated in an
-    /// E-string, both misplace the end.
-    fn skip_single_quoted(&mut self, backslash_escapes: bool) {
-        let bytes = self.rest.as_bytes();
-        let mut i = 1; // past the opening quote
-        while i < bytes.len() {
-            match bytes[i] {
-                b'\\' if backslash_escapes => i += 2,
-                b'\'' if bytes.get(i + 1) == Some(&b'\'') => i += 2,
-                b'\'' => {
-                    i += 1;
-                    break;
-                }
-                _ => i += 1,
-            }
-        }
-        self.advance(i);
-    }
-
-    /// Skips a quoted identifier, in which `""` is an escaped quote.
-    fn skip_double_quoted(&mut self) {
-        let bytes = self.rest.as_bytes();
-        let mut i = 1;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'"' if bytes.get(i + 1) == Some(&b'"') => i += 2,
-                b'"' => {
-                    i += 1;
-                    break;
-                }
-                _ => i += 1,
-            }
-        }
-        self.advance(i);
-    }
-
-    /// Skips a dollar-quoted string, returning whether one was there.
-    ///
-    /// The tag matters twice over. It decides where the string ends, since
-    /// `$$` inside `$body$ ... $body$` is data rather than a delimiter. And it
-    /// decides whether this is dollar quoting at all: a tag follows the rules
-    /// for an unquoted identifier, so `$1` is a parameter placeholder and
-    /// `$1 INSERT $` is not a tag at all.
-    ///
-    /// Getting that validation wrong is how `SELECT $1 INSERT $$` came to be
-    /// classified read-only. An over-eager tag swallowed the rest of the
-    /// statement as a string body, and the `INSERT` vanished. Found by the
-    /// differential property test in `tests/properties.rs`.
-    fn skip_dollar_quoted(&mut self) -> bool {
-        let after = &self.rest[1..];
-        let Some(offset) = after.find('$') else {
-            return false;
-        };
-        if !is_dollar_tag(&after[..offset]) {
-            return false;
-        }
-
-        // The `$`, the tag body, and the closing `$`.
-        let tag = &self.rest[..offset + 2];
-        let body_at = tag.len();
-        let end = self.rest[body_at..]
-            .find(tag)
-            .map_or(self.rest.len(), |i| body_at + i + tag.len());
-        self.advance(end);
-        true
-    }
-}
-
-/// Whether the text between two dollar signs is a valid tag.
-///
-/// Postgres: a tag follows the rules for an unquoted identifier, except that it
-/// cannot contain a dollar sign. Empty is valid, which is `$$`.
-fn is_dollar_tag(inner: &str) -> bool {
-    let mut chars = inner.chars();
-    let Some(first) = chars.next() else {
-        // `$$`, the untagged form.
-        return true;
-    };
-    // A leading digit is what makes `$1` a placeholder rather than a tag.
-    (first.is_alphabetic() || first == '_' || !first.is_ascii())
-        && chars.all(|c| c.is_alphanumeric() || c == '_' || !c.is_ascii())
-}
-
-/// Whether a character can appear in a bare word.
-///
-/// Non-ASCII is included because Postgres identifiers may be, and treating a
-/// multi-byte character as punctuation would split one word into two, which
-/// could turn a harmless identifier into a keyword match.
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || !c.is_ascii()
-}
-
-/// Whether a word introduces a string literal rather than being one.
-fn is_string_introducer(word: &str) -> bool {
-    word.eq_ignore_ascii_case("e")
-        || word.eq_ignore_ascii_case("b")
-        || word.eq_ignore_ascii_case("x")
-        || word.eq_ignore_ascii_case("u")
 }
 
 #[cfg(test)]

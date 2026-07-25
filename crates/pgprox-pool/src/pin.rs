@@ -351,148 +351,16 @@ fn has_adjacent_pair(words: &[String], first: &str, second: &str) -> bool {
     words.windows(2).any(|w| w[0] == first && w[1] == second)
 }
 
-/// The lowercase bare words of each statement, skipping comments and quoted
-/// text.
+/// The lowercase bare words of each statement.
 ///
-/// Same reasoning as the classifier's scanner, and the same danger: text that
-/// is data must not be read as SQL, and a quoted region whose end is misjudged
-/// swallows what follows it. Splitting on `;` matters for the same reason it
-/// does there, and a `;` inside a string must not split anything.
+/// [`pgprox_core::sql`] owns the hard part: which text is SQL and which is
+/// data. This crate used to carry its own copy, and the two diverged. See that
+/// module's docs for what it cost.
+///
+/// Dots are kept, so `pgprox.pin` and `pg_temp.t` arrive as one word each and
+/// can be compared against a qualified name.
 fn statements_of(sql: &str) -> Vec<Vec<String>> {
-    let mut statements = Vec::new();
-    let mut words: Vec<String> = Vec::new();
-    let mut rest = sql;
-
-    loop {
-        let trimmed = rest.trim_start();
-        if trimmed.len() != rest.len() {
-            rest = trimmed;
-            continue;
-        }
-        let Some(first) = rest.chars().next() else {
-            if !words.is_empty() {
-                statements.push(words);
-            }
-            return statements;
-        };
-
-        if first == ';' {
-            if !words.is_empty() {
-                statements.push(std::mem::take(&mut words));
-            }
-            rest = &rest[1..];
-            continue;
-        }
-
-        if rest.starts_with("--") {
-            rest = rest.find('\n').map_or("", |i| &rest[i + 1..]);
-            continue;
-        }
-        if rest.starts_with("/*") {
-            rest = skip_block_comment(rest);
-            continue;
-        }
-        if first == '\'' || first == '"' {
-            rest = skip_quoted(rest, first);
-            continue;
-        }
-        if first == '$' {
-            let (skipped, remainder) = skip_dollar_quoted(rest);
-            if skipped {
-                rest = remainder;
-                continue;
-            }
-            rest = &rest[first.len_utf8()..];
-            continue;
-        }
-
-        if is_word_char(first) {
-            let end = rest.find(|c: char| !is_word_char(c)).unwrap_or(rest.len());
-            words.push(rest[..end].to_ascii_lowercase());
-            rest = &rest[end..];
-            continue;
-        }
-
-        rest = &rest[first.len_utf8()..];
-    }
-}
-
-/// Whether a character can appear in a bare word.
-///
-/// A dot is included so `pgprox.route` and `pg_catalog.nextval` arrive as one
-/// word, which is what lets the `SET` check compare against a qualified name.
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == '.' || !c.is_ascii()
-}
-
-/// Skips a block comment, which nests in Postgres.
-fn skip_block_comment(input: &str) -> &str {
-    let bytes = input.as_bytes();
-    let mut depth = 0_u32;
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i..].starts_with(b"/*") {
-            depth += 1;
-            i += 2;
-        } else if bytes[i..].starts_with(b"*/") {
-            depth -= 1;
-            i += 2;
-            if depth == 0 {
-                break;
-            }
-        } else {
-            i += 1;
-        }
-    }
-    &input[i.min(input.len())..]
-}
-
-/// Skips a quoted region, honouring the doubled-quote escape.
-fn skip_quoted(input: &str, quote: char) -> &str {
-    let bytes = input.as_bytes();
-    let quote = quote as u8;
-    let mut i = 1;
-    while i < bytes.len() {
-        if bytes[i] == quote {
-            if bytes.get(i + 1) == Some(&quote) {
-                i += 2;
-                continue;
-            }
-            i += 1;
-            break;
-        }
-        i += 1;
-    }
-    &input[i.min(input.len())..]
-}
-
-/// Skips a dollar-quoted string, reporting whether one was there.
-///
-/// A tag follows the rules for an unquoted identifier, so `$1` is a placeholder
-/// rather than a tag. Getting this wrong swallows the rest of the statement,
-/// which is the bug the classifier's property test found in M5.7.
-fn skip_dollar_quoted(input: &str) -> (bool, &str) {
-    let after = &input[1..];
-    let Some(offset) = after.find('$') else {
-        return (false, input);
-    };
-    let inner = &after[..offset];
-    let valid = inner.chars().next().is_none_or(|first| {
-        (first.is_alphabetic() || first == '_' || !first.is_ascii())
-            && inner
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '_' || !c.is_ascii())
-    });
-    if !valid {
-        return (false, input);
-    }
-
-    let tag = &input[..offset + 2];
-    let body_at = tag.len();
-    let end = input[body_at..]
-        .find(tag)
-        .map_or(input.len(), |i| body_at + i + tag.len());
-    (true, &input[end..])
+    pgprox_core::sql::statement_words(sql, true)
 }
 
 #[cfg(test)]
@@ -645,6 +513,24 @@ mod tests {
         // session that used one is still perfectly movable.
         assert_eq!(reason("SET pgprox.route = 'replica'"), None);
         assert_eq!(reason("SET pgprox.anything = 1"), None);
+    }
+
+    #[test]
+    fn an_e_string_does_not_hide_a_later_statement() {
+        // The divergence that put the lexer in pgprox-core. This crate's own
+        // scanner ended `E'\''` at the escaped quote, read the rest as data,
+        // and left the session unpinned. A missed pin hands one client another
+        // client's state.
+        assert_eq!(
+            reason(r"SELECT E'\'' ; LISTEN c"),
+            Some(PinReason::Listen),
+            "an E-string swallowed the statement after it"
+        );
+        assert_eq!(
+            reason(r"SELECT E'\' ; LISTEN c'"),
+            None,
+            "an E-string's contents were read as SQL"
+        );
     }
 
     #[test]

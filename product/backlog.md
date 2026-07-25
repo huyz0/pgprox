@@ -626,6 +626,15 @@ what a composer is for. ADR 0011 is amended in `M5.1` to say so.
   explicitly skips `pgprox.` parameters, so the variant is unreachable.
   Acceptance: the documented spelling pins the session, or the variant and its
   claim are gone.
+- [x] `M5.17` One SQL lexer, in `pgprox-core`. Found reviewing M5: the
+  classifier and the pin detector each carry their own scanner for the same
+  hazards, and they have already diverged. `pin.rs` does not honour backslash
+  escapes inside `E'...'`, so `SELECT E'\'' ; LISTEN c` leaves the session
+  unpinned, which is a missed pin and therefore a correctness bug. A third,
+  simpler copy of the trivia skipping lives in `params.rs`. Deciding which text
+  is SQL and which is data is one rule, and the same argument that puts
+  `route::decide` in core puts this there. Acceptance: one implementation, both
+  crates on it, and the E-string case pins.
 - [ ] `M5.14` Close M5.
 
 ## M4 and later

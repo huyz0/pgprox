@@ -51,6 +51,7 @@ pub mod ids;
 pub mod pool;
 pub mod route;
 pub mod secret;
+pub mod sql;
 
 pub use auth::{
     AuthError, AuthRequest, Backend, ClaimSet, CredentialResolver, Grant, PoolHints, PoolMode,
