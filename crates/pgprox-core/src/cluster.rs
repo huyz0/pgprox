@@ -55,8 +55,12 @@ fn stable_hash(bytes: &[u8], seed: u64) -> u64 {
 }
 
 /// One member of the cluster.
+///
+/// Not `#[non_exhaustive]`: `pgprox-cluster` builds these from gossip, and the
+/// attribute would make them unconstructable outside this crate. It belongs on
+/// enums describing external state, not on a DTO a caller assembles. Same
+/// correction as `Grant` and `PoolHints` in M0.
 #[derive(Clone, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub struct Member {
     /// Which node.
     pub id: NodeId,
@@ -215,7 +219,10 @@ pub struct ClusterDigest {
 }
 
 /// Why a quota request failed.
-#[derive(Clone, Debug, thiserror::Error)]
+///
+/// `PartialEq` so a test can assert which failure happened. Every other error
+/// type here has it, and its absence made `pgprox-cluster` compare strings.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum QuotaError {
     /// The free pool for this server is exhausted.

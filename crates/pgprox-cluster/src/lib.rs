@@ -14,8 +14,10 @@
 //! Partitions must therefore cause under-subscription, never over-subscription.
 //! Slow beats down.
 
+pub mod lease;
 pub mod quota;
 
+pub use lease::{LeaseConfig, LeaseLedger};
 pub use quota::{NodeAllowance, QuotaSplit, split};
 
 // Compiled during this crate's own tests so the coverage gate measures it, and

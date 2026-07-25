@@ -429,10 +429,10 @@ found in staging.
   the cap and live membership, and the leasable free pool. Acceptance: the sum
   can never exceed the cap for any membership size, checked exhaustively for
   small N and by property test beyond.
-- [ ] `M3.4` Leader selection from a membership view, and what happens when it
+- [x] `M3.4` Leader selection from a membership view, and what happens when it
   changes. Acceptance: every node agrees on the leader given the same view, and
   a new leader waits one full lease TTL before granting from the free pool.
-- [ ] `M3.5` Lease lifecycle: request, grant, renew, expire, release.
+- [x] `M3.5` Lease lifecycle: request, grant, renew, expire, release.
   Acceptance: an unreachable node's leases expire without anyone acting, and a
   lease is never counted after its expiry.
 - [ ] `M3.6` Tenant reservations with use-it-or-lose-it decay.
