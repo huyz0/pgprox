@@ -220,6 +220,7 @@ impl Conn {
             };
             let msg = backend::decode(&frame).expect("backend message should decode");
             self.state.on_backend(&msg);
+            record_tag("backend", frame.tag());
             tags.push(frame.tag());
 
             // Returned rather than panicked, so the readiness probe can treat
@@ -246,10 +247,32 @@ impl Conn {
     }
 
     fn send(&mut self, tag: Tag, body: &[u8]) -> std::io::Result<()> {
+        record_tag("frontend", tag);
         let mut out = vec![tag.get()];
         out.extend_from_slice(&u32::try_from(body.len() + 4).unwrap().to_be_bytes());
         out.extend_from_slice(body);
         self.sock.write_all(&out)
+    }
+}
+
+/// Records a tag the suite actually saw on the wire.
+///
+/// Appends to the file named by `PGPROX_TAG_LOG` when it is set, and does
+/// nothing otherwise, so an ordinary run pays nothing.
+///
+/// This exists because "we decode it" and "we tested it" are different claims,
+/// and only the second one is worth anything. `scripts/message-coverage.sh`
+/// turns the log into a pass or a fail.
+fn record_tag(direction: &str, tag: Tag) {
+    let Ok(path) = std::env::var("PGPROX_TAG_LOG") else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{direction} {}", tag.get());
     }
 }
 
@@ -343,6 +366,7 @@ fn conformance_client_tracks_a_failed_transaction() {
             unreachable!()
         };
         let msg = backend::decode(&frame).unwrap();
+        record_tag("backend", frame.tag());
         conn.state.on_backend(&msg);
         if let BackendMessage::ErrorResponse(fields) = msg {
             assert_eq!(fields.code, "42P01", "expected undefined_table");
@@ -427,6 +451,7 @@ fn conformance_client_copy_out_holds_the_session() {
             unreachable!()
         };
         let msg = backend::decode(&frame).unwrap();
+        record_tag("backend", frame.tag());
         conn.state.on_backend(&msg);
 
         if matches!(msg, BackendMessage::CopyOutResponse) {
@@ -612,6 +637,7 @@ impl Conn {
                 window = &window[outcome.consumed..];
 
                 if let Some(completed) = outcome.completed {
+                    record_tag("backend", completed.header.tag);
                     tags.push(completed.header.tag);
                     if completed.header.tag == Tag::READY_FOR_QUERY {
                         done = true;
@@ -725,6 +751,7 @@ fn conformance_client_handles_copy_in() {
             unreachable!()
         };
         let msg = backend::decode(&frame).unwrap();
+        record_tag("backend", frame.tag());
         conn.state.on_backend(&msg);
         if matches!(msg, BackendMessage::CopyInResponse) {
             saw_copy_in = true;
@@ -808,6 +835,7 @@ fn conformance_client_survives_an_error_mid_result_stream() {
             unreachable!()
         };
         let msg = backend::decode(&frame).unwrap();
+        record_tag("backend", frame.tag());
         conn.state.on_backend(&msg);
 
         if frame.tag() == Tag::DATA_ROW {
@@ -869,6 +897,7 @@ fn conformance_client_handles_pipelined_extended_queries() {
             unreachable!()
         };
         let msg = backend::decode(&frame).unwrap();
+        record_tag("backend", frame.tag());
         conn.state.on_backend(&msg);
         if matches!(msg, BackendMessage::ReadyForQuery(_)) {
             readys += 1;
@@ -903,6 +932,7 @@ fn conformance_client_receives_a_listen_notify() {
             unreachable!()
         };
         let msg = backend::decode(&frame).unwrap();
+        record_tag("backend", frame.tag());
         conn.state.on_backend(&msg);
         if let BackendMessage::NotificationResponse {
             channel, payload, ..
@@ -918,6 +948,50 @@ fn conformance_client_receives_a_listen_notify() {
     let (channel, payload) = seen.expect("no NotificationResponse arrived");
     assert_eq!(channel, "pgprox_test_channel");
     assert_eq!(payload, "hello from the test");
+}
+
+#[test]
+#[ignore = "requires docker"]
+fn conformance_client_describes_a_statement_and_reads_its_parameters() {
+    // The message-coverage report found this gap: ParameterDescription had a
+    // decoder that nothing ever drove. Describing a *statement* rather than a
+    // portal is what makes a real server send one, and it is the exact exchange
+    // statement mapping will have to rewrite. See ADR 0011.
+    let pg = Postgres::start(&major());
+    let mut conn = pg.connect();
+
+    let mut parse = Vec::new();
+    cstr(&mut parse, "described");
+    cstr(&mut parse, "SELECT $1::int4 + $2::int4");
+    parse.extend_from_slice(&0_i16.to_be_bytes());
+    conn.send(Tag::PARSE, &parse).unwrap();
+
+    let mut describe = vec![b'S'];
+    cstr(&mut describe, "described");
+    conn.send(Tag::DESCRIBE, &describe).unwrap();
+    conn.send(Tag::SYNC, &[]).unwrap();
+
+    let mut params = None;
+    loop {
+        let bytes = conn.next_frame_bytes().unwrap();
+        let Decoded::Frame(frame, _) = decode(&bytes, DEFAULT_MAX_FRAME).unwrap() else {
+            unreachable!()
+        };
+        let msg = backend::decode(&frame).unwrap();
+        record_tag("backend", frame.tag());
+        conn.state.on_backend(&msg);
+        if let BackendMessage::ParameterDescription { count, oids } = msg {
+            params = Some((count, oids.len()));
+        }
+        if matches!(msg, BackendMessage::ReadyForQuery(_)) {
+            break;
+        }
+    }
+
+    let (count, oid_bytes) = params.expect("no ParameterDescription from a described statement");
+    assert_eq!(count, 2, "the server reported the wrong parameter count");
+    assert_eq!(oid_bytes, 8, "four bytes per OID");
+    assert!(conn.state.is_releasable());
 }
 
 #[test]
@@ -944,6 +1018,7 @@ fn conformance_client_captures_every_error_field_a_real_server_sends() {
             unreachable!()
         };
         let msg = backend::decode(&frame).unwrap();
+        record_tag("backend", frame.tag());
         conn.state.on_backend(&msg);
         if let BackendMessage::ErrorResponse(fields) = msg {
             captured = Some((

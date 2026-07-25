@@ -324,7 +324,7 @@ pgdog carries a whole logical-decoding subtree. We only track the mode.
 
 ### Group F: conformance depth
 
-- [ ] `M1F.23` A message-coverage report. Instrument the conformance run to
+- [x] `M1F.23` A message-coverage report. Instrument the conformance run to
   record which tags were actually seen in each direction, and fail if a tag with
   a decoder was never exercised. This is what turns "we handle it" into "we
   tested it".
