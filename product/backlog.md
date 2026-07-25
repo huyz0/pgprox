@@ -80,7 +80,7 @@ below is types plus tests plus fake where one applies.
 - [x] `M0.4` `SecretString`.
   Acceptance: `Debug` and `Display` print no part of the secret; the value is
   reachable only through `expose()`; memory is zeroed on drop.
-- [ ] `M0.5` Error taxonomy and the SQLSTATE mapping.
+- [x] `M0.5` Error taxonomy and the SQLSTATE mapping.
   Acceptance: every client-visible error maps to the code in the table in
   `standards/error-handling.md`; no error variant can carry a credential.
 - [ ] `M0.6` `Clock` trait, `SystemClock`, and `FakeClock`.
