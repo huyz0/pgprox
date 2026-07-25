@@ -11,7 +11,9 @@
 //! rather than redundancy. See ADR 0003.
 
 pub mod cache;
+pub mod client;
 pub mod jwt;
 
 pub use cache::{CacheConfig, CachingResolver};
+pub use client::{SidecarConfig, SidecarResolver};
 pub use jwt::{ALLOWED_ALGORITHMS, check_algorithm};

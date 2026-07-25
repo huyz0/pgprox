@@ -26,7 +26,7 @@ fi
 
 # Generated code and the composition root's main.rs are the only exclusions.
 # Adding another needs a reason in the commit message. See standards/testing.md.
-IGNORE_RE='(target-coverage|/OUT_DIR/|bin/pgprox/src/main\.rs)'
+IGNORE_RE='(target-coverage|/OUT_DIR/|/out/|\.pb\.rs|bin/pgprox/src/main\.rs)'
 
 run_gate() {
   local crate="$1"

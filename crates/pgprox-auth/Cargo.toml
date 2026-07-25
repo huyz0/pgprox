@@ -9,8 +9,17 @@ repository.workspace = true
 
 [features]
 default = []
-# Tests that need a real socket or the mock sidecar process.
-integration = []
+# Tests that need a real socket or the mock sidecar process. Pulls in what the
+# mock server needs, so an ordinary build carries neither.
+integration = ["dep:tokio-stream", "tokio/rt-multi-thread"]
+
+# A test-support binary, not a product one. required-features keeps it out of
+# ordinary builds, and making it a bin rather than an example means the test run
+# builds it once instead of every test shelling out to cargo and contending on
+# the build lock.
+[[bin]]
+name = "mock_sidecar"
+required-features = ["integration"]
 
 [dependencies]
 pgprox-core = { path = "../pgprox-core" }
@@ -20,6 +29,7 @@ prost = "0.14"
 tonic = { version = "0.14", default-features = false, features = ["codegen", "channel", "router", "server", "transport"] }
 tonic-prost = "0.14"
 tokio = { workspace = true, features = ["rt", "net", "sync", "time", "macros"] }
+tokio-stream = { version = "0.1", features = ["net"], optional = true }
 tower = "0.5"
 hyper-util = { version = "0.1", features = ["tokio"] }
 sha2 = "0.10"
@@ -31,8 +41,9 @@ tracing = "0.1"
 tonic-prost-build = "0.14"
 
 [dev-dependencies]
+base64 = "0.22"
 pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
 
 [lints]
 workspace = true

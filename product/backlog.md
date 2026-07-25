@@ -195,10 +195,10 @@ field numbers may still change.
 - [x] `M2.1` Define M2: this decomposition, and the `.proto` contract as a
   proposal. Acceptance: the file states its unfrozen status and its versioning
   rules; field numbers are assigned and never reused.
-- [ ] `M2.2` `pgprox-auth` crate with tonic codegen wired into the build.
+- [x] `M2.2` `pgprox-auth` crate with tonic codegen wired into the build.
   Acceptance: the workspace builds, generated code is excluded from coverage,
   and nothing hand-edits it.
-- [ ] `M2.3` gRPC client over a Unix domain socket, implementing
+- [x] `M2.3` gRPC client over a Unix domain socket, implementing
   `CredentialResolver`. Acceptance: a `Grant` round-trips proto to Rust with the
   password arriving as a `SecretString`.
 - [x] `M2.4` Grant cache keyed by `sha256(token) || startup_db`.
@@ -215,10 +215,10 @@ field numbers may still change.
   Acceptance: `none` and the `HS*` family are rejected before the sidecar is
   called; the six approved algorithms pass. The proxy still does not verify
   signatures.
-- [ ] `M2.8` Mock sidecar binary.
+- [x] `M2.8` Mock sidecar binary.
   Acceptance: it starts, serves over UDS, and can be told to refuse, stall, and
   return a malformed grant so callers' error paths are reachable.
-- [ ] `M2.9` Integration tests against the mock over a real socket.
+- [x] `M2.9` Integration tests against the mock over a real socket.
   Acceptance: `cargo nextest run -p pgprox-auth --features integration` passes.
 - [ ] `M2.10` Close M2.
 
