@@ -18,7 +18,7 @@ early produces tasks that are wrong by the time they are reached.
   `CLAUDE.md` importing it. Root file stays an index and links out.
   Acceptance: both files exist, `CLAUDE.md` is the one-line import, `AGENTS.md`
   links every standards file.
-- [ ] `M-1.3` Standards, part one: `rust-style.md`, `error-handling.md`,
+- [x] `M-1.3` Standards, part one: `rust-style.md`, `error-handling.md`,
   `async-concurrency.md`. Acceptance: each states rules that are checkable, and
   names the lint or script that enforces it where one exists.
 - [ ] `M-1.4` Standards, part two: `testing.md`, `observability.md`,
