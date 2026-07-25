@@ -459,6 +459,20 @@ found in staging.
   gossip transport, so it belongs with M4 or M6 rather than here. Acceptance:
   a non-leader obtains a lease, and the invariant property test still holds
   with the hop in the loop.
+- [x] `M3.13` Per-tenant usage in the gossip digest, and the coordinator wiring
+  `Reservations` to it. Found reviewing M3: `Reservations::observe` takes the
+  home node's usage and `ShedCtx` takes `home_has_headroom`, and neither has a
+  source, because `ClusterDigest` carries only whole-node counts. ADR 0004 says
+  the digest carries per-tenant usage for homed tenants; it does not. Both
+  modules are correct pure functions with nothing able to feed them.
+  Acceptance: a peer decays a home node's reservation from gossip alone, and a
+  caller can assemble a `ShedCtx` without inventing any field.
+- [ ] `M3.14` Drive the invariant property test through `sim::Network`, so
+  gossip is dropped, delayed and reordered rather than delivered directly.
+  Found reviewing M3: the schedules partition, but every message that is not
+  partitioned away arrives immediately and in order, which is the case least
+  likely to produce stale liveness. Acceptance: the invariant holds with loss
+  and reordering enabled, and any failing seed is committed.
 
 ## M2: auth and sidecar (track B)
 

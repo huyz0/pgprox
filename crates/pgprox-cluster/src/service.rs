@@ -23,11 +23,28 @@ use pgprox_core::clock::Clock;
 use pgprox_core::cluster::{
     ClusterCoordinator, ClusterDigest, MembershipView, NodeMode, QuotaError, QuotaLease,
 };
-use pgprox_core::ids::{NodeId, ServerId};
+use pgprox_core::ids::{NodeId, ServerId, TenantId};
 
 use crate::coordinator::{CoordinatorConfig, NodeCoordinator};
 use crate::digest::{MergeOutcome, VersionedDigest};
 use crate::quota::NodeAllowance;
+
+/// What the cluster layer knows about where a tenant belongs.
+///
+/// The cluster-side half of a [`crate::shed::ShedCtx`]. Kept separate because
+/// the other half is session state this crate cannot see, and a type that
+/// carried both would have to invent the fields it does not own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TenantPlacement {
+    /// Whether this node is the tenant's home.
+    pub on_home_node: bool,
+    /// Whether the tenant's home node has room for another connection.
+    pub home_has_headroom: bool,
+    /// Whether the home node is draining.
+    pub home_draining: bool,
+    /// How long since the membership view last changed.
+    pub since_membership_change: std::time::Duration,
+}
 
 /// A [`ClusterCoordinator`] over a gossiping [`NodeCoordinator`].
 #[derive(Debug)]
@@ -42,7 +59,7 @@ impl GossipCoordinator {
     #[must_use]
     pub fn new(local: NodeId, config: CoordinatorConfig, clock: Arc<dyn Clock>) -> Arc<Self> {
         Arc::new(Self {
-            inner: Mutex::new(NodeCoordinator::new(local, config)),
+            inner: Mutex::new(NodeCoordinator::new(local, config, clock.now())),
             clock,
             local,
         })
@@ -92,6 +109,38 @@ impl GossipCoordinator {
     /// Records what this node is serving, for the next digest.
     pub fn report(&self, client_conns: u32, upstream_conns: Vec<(ServerId, u32)>) {
         self.with(|c| c.report(client_conns, upstream_conns));
+    }
+
+    /// Records this node's per-tenant usage, for the next digest.
+    pub fn report_tenants(&self, usage: Vec<(TenantId, u32)>) {
+        self.with(|c| c.report_tenants(usage));
+    }
+
+    /// Starts tracking a tenant's reservation.
+    pub fn track_tenant(&self, tenant: TenantId) {
+        self.with(|c| c.track_tenant(tenant));
+    }
+
+    /// Stops tracking a tenant.
+    pub fn forget_tenant(&self, tenant: &TenantId) {
+        self.with(|c| c.forget_tenant(tenant));
+    }
+
+    /// The cluster-side inputs to a shed decision for one tenant.
+    ///
+    /// Returns only what this crate knows. The session-scoped fields, whether
+    /// the client is idle, pinned or mid-transaction, belong to the caller, so
+    /// this deliberately does not return a `ShedCtx`: assembling one here would
+    /// mean inventing values for state this crate cannot see.
+    #[must_use]
+    pub fn placement(&self, tenant: &TenantId, budget: u32) -> TenantPlacement {
+        let now = self.clock.now();
+        self.with(|c| TenantPlacement {
+            on_home_node: c.membership(now).is_home_for(tenant),
+            home_has_headroom: c.home_has_headroom(tenant, budget, now),
+            home_draining: c.home_draining(tenant, now),
+            since_membership_change: c.since_membership_change(now),
+        })
     }
 
     /// What this node may open for a server right now.
@@ -152,6 +201,7 @@ mod tests {
                 mode: NodeMode::Active,
                 client_conns: 0,
                 upstream_conns: Vec::new(),
+                tenant_usage: Vec::new(),
             },
             version,
         }
@@ -271,6 +321,53 @@ mod tests {
             version: 13,
         });
         assert_eq!(coordinator.membership().leader(), Some(node(2)));
+    }
+
+    #[tokio::test]
+    async fn placement_reports_only_what_the_cluster_layer_knows() {
+        // Deliberately not a ShedCtx: the session-scoped half belongs to the
+        // caller, and assembling one here would mean inventing those fields.
+        let (coordinator, _clock) = serving();
+        let view = coordinator.membership();
+        let tenant = (0..1_000)
+            .map(|i| TenantId::new(format!("tenant-{i}")))
+            .find(|t| view.home_node(t) == Some(node(1)))
+            .unwrap();
+
+        let placement = coordinator.placement(&tenant, 10);
+        assert!(placement.on_home_node);
+        assert!(
+            placement.home_has_headroom,
+            "an unused home had no headroom"
+        );
+        assert!(!placement.home_draining);
+        assert!(placement.since_membership_change > Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn a_tracked_tenant_decays_and_a_forgotten_one_stops() {
+        let (coordinator, clock) = serving();
+        let tenant = TenantId::new("tenant-1");
+        coordinator.track_tenant(tenant.clone());
+        for _ in 0..5 {
+            clock.advance(Duration::from_secs(1));
+            coordinator.tick();
+        }
+        coordinator.forget_tenant(&tenant);
+        clock.advance(Duration::from_secs(1));
+        coordinator.tick();
+
+        // Nothing to assert beyond it not panicking and the digest surviving:
+        // the decay arithmetic is covered in the coordinator's own tests.
+        assert_eq!(coordinator.digest().node, node(1));
+    }
+
+    #[test]
+    fn the_digest_carries_per_tenant_usage() {
+        let (coordinator, _clock) = serving();
+        let tenant = TenantId::new("tenant-1");
+        coordinator.report_tenants(vec![(tenant.clone(), 9)]);
+        assert_eq!(coordinator.digest().tenant_usage, vec![(tenant, 9)]);
     }
 
     #[test]

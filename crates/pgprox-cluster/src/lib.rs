@@ -29,7 +29,7 @@ pub use lease::{LeaseConfig, LeaseLedger};
 pub use membership::{Membership, MembershipConfig, NodeState};
 pub use quota::{NodeAllowance, QuotaSplit, split};
 pub use reservation::{ReservationConfig, Reservations, TenantEntitlement};
-pub use service::GossipCoordinator;
+pub use service::{GossipCoordinator, TenantPlacement};
 pub use shed::{ShedConfig, ShedCtx, ShedDecision, ShedRefusal};
 
 // Compiled during this crate's own tests so the coverage gate measures it, and

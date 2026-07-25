@@ -17,7 +17,18 @@ and restart, is the hard part of the whole design.
 SWIM gossip over UDP using `foca`, seeded from headless Service DNS. One-second
 protocol period, sub-second failure detection. Each message piggybacks a compact
 per-node digest: upstream counts per server, client counts, per-tenant usage for
-homed tenants, lease state, and drain mode.
+homed tenants, and drain mode.
+
+Only *homed* tenants appear in the per-tenant usage, which is what bounds the
+message: a node homes roughly `tenants / nodes` of the fleet, and that is exactly
+the set peers need in order to judge whether it is using what it reserved.
+Gossiping every tenant a node touches would put 5,000 entries in a message sent
+once a second.
+
+Lease state is deliberately not gossiped. The takeover wait already guarantees
+that every lease the previous leader issued has either been renewed through the
+new one or expired, so gossiping the ledger would add a second source of truth
+for capacity without removing the need for the wait.
 
 Quota for a server with cap `C` across a fleet configured to run `N` nodes:
 

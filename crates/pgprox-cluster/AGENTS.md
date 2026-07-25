@@ -44,6 +44,16 @@ purpose, thousands of times, in milliseconds.
 - A failing seed is committed as a regression case, named for what it broke.
 - Gossip digests feed cluster-wide admin aggregates as well as control, so the
   digest schema needs the care of a public API.
+- `ClusterDigest::tenant_usage` carries only the tenants a node **homes**. That
+  is what bounds the message and what makes reservation decay possible; adding
+  every tenant a node touches would put 5,000 entries in a message sent once a
+  second.
+- A tenant with no reported usage reads as idle, and a tenant with no home has
+  no headroom. Both defaults let peers reclaim slack rather than reserving
+  capacity for a node that may be gone.
+- `Reservations` and `shed::decide` are pure functions; the coordinator is what
+  feeds them. If you add an input to either, check it has a source in the digest
+  before assuming a caller can supply it.
 
 See ADR [0004](../../product/decisions/0004-swim-gossip-with-leader-leases.md)
 and [0005](../../product/decisions/0005-home-node-affinity-by-reservation.md).

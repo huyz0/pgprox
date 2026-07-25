@@ -220,6 +220,18 @@ pub struct ClusterDigest {
     pub client_conns: u32,
     /// Upstream connections it holds, per server.
     pub upstream_conns: Vec<(ServerId, u32)>,
+    /// Upstream connections it holds per tenant, for the tenants it homes.
+    ///
+    /// Only homed tenants, which is what bounds this. A node homes roughly
+    /// `tenants / nodes` of the fleet by rendezvous hashing, and every other
+    /// node needs exactly this to decide whether the home node is using the
+    /// share it reserved. Gossiping every tenant a node touches would put 5,000
+    /// entries in a message sent once a second.
+    ///
+    /// This is what feeds `Reservations::observe` and the `home_has_headroom`
+    /// input to a shed decision. Without it both are correct functions with no
+    /// source of truth.
+    pub tenant_usage: Vec<(TenantId, u32)>,
 }
 
 /// Why a quota request failed.
@@ -391,6 +403,7 @@ mod fake {
                 mode: NodeMode::Active,
                 client_conns: 0,
                 upstream_conns: Vec::new(),
+                tenant_usage: Vec::new(),
             }
         }
     }

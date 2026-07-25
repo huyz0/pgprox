@@ -41,16 +41,17 @@
 //! partitions, leader loss and simultaneous restarts, asserting after every step
 //! that the sum of what every node believes it may open never exceeds the cap.
 
-use std::collections::HashMap;
-use std::time::Instant;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use pgprox_core::cluster::{ClusterDigest, MembershipView, NodeMode, QuotaError, QuotaLease};
-use pgprox_core::ids::{NodeId, ServerId};
+use pgprox_core::ids::{NodeId, ServerId, TenantId};
 
 use crate::digest::{DigestStore, MergeOutcome, VersionedDigest};
 use crate::lease::{LeaseConfig, LeaseLedger};
 use crate::membership::{Membership, MembershipConfig};
 use crate::quota::{self, NodeAllowance};
+use crate::reservation::{ReservationConfig, Reservations};
 
 /// How a node's quota behaviour is tuned.
 #[derive(Clone, Copy, Debug)]
@@ -69,6 +70,8 @@ pub struct CoordinatorConfig {
     pub lease: LeaseConfig,
     /// Liveness timing.
     pub membership: MembershipConfig,
+    /// Tenant reservation tuning.
+    pub reservation: ReservationConfig,
 }
 
 impl Default for CoordinatorConfig {
@@ -87,6 +90,7 @@ impl Default for CoordinatorConfig {
                 ..lease
             },
             membership,
+            reservation: ReservationConfig::default(),
         }
     }
 }
@@ -144,12 +148,19 @@ pub struct NodeCoordinator {
     mode: NodeMode,
     client_conns: u32,
     upstream_conns: Vec<(ServerId, u32)>,
+    tenant_usage: Vec<(TenantId, u32)>,
+    /// Tenant placement.
+    reservations: Reservations,
+    tracked_tenants: HashSet<TenantId>,
+    /// When the view last changed, for the shed settle window.
+    membership_changed_at: Instant,
+    view_hash: u64,
 }
 
 impl NodeCoordinator {
     /// A coordinator for `local`.
     #[must_use]
-    pub fn new(local: NodeId, config: CoordinatorConfig) -> Self {
+    pub fn new(local: NodeId, config: CoordinatorConfig, started: Instant) -> Self {
         Self {
             local,
             config,
@@ -161,6 +172,14 @@ impl NodeCoordinator {
             mode: NodeMode::Active,
             client_conns: 0,
             upstream_conns: Vec::new(),
+            tenant_usage: Vec::new(),
+            reservations: Reservations::new(config.reservation),
+            tracked_tenants: HashSet::new(),
+            // A node that has just started has by definition just seen its
+            // membership change, so the settle window applies from boot rather
+            // than from the first peer it happens to lose.
+            membership_changed_at: started,
+            view_hash: 0,
         }
     }
 
@@ -257,6 +276,26 @@ impl NodeCoordinator {
             ledger.reap(now);
         }
         self.liveness.reap(now);
+
+        // A reservation decays by counting gossip rounds in which the home node
+        // reported no use, so this must advance every round whether or not
+        // anything arrived. Advancing it only on a digest merge would mean a
+        // silent home node looked busy forever, which is the direction that
+        // strands its tenants' capacity.
+        let tenants: Vec<TenantId> = self.tracked_tenants.iter().cloned().collect();
+        for tenant in tenants {
+            let usage = self.home_usage(&tenant, now);
+            self.reservations.observe(&tenant, usage);
+        }
+
+        // The settle window measures from a change in the view, not from a
+        // gossip arrival: a peer repeating itself must not keep resetting the
+        // clock and suppress shedding forever.
+        let hash = self.digests.view_hash();
+        if hash != self.view_hash {
+            self.view_hash = hash;
+            self.membership_changed_at = now;
+        }
     }
 
     /// What this node may open for a server right now.
@@ -333,6 +372,13 @@ impl NodeCoordinator {
         self.upstream_conns = upstream_conns;
     }
 
+    /// Records this node's per-tenant usage, for the next digest.
+    ///
+    /// Only tenants this node homes belong here. See [`ClusterDigest`].
+    pub fn report_tenants(&mut self, usage: Vec<(TenantId, u32)>) {
+        self.tenant_usage = usage;
+    }
+
     /// What this node tells its peers about itself.
     #[must_use]
     pub fn digest(&self) -> ClusterDigest {
@@ -341,7 +387,89 @@ impl NodeCoordinator {
             mode: self.mode,
             client_conns: self.client_conns,
             upstream_conns: self.upstream_conns.clone(),
+            tenant_usage: self.tenant_usage.clone(),
         }
+    }
+
+    /// What the tenant's home node last said it was using for that tenant.
+    ///
+    /// Zero when the tenant has no home, or when its home has said nothing.
+    /// Both read as idle, which is the direction that lets peers reclaim the
+    /// slack rather than reserving capacity for a node that may be gone.
+    #[must_use]
+    pub fn home_usage(&self, tenant: &TenantId, now: Instant) -> u32 {
+        let Some(home) = self.membership(now).home_node(tenant) else {
+            return 0;
+        };
+        self.digests.get(home).map_or(0, |digest| {
+            digest
+                .tenant_usage
+                .iter()
+                .find(|(id, _)| id == tenant)
+                .map_or(0, |(_, used)| *used)
+        })
+    }
+
+    /// Whether the tenant's home node has room for another connection.
+    ///
+    /// The cluster-side input to a shed decision. Defaults to `false` when the
+    /// tenant has no home or its home has gone quiet, so a client is kept rather
+    /// than moved toward a node that may not be able to take it.
+    #[must_use]
+    pub fn home_has_headroom(&self, tenant: &TenantId, budget: u32, now: Instant) -> bool {
+        let view = self.membership(now);
+        let Some(home) = view.home_node(tenant) else {
+            return false;
+        };
+        let peers = u32::try_from(view.active_count()).unwrap_or(u32::MAX);
+        let entitlement = self
+            .reservations
+            .entitlement(tenant, home, Some(home), budget, peers);
+        self.home_usage(tenant, now) < entitlement.allowed
+    }
+
+    /// Whether the tenant's home node is draining.
+    ///
+    /// `false` when there is no home: a drain is a reason not to shed toward a
+    /// node, and "no home at all" is covered by [`Self::home_has_headroom`]
+    /// instead of being reported here as a drain that is not happening.
+    #[must_use]
+    pub fn home_draining(&self, tenant: &TenantId, now: Instant) -> bool {
+        let view = self.membership(now);
+        view.home_node(tenant)
+            .and_then(|home| self.digests.get(home))
+            .is_some_and(|digest| digest.mode == NodeMode::Draining)
+    }
+
+    /// How long since the membership view last changed.
+    ///
+    /// The settle window a shed decision waits out. Measured from a change in
+    /// the view hash rather than from a gossip arrival, so a peer repeating
+    /// itself does not keep resetting the clock and suppress shedding forever.
+    #[must_use]
+    pub fn since_membership_change(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.membership_changed_at)
+    }
+
+    /// The reservation tracker, for entitlement questions and diagnostics.
+    #[must_use]
+    pub const fn reservations(&self) -> &Reservations {
+        &self.reservations
+    }
+
+    /// Starts tracking a tenant's reservation.
+    ///
+    /// Tracking is explicit because the decay counter only means something if
+    /// it is advanced on every gossip round. A tenant added lazily on first use
+    /// would start at zero idle rounds and read as freshly active.
+    pub fn track_tenant(&mut self, tenant: TenantId) {
+        self.tracked_tenants.insert(tenant);
+    }
+
+    /// Stops tracking a tenant.
+    pub fn forget_tenant(&mut self, tenant: &TenantId) {
+        self.tracked_tenants.remove(tenant);
+        self.reservations.forget(tenant);
     }
 }
 
@@ -370,6 +498,7 @@ mod tests {
                 mode,
                 client_conns: 0,
                 upstream_conns: Vec::new(),
+                tenant_usage: Vec::new(),
             },
             version,
         }
@@ -386,7 +515,7 @@ mod tests {
     fn cluster(size: u16, now: Instant) -> Vec<NodeCoordinator> {
         let mut nodes: Vec<NodeCoordinator> = (1..=size)
             .map(|n| {
-                let mut c = NodeCoordinator::new(node(n), config_for(size));
+                let mut c = NodeCoordinator::new(node(n), config_for(size), now);
                 c.set_cap(server(), CAP);
                 c
             })
@@ -458,9 +587,9 @@ mod tests {
     }
 
     /// A restart: a fresh process, with no leases and no idea who is out there.
-    fn restart(nodes: &mut [NodeCoordinator], index: usize) {
+    fn restart(nodes: &mut [NodeCoordinator], index: usize, at: Instant) {
         let id = nodes[index].node();
-        let mut fresh = NodeCoordinator::new(id, config_for(FLEET));
+        let mut fresh = NodeCoordinator::new(id, config_for(FLEET), at);
         fresh.set_cap(server(), CAP);
         nodes[index] = fresh;
     }
@@ -495,7 +624,7 @@ mod tests {
                         // Simultaneous restarts, up to the whole fleet.
                         let count = usize::try_from(rng.below(u64::from(FLEET)) + 1).unwrap();
                         for index in 0..count {
-                            restart(&mut nodes, index);
+                            restart(&mut nodes, index, now);
                         }
                     }
                     _ => {}
@@ -901,7 +1030,7 @@ mod tests {
         let now = Instant::now();
         let mut nodes: Vec<NodeCoordinator> = (1..=8_u16)
             .map(|n| {
-                let mut c = NodeCoordinator::new(node(n), config_for(FLEET));
+                let mut c = NodeCoordinator::new(node(n), config_for(FLEET), now);
                 c.set_cap(server(), CAP);
                 c
             })
@@ -919,6 +1048,232 @@ mod tests {
             "the share was divided by the configured size, not the real one"
         );
         assert!(total_permitted(&nodes, now) <= CAP);
+    }
+
+    /// A digest carrying per-tenant usage.
+    fn digest_with_tenants(
+        n: u16,
+        version: u64,
+        mode: NodeMode,
+        usage: &[(&str, u32)],
+    ) -> VersionedDigest {
+        let mut d = digest_for(n, version, mode);
+        d.digest.tenant_usage = usage.iter().map(|(t, u)| (TenantId::new(*t), *u)).collect();
+        d
+    }
+
+    /// The tenant that `cluster(3, _)` homes on node `n`, found by asking.
+    fn tenant_homed_on(nodes: &[NodeCoordinator], n: u16, now: Instant) -> TenantId {
+        let view = nodes[0].membership(now);
+        (0..1_000)
+            .map(|i| TenantId::new(format!("tenant-{i}")))
+            .find(|t| view.home_node(t) == Some(node(n)))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_peer_reads_the_home_nodes_usage_out_of_its_digest() {
+        // The link that was missing: Reservations::observe takes the home
+        // node's usage, and before this the digest carried no per-tenant data
+        // at all, so nothing could feed it.
+        let now = Instant::now();
+        let mut nodes = cluster(3, now);
+        let tenant = tenant_homed_on(&nodes, 2, now);
+
+        nodes[0].gossip(
+            digest_with_tenants(2, 2, NodeMode::Active, &[(tenant.as_str(), 7)]),
+            now,
+        );
+        assert_eq!(nodes[0].home_usage(&tenant, now), 7);
+    }
+
+    #[test]
+    fn a_tenant_with_no_reported_usage_reads_as_idle() {
+        // The direction that lets peers reclaim slack rather than reserving
+        // capacity for a node that may be gone.
+        let now = Instant::now();
+        let nodes = cluster(3, now);
+        let tenant = tenant_homed_on(&nodes, 2, now);
+        assert_eq!(nodes[0].home_usage(&tenant, now), 0);
+    }
+
+    #[test]
+    fn a_reservation_decays_from_gossip_alone() {
+        // The acceptance criterion: a peer watches a home node do nothing for
+        // this tenant and reclaims the slack, with no message beyond the digest.
+        let config = config_for(3);
+        let mut now = Instant::now();
+        let mut nodes = cluster(3, now);
+        let tenant = tenant_homed_on(&nodes, 2, now);
+        nodes[0].track_tenant(tenant.clone());
+
+        for round in 2..=(config.reservation.decay_rounds + 1) {
+            now += Duration::from_secs(1);
+            nodes[0].gossip(
+                digest_with_tenants(2, u64::from(round), NodeMode::Active, &[]),
+                now,
+            );
+            nodes[0].observe(now);
+        }
+        assert!(
+            nodes[0].reservations().has_decayed(&tenant),
+            "an idle home node kept its reservation forever"
+        );
+    }
+
+    #[test]
+    fn any_use_at_all_resets_the_decay() {
+        let mut now = Instant::now();
+        let mut nodes = cluster(3, now);
+        let tenant = tenant_homed_on(&nodes, 2, now);
+        nodes[0].track_tenant(tenant.clone());
+
+        for round in 2..=6_u64 {
+            now += Duration::from_secs(1);
+            nodes[0].gossip(digest_with_tenants(2, round, NodeMode::Active, &[]), now);
+            nodes[0].observe(now);
+        }
+        assert!(nodes[0].reservations().has_decayed(&tenant));
+
+        now += Duration::from_secs(1);
+        nodes[0].gossip(
+            digest_with_tenants(2, 7, NodeMode::Active, &[(tenant.as_str(), 1)]),
+            now,
+        );
+        nodes[0].observe(now);
+        assert!(
+            !nodes[0].reservations().has_decayed(&tenant),
+            "a home node that came back was still treated as idle"
+        );
+    }
+
+    #[test]
+    fn decay_advances_on_a_round_where_nothing_arrived() {
+        // A silent home node must decay. Advancing only on a merge would let it
+        // look busy forever and strand its tenants' capacity.
+        let config = config_for(3);
+        let mut now = Instant::now();
+        let mut nodes = cluster(3, now);
+        let tenant = tenant_homed_on(&nodes, 2, now);
+        nodes[0].track_tenant(tenant.clone());
+
+        for _ in 0..=config.reservation.decay_rounds {
+            now += Duration::from_secs(1);
+            nodes[0].observe(now);
+        }
+        assert!(nodes[0].reservations().has_decayed(&tenant));
+    }
+
+    #[test]
+    fn a_forgotten_tenant_stops_being_tracked() {
+        let mut now = Instant::now();
+        let mut nodes = cluster(3, now);
+        let tenant = tenant_homed_on(&nodes, 2, now);
+        nodes[0].track_tenant(tenant.clone());
+        now += Duration::from_secs(1);
+        nodes[0].observe(now);
+        assert_eq!(nodes[0].reservations().tracked(), 1);
+
+        nodes[0].forget_tenant(&tenant);
+        now += Duration::from_secs(1);
+        nodes[0].observe(now);
+        assert_eq!(nodes[0].reservations().tracked(), 0);
+    }
+
+    #[test]
+    fn a_busy_home_node_reports_no_headroom() {
+        let now = Instant::now();
+        let mut nodes = cluster(3, now);
+        let tenant = tenant_homed_on(&nodes, 2, now);
+
+        // Budget 10, home share 0.8, so the home node reserves 8.
+        nodes[0].gossip(
+            digest_with_tenants(2, 2, NodeMode::Active, &[(tenant.as_str(), 7)]),
+            now,
+        );
+        assert!(nodes[0].home_has_headroom(&tenant, 10, now));
+
+        nodes[0].gossip(
+            digest_with_tenants(2, 3, NodeMode::Active, &[(tenant.as_str(), 8)]),
+            now,
+        );
+        assert!(
+            !nodes[0].home_has_headroom(&tenant, 10, now),
+            "a home node at its reservation reported headroom"
+        );
+    }
+
+    #[test]
+    fn a_tenant_with_no_home_has_no_headroom_to_shed_toward() {
+        // Every node draining leaves no home at all. Keeping the client is the
+        // only safe answer; shedding it would aim at nobody.
+        let now = Instant::now();
+        let mut nodes = cluster(3, now);
+        let tenant = tenant_homed_on(&nodes, 2, now);
+        for peer in 1..=3_u16 {
+            nodes[0].gossip(digest_for(peer, 2, NodeMode::Draining), now);
+        }
+        assert_eq!(nodes[0].membership(now).home_node(&tenant), None);
+        assert!(!nodes[0].home_has_headroom(&tenant, 10, now));
+        assert!(!nodes[0].home_draining(&tenant, now));
+        assert_eq!(nodes[0].home_usage(&tenant, now), 0);
+    }
+
+    #[test]
+    fn a_draining_home_node_is_reported_as_draining() {
+        let now = Instant::now();
+        let mut nodes = cluster(3, now);
+        let tenant = tenant_homed_on(&nodes, 3, now);
+        assert!(!nodes[0].home_draining(&tenant, now));
+
+        // Node 3 drains, so the tenant rehomes and its new home is not draining.
+        nodes[0].gossip(digest_for(1, 2, NodeMode::Draining), now);
+        nodes[0].gossip(digest_for(2, 2, NodeMode::Draining), now);
+        assert_eq!(nodes[0].membership(now).home_node(&tenant), Some(node(3)));
+        nodes[0].gossip(digest_for(3, 3, NodeMode::Draining), now);
+        assert_eq!(
+            nodes[0].membership(now).home_node(&tenant),
+            None,
+            "a draining node still homed a tenant"
+        );
+    }
+
+    #[test]
+    fn the_settle_window_runs_from_a_view_change_not_from_a_gossip_arrival() {
+        // A peer repeating itself must not keep resetting the clock, or the
+        // settle window suppresses shedding forever in a healthy cluster.
+        let start = Instant::now();
+        let mut nodes = cluster(3, start);
+        let mut now = start;
+
+        for round in 2..=10_u64 {
+            now += Duration::from_secs(1);
+            for peer in 1..=3_u16 {
+                nodes[0].gossip(digest_for(peer, round, NodeMode::Active), now);
+            }
+            nodes[0].observe(now);
+        }
+        assert_eq!(
+            nodes[0].since_membership_change(now),
+            now - start,
+            "repeated gossip reset the settle window"
+        );
+
+        // A node leaving is a change, and does reset it.
+        now += Duration::from_secs(1);
+        nodes[0].forget(node(3));
+        nodes[0].observe(now);
+        assert_eq!(nodes[0].since_membership_change(now), Duration::ZERO);
+    }
+
+    #[test]
+    fn the_digest_carries_the_tenants_this_node_homes() {
+        let now = Instant::now();
+        let mut nodes = cluster(3, now);
+        let tenant = tenant_homed_on(&nodes, 1, now);
+        nodes[0].report_tenants(vec![(tenant.clone(), 12)]);
+
+        assert_eq!(nodes[0].digest().tenant_usage, vec![(tenant, 12)]);
     }
 
     #[test]

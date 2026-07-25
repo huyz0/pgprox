@@ -183,6 +183,7 @@ mod tests {
                 mode: NodeMode::Active,
                 client_conns: clients,
                 upstream_conns: vec![(ServerId::new("db-1", 5432), clients / 10)],
+                tenant_usage: Vec::new(),
             },
             version,
         }
@@ -326,6 +327,7 @@ mod tests {
                     mode: NodeMode::Active,
                     client_conns: u32::MAX,
                     upstream_conns: vec![(ServerId::new("db-1", 5432), u32::MAX)],
+                    tenant_usage: Vec::new(),
                 },
                 version: 1,
             });
