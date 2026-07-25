@@ -1,0 +1,54 @@
+{
+  "$comment": [
+    "Agent hooks are an accelerator, not the enforcement layer. Every command",
+    "here calls a script in scripts/, the same script lefthook and CI call, so",
+    "no check is implemented twice. A developer on a tool without hook support",
+    "works under identical rules with slower feedback, never weaker rules.",
+    "In-session feedback matters because it lets an agent fix a clippy failure",
+    "in the same turn while the context is live; catching it at commit time",
+    "means re-deriving what changed."
+  ],
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$CLAUDE_TOOL_INPUT_FILE_PATH\" | grep -q '\\.rs$'; then \"$CLAUDE_PROJECT_DIR/scripts/check-crate.sh\"; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$CLAUDE_TOOL_INPUT_FILE_PATH\" in *AGENTS.md|*CLAUDE.md|*SKILL.md) \"$CLAUDE_PROJECT_DIR/scripts/check-drift.sh\";; esac"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$CLAUDE_TOOL_INPUT_FILE_PATH\" | grep -qE '(/OUT_DIR/|\\.pb\\.rs$|_generated\\.rs$)'; then echo 'Blocked: generated code. Change the generator or the .proto instead. See standards/behavior.md' >&2; exit 2; fi"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/scripts/check-drift.sh\" >/dev/null 2>&1 || echo 'check-drift.sh is failing. Run scripts/check-drift.sh for detail.' >&2"
+          }
+        ]
+      }
+    ]
+  }
+}

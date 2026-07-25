@@ -34,15 +34,15 @@ early produces tasks that are wrong by the time they are reached.
 - [ ] `M-1.7` ADRs, one per row of the decisions table in the plan. Ten records,
   each naming the alternatives rejected and why. Acceptance: `decisions/0001`
   through `decisions/0010` exist and each has a Consequences section.
-- [ ] `M-1.8` Enforcement scripts: `check-fmt.sh`, `check-crate.sh`,
+- [x] `M-1.8` Enforcement scripts: `check-fmt.sh`, `check-crate.sh`,
   `check-coverage.sh`, `check-drift.sh`. Acceptance: each runs and exits
   correctly on the current (Rust-free) tree, meaning they no-op cleanly rather
   than failing when there are no crates yet.
-- [ ] `M-1.9` `lefthook.yml` calling the scripts, plus install instructions.
+- [x] `M-1.9` `lefthook.yml` calling the scripts, plus install instructions.
   Acceptance: hooks fire on a test commit and block on a seeded violation.
-- [ ] `M-1.10` CI workflow running the same scripts. Acceptance: workflow file
+- [x] `M-1.10` CI workflow running the same scripts. Acceptance: workflow file
   validates and calls `scripts/` rather than reimplementing the checks.
-- [ ] `M-1.11` Claude Code hooks as accelerator, calling identical scripts.
+- [x] `M-1.11` Claude Code hooks as accelerator, calling identical scripts.
   Acceptance: `.claude/settings.json` hooks reference `scripts/`, no check is
   implemented twice.
 - [ ] `M-1.12` Skills, part one: `spec`, `tdd`, `next-task`. Acceptance: Agent
@@ -51,7 +51,7 @@ early produces tasks that are wrong by the time they are reached.
 - [ ] `M-1.14` Skills, part three: `hot-path`, `wire-debug`, `skill-forge`.
 - [ ] `M-1.15` Skill discovery symlink and per-crate `AGENTS.md` stubs for the
   twelve planned crates.
-- [ ] `M-1.16` `scripts/m-1-complete.sh`, the milestone completion condition.
+- [x] `M-1.16` `scripts/m-1-complete.sh`, the milestone completion condition.
   Acceptance: exits zero on a complete M-1 and non-zero with a useful message on
   each individual failure.
 - [ ] `M-1.17` Portability check on a second tool. Run a small throwaway task

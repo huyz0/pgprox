@@ -1,0 +1,77 @@
+name: ci
+
+# CI calls scripts/ rather than reimplementing the checks. If a check exists in
+# two places it drifts, and the version that matters is whichever one the
+# developer did not run.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  tier1:
+    name: tier 1 (the pre-commit gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup show && rustup component add rustfmt clippy llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest,cargo-deny
+
+      - run: scripts/check-fmt.sh
+      - run: scripts/check-drift.sh
+      - run: scripts/check-crate.sh
+      - run: scripts/check-coverage.sh
+
+  supply-chain:
+    name: supply chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: cargo deny
+        run: |
+          if [ -f deny.toml ]; then
+            cargo deny check
+          else
+            echo "no deny.toml yet (pre-M0), skipping"
+          fi
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  milestone:
+    name: milestone completion condition
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: M-1
+        # Reported, not enforced, until M-1 closes. Once it passes it becomes a
+        # required check so the system cannot regress.
+        continue-on-error: true
+        run: scripts/m-1-complete.sh
