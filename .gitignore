@@ -11,3 +11,6 @@ dhat-heap.json
 .env
 *.pem
 *.key
+
+# Upstream proxies cloned for protocol reference. Read-only, never vendored.
+/reference

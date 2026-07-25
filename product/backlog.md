@@ -223,6 +223,122 @@ pipelining, no multi-statement query, no error mid-stream.
   driver, rather than `SELECT 1` five times.
 - [x] `M1R.10` Close M1R.
 
+## M1F: full protocol coverage
+
+Measured against three references cloned into `reference/` (gitignored): pgdog
+(Rust, closest peer), pgbouncer (canonical SCRAM and prepared statements), and
+odyssey. The comparison is what makes this list finite rather than a guess.
+
+**Where we are already ahead.** pgdog's `read_buf` reserves the declared length
+and reads the whole body before handing it on, using `unsafe set_len`. Our
+`FrameRelay` streams and forbids unsafe. Do not regress this to match a
+reference.
+
+**What passing bytes through opaquely covers.** `RowDescription`, `DataRow`,
+`NoData`, `ParseComplete`, `BindComplete`, `CloseComplete`, `PortalSuspended`
+need no decoder for a proxy, and decoding them would cost throughput for
+nothing. They are not gaps.
+
+**The real gaps**, in dependency order.
+
+### Group A: message surface
+
+- [ ] `M1F.1` `EmptyQueryResponse` (`I`). No `Tag` constant exists at all. An
+  empty statement yields this instead of `CommandComplete`, so anything counting
+  completions is wrong today.
+- [ ] `M1F.2` `ParameterDescription` (`t`) decoder. Encoded by the harness,
+  never decoded. M5's statement mapping needs the parameter count to rewrite a
+  `Describe` response.
+- [ ] `M1F.3` `FunctionCall` (`F`) and `FunctionCallResponse` (`V`). Legacy
+  fast-path, still reachable. pgdog models it as `fastpath`. Decide explicitly
+  whether to support or refuse it, and record the choice; refusing silently is
+  the option that is definitely wrong.
+- [ ] `M1F.4` Full `ErrorResponse`/`NoticeResponse` field set. Three of about
+  twenty are extracted. Add detail, hint, position, internal position, internal
+  query, where, schema, table, column, datatype, constraint, file, line,
+  routine. Acceptance: a real Postgres error round-trips every field it sent.
+- [ ] `M1F.5` `Tag` completeness audit. Assert every code in the Postgres
+  protocol appendix has a constant and a stated policy, so a future message
+  cannot be silently unhandled. Acceptance: a test enumerates them.
+
+### Group B: SCRAM-SHA-256 authentication
+
+ADR 0002 chose SCRAM passthrough for non-JWT clients and it was never built, so
+admin tooling and migrations cannot connect. pgbouncer spends 1205 lines here;
+this is the largest single gap.
+
+- [ ] `M1F.6` SASL message framing: `AuthenticationSASL`,
+  `AuthenticationSASLContinue`, `AuthenticationSASLFinal`, and the
+  `SASLInitialResponse`/`SASLResponse` frontend forms.
+- [ ] `M1F.7` SCRAM client-first and server-first messages: nonce generation,
+  channel-binding flag, the `n,,` GS2 header. Sans-I/O, so testable against RFC
+  5802 vectors.
+- [ ] `M1F.8` Salted password derivation: PBKDF2-HMAC-SHA-256, `SaltedPassword`,
+  `ClientKey`, `StoredKey`, `ServerKey`. Must use the FIPS provider so the FIPS
+  build does not diverge.
+- [ ] `M1F.9` Client proof and server signature verification, in constant time.
+  Acceptance: RFC 5802 and RFC 7677 test vectors pass.
+- [ ] `M1F.10` `scram-sha-256` verifier parsing, for verifying a client against
+  a stored verifier rather than a password.
+- [ ] `M1F.11` Channel binding (`SCRAM-SHA-256-PLUS`). Decide and record: it
+  requires the TLS exporter and interacts with the FIPS suite list. Refusing is
+  acceptable; refusing without saying so is not.
+- [ ] `M1F.12` Wire SCRAM into the auth path as the non-JWT branch, selected by
+  a configured static-credential rule.
+- [ ] `M1F.13` SCRAM conformance against real Postgres and all five drivers.
+  Acceptance: each driver authenticates with SCRAM through the harness.
+
+### Group C: protocol 3.2
+
+- [ ] `M1F.14` 256-bit cancel keys. `ConnId` is 64-bit and `BackendKeyData` is
+  two `i32`s, so this is a `pgprox-core` contract change: use the
+  `contract-change` skill and expect to touch every crate that holds a `ConnId`.
+- [ ] `M1F.15` Negotiate 3.2 upward rather than down, keeping the 3.0 path for
+  older clients. Acceptance: a 3.2 client gets 3.2, a 3.0 client gets 3.0, both
+  against real Postgres 18.
+- [ ] `M1F.16` `_pq_.` protocol extension parameters in the startup packet, and
+  reporting unrecognised ones in `NegotiateProtocolVersion`.
+
+### Group D: replication and COPY BOTH
+
+pgdog carries a whole logical-decoding subtree. We only track the mode.
+
+- [ ] `M1F.17` Decide scope and record an ADR. Physical replication passthrough
+  is cheap; logical decoding message types are a large surface that a
+  connection proxy may not need at all. Do not build Group D before this.
+- [ ] `M1F.18` `CopyBothResponse` session semantics: a replication connection
+  never returns to the pool and must be pinned for life.
+- [ ] `M1F.19` Standby status update and keepalive passthrough, if M1F.17 says
+  yes.
+
+### Group E: startup and session parameters
+
+- [ ] `M1F.20` `options` startup parameter parsing, including the
+  `-c name=value` form. It carries `search_path`, which is part of the cache key
+  and therefore correctness-relevant.
+- [ ] `M1F.21` The replayable session-parameter allowlist as a real type, with
+  `SET`, `SET LOCAL`, `RESET`, and `RESET ALL` handling. ADR 0001 named it; it
+  does not exist yet.
+- [ ] `M1F.22` `GSSENCRequest` beyond refusal: confirm the refusal path against
+  a GSSAPI-capable client rather than assuming it.
+
+### Group F: conformance depth
+
+- [ ] `M1F.23` A message-coverage report. Instrument the conformance run to
+  record which tags were actually seen in each direction, and fail if a tag with
+  a decoder was never exercised. This is what turns "we handle it" into "we
+  tested it".
+- [ ] `M1F.24` Driver matrix against real Postgres, not only the harness. The
+  drivers currently only meet our own server; run each against real Postgres
+  through the relay to catch anything the harness gets wrong in the same
+  direction we do.
+- [ ] `M1F.25` Corpus seeding from the references: extract their protocol test
+  fixtures into the fuzz corpus, so their accumulated edge cases become ours.
+
+### Group G: close
+
+- [ ] `M1F.26` Close M1F. Acceptance: `scripts/m1f-complete.sh` exits zero.
+
 ## M2: auth and sidecar (track B)
 
 `pgprox-auth` turns a client's token into the credentials for its database, by

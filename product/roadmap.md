@@ -17,6 +17,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M0 | Contracts and quality gates | complete |
 | M1 | Protocol and TLS (track A) | complete |
 | M1R | Protocol revision: streaming and test breadth | complete |
+| M1F | Full protocol coverage | ready |
 | M2 | Auth and sidecar (track B) | complete |
 | M3 | Cluster (track C) | ready |
 | M4 | Operations (track D) | ready |
