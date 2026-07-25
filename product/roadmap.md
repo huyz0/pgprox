@@ -13,8 +13,8 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 
 | Milestone | Name | State |
 | --- | --- | --- |
-| M-1 | AI development system | in progress |
-| M0 | Contracts and quality gates | blocked by M-1 |
+| M-1 | AI development system | complete |
+| M0 | Contracts and quality gates | ready |
 | M1 | Protocol and TLS (track A) | blocked by M0 |
 | M2 | Auth and sidecar (track B) | blocked by M0 |
 | M3 | Cluster (track C) | blocked by M0 |
@@ -27,7 +27,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
-## M-1: AI development system
+## M-1: AI development system (complete)
 
 No Rust. Standards, product docs, ADRs, portable skills, and the enforcement
 layer, all validated before any code depends on them.
