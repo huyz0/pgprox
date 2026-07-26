@@ -125,8 +125,50 @@ pub fn negotiate_protocol_version(out: &mut Vec<u8>, minor: i32, unrecognized: &
     });
 }
 
+/// `R` with subtype 10: begin SASL, offering these mechanisms.
+///
+/// The list is written in the order given, which is the order a client is
+/// expected to prefer. `SCRAM-SHA-256-PLUS` is deliberately not something this
+/// proxy offers: it terminates TLS itself, so the binding a client would verify
+/// is to the proxy rather than to the database.
+pub fn authentication_sasl(out: &mut Vec<u8>, mechanisms: &[&str]) {
+    tagged(out, Tag::AUTHENTICATION, |b| {
+        b.extend_from_slice(&10_i32.to_be_bytes());
+        for mechanism in mechanisms {
+            cstr(b, mechanism);
+        }
+        // The list is itself null-terminated, on top of each entry being so. A
+        // client reading one terminator and stopping would hang waiting for a
+        // message the server already sent.
+        b.push(0);
+    });
+}
+
+/// `R` with subtype 11: a SASL challenge carrying the server-first message.
+///
+/// The payload is not null-terminated: SASL data is length-counted by the
+/// enclosing frame, and a terminator would end up inside the client's
+/// `AuthMessage` and break every proof it computes.
+pub fn authentication_sasl_continue(out: &mut Vec<u8>, payload: &str) {
+    tagged(out, Tag::AUTHENTICATION, |b| {
+        b.extend_from_slice(&11_i32.to_be_bytes());
+        b.extend_from_slice(payload.as_bytes());
+    });
+}
+
+/// `R` with subtype 12: SASL succeeded, carrying the server-final message.
+///
+/// Followed by an `AuthenticationOk`, which is what actually ends
+/// authentication. A client that got this and nothing else would wait forever.
+pub fn authentication_sasl_final(out: &mut Vec<u8>, payload: &str) {
+    tagged(out, Tag::AUTHENTICATION, |b| {
+        b.extend_from_slice(&12_i32.to_be_bytes());
+        b.extend_from_slice(payload.as_bytes());
+    });
+}
+
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::backend::{self, AuthRequest, BackendMessage};
@@ -335,5 +377,81 @@ mod tests {
         // Major in the high 16 bits, minor in the low 16.
         assert_eq!(PROTOCOL_3_0, 3 << 16);
         assert_eq!(PROTOCOL_3_2, (3 << 16) | 2);
+    }
+
+    #[test]
+    fn a_sasl_request_lists_its_mechanisms_and_terminates_the_list() {
+        let mut out = Vec::new();
+        authentication_sasl(&mut out, &["SCRAM-SHA-256"]);
+
+        assert_eq!(
+            round_trip(&out),
+            BackendMessage::Authentication(AuthRequest::Sasl)
+        );
+        assert!(
+            out.ends_with(b"SCRAM-SHA-256\0\0"),
+            "the mechanism list was not terminated, so a client would hang: {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_sasl_request_can_offer_more_than_one_mechanism() {
+        let mut out = Vec::new();
+        authentication_sasl(&mut out, &["SCRAM-SHA-256", "SOMETHING-ELSE"]);
+        assert!(out.ends_with(b"SCRAM-SHA-256\0SOMETHING-ELSE\0\0"));
+    }
+
+    #[test]
+    fn a_sasl_continue_carries_its_payload_unterminated() {
+        // The terminator would land inside the client's AuthMessage and break
+        // every proof computed from it, which presents as "the password is
+        // wrong" against a password that is right.
+        let mut out = Vec::new();
+        authentication_sasl_continue(&mut out, "r=NONCE,s=U0FMVA==,i=4096");
+
+        assert_eq!(
+            round_trip(&out),
+            BackendMessage::Authentication(AuthRequest::SaslContinue)
+        );
+        assert!(
+            out.ends_with(b"i=4096"),
+            "a terminator was appended: {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_sasl_final_carries_its_payload_unterminated() {
+        let mut out = Vec::new();
+        authentication_sasl_final(&mut out, "v=U0lHTg==");
+
+        assert_eq!(
+            round_trip(&out),
+            BackendMessage::Authentication(AuthRequest::SaslFinal)
+        );
+        assert!(out.ends_with(b"v=U0lHTg=="));
+    }
+
+    #[test]
+    fn every_sasl_message_declares_its_own_length_correctly() {
+        // A hand-written length prefix is the thing most worth checking, and
+        // round_trip only proves the first message parses. This proves each
+        // one consumes exactly what it wrote, with nothing left over.
+        let mut out = Vec::new();
+        authentication_sasl(&mut out, &["SCRAM-SHA-256"]);
+        authentication_sasl_continue(&mut out, "r=NONCE,s=U0FMVA==,i=4096");
+        authentication_sasl_final(&mut out, "v=U0lHTg==");
+        authentication_ok(&mut out);
+
+        let mut rest = out.as_slice();
+        let mut seen = Vec::new();
+        while !rest.is_empty() {
+            let Decoded::Frame(frame, consumed) = decode(rest, DEFAULT_MAX_FRAME).unwrap() else {
+                panic!("a message declared a length longer than it wrote");
+            };
+            backend::decode(&frame).unwrap();
+            seen.push(frame.tag());
+            rest = &rest[consumed..];
+        }
+        assert_eq!(seen.len(), 4, "the four messages did not decode as four");
     }
 }
