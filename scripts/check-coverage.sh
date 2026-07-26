@@ -32,17 +32,26 @@ run_gate() {
   local crate="$1"
   local out
 
-  # Stale profile data from a previous crate's run is discarded first.
-  # Coverage attributes a generic function to the file it is written in, so a
-  # crate that instantiates another crate's generics and does not exercise them
-  # lands in that crate's report. bin/pgprox instantiating LivePool did exactly
-  # that, and pgprox-pool read 94% while its own tests covered 99%. Left alone
-  # this understates and, with the runs in the other order, overstates.
-  # --profraw-only keeps the instrumented build, so this costs nothing.
-  CARGO_TARGET_DIR="$COVERAGE_TARGET_DIR" cargo llvm-cov clean \
+  # One target directory per crate.
+  #
+  # Two problems, one fix. Coverage attributes a generic function to the file
+  # it is written in, so a crate that instantiates another crate's generics
+  # without exercising them lands in that crate's report: bin/pgprox
+  # instantiating LivePool did exactly that, and pgprox-pool read 94% while its
+  # own tests covered 99%. And a shared directory keeps object files from the
+  # previous crate's run, so llvm-cov reads a stale binary and reports zero for
+  # functions the run did execute: pgprox-config read 85% and 98% for the same
+  # tree minutes apart, in the direction that fails a green crate. Clearing
+  # only the profraw files fixed the first and not the second.
+  #
+  # Separate directories fix both by construction, and each crate keeps its own
+  # warm build, so a repeated run of one crate is as fast as it was. The cost
+  # is disk: one instrumented target tree per crate.
+  local target="$COVERAGE_TARGET_DIR/$crate"
+  CARGO_TARGET_DIR="$target" cargo llvm-cov clean \
     --workspace --profraw-only >/dev/null 2>&1 || true
 
-  if ! out="$(CARGO_TARGET_DIR="$COVERAGE_TARGET_DIR" cargo llvm-cov nextest \
+  if ! out="$(CARGO_TARGET_DIR="$target" cargo llvm-cov nextest \
         -p "$crate" --lib --bins \
         --ignore-filename-regex "$IGNORE_RE" \
         --summary-only --json 2>/dev/null)"; then

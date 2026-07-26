@@ -914,7 +914,7 @@ rule already allows `pgprox-proto`.
   `check-crate.sh` runs clippy with `--all-features`, where the import is used.
   Acceptance: the default build is warning-free, and the check that missed it
   covers the default feature set too.
-- [ ] `M6.35` `check-coverage.sh` reports stale numbers. Its `cargo llvm-cov
+- [x] `M6.35` `check-coverage.sh` reports stale numbers. Its `cargo llvm-cov
   clean --profraw-only` keeps the instrumented build, which is the point, but
   it also keeps object files from a previous run of a different crate, and the
   report then attributes zero coverage to functions the run did execute. Seen
