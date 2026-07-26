@@ -20,6 +20,7 @@
 //! and the crate's `AGENTS.md` says so at length.
 
 pub mod auth;
+pub mod cancel;
 pub mod connect;
 pub mod probe;
 pub mod relay;
@@ -31,6 +32,7 @@ pub use auth::{
     Progress, SCRAM_SHA_256, SaslProgress, ScramAuth, ScramChallenge, ScramConfig,
     StaticCredentials, TokenAuth,
 };
+pub use cancel::{Cancellation, Entropy, Registry, Routing};
 pub use connect::{Need, UpstreamHandshake, UpstreamScram};
 pub use probe::{ParameterCache, Parameters, REPLICA_QUERY, SqlReplicaProbe};
 pub use relay::{ClientAction, ClientOutcome, Relay, ServerOutcome};

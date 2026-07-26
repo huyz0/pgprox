@@ -838,7 +838,7 @@ rule already allows `pgprox-proto`.
   `pg_is_in_recovery()`. Acceptance: a replica that stops replaying leaves the
   eligible set within one poll interval, and a probe failure is a stale reading
   with an age rather than a silent zero.
-- [ ] `M6.15` Cancellation across nodes: decode the node from the key, forward
+- [x] `M6.15` Cancellation across nodes: decode the node from the key, forward
   to the owner, issue the real `CancelRequest` upstream. Acceptance: a cancel
   arriving at a node that does not own the connection reaches the one that
   does, and an unknown key is refused rather than ignored.
