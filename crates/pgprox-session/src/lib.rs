@@ -20,6 +20,7 @@
 //! and the crate's `AGENTS.md` says so at length.
 
 pub mod auth;
+pub mod connect;
 pub mod relay;
 pub mod resume;
 pub mod shell;
@@ -29,6 +30,7 @@ pub use auth::{
     Progress, SCRAM_SHA_256, SaslProgress, ScramAuth, ScramChallenge, ScramConfig,
     StaticCredentials, TokenAuth,
 };
+pub use connect::{Need, UpstreamHandshake, UpstreamScram};
 pub use relay::{ClientAction, ClientOutcome, Relay, ServerOutcome};
 pub use resume::{ConnectionMemory, SessionMemory, Step, before_bind, on_acquire, replayed};
 pub use shell::{

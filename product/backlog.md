@@ -821,7 +821,7 @@ rule already allows `pgprox-proto`.
   packet, which the conformance test already does in a third place. Acceptance:
   each message round-trips through this crate's own frontend decoder, and the
   conformance client uses these rather than its own copies.
-- [ ] `M6.11` The upstream handshake, as a state machine. Split from the
+- [x] `M6.11` The upstream handshake, as a state machine. Split from the
   `Connector` below while writing it: the sequence is testable with no socket
   and the socket part is not, and one commit holding both would leave the
   interesting half only reachable through the dull one. Acceptance: every

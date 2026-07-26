@@ -135,7 +135,10 @@ impl PoolStats {
 }
 
 /// Why a connection could not be acquired.
-#[derive(Clone, Debug, thiserror::Error)]
+// PartialEq and Eq for the same reason ClientError has them: callers assert on
+// which error a state machine chose, and matches! with a wildcard body passes
+// on the wrong variant's payload.
+#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PoolError {
     /// The upstream server is at its configured cap and no connection freed up.
