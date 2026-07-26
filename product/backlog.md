@@ -851,24 +851,29 @@ rule already allows `pgprox-proto`.
 - [x] `M6.17` `bin/pgprox`: the composition root, with the wiring in a lib
   target and `main.rs` doing nothing a test cannot call. Acceptance: the wiring
   is called by a test with fakes, and `main.rs` is the only excluded file.
-- [ ] `M6.18` The live `Observatory`, reading the real components. Acceptance:
+- [x] `M6.18` The upstream dialer and the pool. Split out while starting the
+  live `Observatory`, which cannot report pool statistics for a pool that does
+  not exist. Acceptance: a backend that asks for TLS gets it, one that does not
+  is refused a plaintext connection only if the document says so, and the pool
+  the node holds is the one the `Connector` opens through.
+- [ ] `M6.19` The live `Observatory`, reading the real components. Acceptance:
   the surfaces-agree suite from `M4.18` passes against the live implementation
   unchanged, since it was written against the contract rather than the fake.
-- [ ] `M6.19` The accept loop and listener, with TLS and the client connection
+- [ ] `M6.20` The accept loop and listener, with TLS and the client connection
   ceiling. Acceptance: a node at its ceiling refuses with a message naming the
   limit, and refusal never takes down connections already established.
-- [ ] `M6.20` The drain sequence, end to end. Acceptance: `/readyz` fails
+- [ ] `M6.21` The drain sequence, end to end. Acceptance: `/readyz` fails
   first, gossip announces before any client is closed, in-flight transactions
   finish, and the grace timer force-closes the remainder.
-- [ ] `M6.21` `deploy/` and `scripts/e2e.sh`: three proxy nodes, a primary, two
+- [ ] `M6.22` `deploy/` and `scripts/e2e.sh`: three proxy nodes, a primary, two
   replicas, the mock sidecar. Acceptance: the script brings the stack up and
   reports which component failed when it does not, rather than a compose exit
   code.
-- [ ] `M6.22` The e2e assertions the milestone is judged on: pgbench clean,
+- [ ] `M6.23` The e2e assertions the milestone is judged on: pgbench clean,
   drain with zero failed transactions, no replica read behind the session
   watermark. Acceptance: each assertion fails when its property is broken on
   purpose, verified once per assertion.
-- [ ] `M6.23` Close M6.
+- [ ] `M6.24` Close M6.
 
 ## M7 and later
 

@@ -15,6 +15,8 @@
 
 use std::sync::Arc;
 
+use crate::dial::TcpUpstream;
+
 use pgprox_cluster::coordinator::CoordinatorConfig;
 use pgprox_cluster::service::GossipCoordinator;
 use pgprox_config::drain::{DrainConfig, DrainState};
@@ -23,8 +25,11 @@ use pgprox_core::clock::Clock;
 use pgprox_core::config::{Config, ConfigError, ConfigSource};
 use pgprox_core::ids::NodeId;
 use pgprox_observe::health::{Health, HealthConfig};
+use pgprox_pool::live::LivePool;
+use pgprox_pool::pool::PoolConfig;
 use pgprox_route::poller::ReplicaWatch;
 use pgprox_route::replica::ReplicaConfig;
+use pgprox_session::connect::PgConnector;
 
 /// Why a node could not be built.
 #[derive(Debug, thiserror::Error)]
@@ -67,6 +72,8 @@ pub struct Deps {
     pub node_name: String,
     /// Time. Injected so tests never sleep.
     pub clock: Arc<dyn Clock>,
+    /// How upstream TLS is verified.
+    pub tls: Arc<tokio_rustls::rustls::ClientConfig>,
     /// Where configuration comes from.
     pub config: Arc<dyn ConfigSource>,
     /// Who resolves a token into a backend.
@@ -81,6 +88,12 @@ impl std::fmt::Debug for Deps {
             .finish_non_exhaustive()
     }
 }
+
+/// The connector this node opens upstream connections through.
+pub type NodeConnector = Arc<PgConnector<TcpUpstream>>;
+
+/// The pool this node holds.
+pub type NodePool = LivePool<NodeConnector>;
 
 /// One built node.
 #[derive(Debug)]
@@ -100,6 +113,14 @@ pub struct App {
     pub drain: DrainState,
     /// What the probes answer.
     pub health: Health,
+    /// Where upstream connections come from.
+    ///
+    /// Held alongside the pool rather than only inside it, because the grant
+    /// path has to teach it which backend a pool key means and the pool has no
+    /// opinion about that.
+    pub connector: NodeConnector,
+    /// The upstream connections this node holds.
+    pub pool: Arc<NodePool>,
 }
 
 impl App {
@@ -135,7 +156,25 @@ impl App {
             cluster.set_cap(server.server.clone(), server.max_connections);
         }
 
+        let connector = Arc::new(PgConnector::new(TcpUpstream::new(Arc::clone(&deps.tls))));
+        let pool = LivePool::new(
+            Arc::clone(&connector),
+            Arc::clone(&deps.clock),
+            PoolConfig {
+                // Per pool, and a pool is one server, database and user. The
+                // cluster layer holds the cap that actually matters; this stops
+                // one tenant's pool from being the whole node's.
+                max_size: config
+                    .servers
+                    .first()
+                    .map_or(50, |server| server.max_connections.min(50)),
+                ..PoolConfig::default()
+            },
+        );
+
         Ok(Self {
+            connector,
+            pool,
             replicas: ReplicaWatch::new(0, ReplicaConfig::default(), Arc::clone(&deps.clock)),
             drain: DrainState::new(deps.node_name.clone(), DrainConfig::default()),
             health: Health::new(HealthConfig::default()),
@@ -178,6 +217,8 @@ mod tests {
             node: NodeId::new(1),
             node_name: "pgprox-1".to_owned(),
             clock: Arc::new(FakeClock::new()),
+            tls: pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty())
+                .expect("an empty root store is a valid client config"),
             config: FakeConfigSource::new(config).expect("the test's config is valid"),
             resolver: Arc::new(FakeCredentialResolver::new()),
         }
@@ -312,5 +353,40 @@ mod tests {
         let rendered = format!("{:?}", deps(config()));
         assert!(!rendered.to_lowercase().contains("token"), "{rendered}");
         assert!(!rendered.to_lowercase().contains("password"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn the_pool_opens_through_the_connector_the_node_holds() {
+        // Two connectors would mean the grant path teaching one of them where
+        // a database lives while the pool opened through the other, and every
+        // connection failing for a reason nothing reported.
+        let app = App::build(deps(config())).await.unwrap();
+        assert_eq!(app.connector.known(), 0);
+
+        app.connector.learn(&pgprox_core::auth::Backend {
+            server: ServerId::new("db-1", 5432),
+            database: "acme".into(),
+            user: "acme_app".into(),
+            password: pgprox_core::secret::SecretString::new("hunter2"),
+            tls: pgprox_core::auth::TlsMode::Disabled,
+        });
+
+        assert_eq!(
+            app.connector.known(),
+            1,
+            "the node's connector did not learn the backend"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_node_holds_no_upstream_connections() {
+        // The property the whole design rests on: a node that has started and
+        // been connected to by nobody costs the database nothing.
+        let app = App::build(deps(config())).await.unwrap();
+        let key = pgprox_core::ids::PoolKey::new(ServerId::new("db-1", 5432), "acme", "acme_app");
+        assert_eq!(
+            pgprox_core::pool::UpstreamPool::stats(app.pool.as_ref(), &key).active,
+            0
+        );
     }
 }

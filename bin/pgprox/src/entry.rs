@@ -167,6 +167,14 @@ pub async fn start_with(
         node: options.node,
         node_name: options.node_name,
         clock: Arc::new(SystemClock),
+        // An empty root store until certificates are configured. A backend
+        // that asks for a verified connection therefore fails to verify, which
+        // is the safe direction: the alternative is trusting whatever answers.
+        tls: pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).map_err(
+            |err| StartupError::Arguments {
+                detail: format!("could not build the upstream TLS configuration: {err}"),
+            },
+        )?,
         config,
         resolver,
     })

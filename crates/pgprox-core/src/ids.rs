@@ -135,6 +135,27 @@ impl ServerId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The host half.
+    ///
+    /// Split from the right, so the colons in an IPv6 address stay with the
+    /// host where they belong.
+    #[must_use]
+    pub fn host(&self) -> &str {
+        self.0.rsplit_once(':').map_or(&self.0, |(host, _)| host)
+    }
+
+    /// The port half.
+    ///
+    /// Zero for an identifier built without one, which nothing listens on, so
+    /// a caller that dials it fails rather than reaching something else.
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        self.0
+            .rsplit_once(':')
+            .and_then(|(_, port)| port.parse().ok())
+            .unwrap_or(0)
+    }
 }
 
 impl fmt::Display for ServerId {
@@ -497,5 +518,21 @@ mod tests {
         let key = PoolKey::new(ServerId::new("db-1", 5432), "d", "u");
         map.insert(key.clone(), 1);
         assert_eq!(map.get(&key), Some(&1));
+    }
+
+    #[test]
+    fn a_server_id_splits_back_into_its_host_and_port() {
+        let id = ServerId::new("db-1", 5432);
+        assert_eq!(id.host(), "db-1");
+        assert_eq!(id.port(), 5432);
+    }
+
+    #[test]
+    fn an_ipv6_host_keeps_its_colons() {
+        // Splitting from the left would dial 2001 on port 0db8, which is a
+        // failure that looks like a network problem.
+        let id = ServerId::new("[2001:db8::1]", 5432);
+        assert_eq!(id.host(), "[2001:db8::1]");
+        assert_eq!(id.port(), 5432);
     }
 }

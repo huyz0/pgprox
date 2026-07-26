@@ -20,8 +20,10 @@
 
 #![warn(missing_docs)]
 
+pub mod dial;
 pub mod entry;
 pub mod wiring;
 
+pub use dial::{ClientScram, Stream, TcpUpstream};
 pub use entry::{Options, run_with, start, start_with};
 pub use wiring::{App, Deps, StartupError};

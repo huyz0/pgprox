@@ -59,6 +59,21 @@ pub trait Connector: Send + Sync + fmt::Debug {
     async fn connect(&self, key: &PoolKey) -> Result<Self::Connection, PoolError>;
 }
 
+/// So a caller can hold its own handle on the connector while the pool holds
+/// one too.
+///
+/// The composition root needs both: the pool opens connections through it, and
+/// the grant path teaches it which backend a key means. Without this the two
+/// would need two connectors and only one of them would know anything.
+#[async_trait::async_trait]
+impl<C: Connector> Connector for Arc<C> {
+    type Connection = C::Connection;
+
+    async fn connect(&self, key: &PoolKey) -> Result<Self::Connection, PoolError> {
+        (**self).connect(key).await
+    }
+}
+
 /// Per-key state: the decisions and the payloads.
 struct Keyed<C> {
     pool: Pool,
