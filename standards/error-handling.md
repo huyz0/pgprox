@@ -55,6 +55,7 @@ real SQLSTATE, never a generic internal error. The mapping is one function in
 | TLS required but the client did not request it | `28000` | `invalid_authorization_specification` |
 | Sidecar unreachable | `08006` | `connection_failure` |
 | Acquire timeout | `57014` | `query_canceled` |
+| A failure that is the proxy's own, such as no system entropy | `XX000` | `internal_error` |
 
 `57P01` is chosen deliberately for shedding: every mainstream driver treats it
 as a clean server-initiated close and reconnects, which is the entire point of

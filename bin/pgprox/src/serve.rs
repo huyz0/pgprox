@@ -186,7 +186,14 @@ where
         .await
         .map_err(|err| ShellError::Refused(err.into()))?;
 
-    let conn = context.cancels.issue();
+    // Refused rather than issued from a fallback: a cancel key is a bearer
+    // token, and one drawn from anything predictable lets a tenant cancel its
+    // neighbour's queries.
+    let Some(conn) = context.cancels.issue() else {
+        return Err(wire
+            .refuse(ClientError::Internal("no entropy for a cancel key"))
+            .await);
+    };
     accept(&mut wire, conn, &parameters).await?;
 
     let _registered = context.sessions.register(
@@ -540,8 +547,8 @@ mod tests {
     struct Fixed;
 
     impl pgprox_session::cancel::Entropy for Fixed {
-        fn next(&self) -> u64 {
-            42
+        fn next(&self) -> Option<u64> {
+            Some(42)
         }
     }
 
@@ -773,6 +780,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_client_is_refused_when_there_is_no_entropy_for_its_cancel_key() {
+        // The alternative is a key drawn from something predictable, which
+        // lets one tenant cancel another's queries, and the client would have
+        // no way to know it had been handed one.
+        #[derive(Debug)]
+        struct Dry;
+
+        impl pgprox_session::cancel::Entropy for Dry {
+            fn next(&self) -> Option<u64> {
+                None
+            }
+        }
+
+        let addr = fake_postgres().await;
+        let mut context = context_for(addr);
+        context.cancels = Arc::new(Registry::new(NodeId::new(1), Box::new(Dry)));
+        let context = Arc::new(context);
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        // The credential request, then the refusal: the client never reaches
+        // AuthenticationOk, because the key it would be given cannot be made.
+        assert_eq!(expect(&mut client).await.0, Tag::AUTHENTICATION);
+
+        let (tag, body) = expect(&mut client).await;
+        assert_eq!(tag, Tag::ERROR_RESPONSE);
+        let rendered = String::from_utf8_lossy(&body);
+        assert!(rendered.contains("XX000"), "{rendered}");
+        assert!(
+            !rendered.contains("entropy"),
+            "the client was told which internal condition failed: {rendered}"
+        );
+        assert!(served.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
     async fn a_session_that_ends_leaves_no_client_behind() {
         // The registry is what SHOW CLIENTS reads. A row for a client that has
         // gone is worse than no row: an operator chasing it finds nothing.
@@ -912,7 +963,7 @@ mod tests {
         let backend = grant_for(addr).primary;
         context.connector.learn(&backend);
 
-        let conn = context.cancels.issue();
+        let conn = context.cancels.issue().unwrap();
         context.cancels.hold(
             conn,
             pgprox_session::cancel::Cancellation {

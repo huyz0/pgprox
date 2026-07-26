@@ -66,8 +66,15 @@ pub struct Cancellation {
 /// A trait so tests can be deterministic, and so this crate does not have to
 /// choose a random number generator on behalf of the composition root.
 pub trait Entropy: Send + Sync + fmt::Debug {
-    /// The next value. Only the low 48 bits are used.
-    fn next(&self) -> u64;
+    /// The next value, or `None` when there is no entropy to be had.
+    ///
+    /// Only the low 48 bits are used. `None` rather than a fallback value,
+    /// because every fallback available is either predictable or a panic on a
+    /// connection path: a cancel key is a bearer token, and one drawn from a
+    /// counter lets a tenant cancel its neighbour's queries by trying numbers
+    /// near its own. A source that cannot produce bits refuses the connection
+    /// instead. See `M1F.36` and `M6.30`.
+    fn next(&self) -> Option<u64>;
 }
 
 /// Every query this node could be asked to cancel.
@@ -102,8 +109,12 @@ impl Registry {
     /// A fresh connection identifier, with a random secret.
     ///
     /// The randomness is the point. See the module docs.
-    pub fn issue(&self) -> ConnId {
-        ConnId::new(self.node, self.entropy.next())
+    ///
+    /// Returns `None` when the entropy source has none, which the caller turns
+    /// into a refused connection. A key issued anyway would be guessable, and
+    /// the client would have no way to know that.
+    pub fn issue(&self) -> Option<ConnId> {
+        Some(ConnId::new(self.node, self.entropy.next()?))
     }
 
     /// How many queries are currently cancellable.
@@ -189,8 +200,18 @@ mod tests {
     struct Counter(AtomicU64);
 
     impl Entropy for Counter {
-        fn next(&self) -> u64 {
-            self.0.fetch_add(1, Ordering::SeqCst) + 1
+        fn next(&self) -> Option<u64> {
+            Some(self.0.fetch_add(1, Ordering::SeqCst) + 1)
+        }
+    }
+
+    /// A source that has nothing, which is what a broken machine looks like.
+    #[derive(Debug, Default)]
+    struct Dry;
+
+    impl Entropy for Dry {
+        fn next(&self) -> Option<u64> {
+            None
         }
     }
 
@@ -199,7 +220,7 @@ mod tests {
     struct SplitMix(AtomicU64);
 
     impl Entropy for SplitMix {
-        fn next(&self) -> u64 {
+        fn next(&self) -> Option<u64> {
             // Not for production either, but it has the property under test:
             // consecutive outputs are not consecutive numbers.
             let mut z = self
@@ -208,7 +229,7 @@ mod tests {
                 .wrapping_add(0x9E37_79B9_7F4A_7C15);
             z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
             z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            z ^ (z >> 31)
+            Some(z ^ (z >> 31))
         }
     }
 
@@ -225,15 +246,12 @@ mod tests {
     }
 
     #[test]
-    fn a_key_this_node_issued_and_holds_routes_locally() {
-        let registry = registry();
-        let conn = registry.issue();
-        registry.hold(conn, cancellation());
+    fn a_source_with_no_entropy_issues_nothing() {
+        // Rather than a fallback. Every fallback available is guessable, and a
+        // client handed a guessable cancel key has no way to know it.
+        let registry = Registry::new(NodeId::new(1), Box::new(Dry));
 
-        assert_eq!(
-            registry.route(conn),
-            Routing::Local(Box::new(cancellation()))
-        );
+        assert!(registry.issue().is_none());
     }
 
     #[test]
@@ -251,7 +269,7 @@ mod tests {
         // A cancel for a query that already finished is normal. Treating an
         // unknown key as probably fine is how a leaked key stays useful.
         let registry = registry();
-        let conn = registry.issue();
+        let conn = registry.issue().unwrap();
 
         assert_eq!(registry.route(conn), Routing::Unknown);
     }
@@ -263,7 +281,7 @@ mod tests {
         // now, and cancelling it would fail an unrelated tenant's query while
         // the client that asked watches its own finish normally.
         let registry = registry();
-        let conn = registry.issue();
+        let conn = registry.issue().unwrap();
 
         registry.hold(conn, cancellation());
         registry.release(conn);
@@ -280,7 +298,7 @@ mod tests {
         // A session that released and acquired again is on a different
         // upstream connection, with a different server-side key.
         let registry = registry();
-        let conn = registry.issue();
+        let conn = registry.issue().unwrap();
         registry.hold(conn, cancellation());
 
         let moved = Cancellation {
@@ -297,7 +315,7 @@ mod tests {
     fn every_issued_key_belongs_to_this_node() {
         let registry = Registry::new(NodeId::new(5), Box::new(SplitMix::default()));
         for _ in 0..100 {
-            assert_eq!(registry.issue().node(), NodeId::new(5));
+            assert_eq!(registry.issue().unwrap().node(), NodeId::new(5));
         }
     }
 
@@ -307,7 +325,9 @@ mod tests {
         // gives you your neighbour's, and "cancel your own query" becomes
         // "cancel anyone's".
         let registry = Registry::new(NodeId::new(1), Box::new(SplitMix::default()));
-        let issued: Vec<u64> = (0..64).map(|_| registry.issue().secret()).collect();
+        let issued: Vec<u64> = (0..64)
+            .map(|_| registry.issue().unwrap().secret())
+            .collect();
 
         let sequential = issued.windows(2).filter(|w| w[1] == w[0] + 1).count();
         assert_eq!(
@@ -324,7 +344,7 @@ mod tests {
         // Proves the test above is measuring something. A counter is exactly
         // what the module docs forbid, and it must not pass.
         let registry = registry();
-        let issued: Vec<u64> = (0..8).map(|_| registry.issue().secret()).collect();
+        let issued: Vec<u64> = (0..8).map(|_| registry.issue().unwrap().secret()).collect();
 
         assert!(
             issued.windows(2).all(|w| w[1] == w[0] + 1),
@@ -336,7 +356,7 @@ mod tests {
     fn a_registry_prints_no_cancel_keys() {
         // Each entry is a bearer token, and this will reach a log line.
         let registry = registry();
-        let conn = registry.issue();
+        let conn = registry.issue().unwrap();
         registry.hold(conn, cancellation());
 
         let rendered = format!("{registry:?}");

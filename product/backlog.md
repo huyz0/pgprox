@@ -892,7 +892,7 @@ rule already allows `pgprox-proto`.
   omitting the node that answered. Acceptance: two nodes in one process
   converge on each other's digests, a stale message is refused by version, and
   an oversized one is refused without allocating for it.
-- [ ] `M6.30` Give `Entropy` a failure channel. Found writing `SystemEntropy`:
+- [x] `M6.30` Give `Entropy` a failure channel. Found writing `SystemEntropy`:
   `next` returns a `u64` and the system source can fail, so the only options
   are panicking on a connection path or returning a guessable cancel key.
   Refusing the connection is the third, and the trait cannot express it.

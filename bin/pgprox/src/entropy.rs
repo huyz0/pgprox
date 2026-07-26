@@ -23,7 +23,7 @@ use pgprox_session::cancel::Entropy;
 pub struct SystemEntropy;
 
 impl Entropy for SystemEntropy {
-    fn next(&self) -> u64 {
+    fn next(&self) -> Option<u64> {
         use aws_lc_rs::rand::{SecureRandom as _, SystemRandom};
 
         let rng = SystemRandom::new();
@@ -31,18 +31,14 @@ impl Entropy for SystemEntropy {
 
         // Retried, because a transient failure of the system source is the only
         // kind worth surviving. A persistent one means the machine has no
-        // entropy, and `Entropy::next` has no way to say so: it returns a
-        // `u64`. Zero is what it returns then, which is a key that collides
-        // with every other zero and is guessable besides. That is a real gap
-        // rather than a safe fallback, and `M6.30` gives the trait a failure
-        // channel so the connection can be refused instead. Panicking on a
-        // connection path is the one option that is definitely worse.
+        // entropy, and the answer to that is `None`: the connection is refused
+        // with an internal error rather than handed a guessable cancel key.
         for _ in 0..3 {
             if rng.fill(&mut bytes).is_ok() {
-                return u64::from_be_bytes(bytes);
+                return Some(u64::from_be_bytes(bytes));
             }
         }
-        0
+        None
     }
 }
 
@@ -53,10 +49,18 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
+    fn the_source_produces_something() {
+        assert!(
+            SystemEntropy.next().is_some(),
+            "the system entropy source produced nothing"
+        );
+    }
+
+    #[test]
     fn two_draws_differ() {
         // The property M1F.36 is about: a sequence number is not a secret.
         let entropy = SystemEntropy;
-        let drawn: HashSet<u64> = (0..64).map(|_| entropy.next()).collect();
+        let drawn: HashSet<Option<u64>> = (0..64).map(|_| entropy.next()).collect();
 
         assert!(
             drawn.len() > 60,
@@ -70,7 +74,7 @@ mod tests {
         // A source that filled only the low bits would leave a cancel key with
         // far less than the 48 bits the design assumes.
         let entropy = SystemEntropy;
-        let seen = (0..64).fold(0_u64, |bits, _| bits | entropy.next());
+        let seen = (0..64).fold(0_u64, |bits, _| bits | entropy.next().unwrap_or(0));
 
         assert_eq!(
             seen.count_ones(),

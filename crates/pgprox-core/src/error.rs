@@ -37,6 +37,12 @@ impl SqlState {
     pub const QUERY_CANCELED: Self = Self("57014");
     /// `08P01`, `protocol_violation`.
     pub const PROTOCOL_VIOLATION: Self = Self("08P01");
+    /// `XX000`, `internal_error`.
+    ///
+    /// For the failures that are the proxy's own and that no client action can
+    /// fix. Rare on purpose: a proxy that answered `XX000` to a condition with
+    /// a real code would send every operator reading it to the wrong place.
+    pub const INTERNAL_ERROR: Self = Self("XX000");
 
     /// The code as it appears in the `ErrorResponse` message.
     #[must_use]
@@ -125,6 +131,15 @@ pub enum ClientError {
     /// The client sent something the protocol does not allow.
     #[error("protocol violation: {0}")]
     ProtocolViolation(&'static str),
+
+    /// The proxy could not do its job, for a reason that is its own.
+    ///
+    /// The detail is for the operator and never reaches the client. The one
+    /// condition that has needed this so far is the system entropy source
+    /// failing, where the alternatives were a panic on a connection path or a
+    /// guessable cancel key.
+    #[error("internal error: {0}")]
+    Internal(&'static str),
 }
 
 impl ClientError {
@@ -141,6 +156,7 @@ impl ClientError {
             Self::AuthRefused(_) | Self::TlsRequired => SqlState::INVALID_AUTHORIZATION,
             Self::SidecarUnavailable => SqlState::CONNECTION_FAILURE,
             Self::ProtocolViolation(_) => SqlState::PROTOCOL_VIOLATION,
+            Self::Internal(_) => SqlState::INTERNAL_ERROR,
         }
     }
 
@@ -163,6 +179,9 @@ impl ClientError {
             Self::TlsRequired => "SSL connection is required",
             Self::SidecarUnavailable => "authentication service unavailable",
             Self::ProtocolViolation(_) => "protocol violation",
+            // Vague on purpose, like the rest: which internal condition failed
+            // is an operator's business and a prober's gift.
+            Self::Internal(_) => "internal error",
         }
     }
 
@@ -206,6 +225,7 @@ mod tests {
             ClientError::TlsRequired,
             ClientError::SidecarUnavailable,
             ClientError::ProtocolViolation("unexpected message after Sync"),
+            ClientError::Internal("the system entropy source failed"),
         ]
     }
 
@@ -243,6 +263,7 @@ mod tests {
             (ClientError::TlsRequired, "28000"),
             (ClientError::SidecarUnavailable, "08006"),
             (ClientError::ProtocolViolation("x"), "08P01"),
+            (ClientError::Internal("x"), "XX000"),
         ];
         for (err, expected) in cases {
             assert_eq!(err.sqlstate().as_str(), *expected, "wrong code for {err}");
@@ -319,6 +340,9 @@ mod tests {
         assert!(!ClientError::TlsRequired.is_retryable());
         assert!(!ClientError::AuthRefused(AuthRejection::Malformed).is_retryable());
         assert!(!ClientError::ProtocolViolation("x").is_retryable());
+        // The proxy's own failures are not the client's to retry: reconnecting
+        // into the same broken node just repeats it.
+        assert!(!ClientError::Internal("x").is_retryable());
     }
 
     #[test]
