@@ -356,6 +356,11 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut relay = Relay::new();
+    // What this session expects any connection it borrows to look like, and
+    // what each borrowed connection currently carries. A transaction-pooling
+    // proxy hands a session a different connection per transaction, so without
+    // these a `SET` is silently lost at the next boundary.
+    let mut session_state = pgprox_session::resume::SessionMemory::default();
     let mut held: Option<(UpstreamGuard, Upstreamed<crate::dial::Stream>)> = None;
     let mut body = Vec::new();
     // The watch this grant's replicas are polled into, shared with every other
@@ -397,6 +402,18 @@ where
         };
 
         let now = context.clock.now();
+        // A `SET` this session runs is a thing every later connection it
+        // borrows has to be told about. Observed here rather than inside the
+        // relay, because the relay decides where a statement goes and this
+        // decides what the session is.
+        if let pgprox_proto::frontend::FrontendMessage::Query { sql }
+        | pgprox_proto::frontend::FrontendMessage::Parse { sql, .. } = message
+        {
+            session_state
+                .params
+                .observe_statement(sql, pgprox_pool::pin::REPLAYABLE_PARAMETERS);
+        }
+
         let outcome = match watch.as_ref() {
             Some(watch) => watch.with_replicas(|replicas| relay.on_client(&message, replicas, now)),
             None => relay.on_client(&message, &none, now),
@@ -418,7 +435,12 @@ where
                 acquire: true,
                 target,
             } => {
-                held = Some(borrow(context, grant, target, conn).await?);
+                let mut borrowed = borrow(context, grant, target, conn).await?;
+                // Before the client's own frame reaches the server, and only
+                // where the connection does not already match: a warm pool
+                // serving one tenant replays nothing.
+                resume(&mut borrowed.1, &session_state).await?;
+                held = Some(borrowed);
                 relay.acquired();
             }
             ClientAction::Send { acquire: false, .. } => {}
@@ -508,6 +530,54 @@ async fn borrow(
         .set_state(conn, ClientState::Active, context.clock.now());
 
     Ok((guard, taken))
+}
+
+/// Brings a freshly borrowed connection up to this session's parameters.
+///
+/// Runs before the client's own frame, and sends nothing at all when the
+/// connection already matches, which is the common case for a warm pool
+/// serving one tenant. Each replayed statement's answer is read and discarded:
+/// the client asked for none of them and must not see them.
+async fn resume(
+    upstream: &mut Upstreamed<crate::dial::Stream>,
+    session: &pgprox_session::resume::SessionMemory,
+) -> Result<(), ShellError> {
+    use pgprox_session::resume::Step;
+
+    // The connection's own memory is not tracked across borrows yet, so this
+    // replays onto a connection assumed to carry nothing. Correct and
+    // occasionally wasteful: a `SET` applied twice is the same as once, where
+    // a `SET` skipped is a session that forgot something. `M6.49` gives the
+    // pool the memory that makes the skip safe.
+    let connection = pgprox_session::resume::ConnectionMemory::default();
+
+    for step in pgprox_session::resume::on_acquire(session, &connection) {
+        let Step::Run(sql) = step else {
+            continue;
+        };
+        upstream
+            .wire
+            .queue(|out| pgprox_proto::encode_frontend::query(out, &sql));
+        upstream.wire.flush().await?;
+
+        let mut body = Vec::new();
+        loop {
+            let tag = upstream.wire.read_tagged(&mut body).await?;
+            if tag == pgprox_proto::frame::Tag::READY_FOR_QUERY {
+                break;
+            }
+            if tag == pgprox_proto::frame::Tag::ERROR_RESPONSE {
+                // A parameter the server refuses is the session's problem
+                // rather than this connection's, and the client is about to
+                // send a statement that will fail in a way it can read. The
+                // replay stops here rather than pretending it worked.
+                return Err(ShellError::Refused(ClientError::ProtocolViolation(
+                    "a replayed session parameter was refused",
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Copies the server's answer back, returning whether the connection is free.
@@ -853,6 +923,28 @@ mod tests {
     /// A real socket speaking the real protocol: everything the proxy sends it
     /// is decoded by this project's own decoder, and everything it sends back
     /// goes through the proxy's relay untouched.
+    /// Every statement each fake server was sent, by port.
+    ///
+    /// A test asserting that something was replayed has to see what reached
+    /// the server, and the alternative is a fake per test that reads the same
+    /// bytes a different way.
+    fn seen() -> &'static std::sync::Mutex<std::collections::HashMap<u16, Vec<String>>> {
+        static SEEN: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<u16, Vec<String>>>,
+        > = std::sync::OnceLock::new();
+        SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+    }
+
+    /// What one fake server was sent.
+    fn statements_seen(addr: SocketAddr) -> Vec<String> {
+        seen()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&addr.port())
+            .cloned()
+            .unwrap_or_default()
+    }
+
     async fn fake_postgres() -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -893,7 +985,16 @@ mod tests {
                         // replica answers it: a replay position and t for
                         // pg_is_in_recovery. Every other query gets the canned
                         // completion below.
-                        let sql = String::from_utf8_lossy(&body).into_owned();
+                        let sql = String::from_utf8_lossy(&body)
+                            .trim_end_matches('\0')
+                            .to_owned();
+                        seen()
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .entry(addr.port())
+                            .or_default()
+                            .push(sql.clone());
+
                         if sql.contains("pg_last_wal_replay_lsn") {
                             out.extend_from_slice(&text_row(&[Some(REPLICA_REPLAYED), Some("t")]));
                             encode::ready_for_query(&mut out, TxStatus::Idle);
@@ -1231,6 +1332,60 @@ mod tests {
             "a session read from a replica that had not replayed its own write"
         );
         assert!(held_for(&context, primary) > 0);
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_replayable_parameter_survives_a_change_of_connection() {
+        // The point of transaction pooling is that a session gets a different
+        // upstream connection per transaction, so a `SET` that was not
+        // replayed is a session that forgets things between statements.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        // A replayable parameter, then a statement on what may be another
+        // connection.
+        let mut set = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut set, "SET application_name = 'reporting'");
+        client.write_all(&set).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
+        client.write_all(&query).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        // Twice: once because the client sent it, and once replayed onto the
+        // connection borrowed for the statement after it. Asserting it was
+        // merely present would pass with no replay at all, since the client's
+        // own `SET` reached the server.
+        let sets = statements_seen(addr)
+            .iter()
+            .filter(|sql| sql.contains("application_name"))
+            .count();
+        assert!(
+            sets >= 2,
+            "the parameter was not replayed onto the next connection: {:?}",
+            statements_seen(addr)
+        );
 
         drop(client);
         let _ = served.await;

@@ -1025,7 +1025,7 @@ never touch", which is the same question M5's and M4's reviews asked.
 Both gates pass, so these were found the same way the first eight were: by
 asking of each crate what the binary never touches.
 
-- [ ] `M6.47` Nothing replays a session's state onto a new connection.
+- [x] `M6.47` Nothing replays a session's state onto a new connection.
   `pgprox-session::resume` is M6.7, with `on_acquire`, `replayed` and
   `before_bind`, and `serve::relay` calls none of them. In a transaction
   pooling proxy a session gets a different upstream connection per
@@ -1034,7 +1034,17 @@ asking of each crate what the binary never touches.
   before the `Bind` that needs it. Both are correctness bugs a tenant sees as
   their session forgetting things. Acceptance: a replayable parameter survives
   a change of upstream connection, a prepared statement is replayed before the
-  `Bind` that uses it, and `SET LOCAL` is still never replayed.
+  `Bind` that uses it, and `SET LOCAL` is still never replayed. Split: the
+  parameter half is done here, the prepared-statement half is `M6.49`.
+- [ ] `M6.49` Prepared statements are not mapped onto the connection that
+  serves them. `resume::before_bind` and `pgprox-pool`'s statement map are
+  M5.10 and M6.7, and the relay calls neither, so a client that `Parse`s on
+  one connection and `Bind`s on another gets "prepared statement does not
+  exist" from the server. Needs the name rewriting ADR 0011 puts in
+  `pgprox-proto`, which is why it is not the parameter half's commit.
+  Acceptance: two sessions preparing identical SQL share one global name, a
+  `Bind` whose connection does not hold the statement replays the `Parse`
+  first, and a client's own statement name never reaches a server.
 - [ ] `M6.48` No metric carries a tenant. `pgprox-observe::tenants` is M4.9's
   per-tenant series allowlist with its configured ceiling, and nothing calls
   it: the exporter emits no per-tenant series at all, so the allowlist governs
