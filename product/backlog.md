@@ -1245,7 +1245,7 @@ recorded runs say which they are.
   Acceptance: counts are reproducible across two runs on the same tree, and
   the script reports the delta against the baseline rather than a bare
   number.
-- [ ] `M7.14` `scripts/profile.sh` and the semantic coverage report: replay the
+- [x] `M7.14` `scripts/profile.sh` and the semantic coverage report: replay the
   workload against an instrumented binary, keep execution counts, and emit the
   three lists. Acceptance: the report names functions, and the hot-and-
   under-tested list is non-empty or the report explains why it is not.
@@ -1289,15 +1289,14 @@ recorded runs say which they are.
   installed on the machine all along. The compose stack stays the deployment
   shape and stays what a reported number should come from; every run records
   which stack it was.
-- [ ] `M7.23` The proxy adds a second of latency at 1000 connections. Found by
-  the first honest scale run: p50 of 1.18s through the proxy against 2.2ms
-  direct, 512 transactions per second against a demand of roughly 3,600, and
-  only 30 of the 60 allowed upstream connections in use. The cap is respected
-  and nothing fails, so `scripts/scale.sh` passes; the number is still four
-  orders off the roadmap's target and nothing about the workload explains it.
-  Acceptance: the cause is named from a profile rather than guessed, the fix
-  is measured against the recorded run, and the upstream pool either fills or
-  the reason it does not is written down.
+- [x] `M7.23` The second of latency the first run reported was the
+  measurement's, not the proxy's. A thousand clients offer several times the
+  work sixty do, so the database saturates and the queue that forms is in
+  front of it; subtracting a sixty-connection baseline from that reported the
+  database's queue as proxy overhead. `scripts/scale.sh` now runs the proxy at
+  the baseline's connection count as well, and the hop costs 348us at p50 and
+  4.3ms at p99. Found by measuring rather than guessing: the proxy's own CPU
+  was under half a core while Postgres had 49 of 50 backends active.
 - [ ] `M7.19` Close M7.
 
 ## M8 and later

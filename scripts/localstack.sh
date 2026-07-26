@@ -91,10 +91,12 @@ local_down() {
 
 # Brings up Postgres, the mock sidecar and the proxy, and waits for each.
 #
-# `$1` is passed to `cargo` as the build+run prefix, so a caller can run the
-# proxy under instrumentation: `local_up "llvm-cov run --no-report"`.
+# Set `LOCAL_PROXY_BIN` to run a binary this function did not build, which is
+# how `scripts/profile.sh` runs an instrumented one. The proxy is exec'd
+# directly rather than through `cargo run` on purpose: `cargo run` is the
+# parent, so the recorded pid was cargo's, and a `SIGTERM` to it left the proxy
+# running and its coverage counters unwritten.
 local_up() {
-  local runner="${1:-run}"
   local bin
   bin="$(_pg_bin)" || { fail "no postgres on this machine"; return 1; }
 
@@ -160,9 +162,15 @@ nodes:
   pgprox-1: {}
 CONFIG
 
+  local proxy="${LOCAL_PROXY_BIN:-}"
+  if [[ -z "$proxy" ]]; then
+    cargo build --release --bin pgprox >/dev/null 2>&1 \
+      || { fail "pgprox did not build"; return 1; }
+    proxy="$REPO_ROOT/target/release/pgprox"
+  fi
+
   echo "  starting the proxy on $LOCAL_PROXY_PORT"
-  # shellcheck disable=SC2086
-  cargo $runner --release --bin pgprox -- \
+  "$proxy" \
     --config "$LOCAL_DIR/config.yaml" \
     --sidecar "$LOCAL_DIR/sidecar.sock" \
     --listen "0.0.0.0:$LOCAL_PROXY_PORT" \
