@@ -350,7 +350,8 @@ async fn follow_drain(app: &App, probes: &Arc<Probes>, drainer: &Drainer<'_>) {
     let signalled = drainer.context.draining.fired();
 
     if draining && !signalled {
-        crate::drain::Drain {
+        tracing::warn!(node_id = app.deps.node.get(), "draining");
+        let steps = crate::drain::Drain {
             cluster: &app.cluster,
             sessions: &app.sessions,
             peers: drainer.addresses,
@@ -360,7 +361,12 @@ async fn follow_drain(app: &App, probes: &Arc<Probes>, drainer: &Drainer<'_>) {
         }
         .run()
         .await;
+        // The order is the property the sequence guarantees, so it is what the
+        // line carries: an operator reading it afterwards can see whether the
+        // fleet was told before anyone was closed.
+        tracing::info!(steps = ?steps, "drained");
     } else if !draining && signalled {
+        tracing::info!(node_id = app.deps.node.get(), "undraining");
         crate::drain::undrain(
             &app.cluster,
             &drainer.context.draining,
@@ -408,7 +414,18 @@ async fn ticker(
         // last one's, and awaited rather than spawned: a round that took longer
         // than a tick would otherwise pile up one task per second against a
         // peer that is already too slow to answer.
-        crate::gossip::round(peers, &app.cluster).await;
+        let reached = crate::gossip::round(peers, &app.cluster).await;
+        if reached < peers.len() {
+            // A node that cannot see its peers falls back to its guaranteed
+            // share and stops being able to lead, which shows up as capacity
+            // that has gone missing. Saying so once a second is noisy; saying
+            // nothing leaves the operator to infer it from a quota error.
+            tracing::warn!(
+                reached,
+                peers = peers.len(),
+                "some peers did not answer the gossip round"
+            );
+        }
 
         // Last, so a node that has just been told to drain has already
         // reported its final numbers to the fleet.

@@ -26,6 +26,7 @@ pub mod entropy;
 pub mod entry;
 pub mod gossip;
 pub mod http;
+pub mod logging;
 pub mod observatory;
 pub mod replicas;
 pub mod run;

@@ -217,8 +217,10 @@ where
 ///
 /// As [`start`], plus a port that cannot be bound.
 pub async fn serve(options: Options) -> Result<(), StartupError> {
+    crate::logging::init();
     let addrs = options.addrs();
     let peers = options.peers.clone();
+    let node = options.node;
     let app = start(options).await?;
     let listeners = Listeners::bind(addrs)
         .await
@@ -234,6 +236,15 @@ pub async fn serve(options: Options) -> Result<(), StartupError> {
             shutdown.fire();
         }
     });
+
+    tracing::info!(
+        node_id = node.get(),
+        client = %addrs.client,
+        admin = %addrs.admin,
+        gossip = %addrs.gossip,
+        peers = peers.len(),
+        "serving"
+    );
 
     crate::run::run_with_peers(app, listeners, peers, shutdown)
         .await

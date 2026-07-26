@@ -979,7 +979,7 @@ never touch", which is the same question M5's and M4's reviews asked.
   releases an idle connection holds the database's connection budget for as
   long as it runs. Acceptance: a pool left quiet past its idle timeout drops to
   zero in a running node.
-- [ ] `M6.39` The node says nothing. There is no tracing subscriber, no span,
+- [x] `M6.39` The node says nothing. There is no tracing subscriber, no span,
   and no log line anywhere in the binary: a refused client, a dead upstream and
   a failed gossip round are all silent. `standards/observability.md` and
   `pgprox-observe::spans` describe what should be emitted and nothing emits.

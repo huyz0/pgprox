@@ -48,6 +48,8 @@ serde_json.workspace = true
 base64 = "0.22"
 tokio-rustls = { version = "0.26", default-features = false }
 thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
 
 [dev-dependencies]

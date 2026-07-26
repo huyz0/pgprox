@@ -35,6 +35,10 @@ axum = { version = "0.8", default-features = false }
 utoipa = "5"
 tower = { version = "0.5", default-features = false }
 http-body-util = "0.1"
+# Structured logging. The span and field conventions are pgprox-observe's; this
+# is the machinery that carries them.
+tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "json"] }
 
 [workspace.lints.rust]
 # No unsafe anywhere. If the buffer slab or the codec appears to need it, that

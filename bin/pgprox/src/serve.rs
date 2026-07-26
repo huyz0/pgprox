@@ -580,6 +580,7 @@ pub async fn accept_loop(
             // against a refused connection instead. It is also what makes a
             // drain reversible: nothing had to be torn down to start it.
             if context.draining.fired() {
+                tracing::debug!("refused a client: this node is draining");
                 let _ = refuse_draining(socket).await;
                 return;
             }
@@ -587,6 +588,9 @@ pub async fn accept_loop(
             // 53300 reports it; a driver whose socket vanished reports a
             // network error.
             let Some(admitted) = gate.admit() else {
+                // Warn rather than debug: this is the node at its ceiling,
+                // which is a capacity decision somebody has to take.
+                tracing::warn!(ceiling, "refused a client: at the connection ceiling");
                 let _ = refuse_full(socket, ceiling).await;
                 return;
             };
