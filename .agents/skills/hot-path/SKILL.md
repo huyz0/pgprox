@@ -27,8 +27,10 @@ Never optimize from intuition. In a proxy the bottleneck is reliably somewhere
 other than where it looks.
 
 ```bash
-scripts/bench.sh <bench-name>        # iai instruction counts, deterministic
-scripts/profile.sh                   # reference workload, flamegraph
+scripts/bench.sh                     # instruction counts against the baseline
+scripts/bench.sh --update            # re-record the baseline, deliberately
+scripts/profile.sh                   # replay the workload, semantic coverage
+scripts/scale.sh <connections>       # RSS, added latency, upstream count
 ```
 
 Record the baseline before touching anything. An optimization with no baseline
@@ -52,9 +54,16 @@ fn relay_of_one_data_row_does_not_allocate() {
 }
 ```
 
-**Instruction counts**, via `iai-callgrind`. A 3% regression is visible where
-`criterion` would report noise. Keep `criterion` for numbers that inform rather
-than gate.
+**Instruction counts**, via `callgrind` directly. Each bench binary takes a
+name and an iteration count; `scripts/bench.sh` runs it at N and at 2N and
+divides the difference, so startup and fixtures cancel exactly. A few per cent
+is a real change here where a timing would report it as noise. Not
+`iai-callgrind`: it pulls two crates under unmaintained advisories and
+`cargo deny` fails the workspace on them.
+
+The baseline is `product/perf/baseline.json`. Rewriting it is a deliberate act
+with a reason in the commit message, which is why the script only does it when
+asked.
 
 ## The three lists
 
@@ -74,7 +83,7 @@ it into three lists, each implying a different action:
 
 ## The reference workload
 
-Everything measures against one committed workload description: tenant mix (a
+`product/perf/workload.yaml`. Everything measures against it: tenant mix (a
 few hot, a long tail idle), query shape distribution, connection churn rate,
 transaction size distribution, replica read fraction.
 
@@ -87,7 +96,7 @@ commit with the reasoning, and re-baseline everything.
 
 - [ ] Baseline recorded before
 - [ ] Allocation budget test still passes, or was tightened
-- [ ] `iai` instruction count improved, and by how much
+- [ ] The instruction count improved, and by how much
 - [ ] The improvement is stated as a number in the commit message
 - [ ] No correctness test was weakened to get it
 

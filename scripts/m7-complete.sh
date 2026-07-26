@@ -68,7 +68,10 @@ declare -A BUDGETS=(
 # the cluster layer owns the digest as a value, this owns how it travels.
 BUDGETS[pgprox]="gossip digest encode and decode"
 for crate in "${!BUDGETS[@]}"; do
-  if grep -rqs --include='*.rs' 'dhat' \
+  # `dhat::Profiler` rather than the word `dhat`: a comment mentioning the
+  # crate would otherwise satisfy this, which is the shape of check that
+  # passes for years while the thing it names does not exist.
+  if grep -rqs --include='*.rs' 'dhat::Profiler' \
        "crates/$crate/src" "crates/$crate/tests" \
        "bin/$crate/src" "bin/$crate/tests" 2>/dev/null; then
     ok "allocation budget: $crate (${BUDGETS[$crate]})"

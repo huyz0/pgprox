@@ -1339,6 +1339,13 @@ recorded runs say which they are.
   hard-coded instead. The first two are deleted and the third is now read. The
   same failure M6's first review round found eight times, in code written to
   measure for that failure.
+- [x] `M7.30` The documentation caught up with what was built. The `hot-path`
+  skill still told a reader to run `iai` benchmarks and a flamegraph script
+  that did not exist in that form; `AGENTS.md` listed the per-commit checks
+  and none of the measurement ones. Found in the review round, and it is the
+  kind of drift that makes a skill worse than nothing: it sends whoever reads
+  it to a command that fails. The M7 gate also tightened from grepping for the
+  word `dhat` to grepping for `dhat::Profiler`, since a comment satisfied it.
 - [ ] `M7.19` Close M7.
 
 ## M8 and later

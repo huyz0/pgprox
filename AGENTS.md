@@ -63,5 +63,14 @@ scripts/check-coverage.sh <crate> # the 95% gate
 scripts/check-drift.sh            # derived files still match canonical source
 ```
 
+Measurement, which is slower and runs when asked rather than per commit:
+
+```bash
+scripts/bench.sh                  # instruction counts against the baseline
+scripts/profile.sh                # replay the workload, semantic coverage
+scripts/scale.sh <connections>    # RSS, added latency, upstream connections
+scripts/e2e.sh                    # the compose stack and M6's three properties
+```
+
 These same scripts run from git hooks, from CI, and from agent hooks. If you
 add a check, add it to a script so all three pick it up.
