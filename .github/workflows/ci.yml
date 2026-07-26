@@ -62,6 +62,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  performance:
+    name: instruction counts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      # Callgrind is the whole measurement: without it this job would report
+      # nothing and pass, which is worse than not running.
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+      # The allocation budgets are ordinary tests and already run in tier 1.
+      # This is the other half of the hot-path discipline: work that got more
+      # expensive without allocating.
+      - run: scripts/bench.sh
+
   milestone:
     name: milestone completion condition
     runs-on: ubuntu-latest

@@ -1328,6 +1328,11 @@ recorded runs say which they are.
   Acceptance: the limit and the ceiling are compared at startup and the
   mismatch is a refusal to start or a warning that names both numbers, and it
   is decided which.
+- [x] `M7.28` `scripts/bench.sh` runs in CI. Found in the review round: the
+  script, the benchmarks and the baseline all existed and nothing ran them, so
+  an instruction-count regression would have been caught by whoever happened
+  to run it. This repository's own words, from `check-layering.sh`: a rule
+  with no gate is a preference.
 - [ ] `M7.19` Close M7.
 
 ## M8 and later
