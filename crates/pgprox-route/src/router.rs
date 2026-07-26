@@ -237,11 +237,13 @@ impl SessionRouter {
 /// the same `ReadyForQuery` that would release the connection, so there is
 /// nothing to fix a target for.
 fn begins_transaction(sql: &str) -> bool {
-    let mut words = sql.split_whitespace();
-    matches!(
-        words.next().map(str::to_ascii_lowercase).as_deref(),
-        Some("begin" | "start")
-    )
+    // Compared in place rather than lowercased. Lowercasing built a `String`
+    // per statement, which made the route decision the only declared hot path
+    // that allocated; M7.10's budget test found it.
+    let Some(word) = sql.split_whitespace().next() else {
+        return false;
+    };
+    word.eq_ignore_ascii_case("begin") || word.eq_ignore_ascii_case("start")
 }
 
 /// A [`pgprox_core::route::Router`] over the shared rule, for callers that

@@ -101,16 +101,15 @@ The declared hot paths, with budgets, are:
    asserted in `crates/pgprox-pool/tests/budgets.rs`.
 4. Warm-pool acquire. **Zero** once warm, same file. Acquire and release move a
    connection between two collections that keep their capacity.
-5. Route decision: classification plus replica eligibility.
+5. Route decision: classification plus replica eligibility. **Zero**, asserted
+   in `crates/pgprox-route/tests/budgets.rs`. It was one allocation per
+   statement until M7.10 measured it.
 6. Grant cache lookup on connect.
 7. Gossip digest encode and decode.
 
-Paths 5 to 7 were written to be allocation-free and are claims until the
-milestone that asserts them. The route decision iterates the shared
-lexer without lowercasing, and `SessionRouter` keeps a replica-states buffer
-for the life of the session rather than building one per statement. They are
-written down here so the assertion has something to check rather than a number
-to discover.
+Paths 6 and 7 were written to be allocation-free and are claims until the
+milestone that asserts them, and they are written down here so the assertion
+has something to check rather than a number to discover.
 
 A budget test asserts its own harness first: it allocates deliberately once and
 checks the counter moved. A budget that measured nothing would pass forever.

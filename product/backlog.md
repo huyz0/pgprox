@@ -1228,7 +1228,7 @@ recorded runs say which they are.
   `ReadyForQuery` release decision. Acceptance: as above, and the claim in
   `standards/testing.md` that these were written allocation-free is either
   confirmed by the assertion or corrected by it.
-- [ ] `M7.10` Allocation budget, `pgprox-route`: classification plus replica
+- [x] `M7.10` Allocation budget, `pgprox-route`: classification plus replica
   eligibility. Acceptance: as above, with the per-statement path asserted rather
   than the session setup.
 - [ ] `M7.11` Allocation budget, `pgprox-auth`: grant cache lookup on connect.

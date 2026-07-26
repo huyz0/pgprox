@@ -1133,6 +1133,7 @@ name = "pgprox-route"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "dhat",
  "pgprox-core",
  "proptest",
  "tokio",
