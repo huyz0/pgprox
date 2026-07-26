@@ -319,6 +319,29 @@ impl<U: Upstream> PgConnector<U> {
         self.lock().insert(backend.pool_key(), backend.clone());
     }
 
+    /// The backend a key names, if one is known.
+    ///
+    /// For callers that need to reach a server without going through the pool.
+    /// Cancelling a query is the one: it needs a fresh connection carrying
+    /// nothing but the cancel key, and taking one from the pool would count it
+    /// against a cap it is not going to use.
+    #[must_use]
+    pub fn backend(&self, key: &PoolKey) -> Option<Backend> {
+        self.lock().get(key).cloned()
+    }
+
+    /// Opens a socket to a backend without authenticating on it.
+    ///
+    /// Only a `CancelRequest` wants this: it carries no startup packet and
+    /// gets no answer.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the socket cannot be opened.
+    pub async fn dial(&self, backend: &Backend) -> Result<U::Stream, PoolError> {
+        self.upstream.dial(backend).await
+    }
+
     /// How many backends are known.
     #[must_use]
     pub fn known(&self) -> usize {
@@ -1128,5 +1151,26 @@ mod tests {
         );
         assert!(!rendered.contains("4242"), "{rendered}");
         assert!(!rendered.contains("beef"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn a_known_backend_can_be_dialled_without_authenticating() {
+        // What a cancel request needs: a fresh socket carrying nothing but the
+        // key. Taking one from the pool would count it against a cap it is
+        // never going to use.
+        let connector = PgConnector::new(Duplexer {
+            server: Mutex::new(None),
+        });
+        connector.learn(&backend());
+
+        let known = connector.backend(&backend().pool_key()).expect("known");
+        assert_eq!(known.server, server());
+        assert!(connector.dial(&known).await.is_ok());
+    }
+
+    #[test]
+    fn a_key_the_connector_never_learned_names_no_backend() {
+        let connector = PgConnector::new(Unreachable);
+        assert!(connector.backend(&backend().pool_key()).is_none());
     }
 }

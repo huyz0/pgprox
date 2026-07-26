@@ -865,7 +865,7 @@ rule already allows `pgprox-proto`.
   does. Acceptance: a session owns its upstream connection for the duration of
   a transaction and gives it back on release, and a connection that is out on
   loan cannot be handed to a second session.
-- [ ] `M6.21` The accept loop and listener, with TLS and the client connection
+- [x] `M6.21` The accept loop and listener, with TLS and the client connection
   ceiling. Acceptance: a node at its ceiling refuses with a message naming the
   limit, and refusal never takes down connections already established.
 - [ ] `M6.22` The drain sequence, end to end. Acceptance: `/readyz` fails
