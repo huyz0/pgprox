@@ -1,0 +1,34 @@
+[package]
+name = "pgload"
+description = "The load client: replays the reference workload against a proxy or a database."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# Same split as bin/pgprox: a library target holding everything a test can
+# call, and a binary that holds nothing.
+[lib]
+name = "pgload_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pgload"
+path = "src/main.rs"
+
+[dependencies]
+pgprox-load = { path = "../../crates/pgprox-load" }
+pgprox-proto = { path = "../../crates/pgprox-proto" }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+pgprox-core = { path = "../../crates/pgprox-core" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

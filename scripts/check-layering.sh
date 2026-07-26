@@ -17,7 +17,7 @@ if ! has_rust; then
 fi
 
 # Crates permitted to compose others, from product/architecture.md.
-COMPOSERS=("pgprox-session" "pgprox")
+COMPOSERS=("pgprox-session" "pgprox" "pgload")
 
 # Test-only scaffolding. Shipping this in a product binary would put test
 # helpers in the deployed artifact.

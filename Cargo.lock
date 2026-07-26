@@ -862,6 +862,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pgload"
+version = "0.1.0"
+dependencies = [
+ "pgprox-core",
+ "pgprox-load",
+ "pgprox-proto",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "pgprox"
 version = "0.1.0"
 dependencies = [

@@ -1205,7 +1205,7 @@ recorded runs say which they are.
 - [x] `M7.4` The latency histogram and the run report. Acceptance: p50 and p99
   over a known set of samples are the values computed by hand, and the report
   serialises to JSON a script can read without parsing prose.
-- [ ] `M7.5` `bin/pgload`, the load client: opens N connections, replays the
+- [x] `M7.5` `bin/pgload`, the load client: opens N connections, replays the
   sampled workload, prints the report. Acceptance: it runs against a real
   Postgres and against a proxy with the same arguments, its own errors are
   counted rather than swallowed, and `main.rs` holds no logic a test cannot

@@ -7,10 +7,13 @@ rules that keep parallel development from colliding.
 
 Every crate depends on `pgprox-core` and on nothing else in the workspace.
 
-Two stated exceptions:
+Three stated exceptions:
 
 - `pgprox-session` composes `pgprox-proto`, `pgprox-pool`, and `pgprox-route`
 - `bin/pgprox` composes everything
+- `bin/pgload`, the load client, composes `pgprox-proto` and `pgprox-load`. It
+  speaks the wire protocol to measure the proxy, and is never a dependency of
+  the proxy itself.
 
 `pgprox-core` depends on no workspace crate and performs no I/O.
 
@@ -36,6 +39,7 @@ not left to review.
 | `pgprox-cache` | Query cache, trait stub until M9 | M9 |
 | `bin/pgprox` | Composition root. Five lines in `main.rs`, logic in a lib target. | M6 |
 | `pgprox-load` | The reference workload, its sampler, and the run report. No I/O. | M7 |
+| `bin/pgload` | The load client. Replays the reference workload and reports what happened. | M7 |
 | `pgprox-testkit` | Test scaffolding: container readiness classification. Never a runtime dependency. | M1F |
 
 ## Layering inside a crate
