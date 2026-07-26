@@ -450,7 +450,8 @@ found in staging.
   including partitions, leader loss and simultaneous restarts. Acceptance: a
   failing seed is committed as a regression case.
 - [x] `M3.11` Close M3.
-- [ ] `M3.12` Forward a quota request to the leader over the gossip transport.
+- [x] `M3.12` Forward a quota request to the leader over the gossip transport.
+  Done in `M6.16`, which is where the transport it was waiting for arrived.
   Deferred out of M3 deliberately: `pgprox-cluster` needs no socket to be
   tested, and the invariant is a property of the quota rules rather than of a
   message-passing layer. Until this lands, a node that is not the leader gets
@@ -842,7 +843,7 @@ rule already allows `pgprox-proto`.
   to the owner, issue the real `CancelRequest` upstream. Acceptance: a cancel
   arriving at a node that does not own the connection reaches the one that
   does, and an unknown key is refused rather than ignored.
-- [ ] `M6.16` `M3.12`: forward a quota request to the leader over the gossip
+- [x] `M6.16` `M3.12`: forward a quota request to the leader over the gossip
   transport. Carried from M3, where it was deferred because it needed a
   transport that did not exist. Acceptance: a node that is not the leader
   obtains a lease, and a request racing a leader change either fails or is

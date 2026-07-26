@@ -7,17 +7,19 @@
 //!
 //! # Where the peer hop is
 //!
-//! It is not here. `request_quota` answers from the local ledger, which succeeds
-//! only when this node is the serving leader. A node that is not the leader gets
-//! [`QuotaError::NoLeader`] rather than a lease, and falls back to its
-//! guaranteed share, which is exactly the safe direction.
+//! Behind [`QuotaTransport`]. `request_quota` answers from the local ledger
+//! when this node is the serving leader, and forwards to whoever is otherwise.
+//! The socket that carries it stays outside this crate, because
+//! `pgprox-cluster` needs no socket to be tested and the quota invariant is a
+//! property of the rules rather than of a message-passing layer.
 //!
-//! Forwarding the request to the leader needs the gossip transport, which is
-//! deliberately outside this crate: `pgprox-cluster` needs no socket to be
-//! tested, and the invariant is a property of the quota rules rather than of a
-//! message-passing layer. See `M3.12` in the backlog.
+//! A node with no transport, or one that cannot see a leader, gets
+//! [`QuotaError::NoLeader`] and falls back to its guaranteed share. That is the
+//! safe direction: the guaranteed share needs no coordination and cannot
+//! breach the cap.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::fmt;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use pgprox_core::clock::Clock;
 use pgprox_core::cluster::{
@@ -46,12 +48,42 @@ pub struct TenantPlacement {
     pub since_membership_change: std::time::Duration,
 }
 
+/// Carries a quota request to the leader.
+///
+/// Implemented over the gossip transport by the composition root. A trait
+/// here, rather than a socket, because every rule this crate owns has to be
+/// testable without one.
+#[async_trait::async_trait]
+pub trait QuotaTransport: Send + Sync + fmt::Debug {
+    /// Asks `leader` for a lease on `holder`'s behalf.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the leader refuses, or when it cannot be reached, which the
+    /// caller treats identically: both mean falling back to the guaranteed
+    /// share.
+    async fn request(
+        &self,
+        leader: NodeId,
+        server: &ServerId,
+        holder: NodeId,
+        want: u32,
+    ) -> Result<QuotaLease, QuotaError>;
+}
+
 /// A [`ClusterCoordinator`] over a gossiping [`NodeCoordinator`].
 #[derive(Debug)]
 pub struct GossipCoordinator {
     inner: Mutex<NodeCoordinator>,
     clock: Arc<dyn Clock>,
     local: NodeId,
+    /// Set once, after construction.
+    ///
+    /// The transport needs a coordinator to answer requests it receives, and
+    /// the coordinator needs a transport to send them, so one of the two has to
+    /// be filled in afterwards. A `OnceLock` makes that a single assignment
+    /// rather than a mutable field anything could reassign later.
+    transport: OnceLock<Arc<dyn QuotaTransport>>,
 }
 
 impl GossipCoordinator {
@@ -62,6 +94,7 @@ impl GossipCoordinator {
             inner: Mutex::new(NodeCoordinator::new(local, config, clock.now())),
             clock,
             local,
+            transport: OnceLock::new(),
         })
     }
 
@@ -143,6 +176,38 @@ impl GossipCoordinator {
         })
     }
 
+    /// Supplies the transport that carries quota requests to the leader.
+    ///
+    /// Returns whether it was set, which is false if one already was. A second
+    /// transport would mean two paths to the leader and no way to say which
+    /// one a lease came from.
+    pub fn set_transport(&self, transport: Arc<dyn QuotaTransport>) -> bool {
+        self.transport.set(transport).is_ok()
+    }
+
+    /// Serves a quota request that arrived from a peer.
+    ///
+    /// The leader end of [`QuotaTransport`]. Grants against this node's ledger
+    /// and attributes the lease to `holder`, so the capacity is accounted to
+    /// the node that will actually open the connections.
+    ///
+    /// # Errors
+    ///
+    /// Fails when this node is not a serving leader, or the free pool is
+    /// exhausted.
+    pub fn serve_request(
+        &self,
+        server: &ServerId,
+        holder: NodeId,
+        want: u32,
+    ) -> Result<QuotaLease, QuotaError> {
+        let now = self.clock.now();
+        // Deliberately no `accept`: this node is granting, not holding.
+        // Accepting here would count the lease twice, once on the leader and
+        // once on the node that asked, and the second count is the real one.
+        self.with(|c| c.request(server, holder, want, now))
+    }
+
     /// What this node may open for a server right now.
     #[must_use]
     pub fn allowance(&self, server: &ServerId) -> NodeAllowance {
@@ -160,14 +225,44 @@ impl ClusterCoordinator for GossipCoordinator {
 
     async fn request_quota(&self, server: &ServerId, want: u32) -> Result<QuotaLease, QuotaError> {
         let now = self.clock.now();
-        // No await inside: the lock is a `std::sync::Mutex` and must not be held
-        // across one. The method is async because the trait is, and because
-        // forwarding to the leader will be.
-        self.with(|c| {
+        // The lock is a std::sync::Mutex and is never held across the await
+        // below. Every use of it here is a separate short critical section.
+        let local = self.with(|c| {
             let lease = c.request(server, self.local, want, now)?;
             c.accept(lease.clone());
-            Ok(lease)
-        })
+            Ok::<_, QuotaError>(lease)
+        });
+
+        match local {
+            Ok(lease) => return Ok(lease),
+            // Anything else, exhaustion in particular, is the leader's real
+            // answer and forwarding it elsewhere would be asking a second time
+            // for capacity that does not exist.
+            Err(err) if !matches!(err, QuotaError::NoLeader) => return Err(err),
+            Err(_) => {}
+        }
+
+        let leader = self.with(|c| c.membership(now).leader());
+        let (Some(leader), Some(transport)) = (leader, self.transport.get()) else {
+            return Err(QuotaError::NoLeader);
+        };
+        if leader == self.local {
+            // This node is the leader by view and could not grant: it is
+            // inside its takeover wait, or it has lost quorum. Asking itself
+            // over a socket would get the same answer more slowly.
+            return Err(QuotaError::NoLeader);
+        }
+
+        let lease = transport.request(leader, server, self.local, want).await?;
+        if lease.server() != server {
+            // A leader that answered about a different server would have this
+            // node open connections against one cap while the lease was
+            // counted against another.
+            return Err(QuotaError::NoLeader);
+        }
+
+        self.with(|c| c.accept(lease.clone()));
+        Ok(lease)
     }
 
     fn release_quota(&self, lease: QuotaLease) {
@@ -462,5 +557,224 @@ mod tests {
         assert!(dynamic.membership().is_leader());
         assert!(dynamic.request_quota(&server(), 10).await.is_ok());
         assert_eq!(dynamic.digest().node, node(1));
+    }
+
+    /// A follower that has seen the same gossip, and leads nothing.
+    fn following(clock: &FakeClock) -> Arc<GossipCoordinator> {
+        let config = CoordinatorConfig {
+            fleet_size: 3,
+            ..CoordinatorConfig::default()
+        };
+        let follower = GossipCoordinator::new(node(2), config, Arc::new(clock.clone()));
+        follower.set_cap(server(), 100);
+        for round in 1..=12 {
+            follower.gossip(digest_for(1, round));
+            follower.gossip(digest_for(2, round));
+            follower.gossip(digest_for(3, round));
+        }
+        follower.tick();
+        follower
+    }
+
+    /// A transport that hands the request straight to the leader's own
+    /// coordinator.
+    ///
+    /// Not a mock: it calls the same entry point a real socket would land on,
+    /// so what is being tested is the leader's accounting rather than a
+    /// message format.
+    #[derive(Debug)]
+    struct DirectTransport {
+        leader: Arc<GossipCoordinator>,
+        seen: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl QuotaTransport for DirectTransport {
+        async fn request(
+            &self,
+            leader: NodeId,
+            server: &ServerId,
+            holder: NodeId,
+            want: u32,
+        ) -> Result<QuotaLease, QuotaError> {
+            self.seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(leader, node(1), "the request went to the wrong node");
+            self.leader.serve_request(server, holder, want)
+        }
+    }
+
+    /// A transport to a leader that has gone.
+    #[derive(Debug)]
+    struct Unreachable;
+
+    #[async_trait::async_trait]
+    impl QuotaTransport for Unreachable {
+        async fn request(
+            &self,
+            _leader: NodeId,
+            _server: &ServerId,
+            _holder: NodeId,
+            _want: u32,
+        ) -> Result<QuotaLease, QuotaError> {
+            Err(QuotaError::NoLeader)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_non_leader_obtains_a_lease_through_the_leader() {
+        // M3.12, deferred from M3 because the transport did not exist. Without
+        // it every node but one is capped at its guaranteed share, and the free
+        // pool, which is half the cap by default, is unreachable.
+        let (leader, clock) = serving();
+        let follower = following(&clock);
+        let transport = Arc::new(DirectTransport {
+            leader: Arc::clone(&leader),
+            seen: std::sync::atomic::AtomicU32::new(0),
+        });
+        assert!(follower.set_transport(Arc::clone(&transport) as Arc<dyn QuotaTransport>));
+
+        let lease = follower.request_quota(&server(), 5).await.unwrap();
+
+        assert_eq!(lease.count(clock.now()), 5);
+        assert_eq!(
+            transport.seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the follower answered locally instead of asking the leader"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_forwarded_lease_is_counted_once_and_on_the_leader() {
+        // The failure that would breach the cap: both ends recording the same
+        // lease, so the fleet believes it has twice the capacity it has.
+        let (leader, clock) = serving();
+        let follower = following(&clock);
+        follower.set_transport(Arc::new(DirectTransport {
+            leader: Arc::clone(&leader),
+            seen: std::sync::atomic::AtomicU32::new(0),
+        }));
+
+        follower.request_quota(&server(), 5).await.unwrap();
+
+        assert_eq!(
+            follower.allowance(&server()).leased,
+            5,
+            "the node that will open the connections does not hold the lease"
+        );
+        assert_eq!(
+            leader.allowance(&server()).leased,
+            0,
+            "the leader counted a lease it granted to somebody else as its own"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_leader_that_cannot_be_reached_leaves_the_guaranteed_share() {
+        // The safe direction. A node that cannot get a lease still opens up to
+        // its guaranteed share, which needs no coordination and cannot breach
+        // the cap.
+        let (_leader, clock) = serving();
+        let follower = following(&clock);
+        follower.set_transport(Arc::new(Unreachable));
+
+        assert!(matches!(
+            follower.request_quota(&server(), 5).await,
+            Err(QuotaError::NoLeader)
+        ));
+        assert!(follower.allowance(&server()).guaranteed > 0);
+    }
+
+    #[tokio::test]
+    async fn a_node_with_no_transport_asks_nobody() {
+        let (_leader, clock) = serving();
+        let follower = following(&clock);
+
+        assert!(matches!(
+            follower.request_quota(&server(), 5).await,
+            Err(QuotaError::NoLeader)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_leader_inside_its_takeover_wait_does_not_ask_itself() {
+        // It is the leader by view and cannot grant yet. Sending itself a
+        // request over a socket would get the same answer, slower.
+        let clock = FakeClock::new();
+        let config = CoordinatorConfig {
+            fleet_size: 3,
+            ..CoordinatorConfig::default()
+        };
+        let fresh = GossipCoordinator::new(node(1), config, Arc::new(clock.clone()));
+        fresh.set_cap(server(), 100);
+        fresh.gossip(digest_for(1, 1));
+        fresh.gossip(digest_for(2, 1));
+        fresh.gossip(digest_for(3, 1));
+        fresh.tick();
+
+        let transport = Arc::new(DirectTransport {
+            leader: Arc::clone(&fresh),
+            seen: std::sync::atomic::AtomicU32::new(0),
+        });
+        fresh.set_transport(Arc::clone(&transport) as Arc<dyn QuotaTransport>);
+
+        assert!(fresh.request_quota(&server(), 5).await.is_err());
+        assert_eq!(
+            transport.seen.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the leader asked itself over the transport"
+        );
+    }
+
+    /// A leader that answers about a server nobody asked about.
+    #[derive(Debug)]
+    struct WrongServer;
+
+    #[async_trait::async_trait]
+    impl QuotaTransport for WrongServer {
+        async fn request(
+            &self,
+            _leader: NodeId,
+            _server: &ServerId,
+            _holder: NodeId,
+            want: u32,
+        ) -> Result<QuotaLease, QuotaError> {
+            Ok(QuotaLease::new(
+                ServerId::new("db-9", 5432),
+                want,
+                std::time::Instant::now() + Duration::from_secs(5),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lease_for_the_wrong_server_is_refused() {
+        // Accepting it would have this node open connections against one cap
+        // while its lease was counted against another, which is how a cap gets
+        // breached without any single ledger being wrong.
+        let (_leader, clock) = serving();
+        let follower = following(&clock);
+        follower.set_transport(Arc::new(WrongServer));
+
+        assert!(matches!(
+            follower.request_quota(&server(), 5).await,
+            Err(QuotaError::NoLeader)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_transport_is_set_once() {
+        // Two paths to the leader would mean no way to say which one a lease
+        // came from.
+        let (leader, clock) = serving();
+        let follower = following(&clock);
+
+        assert!(follower.set_transport(Arc::new(Unreachable)));
+        assert!(
+            !follower.set_transport(Arc::new(DirectTransport {
+                leader,
+                seen: std::sync::atomic::AtomicU32::new(0),
+            })),
+            "a second transport replaced the first"
+        );
     }
 }
