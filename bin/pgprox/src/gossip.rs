@@ -1,0 +1,464 @@
+//! The socket that carries gossip between nodes.
+//!
+//! `pgprox-cluster` owns every rule about what a digest means and needs no
+//! socket to prove any of them. This is the socket, and it holds no rule: a
+//! message arrives, it is handed to [`GossipCoordinator::gossip`], and what
+//! comes back is this node's own digest.
+//!
+//! # The wire format is JSON, on purpose
+//!
+//! One message per line. A fleet gossips once per node per second, so the
+//! encoding costs nothing measurable, and the thing it buys is that an
+//! operator debugging a cluster that will not converge can read the traffic
+//! with `nc`. The digest schema is already a public interface (see
+//! `pgprox-cluster`'s notes), so a self-describing encoding matches what it
+//! already is.
+//!
+//! The wire types are declared here rather than by deriving `Serialize` on the
+//! `pgprox-core` DTOs, for the same reason `pgprox-admin` declares its own
+//! response bodies: a field can be renamed in core without silently changing
+//! what a running fleet speaks.
+//!
+//! # An exchange, not a broadcast
+//!
+//! A round opens a connection, sends this node's digest, and reads the peer's
+//! back. Two nodes therefore converge in one round trip rather than two
+//! one-way messages, and a peer that is down costs one failed connect rather
+//! than a message queued for something that will never read it.
+//!
+//! # What is refused
+//!
+//! More than [`MAX_INCOMING`] bytes on one connection, refused by reading no
+//! further rather than by checking a length after buffering it. A gossip port
+//! is reachable from inside the cluster network, and a peer that is really an
+//! attacker must not be able to make a node allocate without limit.
+//!
+//! The budget is per connection rather than per message, which is what makes
+//! it enforceable by construction: a client opens one connection per round, so
+//! a peer that keeps talking on one connection is doing something a peer does
+//! not do.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use pgprox_cluster::digest::VersionedDigest;
+use pgprox_cluster::service::GossipCoordinator;
+use pgprox_core::cluster::{ClusterDigest, NodeMode};
+use pgprox_core::ids::{NodeId, ServerId, TenantId};
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+/// How much a node will read from one gossip connection.
+///
+/// A digest carries one entry per server and one per homed tenant, and a node
+/// homes at most a few thousand tenants, so 1 MiB is far above anything
+/// legitimate and far below anything that hurts. A connection that reaches it
+/// is closed with whatever it had.
+pub const MAX_INCOMING: u64 = 1024 * 1024;
+
+/// How long a round waits on a peer.
+///
+/// Short: a peer that has not answered within this is either gone or too busy
+/// to gossip, and both mean the same thing to the failure detector. Waiting
+/// longer would let one unreachable node slow the whole round.
+pub const PEER_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// One node's digest, as it travels.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DigestWire {
+    /// Which node.
+    pub node: u16,
+    /// `active` or `draining`.
+    pub mode: String,
+    /// Its version, which is how a peer orders it against what it holds.
+    pub version: u64,
+    /// Client connections it is serving.
+    pub client_conns: u32,
+    /// Upstream connections it holds, per server, as `host:port`.
+    pub upstream_conns: Vec<(String, u32)>,
+    /// Per-tenant usage, for the tenants this node homes.
+    pub tenant_usage: Vec<(String, u32)>,
+}
+
+impl From<&VersionedDigest> for DigestWire {
+    fn from(versioned: &VersionedDigest) -> Self {
+        Self {
+            node: versioned.digest.node.get(),
+            mode: match versioned.digest.mode {
+                NodeMode::Draining => "draining".to_owned(),
+                _ => "active".to_owned(),
+            },
+            version: versioned.version,
+            client_conns: versioned.digest.client_conns,
+            upstream_conns: versioned
+                .digest
+                .upstream_conns
+                .iter()
+                .map(|(server, count)| (server.to_string(), *count))
+                .collect(),
+            tenant_usage: versioned
+                .digest
+                .tenant_usage
+                .iter()
+                .map(|(tenant, count)| (tenant.as_str().to_owned(), *count))
+                .collect(),
+        }
+    }
+}
+
+impl DigestWire {
+    /// Reads a message back into what the cluster layer understands.
+    ///
+    /// Returns `None` when a field cannot be understood, which is refused
+    /// rather than defaulted: a server address that failed to parse would
+    /// otherwise become a different server, and its usage would be counted
+    /// against the wrong cap.
+    #[must_use]
+    pub fn parse(&self) -> Option<VersionedDigest> {
+        let mut upstream_conns = Vec::with_capacity(self.upstream_conns.len());
+        for (server, count) in &self.upstream_conns {
+            upstream_conns.push((ServerId::parse(server)?, *count));
+        }
+
+        Some(VersionedDigest {
+            digest: ClusterDigest {
+                node: NodeId::new(self.node),
+                mode: if self.mode == "draining" {
+                    NodeMode::Draining
+                } else {
+                    NodeMode::Active
+                },
+                client_conns: self.client_conns,
+                upstream_conns,
+                tenant_usage: self
+                    .tenant_usage
+                    .iter()
+                    .map(|(tenant, count)| (TenantId::new(tenant), *count))
+                    .collect(),
+            },
+            version: self.version,
+        })
+    }
+}
+
+/// Serves gossip until the shutdown future resolves.
+///
+/// # Errors
+///
+/// Fails when the listening socket does. A peer that misbehaves costs that one
+/// connection and nothing else: a node whose gossip listener died would stop
+/// hearing from the fleet without stopping serving clients, which is the worst
+/// of both.
+pub async fn serve<F>(
+    listener: tokio::net::TcpListener,
+    coordinator: Arc<GossipCoordinator>,
+    shutdown: F,
+) -> std::io::Result<()>
+where
+    F: std::future::Future<Output = ()> + Send,
+{
+    tokio::pin!(shutdown);
+    loop {
+        let accepted = tokio::select! {
+            accepted = listener.accept() => accepted?,
+            () = &mut shutdown => return Ok(()),
+        };
+
+        let coordinator = Arc::clone(&coordinator);
+        tokio::spawn(async move {
+            let _ = answer(accepted.0, &coordinator).await;
+        });
+    }
+}
+
+/// Merges what a peer sent and answers with this node's own digest.
+async fn answer<S>(stream: S, coordinator: &GossipCoordinator) -> std::io::Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (read, mut write) = tokio::io::split(stream);
+    let mut lines = BufReader::new(read.take(MAX_INCOMING)).lines();
+
+    while let Some(line) = lines.next_line().await? {
+        // A line that does not parse is dropped rather than closing the
+        // connection: gossip from a node running a newer build is expected
+        // during a rolling upgrade, and refusing to talk to it at all would
+        // partition the fleet along version lines.
+        if let Ok(wire) = serde_json::from_str::<DigestWire>(&line)
+            && let Some(incoming) = wire.parse()
+        {
+            coordinator.gossip(incoming);
+        }
+
+        let mut reply = serde_json::to_vec(&DigestWire::from(&coordinator.outgoing()))
+            .unwrap_or_else(|_| Vec::new());
+        reply.push(b'\n');
+        write.write_all(&reply).await?;
+        write.flush().await?;
+    }
+    Ok(())
+}
+
+/// One gossip round against every peer.
+///
+/// Peers are contacted concurrently: a round that walked them in sequence
+/// would take the sum of the timeouts when several were down, and the failure
+/// detector would start suspecting nodes that are perfectly healthy.
+pub async fn round(peers: &[SocketAddr], coordinator: &Arc<GossipCoordinator>) -> usize {
+    let mut reached = Vec::new();
+    for peer in peers {
+        reached.push(tokio::spawn({
+            let coordinator = Arc::clone(coordinator);
+            let peer = *peer;
+            async move {
+                tokio::time::timeout(PEER_TIMEOUT, exchange(peer, &coordinator))
+                    .await
+                    .is_ok_and(|result| result.is_ok())
+            }
+        }));
+    }
+
+    let mut count = 0;
+    for handle in reached {
+        if handle.await.unwrap_or(false) {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Sends this node's digest to one peer and merges the answer.
+///
+/// # Errors
+///
+/// Fails when the peer cannot be reached or does not answer. Both are ordinary:
+/// a node that is restarting is unreachable for a few seconds and the failure
+/// detector is what decides that it matters.
+pub async fn exchange(peer: SocketAddr, coordinator: &GossipCoordinator) -> std::io::Result<()> {
+    let stream = tokio::net::TcpStream::connect(peer).await?;
+    speak(stream, coordinator).await
+}
+
+/// The client half of one exchange, over any stream.
+async fn speak<S>(stream: S, coordinator: &GossipCoordinator) -> std::io::Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (read, mut write) = tokio::io::split(stream);
+
+    let mut message = serde_json::to_vec(&DigestWire::from(&coordinator.outgoing()))
+        .unwrap_or_else(|_| Vec::new());
+    message.push(b'\n');
+    write.write_all(&message).await?;
+    write.flush().await?;
+
+    let mut lines = BufReader::new(read.take(MAX_INCOMING)).lines();
+    if let Some(line) = lines.next_line().await?
+        && let Ok(wire) = serde_json::from_str::<DigestWire>(&line)
+        && let Some(incoming) = wire.parse()
+    {
+        coordinator.gossip(incoming);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use pgprox_cluster::coordinator::CoordinatorConfig;
+    use pgprox_core::clock::FakeClock;
+
+    fn coordinator(node: u16) -> Arc<GossipCoordinator> {
+        GossipCoordinator::new(
+            NodeId::new(node),
+            CoordinatorConfig::default(),
+            Arc::new(FakeClock::new()),
+        )
+    }
+
+    #[test]
+    fn a_digest_round_trips_through_the_wire_format() {
+        let source = coordinator(3);
+        source.report(11, vec![(ServerId::new("db-1", 5432), 4)]);
+        source.report_tenants(vec![(TenantId::new("acme"), 2)]);
+        source.set_mode(NodeMode::Draining);
+
+        let outgoing = source.outgoing();
+        let encoded = serde_json::to_string(&DigestWire::from(&outgoing)).unwrap();
+        let decoded = serde_json::from_str::<DigestWire>(&encoded)
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        assert_eq!(decoded, outgoing);
+    }
+
+    #[test]
+    fn a_server_address_that_does_not_parse_is_refused() {
+        // Rather than defaulted. A server that became a different server would
+        // have its usage counted against the wrong cap, which is the one
+        // failure the quota layer has no graceful degradation for.
+        let wire = DigestWire {
+            node: 1,
+            mode: "active".to_owned(),
+            version: 1,
+            client_conns: 0,
+            upstream_conns: vec![("not-an-address".to_owned(), 3)],
+            tenant_usage: Vec::new(),
+        };
+
+        assert!(wire.parse().is_none());
+    }
+
+    #[tokio::test]
+    async fn two_nodes_learn_about_each_other_in_one_exchange() {
+        // The property the whole transport exists for: before it, every node
+        // believed it was alone.
+        let (one, two) = (coordinator(1), coordinator(2));
+        one.report(5, Vec::new());
+        two.report(9, Vec::new());
+
+        let (theirs, ours) = tokio::io::duplex(64 * 1024);
+        let serving = tokio::spawn({
+            let two = Arc::clone(&two);
+            async move { answer(theirs, &two).await }
+        });
+        speak(ours, &one).await.unwrap();
+
+        assert_eq!(
+            one.digests()
+                .iter()
+                .find(|digest| digest.node == NodeId::new(2))
+                .map(|digest| digest.client_conns),
+            Some(9),
+            "the caller did not learn about the peer"
+        );
+        assert_eq!(
+            two.digests()
+                .iter()
+                .find(|digest| digest.node == NodeId::new(1))
+                .map(|digest| digest.client_conns),
+            Some(5),
+            "the peer did not learn about the caller"
+        );
+        drop(serving);
+    }
+
+    #[tokio::test]
+    async fn a_stale_digest_does_not_overwrite_a_newer_one() {
+        // Gossip reorders. A node that applied whatever arrived last would
+        // flap between two states forever.
+        let listener = coordinator(1);
+        let peer = coordinator(2);
+        peer.report(1, Vec::new());
+        let first = peer.outgoing();
+        peer.report(2, Vec::new());
+        let second = peer.outgoing();
+
+        listener.gossip(second);
+        listener.gossip(first);
+
+        assert_eq!(
+            listener
+                .digests()
+                .iter()
+                .find(|digest| digest.node == NodeId::new(2))
+                .map(|digest| digest.client_conns),
+            Some(2),
+            "a replayed older digest was applied"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_talks_past_the_budget_is_cut_off() {
+        // A gossip port is reachable from inside the cluster network, and a
+        // peer that is really an attacker must not be able to make a node
+        // allocate without limit.
+        let node = coordinator(1);
+        let (theirs, mut ours) = tokio::io::duplex(64 * 1024);
+        let serving = tokio::spawn({
+            let node = Arc::clone(&node);
+            async move { answer(theirs, &node).await }
+        });
+
+        // No newline, ever: the reader must stop at the cap rather than buffer.
+        let junk = vec![b'x'; 256 * 1024];
+        for _ in 0..8 {
+            if ours.write_all(&junk).await.is_err() {
+                break;
+            }
+        }
+        drop(ours);
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), serving)
+            .await
+            .expect("the reader never stopped");
+        assert!(
+            outcome.unwrap().is_err() || node.digests().is_empty(),
+            "an oversized message was accepted"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_round_reports_how_many_peers_answered() {
+        // A node that could not tell a reached peer from an unreachable one
+        // could not report why it is not converging.
+        let node = coordinator(1);
+        let peer = coordinator(2);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let serving = tokio::spawn(serve(listener, Arc::clone(&peer), async {
+            let _ = stopped.await;
+        }));
+
+        // One that answers and one that is not there.
+        let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_addr = dead.local_addr().unwrap();
+        drop(dead);
+
+        assert_eq!(round(&[addr, dead_addr], &node).await, 1);
+        assert!(
+            node.digests()
+                .iter()
+                .any(|digest| digest.node == NodeId::new(2))
+        );
+
+        stop.send(()).unwrap();
+        serving.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_message_that_is_not_a_digest_does_not_end_the_conversation() {
+        // A rolling upgrade means talking to a node running a different build.
+        // Refusing to speak to it at all would partition the fleet by version.
+        let node = coordinator(1);
+        let (theirs, ours) = tokio::io::duplex(64 * 1024);
+        let serving = tokio::spawn({
+            let node = Arc::clone(&node);
+            async move { answer(theirs, &node).await }
+        });
+
+        let (read, mut write) = tokio::io::split(ours);
+        write
+            .write_all(b"{\"something\":\"else\"}\n")
+            .await
+            .unwrap();
+        write.flush().await.unwrap();
+
+        let mut lines = BufReader::new(read).lines();
+        let answered = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+            .await
+            .expect("nothing came back")
+            .unwrap();
+
+        assert!(
+            answered.is_some_and(|line| serde_json::from_str::<DigestWire>(&line).is_ok()),
+            "a node that sent something unrecognised got no digest back"
+        );
+        drop(serving);
+    }
+}

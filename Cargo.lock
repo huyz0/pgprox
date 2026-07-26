@@ -871,6 +871,8 @@ dependencies = [
  "pgprox-route",
  "pgprox-session",
  "pgprox-tls",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

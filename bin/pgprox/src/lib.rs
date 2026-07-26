@@ -23,6 +23,7 @@
 pub mod dial;
 pub mod entropy;
 pub mod entry;
+pub mod gossip;
 pub mod http;
 pub mod observatory;
 pub mod run;

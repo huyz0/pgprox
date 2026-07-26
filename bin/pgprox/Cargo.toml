@@ -43,6 +43,8 @@ async-trait.workspace = true
 # bearer token, and the binary needs system entropy to issue one.
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"] }
 axum = { workspace = true, features = ["json", "query", "tokio", "http1"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 base64 = "0.22"
 tokio-rustls = { version = "0.26", default-features = false }
 thiserror.workspace = true

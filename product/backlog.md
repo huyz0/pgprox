@@ -883,21 +883,31 @@ rule already allows `pgprox-proto`.
   binary as committed opens no port at all and a drain has nothing to drain.
   Acceptance: the binary serves a query end to end over a real socket, and the
   run loop returns when its shutdown signal fires rather than being aborted.
-- [ ] `M6.29` The gossip transport: one socket per node carrying digests,
-  quota requests and forwarded cancels. Found wiring the run loop: `M6.16`
-  built quota forwarding behind `QuotaTransport` and `M6.15` built cancel
-  routing behind `Routing::Peer`, and both are answered by the composition
-  root, which never implemented either. So a node's gossip is a trait with one
-  fake, every node believes it is alone, and a drain that "announces before any
-  client is closed" has nothing to announce over. Acceptance: two nodes in one
-  process converge on each other's digests, a non-leader obtains a lease
-  through the socket, and a cancel for a peer's connection is forwarded rather
-  than dropped. Note found while writing the run loop's tick: a node's own
-  digest never enters its digest store and `GossipCoordinator` exposes no way
-  to read it, so `report` and `report_tenants` are currently write-only and
-  `Observatory::stats` at cluster scope omits the node answering. The transport
-  needs that accessor, which makes it part of this task rather than a separate
-  one.
+- [x] `M6.29` The gossip transport, part one: a socket per node exchanging
+  digests. Found wiring the run loop: `M3.8` named the digest an API and built
+  the merge rule, and nothing ever put one on a wire, so every node believes it
+  is alone. A node's own digest also never enters its digest store and
+  `GossipCoordinator` exposes no way to read it, which makes `report` and
+  `report_tenants` write-only and leaves `Observatory::stats` at cluster scope
+  omitting the node that answered. Acceptance: two nodes in one process
+  converge on each other's digests, a stale message is refused by version, and
+  an oversized one is refused without allocating for it.
+- [ ] `M6.30` Give `Entropy` a failure channel. Found writing `SystemEntropy`:
+  `next` returns a `u64` and the system source can fail, so the only options
+  are panicking on a connection path or returning a guessable cancel key.
+  Refusing the connection is the third, and the trait cannot express it.
+  Acceptance: a failing entropy source refuses the connection with an error
+  naming the cause, and no cancel key is ever issued from a fallback.
+- [ ] `M6.31` The gossip transport, part two: quota requests to the leader.
+  `M6.16` built the forwarding rule behind `QuotaTransport` and the composition
+  root never implemented it, so every node falls back to its guaranteed share
+  and the free pool is unusable. Acceptance: a non-leader obtains a lease over
+  the socket, and a request racing a leader change is granted by exactly one.
+- [ ] `M6.32` The gossip transport, part three: forwarded cancels. `M6.15`
+  built the routing and `serve::cancel` drops `Routing::Peer` on the floor, so
+  a cancel that lands on the wrong node does nothing. Acceptance: a cancel for
+  a connection another node owns reaches that node, and an unknown key is
+  refused rather than ignored.
 - [ ] `M6.28` Poll the replicas a grant names, and route from that. Found
   wiring the run loop: `M5.18` built `ReplicaWatch`, `M6.14` built
   `SqlReplicaProbe`, and the session path builds a fresh empty `Replicas` per

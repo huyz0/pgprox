@@ -97,6 +97,8 @@ pub struct Addrs {
     pub client: SocketAddr,
     /// The HTTP port: the probes and the admin API.
     pub admin: SocketAddr,
+    /// The gossip port, where peers arrive.
+    pub gossip: SocketAddr,
 }
 
 /// Both ports, already bound.
@@ -109,6 +111,8 @@ pub struct Listeners {
     pub client: tokio::net::TcpListener,
     /// Where operators and kubelet arrive.
     pub admin: tokio::net::TcpListener,
+    /// Where peers arrive.
+    pub gossip: tokio::net::TcpListener,
 }
 
 impl Listeners {
@@ -121,6 +125,7 @@ impl Listeners {
         Ok(Self {
             client: tokio::net::TcpListener::bind(addrs.client).await?,
             admin: tokio::net::TcpListener::bind(addrs.admin).await?,
+            gossip: tokio::net::TcpListener::bind(addrs.gossip).await?,
         })
     }
 
@@ -134,6 +139,7 @@ impl Listeners {
         Ok(Addrs {
             client: self.client.local_addr()?,
             admin: self.admin.local_addr()?,
+            gossip: self.gossip.local_addr()?,
         })
     }
 }
@@ -182,6 +188,20 @@ pub fn probes(app: &App) -> Arc<Probes> {
 /// Fails when a listening socket does, which means there is nothing left to
 /// serve. A failure serving one client is that client's and never reaches here.
 pub async fn run(app: App, listeners: Listeners, shutdown: Shutdown) -> std::io::Result<()> {
+    run_with_peers(app, listeners, Vec::new(), shutdown).await
+}
+
+/// Runs the node, gossiping to `peers`, until the signal fires.
+///
+/// # Errors
+///
+/// As [`run`].
+pub async fn run_with_peers(
+    app: App,
+    listeners: Listeners,
+    peers: Vec<SocketAddr>,
+    shutdown: Shutdown,
+) -> std::io::Result<()> {
     let ceiling = app.config.max_client_conns;
     let gate = Arc::new(Gate::new(ceiling));
     let context = Arc::new(context(&app));
@@ -199,6 +219,14 @@ pub async fn run(app: App, listeners: Listeners, shutdown: Shutdown) -> std::io:
         },
     ));
 
+    let gossiping = tokio::spawn({
+        let shutdown = shutdown.clone();
+        let cluster = Arc::clone(&app.cluster);
+        crate::gossip::serve(listeners.gossip, cluster, async move {
+            shutdown.waited().await;
+        })
+    });
+
     let accepting = tokio::spawn({
         let shutdown = shutdown.clone();
         let context = Arc::clone(&context);
@@ -214,7 +242,7 @@ pub async fn run(app: App, listeners: Listeners, shutdown: Shutdown) -> std::io:
         }
     });
 
-    let _ticks = ticker(&app, &probes, &shutdown).await;
+    let _ticks = ticker(&app, &probes, &peers, &shutdown).await;
 
     // Both were told to stop by the same signal, so this is waiting rather than
     // stopping. A task that panicked is reported as an error rather than
@@ -226,6 +254,9 @@ pub async fn run(app: App, listeners: Listeners, shutdown: Shutdown) -> std::io:
     if let Ok(Err(err)) = admin.await {
         return Err(err);
     }
+    if let Ok(Err(err)) = gossiping.await {
+        return Err(err);
+    }
     Ok(())
 }
 
@@ -234,7 +265,7 @@ pub async fn run(app: App, listeners: Listeners, shutdown: Shutdown) -> std::io:
 /// Returns how many ticks it ran. A count rather than nothing, because the
 /// work it does is reported to peers and to probes rather than returned, and a
 /// loop that silently never ran would look exactly like one that did.
-async fn ticker(app: &App, probes: &Arc<Probes>, shutdown: &Shutdown) -> u64 {
+async fn ticker(app: &App, probes: &Arc<Probes>, peers: &[SocketAddr], shutdown: &Shutdown) -> u64 {
     let mut ticks = tokio::time::interval(TICK);
     let mut ran = 0;
     loop {
@@ -256,6 +287,12 @@ async fn ticker(app: &App, probes: &Arc<Probes>, shutdown: &Shutdown) -> u64 {
                 .collect(),
         );
         app.cluster.report_tenants(app.sessions.per_tenant());
+
+        // After reporting, so a peer hears this tick's numbers rather than the
+        // last one's, and awaited rather than spawned: a round that took longer
+        // than a tick would otherwise pile up one task per second against a
+        // peer that is already too slow to answer.
+        crate::gossip::round(peers, &app.cluster).await;
     }
 }
 
@@ -293,6 +330,7 @@ mod tests {
         Addrs {
             client: "127.0.0.1:0".parse().unwrap(),
             admin: "127.0.0.1:0".parse().unwrap(),
+            gossip: "127.0.0.1:0".parse().unwrap(),
         }
     }
 
@@ -354,7 +392,7 @@ mod tests {
 
         let clash = Addrs {
             client: taken,
-            admin: "127.0.0.1:0".parse().unwrap(),
+            ..loopback()
         };
         assert!(Listeners::bind(clash).await.is_err());
     }
@@ -369,7 +407,7 @@ mod tests {
 
         let ticked = tokio::spawn({
             let shutdown = shutdown.clone();
-            async move { ticker(&app, &probes, &shutdown).await }
+            async move { ticker(&app, &probes, &[], &shutdown).await }
         });
 
         tokio::time::sleep(Duration::from_millis(1200)).await;
@@ -380,6 +418,57 @@ mod tests {
             .expect("the ticker did not stop when signalled")
             .unwrap();
         assert!(ran >= 2, "the periodic work ran {ran} times in 1.2 seconds");
+    }
+
+    #[tokio::test]
+    async fn two_running_nodes_learn_about_each_other() {
+        // The acceptance for M6.29, driven through the run loop rather than
+        // through the transport, because the failure it fixes was that nothing
+        // called the transport at all.
+        let first = App::build(deps()).await.unwrap();
+        let second = App::build(Deps {
+            node: NodeId::new(2),
+            node_name: "pgprox-2".to_owned(),
+            ..deps()
+        })
+        .await
+        .unwrap();
+
+        let (one, two) = (
+            Listeners::bind(loopback()).await.unwrap(),
+            Listeners::bind(loopback()).await.unwrap(),
+        );
+        let (one_at, two_at) = (one.addrs().unwrap(), two.addrs().unwrap());
+        let shutdown = Shutdown::new();
+
+        let cluster = Arc::clone(&first.cluster);
+        let running = tokio::spawn(run_with_peers(
+            first,
+            one,
+            vec![two_at.gossip],
+            shutdown.clone(),
+        ));
+        let peer = tokio::spawn(run_with_peers(
+            second,
+            two,
+            vec![one_at.gossip],
+            shutdown.clone(),
+        ));
+
+        // Two ticks' worth: the first fires immediately, so one round is
+        // enough, and the margin is for a loaded machine rather than for the
+        // protocol.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let learned = cluster
+            .digests()
+            .iter()
+            .any(|digest| digest.node == NodeId::new(2));
+
+        shutdown.fire();
+        let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), peer).await;
+
+        assert!(learned, "a running node never heard from its peer");
     }
 
     #[tokio::test]

@@ -43,6 +43,9 @@ pub const DEFAULT_LISTEN: &str = "0.0.0.0:6432";
 /// Where the probes and the admin API are served by default.
 pub const DEFAULT_ADMIN: &str = "0.0.0.0:9090";
 
+/// Where peers gossip by default.
+pub const DEFAULT_GOSSIP: &str = "0.0.0.0:6433";
+
 /// What the process was told to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
@@ -58,6 +61,14 @@ pub struct Options {
     pub listen: SocketAddr,
     /// Where the probes and the admin API are served.
     pub admin: SocketAddr,
+    /// Where peers gossip.
+    pub gossip: SocketAddr,
+    /// The peers this node gossips to.
+    ///
+    /// Addresses rather than names, and given rather than discovered: a node
+    /// that discovered its own fleet would decide the fleet size, and the
+    /// guaranteed share is divided by the configured size on purpose.
+    pub peers: Vec<SocketAddr>,
 }
 
 impl Default for Options {
@@ -72,6 +83,8 @@ impl Default for Options {
             // rather than by unwrapping here.
             listen: SocketAddr::from(([0, 0, 0, 0], 6432)),
             admin: SocketAddr::from(([0, 0, 0, 0], 9090)),
+            gossip: SocketAddr::from(([0, 0, 0, 0], 6433)),
+            peers: Vec::new(),
         }
     }
 }
@@ -113,6 +126,11 @@ impl Options {
                 "--node-name" => options.node_name = value()?,
                 "--listen" => options.listen = address(&value()?, "--listen")?,
                 "--admin" => options.admin = address(&value()?, "--admin")?,
+                "--gossip" => options.gossip = address(&value()?, "--gossip")?,
+                // Repeatable: one flag per peer, so a fleet of three is three
+                // flags rather than a comma-separated string with its own
+                // parsing rules.
+                "--peer" => options.peers.push(address(&value()?, "--peer")?),
                 "--node" => {
                     let raw = value()?;
                     options.node =
@@ -137,6 +155,7 @@ impl Options {
         Addrs {
             client: self.listen,
             admin: self.admin,
+            gossip: self.gossip,
         }
     }
 }
@@ -175,6 +194,7 @@ where
 /// As [`start`], plus a port that cannot be bound.
 pub async fn serve(options: Options) -> Result<(), StartupError> {
     let addrs = options.addrs();
+    let peers = options.peers.clone();
     let app = start(options).await?;
     let listeners = Listeners::bind(addrs)
         .await
@@ -191,7 +211,7 @@ pub async fn serve(options: Options) -> Result<(), StartupError> {
         }
     });
 
-    crate::run::run(app, listeners, shutdown)
+    crate::run::run_with_peers(app, listeners, peers, shutdown)
         .await
         .map_err(|err| StartupError::Arguments {
             detail: format!("the node stopped serving: {err}"),
@@ -330,6 +350,21 @@ mod tests {
             Options::default().admin,
             DEFAULT_ADMIN.parse::<SocketAddr>().unwrap()
         );
+        assert_eq!(
+            Options::default().gossip,
+            DEFAULT_GOSSIP.parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn peers_accumulate_rather_than_replacing_each_other() {
+        // One flag per peer. A second --peer overwriting the first would leave
+        // a three-node fleet gossiping to one node and never converging.
+        let options =
+            Options::parse(["--peer", "10.0.0.2:6433", "--peer", "10.0.0.3:6433"]).unwrap();
+
+        assert_eq!(options.peers.len(), 2);
+        assert_eq!(options.peers[0].port(), 6433);
     }
 
     #[test]

@@ -19,6 +19,7 @@
 //! breach the cap.
 
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use pgprox_core::clock::Clock;
@@ -84,6 +85,12 @@ pub struct GossipCoordinator {
     /// be filled in afterwards. A `OnceLock` makes that a single assignment
     /// rather than a mutable field anything could reassign later.
     transport: OnceLock<Arc<dyn QuotaTransport>>,
+    /// Orders this node's own digests against each other.
+    ///
+    /// Per node rather than shared, which is what lets a fleet gossip with no
+    /// common clock: a peer compares versions only against the ones it already
+    /// holds from the same node.
+    version: AtomicU64,
 }
 
 impl GossipCoordinator {
@@ -95,6 +102,7 @@ impl GossipCoordinator {
             clock,
             local,
             transport: OnceLock::new(),
+            version: AtomicU64::new(0),
         })
     }
 
@@ -112,6 +120,23 @@ impl GossipCoordinator {
     /// Registers a server's cap.
     pub fn set_cap(&self, server: ServerId, cap: u32) {
         self.with(|c| c.set_cap(server, cap));
+    }
+
+    /// What this node would tell a peer right now.
+    ///
+    /// Each call takes the next version, so two calls produce two messages a
+    /// peer can order. The counter is this node's own and is never compared
+    /// against another node's, which is what removes the need for a shared
+    /// clock. See [`DigestStore::merge`](crate::digest::DigestStore::merge).
+    ///
+    /// A node's own digest deliberately does not enter its own store: the store
+    /// is what peers said, and mixing the two would make a node's report of
+    /// itself indistinguishable from a peer's report of it.
+    pub fn outgoing(&self) -> VersionedDigest {
+        VersionedDigest {
+            digest: self.with(|c| c.digest()),
+            version: self.version.fetch_add(1, Ordering::Relaxed),
+        }
     }
 
     /// Takes in a peer's gossip and brings the ledgers up to date.
@@ -331,6 +356,64 @@ mod tests {
             },
             version,
         }
+    }
+
+    #[test]
+    fn what_a_node_tells_a_peer_carries_what_it_reported() {
+        // `report` was write-only until the transport existed: nothing could
+        // read a node's own digest, so a node's contribution to the fleet's
+        // totals was invisible even to itself.
+        let coordinator = GossipCoordinator::new(
+            node(1),
+            CoordinatorConfig::default(),
+            Arc::new(FakeClock::new()),
+        );
+        coordinator.report(7, vec![(server(), 3)]);
+        coordinator.set_mode(NodeMode::Draining);
+
+        let outgoing = coordinator.outgoing();
+        assert_eq!(outgoing.digest.node, node(1));
+        assert_eq!(outgoing.digest.client_conns, 7);
+        assert_eq!(outgoing.digest.upstream_conns, vec![(server(), 3)]);
+        assert_eq!(
+            outgoing.digest.mode,
+            NodeMode::Draining,
+            "a draining node did not announce it"
+        );
+    }
+
+    #[test]
+    fn each_outgoing_digest_is_newer_than_the_last() {
+        // A peer accepts a digest only if it is newer than what it holds, so a
+        // version that did not advance would make every update after the first
+        // one stale on arrival.
+        let coordinator = GossipCoordinator::new(
+            node(1),
+            CoordinatorConfig::default(),
+            Arc::new(FakeClock::new()),
+        );
+
+        let first = coordinator.outgoing().version;
+        let second = coordinator.outgoing().version;
+        assert!(second > first, "{second} did not follow {first}");
+    }
+
+    #[test]
+    fn a_node_s_own_digest_does_not_enter_its_own_store() {
+        // The store is what peers said. A node that merged its own report
+        // could not tell its view of itself from a peer's view of it, which is
+        // exactly the comparison split brain is found by.
+        let coordinator = GossipCoordinator::new(
+            node(1),
+            CoordinatorConfig::default(),
+            Arc::new(FakeClock::new()),
+        );
+        let _ = coordinator.outgoing();
+
+        assert!(
+            coordinator.digests().is_empty(),
+            "a node gossiped to itself"
+        );
     }
 
     /// A leading coordinator that has served its takeover wait.
