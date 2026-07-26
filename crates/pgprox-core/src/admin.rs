@@ -251,6 +251,16 @@ pub trait Observatory: Send + Sync + fmt::Debug {
     /// The configuration currently in force.
     fn config(&self) -> Arc<Config>;
 
+    /// Whether that configuration is the current document.
+    ///
+    /// False when the source last failed to re-read it, which is a node
+    /// serving the last good configuration. Defaulted to true, because a
+    /// source that cannot go stale cannot report that it has, and because
+    /// every existing implementation should keep compiling.
+    fn config_is_current(&self) -> bool {
+        true
+    }
+
     /// Upstream pools.
     fn pools(&self, scope: Scope) -> Vec<PoolView>;
 

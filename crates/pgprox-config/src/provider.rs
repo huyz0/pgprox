@@ -234,6 +234,12 @@ impl ConfigSource for FileSource {
         self.tx.subscribe()
     }
 
+    fn is_healthy(&self) -> bool {
+        // The inherent method of the same name would resolve to this one, so
+        // this asks the thing that answers it instead.
+        self.last_error().is_none()
+    }
+
     async fn run_loop(self: Arc<Self>) {
         // The poll loop below, reached through the trait so the composition
         // root can start it without knowing which source it holds.

@@ -128,6 +128,10 @@ impl Observatory for NodeObservatory {
         self.config.watch().borrow().clone()
     }
 
+    fn config_is_current(&self) -> bool {
+        self.config.is_healthy()
+    }
+
     fn pools(&self, scope: Scope) -> Vec<PoolView> {
         let mut pools = self.local_pools();
         if matches!(scope, Scope::Local) {

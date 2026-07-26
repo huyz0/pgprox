@@ -1117,6 +1117,17 @@ asking of each crate what the binary never touches.
   than its allowance, a node that needs more asks the leader, and one that is
   refused waits rather than opening.
 
+### Raised by the sixth review round
+
+- [x] `M6.57` A configuration that stopped reloading is invisible. M4.3 built
+  `FileSource::last_error` and said in its own documentation that this is what
+  `/readyz` and the admin API report, and nothing reports it: the poll loop
+  swallows the error and a node serving a stale configuration looks exactly
+  like one serving the current document. Not `/readyz`, which by M4.8's rule
+  fails only for drain, so it is a log line and a metric. Acceptance: a broken
+  document reaching the mount produces one warning an operator can act on and
+  a metric that stays wrong until it is fixed.
+
 - [ ] `M6.25` Close M6.
 
 ## M7 and later

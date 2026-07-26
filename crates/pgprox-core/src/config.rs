@@ -161,6 +161,16 @@ pub trait ConfigSource: Send + Sync + fmt::Debug {
     /// Observes changes. The receiver always holds the latest value.
     fn watch(&self) -> watch::Receiver<Arc<Config>>;
 
+    /// Whether the last attempt to read the configuration succeeded.
+    ///
+    /// Defaulted to true, because a source with no loop cannot fail between
+    /// reads. The file provider overrides it: a node serving a stale document
+    /// looks exactly like one serving the current one, which is when an
+    /// operator most needs to be told which they have.
+    fn is_healthy(&self) -> bool {
+        true
+    }
+
     /// Runs whatever loop this source needs to notice a change, until dropped.
     ///
     /// Defaulted to never returning, because most sources have no loop: the
@@ -179,6 +189,13 @@ pub trait ConfigSource: Send + Sync + fmt::Debug {
 
 #[async_trait::async_trait]
 impl<T: ConfigSource + ?Sized> ConfigSource for Arc<T> {
+    // Forwarded rather than defaulted: an `Arc` around a source that can go
+    // stale can go stale, and taking the default here would report every
+    // wrapped source as healthy forever.
+    fn is_healthy(&self) -> bool {
+        (**self).is_healthy()
+    }
+
     async fn load(&self) -> Result<Config, ConfigError> {
         (**self).load().await
     }

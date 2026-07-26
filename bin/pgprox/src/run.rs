@@ -548,6 +548,15 @@ async fn ticker(
         );
         app.cluster.report_tenants(app.sessions.per_tenant());
 
+        // A node serving a stale document looks exactly like one serving the
+        // current document, which is when an operator most needs to be told
+        // which they have. Every tick, because the condition persists until
+        // somebody fixes the file, and a single line at the moment it broke
+        // would have scrolled away.
+        if !app.deps.config.is_healthy() {
+            tracing::warn!("the configuration could not be re-read: serving the last good one");
+        }
+
         // Before the reap, so a limit that just dropped is what the reaper
         // measures against.
         apply_quota(app).await;

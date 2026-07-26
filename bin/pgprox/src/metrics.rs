@@ -78,6 +78,55 @@ pub async fn render(
     out
 }
 
+/// Client connections, by state and by tenant.
+///
+/// By state because that is what the registry's label says, and an aggregate
+/// without it would be a different metric wearing this one's name. By tenant
+/// only for the tenants an operator asked to see: a `tenant` label taken from
+/// the data is one series per tenant, which is the unbounded label the
+/// registry's own cardinality test names as the example of what not to do.
+fn client_samples(
+    out: &mut String,
+    metric: &Metric,
+    clients: &[pgprox_core::admin::ClientView],
+    node: &str,
+    tenants: &TenantAllowlist,
+) {
+    use pgprox_core::admin::ClientState;
+
+    let mut idle = 0_u32;
+    let mut active = 0_u32;
+    let mut waiting = 0_u32;
+    for view in clients {
+        match view.state {
+            ClientState::Active => active += 1,
+            ClientState::Waiting => waiting += 1,
+            _ => idle += 1,
+        }
+    }
+    for (state, count) in [("idle", idle), ("active", active), ("waiting", waiting)] {
+        let _ = writeln!(
+            out,
+            "{}{{node=\"{node}\",state=\"{state}\"}} {count}",
+            metric.name
+        );
+    }
+
+    let mut per_tenant: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+    for view in clients {
+        *per_tenant
+            .entry(tenants.label_for(&view.tenant))
+            .or_default() += 1;
+    }
+    for (tenant, count) in per_tenant {
+        let _ = writeln!(
+            out,
+            "{}{{node=\"{node}\",state=\"any\",tenant=\"{tenant}\"}} {count}",
+            metric.name
+        );
+    }
+}
+
 /// The samples for one metric, or none where nothing can answer it.
 fn samples(
     out: &mut String,
@@ -88,47 +137,7 @@ fn samples(
     tenants: &TenantAllowlist,
 ) {
     match metric.name {
-        "pgprox_client_conns" => {
-            // By state, which is what the registry's label says, and the
-            // session registry is what knows: an aggregate without the state
-            // would be a different metric wearing this one's name.
-            let mut idle = 0_u32;
-            let mut active = 0_u32;
-            let mut waiting = 0_u32;
-            for view in clients {
-                match view.state {
-                    pgprox_core::admin::ClientState::Active => active += 1,
-                    pgprox_core::admin::ClientState::Waiting => waiting += 1,
-                    _ => idle += 1,
-                }
-            }
-            for (state, count) in [("idle", idle), ("active", active), ("waiting", waiting)] {
-                let _ = writeln!(
-                    out,
-                    "{}{{node=\"{node}\",state=\"{state}\"}} {count}",
-                    metric.name
-                );
-            }
-
-            // And per tenant, for the tenants an operator asked to see. The
-            // allowlist decides which: a `tenant` label taken from the data
-            // would be one series per tenant, which is the unbounded label the
-            // registry's own test names as the example of what not to do.
-            let mut per_tenant: std::collections::BTreeMap<&str, u32> =
-                std::collections::BTreeMap::new();
-            for view in clients {
-                *per_tenant
-                    .entry(tenants.label_for(&view.tenant))
-                    .or_default() += 1;
-            }
-            for (tenant, count) in per_tenant {
-                let _ = writeln!(
-                    out,
-                    "{}{{node=\"{node}\",state=\"any\",tenant=\"{tenant}\"}} {count}",
-                    metric.name
-                );
-            }
-        }
+        "pgprox_client_conns" => client_samples(out, metric, clients, node, tenants),
         "pgprox_upstream_conns" => {
             for pool in observatory.pools(Scope::Local) {
                 let _ = writeln!(
@@ -199,6 +208,15 @@ fn samples(
                 "{}{{node=\"{node}\",result=\"current\"}} {}",
                 metric.name,
                 observatory.config().max_client_conns
+            );
+            // And whether the last read worked. A node serving a stale
+            // document looks exactly like one serving the current document,
+            // and this is the difference an alert can be written against.
+            let _ = writeln!(
+                out,
+                "{}{{node=\"{node}\",result=\"stale\"}} {}",
+                metric.name,
+                u32::from(!observatory.config_is_current())
             );
         }
         _ => {}
@@ -291,6 +309,19 @@ mod tests {
                 metric.name
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_stale_configuration_is_visible_in_a_scrape() {
+        // A node serving the last good document looks exactly like one serving
+        // the current one, and this is the difference an alert is written
+        // against.
+        let out = rendered().await;
+
+        assert!(
+            out.contains("pgprox_config_reload_total{node=\"1\",result=\"stale\"} 0"),
+            "{out}"
+        );
     }
 
     #[tokio::test]
