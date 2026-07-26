@@ -968,6 +968,7 @@ dependencies = [
 name = "pgprox-session"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "pgprox-core",
  "pgprox-pool",
  "pgprox-proto",

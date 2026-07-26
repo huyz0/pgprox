@@ -827,7 +827,7 @@ rule already allows `pgprox-proto`.
   interesting half only reachable through the dull one. Acceptance: every
   authentication method Postgres can ask for is answered or refused by name,
   and an unsupported one says which it was.
-- [ ] `M6.12` The real `Connector`: dial, drive the handshake, harvest the
+- [x] `M6.12` The real `Connector`: dial, drive the handshake, harvest the
   `ParameterStatus` set. Acceptance: the trait's fake and the real
   implementation are exercised by the same test body, so a behaviour the fake
   invents is caught.

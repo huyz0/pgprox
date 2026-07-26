@@ -25,13 +25,21 @@
 //! exchange does in [`crate::auth`]. Neither direction has crypto in this
 //! crate.
 
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use pgprox_core::ids::ServerId;
+use pgprox_core::auth::Backend;
+use pgprox_core::ids::{PoolKey, ServerId};
 use pgprox_core::pool::PoolError;
 use pgprox_core::secret::SecretString;
+use pgprox_pool::live::Connector;
 use pgprox_proto::backend::{self, AuthRequest, BackendMessage};
 use pgprox_proto::frame::{Frame, Tag};
+use pgprox_proto::{encode, encode_frontend};
+
+use crate::auth::SCRAM_SHA_256;
+use crate::shell::Wire;
 
 /// The client half of a SCRAM exchange, for talking to Postgres.
 ///
@@ -238,6 +246,232 @@ impl UpstreamHandshake {
             server: self.server.clone(),
             reason,
         })
+    }
+}
+
+/// How a socket to a backend is obtained.
+///
+/// Behind a trait because opening one means TLS, and TLS means `pgprox-tls`,
+/// which this crate may not depend on. The composition root supplies it, the
+/// same way it supplies the SCRAM arithmetic.
+#[async_trait::async_trait]
+pub trait Upstream: Send + Sync + fmt::Debug {
+    /// A connected stream. A TCP socket, or a TLS one over it.
+    type Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send;
+
+    /// Opens a socket to this backend, with TLS if the backend asks for it.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the host is unreachable or the TLS handshake fails.
+    async fn dial(&self, backend: &Backend) -> Result<Self::Stream, PoolError>;
+
+    /// A fresh SCRAM exchange, for a server that asks for one.
+    fn scram(&self) -> Box<dyn UpstreamScram>;
+}
+
+/// An open, authenticated upstream connection.
+pub struct Upstreamed<S> {
+    /// The wire, with its buffers.
+    pub wire: Wire<S>,
+    /// What the server said about itself during startup.
+    pub parameters: Vec<(String, String)>,
+    /// The server's own cancel key, for cancelling queries on this connection.
+    pub backend_key: Option<(i32, i32)>,
+}
+
+impl<S> fmt::Debug for Upstreamed<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // No stream and no key: one is a socket and the other is a bearer
+        // token for cancelling somebody's query.
+        f.debug_struct("Upstreamed")
+            .field("parameters", &self.parameters.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Opens upstream connections for real.
+///
+/// The [`Connector`] contract takes a [`PoolKey`] and nothing else, so this
+/// holds the directory of which backend each key means. Grants fill it as they
+/// resolve, which is the only moment the credentials exist.
+#[derive(Debug)]
+pub struct PgConnector<U> {
+    upstream: U,
+    backends: Mutex<HashMap<PoolKey, Backend>>,
+}
+
+impl<U: Upstream> PgConnector<U> {
+    /// A connector over `upstream`, knowing no backends yet.
+    #[must_use]
+    pub fn new(upstream: U) -> Self {
+        Self {
+            upstream,
+            backends: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Records where a pool key's connections should go.
+    ///
+    /// Called when a grant resolves. Overwrites, because a tenant's password
+    /// can be rotated and the newest grant is the one to believe.
+    pub fn learn(&self, backend: &Backend) {
+        self.lock().insert(backend.pool_key(), backend.clone());
+    }
+
+    /// How many backends are known.
+    #[must_use]
+    pub fn known(&self) -> usize {
+        self.lock().len()
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<PoolKey, Backend>> {
+        // A poisoned lock here means another thread panicked while holding a
+        // map of backends. The map is still readable and the alternative is
+        // taking the node down, so it is recovered rather than propagated.
+        self.backends.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Opens and authenticates one connection.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the key names no known backend, when the socket cannot be
+    /// opened, or when the server refuses the credentials.
+    pub async fn open(&self, key: &PoolKey) -> Result<Upstreamed<U::Stream>, PoolError> {
+        let Some(backend) = self.lock().get(key).cloned() else {
+            return Err(PoolError::ConnectFailed {
+                server: key.server.clone(),
+                reason: format!(
+                    "no credentials are known for database {} as {}",
+                    key.database, key.user
+                ),
+            });
+        };
+
+        let stream = self.upstream.dial(&backend).await?;
+        drive(Wire::new(stream), &backend, || self.upstream.scram()).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<U: Upstream + 'static> Connector for PgConnector<U>
+where
+    U::Stream: 'static,
+{
+    type Connection = Upstreamed<U::Stream>;
+
+    async fn connect(&self, key: &PoolKey) -> Result<Self::Connection, PoolError> {
+        self.open(key).await
+    }
+}
+
+/// Runs the handshake to completion over an open stream.
+///
+/// Split out from [`PgConnector::open`] so the sequence can be tested against
+/// a duplex pair without a dialer in the picture.
+///
+/// # Errors
+///
+/// Fails when the socket does, or when the server refuses.
+pub async fn drive<S>(
+    mut wire: Wire<S>,
+    backend: &Backend,
+    scram: impl FnOnce() -> Box<dyn UpstreamScram>,
+) -> Result<Upstreamed<S>, PoolError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let server = backend.server.clone();
+    let refused = |reason: String| PoolError::ConnectFailed {
+        server: server.clone(),
+        reason,
+    };
+
+    let mut handshake = UpstreamHandshake::new(backend.server.clone());
+    let mut exchange: Option<Box<dyn UpstreamScram>> = None;
+    let mut scram = Some(scram);
+    let mut body = Vec::new();
+    let mut need = handshake.begin();
+
+    loop {
+        match need {
+            Need::Startup => {
+                wire.queue(|out| {
+                    encode_frontend::startup_message(
+                        out,
+                        encode::PROTOCOL_3_0,
+                        &[
+                            ("user", &backend.user),
+                            ("database", &backend.database),
+                            // Named so a DBA reading pg_stat_activity sees
+                            // which process is holding the connection rather
+                            // than a row that looks like the tenant's own app.
+                            ("application_name", "pgprox"),
+                        ],
+                    );
+                });
+                need = Need::Read;
+            }
+            Need::Password => {
+                wire.queue(|out| {
+                    encode_frontend::password_message(out, backend.password.expose());
+                });
+                need = Need::Read;
+            }
+            Need::SaslStart => {
+                let mut fresh = scram
+                    .take()
+                    .map(|make| make())
+                    .ok_or_else(|| refused("the server asked for SASL twice".to_owned()))?;
+                let first = fresh.client_first(&backend.user);
+                wire.queue(|out| {
+                    encode_frontend::sasl_initial_response(out, SCRAM_SHA_256, &first);
+                });
+                exchange = Some(fresh);
+                need = Need::Read;
+            }
+            Need::SaslContinue(server_first) => {
+                let exchange = exchange
+                    .as_mut()
+                    .ok_or_else(|| refused("a SASL challenge arrived first".to_owned()))?;
+                let final_message = exchange
+                    .client_final(&backend.password, &server_first)
+                    .map_err(refused)?;
+                wire.queue(|out| encode_frontend::sasl_response(out, &final_message));
+                need = Need::Read;
+            }
+            Need::SaslVerify(server_final) => {
+                let exchange = exchange
+                    .as_mut()
+                    .ok_or_else(|| refused("a SASL result arrived first".to_owned()))?;
+                // Checked rather than assumed: a server that cannot prove it
+                // knew the password is not the server this connection meant to
+                // reach, whatever answered the socket.
+                exchange.verify(&server_final).map_err(refused)?;
+                need = Need::Read;
+            }
+            Need::Read => {
+                // Flushed here rather than after each queue, so a handshake
+                // step that writes and then reads costs one syscall pair.
+                wire.flush()
+                    .await
+                    .map_err(|err| refused(format!("sending to the server failed: {err}")))?;
+                let tag = wire
+                    .read_tagged(&mut body)
+                    .await
+                    .map_err(|err| refused(format!("reading from the server failed: {err}")))?;
+                need = handshake.on_frame(tag, &body);
+            }
+            Need::Ready => {
+                return Ok(Upstreamed {
+                    wire,
+                    parameters: handshake.parameters().to_vec(),
+                    backend_key: handshake.backend_key(),
+                });
+            }
+            Need::Fail(error) => return Err(error),
+        }
     }
 }
 
@@ -499,5 +733,400 @@ mod tests {
         out.extend_from_slice(&0_i16.to_be_bytes());
 
         assert!(matches!(feed(&mut handshake, &framed(&out)), Need::Fail(_)));
+    }
+
+    use pgprox_core::auth::TlsMode;
+    use pgprox_core::secret::SecretString;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
+
+    fn backend() -> Backend {
+        Backend {
+            server: server(),
+            database: "acme".into(),
+            user: "acme_app".into(),
+            password: SecretString::new("hunter2"),
+            tls: TlsMode::Disabled,
+        }
+    }
+
+    /// A scripted server: writes canned bytes and records what it was sent.
+    ///
+    /// Not a mock. It speaks the real protocol, and every byte the connector
+    /// sends it is decoded by this crate's own frontend decoder in the
+    /// assertions below.
+    struct Scripted {
+        io: DuplexStream,
+    }
+
+    impl Scripted {
+        async fn send(&mut self, build: impl FnOnce(&mut Vec<u8>)) {
+            let mut out = Vec::new();
+            build(&mut out);
+            self.io.write_all(&out).await.unwrap();
+        }
+
+        /// Reads one untagged message body, which is how a startup packet
+        /// arrives.
+        async fn read_startup(&mut self) -> Vec<u8> {
+            let mut len = [0_u8; 4];
+            self.io.read_exact(&mut len).await.unwrap();
+            let total = u32::from_be_bytes(len) as usize;
+            let mut body = vec![0; total - 4];
+            self.io.read_exact(&mut body).await.unwrap();
+            body
+        }
+
+        /// Reads one tagged message, returning its tag and body.
+        async fn read_tagged(&mut self) -> (Tag, Vec<u8>) {
+            let mut header = [0_u8; 5];
+            self.io.read_exact(&mut header).await.unwrap();
+            let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+            let mut body = vec![0; len - 4];
+            self.io.read_exact(&mut body).await.unwrap();
+            (Tag(header[0]), body)
+        }
+    }
+
+    fn duplex_pair() -> (Wire<DuplexStream>, Scripted) {
+        let (ours, theirs) = duplex(4096);
+        (Wire::new(ours), Scripted { io: theirs })
+    }
+
+    /// A SCRAM exchange with no arithmetic in it.
+    #[derive(Debug, Default)]
+    struct FakeScram {
+        verified: bool,
+    }
+
+    impl UpstreamScram for FakeScram {
+        fn client_first(&mut self, user: &str) -> String {
+            format!("n,,n={user},r=CLIENTNONCE")
+        }
+
+        fn client_final(
+            &mut self,
+            password: &SecretString,
+            server_first: &str,
+        ) -> Result<String, String> {
+            if password.expose() != "hunter2" {
+                return Err("the connector sent the wrong password".to_owned());
+            }
+            Ok(format!("c=biws,{server_first},p=UFJPT0Y="))
+        }
+
+        fn verify(&mut self, server_final: &str) -> Result<(), String> {
+            self.verified = true;
+            (server_final == "v=U0lHTg==")
+                .then_some(())
+                .ok_or_else(|| "the server's signature did not match".to_owned())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trust_connection_is_opened_and_its_parameters_come_back() {
+        let (wire, mut server) = duplex_pair();
+        let task = tokio::spawn(async move {
+            drive(wire, &backend(), || Box::new(FakeScram::default())).await
+        });
+
+        let startup = server.read_startup().await;
+        assert!(
+            String::from_utf8_lossy(&startup).contains("acme_app"),
+            "the startup packet did not name the backend user"
+        );
+        assert!(
+            String::from_utf8_lossy(&startup).contains("pgprox"),
+            "the connection did not name itself in pg_stat_activity"
+        );
+
+        server.send(encode::authentication_ok).await;
+        server
+            .send(|out| encode::parameter_status(out, "server_version", "17.2"))
+            .await;
+        server
+            .send(|out| encode::ready_for_query(out, pgprox_proto::backend::TxStatus::Idle))
+            .await;
+
+        let opened = task.await.unwrap().unwrap();
+        assert_eq!(
+            opened.parameters,
+            [("server_version".to_owned(), "17.2".to_owned())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cleartext_password_reaches_the_server() {
+        let (wire, mut server) = duplex_pair();
+        let task = tokio::spawn(async move {
+            drive(wire, &backend(), || Box::new(FakeScram::default())).await
+        });
+
+        server.read_startup().await;
+        server.send(encode::authentication_cleartext_password).await;
+
+        let (tag, body) = server.read_tagged().await;
+        assert_eq!(tag, Tag::PASSWORD);
+        assert_eq!(
+            body, b"hunter2\0",
+            "the password was not sent as a null-terminated string"
+        );
+
+        server.send(encode::authentication_ok).await;
+        server
+            .send(|out| encode::ready_for_query(out, pgprox_proto::backend::TxStatus::Idle))
+            .await;
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_scram_exchange_runs_all_three_messages() {
+        let (wire, mut server) = duplex_pair();
+        let task = tokio::spawn(async move {
+            drive(wire, &backend(), || Box::new(FakeScram::default())).await
+        });
+
+        server.read_startup().await;
+        server
+            .send(|out| encode::authentication_sasl(out, &[SCRAM_SHA_256]))
+            .await;
+
+        let (tag, initial) = server.read_tagged().await;
+        assert_eq!(tag, Tag::PASSWORD);
+        assert!(
+            initial.starts_with(b"SCRAM-SHA-256\0"),
+            "the SASLInitialResponse did not name its mechanism"
+        );
+
+        server
+            .send(|out| encode::authentication_sasl_continue(out, "r=NONCE,s=U0FMVA==,i=4096"))
+            .await;
+        let (_, final_message) = server.read_tagged().await;
+        assert!(
+            String::from_utf8_lossy(&final_message).contains("p=UFJPT0Y="),
+            "the client-final message carried no proof"
+        );
+
+        server
+            .send(|out| encode::authentication_sasl_final(out, "v=U0lHTg=="))
+            .await;
+        server.send(encode::authentication_ok).await;
+        server
+            .send(|out| encode::ready_for_query(out, pgprox_proto::backend::TxStatus::Idle))
+            .await;
+
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_server_whose_signature_does_not_match_is_refused() {
+        // The half of SCRAM that exists to authenticate the server. Skipping
+        // it means connecting to whatever answered the socket.
+        let (wire, mut server) = duplex_pair();
+        let task = tokio::spawn(async move {
+            drive(wire, &backend(), || Box::new(FakeScram::default())).await
+        });
+
+        server.read_startup().await;
+        server
+            .send(|out| encode::authentication_sasl(out, &[SCRAM_SHA_256]))
+            .await;
+        server.read_tagged().await;
+        server
+            .send(|out| encode::authentication_sasl_continue(out, "r=NONCE,s=U0FMVA==,i=4096"))
+            .await;
+        server.read_tagged().await;
+        server
+            .send(|out| encode::authentication_sasl_final(out, "v=V1JPTkc="))
+            .await;
+
+        let Err(PoolError::ConnectFailed { reason, .. }) = task.await.unwrap() else {
+            panic!("a server that proved nothing was accepted");
+        };
+        assert!(reason.contains("signature"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_from_the_server_carries_its_own_words() {
+        let (wire, mut server) = duplex_pair();
+        let task = tokio::spawn(async move {
+            drive(wire, &backend(), || Box::new(FakeScram::default())).await
+        });
+
+        server.read_startup().await;
+        server
+            .send(|out| {
+                out.push(Tag::ERROR_RESPONSE.get());
+                let body = b"SFATAL\0C28P01\0Mpassword authentication failed\0\0";
+                out.extend_from_slice(&u32::try_from(body.len() + 4).unwrap().to_be_bytes());
+                out.extend_from_slice(body);
+            })
+            .await;
+
+        let Err(PoolError::ConnectFailed { reason, .. }) = task.await.unwrap() else {
+            panic!("a refused connection was reported as open");
+        };
+        assert!(reason.contains("28P01"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn a_server_that_hangs_up_mid_handshake_is_reported() {
+        let (wire, server) = duplex_pair();
+        drop(server);
+
+        assert!(matches!(
+            drive(wire, &backend(), || Box::new(FakeScram::default())).await,
+            Err(PoolError::ConnectFailed { .. })
+        ));
+    }
+
+    /// A dialer that hands out one end of a duplex pair.
+    #[derive(Debug)]
+    struct Duplexer {
+        server: Mutex<Option<DuplexStream>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Upstream for Duplexer {
+        type Stream = DuplexStream;
+
+        async fn dial(&self, _backend: &Backend) -> Result<Self::Stream, PoolError> {
+            let (ours, theirs) = duplex(4096);
+            *self.server.lock().unwrap() = Some(theirs);
+            Ok(ours)
+        }
+
+        fn scram(&self) -> Box<dyn UpstreamScram> {
+            Box::new(FakeScram::default())
+        }
+    }
+
+    /// A dialer that never connects.
+    #[derive(Debug)]
+    struct Unreachable;
+
+    #[async_trait::async_trait]
+    impl Upstream for Unreachable {
+        type Stream = DuplexStream;
+
+        async fn dial(&self, backend: &Backend) -> Result<Self::Stream, PoolError> {
+            Err(PoolError::ConnectFailed {
+                server: backend.server.clone(),
+                reason: "connection refused".to_owned(),
+            })
+        }
+
+        fn scram(&self) -> Box<dyn UpstreamScram> {
+            Box::new(FakeScram::default())
+        }
+    }
+
+    /// What any Connector must do, whatever it is connecting to.
+    ///
+    /// Run against the real one and against a fake, so a behaviour the fake
+    /// invents shows up as the two disagreeing rather than as a surprise at
+    /// integration time.
+    async fn a_connector_refuses_a_key_it_knows_nothing_about<C: Connector>(connector: &C) {
+        let unknown = PoolKey::new(ServerId::new("db-9", 5432), "nope", "nobody");
+        let Err(PoolError::ConnectFailed { server, .. }) = connector.connect(&unknown).await else {
+            panic!("a connector opened a connection to a database it knows nothing about");
+        };
+        assert_eq!(server, ServerId::new("db-9", 5432));
+    }
+
+    /// A fake connector, of the shape pgprox-pool's own tests use.
+    #[derive(Debug)]
+    struct FakeConnector;
+
+    #[async_trait::async_trait]
+    impl Connector for FakeConnector {
+        type Connection = u32;
+
+        async fn connect(&self, key: &PoolKey) -> Result<u32, PoolError> {
+            Err(PoolError::ConnectFailed {
+                server: key.server.clone(),
+                reason: "the fake knows no backends".to_owned(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn the_fake_and_the_real_connector_agree_about_an_unknown_key() {
+        a_connector_refuses_a_key_it_knows_nothing_about(&FakeConnector).await;
+        a_connector_refuses_a_key_it_knows_nothing_about(&PgConnector::new(Unreachable)).await;
+    }
+
+    #[tokio::test]
+    async fn a_dial_failure_reaches_the_caller_unchanged() {
+        let connector = PgConnector::new(Unreachable);
+        connector.learn(&backend());
+
+        let Err(PoolError::ConnectFailed { reason, .. }) =
+            connector.connect(&backend().pool_key()).await
+        else {
+            panic!("an unreachable server was reported as connected");
+        };
+        assert_eq!(reason, "connection refused");
+    }
+
+    #[tokio::test]
+    async fn a_learned_backend_is_opened_through_the_dialer() {
+        let connector = std::sync::Arc::new(PgConnector::new(Duplexer {
+            server: Mutex::new(None),
+        }));
+        connector.learn(&backend());
+        assert_eq!(connector.known(), 1);
+
+        let opening = {
+            let connector = std::sync::Arc::clone(&connector);
+            let key = backend().pool_key();
+            tokio::spawn(async move { connector.connect(&key).await })
+        };
+
+        // Wait for the dialer to have produced its end of the pair.
+        let mut server = loop {
+            if let Some(io) = connector.upstream.server.lock().unwrap().take() {
+                break Scripted { io };
+            }
+            tokio::task::yield_now().await;
+        };
+
+        server.read_startup().await;
+        server.send(encode::authentication_ok).await;
+        server
+            .send(|out| encode::ready_for_query(out, pgprox_proto::backend::TxStatus::Idle))
+            .await;
+
+        opening.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn a_relearned_backend_replaces_the_old_one() {
+        // A tenant's password can be rotated, and the newest grant is the one
+        // to believe. Keeping the first would keep authenticating with a
+        // password that has been withdrawn.
+        let connector = PgConnector::new(Unreachable);
+        connector.learn(&backend());
+
+        let mut rotated = backend();
+        rotated.password = SecretString::new("hunter3");
+        connector.learn(&rotated);
+
+        assert_eq!(connector.known(), 1);
+    }
+
+    #[test]
+    fn an_open_connection_prints_neither_its_socket_nor_its_cancel_key() {
+        // The key is a bearer token for cancelling somebody's query, and this
+        // type will end up in a log line eventually.
+        let rendered = format!(
+            "{:?}",
+            Upstreamed::<DuplexStream> {
+                wire: Wire::new(duplex(8).0),
+                parameters: vec![("server_version".to_owned(), "17.2".to_owned())],
+                backend_key: Some((4242, 0x0bad_beef)),
+            }
+        );
+        assert!(!rendered.contains("4242"), "{rendered}");
+        assert!(!rendered.contains("beef"), "{rendered}");
     }
 }
