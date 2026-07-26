@@ -898,7 +898,7 @@ rule already allows `pgprox-proto`.
   Refusing the connection is the third, and the trait cannot express it.
   Acceptance: a failing entropy source refuses the connection with an error
   naming the cause, and no cancel key is ever issued from a fallback.
-- [ ] `M6.31` The gossip transport, part two: quota requests to the leader.
+- [x] `M6.31` The gossip transport, part two: quota requests to the leader.
   `M6.16` built the forwarding rule behind `QuotaTransport` and the composition
   root never implemented it, so every node falls back to its guaranteed share
   and the free pool is unusable. Acceptance: a non-leader obtains a lease over
@@ -908,6 +908,12 @@ rule already allows `pgprox-proto`.
   a cancel that lands on the wrong node does nothing. Acceptance: a cancel for
   a connection another node owns reaches that node, and an unknown key is
   refused rather than ignored.
+- [ ] `M6.33` `pgprox-core` warns on an unused import in the default build.
+  `admin.rs` imports `NodeMode` for the fake, which is behind `test-fakes`, so
+  a plain `cargo check -p pgprox-core` warns. Nothing caught it because
+  `check-crate.sh` runs clippy with `--all-features`, where the import is used.
+  Acceptance: the default build is warning-free, and the check that missed it
+  covers the default feature set too.
 - [ ] `M6.28` Poll the replicas a grant names, and route from that. Found
   wiring the run loop: `M5.18` built `ReplicaWatch`, `M6.14` built
   `SqlReplicaProbe`, and the session path builds a fresh empty `Replicas` per

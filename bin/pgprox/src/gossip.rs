@@ -44,7 +44,7 @@ use std::time::Duration;
 
 use pgprox_cluster::digest::VersionedDigest;
 use pgprox_cluster::service::GossipCoordinator;
-use pgprox_core::cluster::{ClusterDigest, NodeMode};
+use pgprox_core::cluster::{ClusterDigest, NodeMode, QuotaError, QuotaLease};
 use pgprox_core::ids::{NodeId, ServerId, TenantId};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -63,6 +63,48 @@ pub const MAX_INCOMING: u64 = 1024 * 1024;
 /// to gossip, and both mean the same thing to the failure detector. Waiting
 /// longer would let one unreachable node slow the whole round.
 pub const PEER_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// One message on the gossip socket.
+///
+/// Tagged, so a message a node has not been taught about is recognisable as
+/// one rather than as a malformed digest. That matters during a rolling
+/// upgrade, which is the only time it happens.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Message {
+    /// What a node is, for its peers to merge.
+    Digest(DigestWire),
+    /// A node asking the leader for a lease it cannot grant itself.
+    QuotaRequest {
+        /// Which upstream server, as `host:port`.
+        server: String,
+        /// Which node will hold the lease. Not necessarily the sender, though
+        /// today it always is.
+        holder: u16,
+        /// How many connections it wants.
+        want: u32,
+    },
+    /// The leader granting one.
+    ///
+    /// The lifetime travels as a duration rather than as an instant, because
+    /// two nodes share no clock and an `Instant` means nothing off the machine
+    /// that made it.
+    QuotaGrant {
+        /// Which server.
+        server: String,
+        /// How many connections.
+        count: u32,
+        /// How long it lasts, from the moment the leader granted it.
+        ttl_ms: u64,
+    },
+    /// The leader refusing.
+    QuotaRefused {
+        /// `exhausted` or `no_leader`, which the asker treats differently: the
+        /// first means wait, the second means this node was wrong about who
+        /// the leader is.
+        reason: String,
+    },
+}
 
 /// One node's digest, as it travels.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -181,23 +223,75 @@ where
     let mut lines = BufReader::new(read.take(MAX_INCOMING)).lines();
 
     while let Some(line) = lines.next_line().await? {
-        // A line that does not parse is dropped rather than closing the
-        // connection: gossip from a node running a newer build is expected
-        // during a rolling upgrade, and refusing to talk to it at all would
-        // partition the fleet along version lines.
-        if let Ok(wire) = serde_json::from_str::<DigestWire>(&line)
-            && let Some(incoming) = wire.parse()
-        {
-            coordinator.gossip(incoming);
-        }
+        // A line that does not parse is answered with this node's digest
+        // rather than closing the connection: gossip from a node running a
+        // newer build is expected during a rolling upgrade, and refusing to
+        // talk to it at all would partition the fleet along version lines.
+        let reply = match serde_json::from_str::<Message>(&line) {
+            Ok(Message::QuotaRequest {
+                server,
+                holder,
+                want,
+            }) => grant(coordinator, &server, holder, want),
+            Ok(Message::Digest(wire)) => {
+                if let Some(incoming) = wire.parse() {
+                    coordinator.gossip(incoming);
+                }
+                Message::Digest(DigestWire::from(&coordinator.outgoing()))
+            }
+            // A grant or a refusal arriving unasked for, or something this
+            // build does not know. Answered with what this node is, which is
+            // the only useful thing it has to say.
+            _ => Message::Digest(DigestWire::from(&coordinator.outgoing())),
+        };
 
-        let mut reply = serde_json::to_vec(&DigestWire::from(&coordinator.outgoing()))
-            .unwrap_or_else(|_| Vec::new());
-        reply.push(b'\n');
-        write.write_all(&reply).await?;
+        write.write_all(&encode(&reply)).await?;
         write.flush().await?;
     }
     Ok(())
+}
+
+/// Answers a quota request from the local ledger.
+///
+/// Only the leader has a free pool to grant from, and `serve_request` is what
+/// knows whether this node is it. Nothing here decides: a transport that
+/// second-guessed the ledger would be a second place the cap is enforced.
+fn grant(coordinator: &GossipCoordinator, server: &str, holder: u16, want: u32) -> Message {
+    let Some(server) = ServerId::parse(server) else {
+        return Message::QuotaRefused {
+            reason: "exhausted".to_owned(),
+        };
+    };
+
+    match coordinator.serve_request(&server, NodeId::new(holder), want) {
+        Ok(lease) => Message::QuotaGrant {
+            server: lease.server().to_string(),
+            count: lease.nominal_count(),
+            ttl_ms: u64::try_from(
+                lease
+                    .expires_at()
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_millis(),
+            )
+            .unwrap_or(u64::MAX),
+        },
+        Err(QuotaError::NoLeader) => Message::QuotaRefused {
+            reason: "no_leader".to_owned(),
+        },
+        Err(_) => Message::QuotaRefused {
+            reason: "exhausted".to_owned(),
+        },
+    }
+}
+
+/// One message, as a line.
+fn encode(message: &Message) -> Vec<u8> {
+    // Serialising these types cannot fail: every field is a string or a
+    // number. An empty line rather than a panic if that ever stops being true,
+    // because the peer treats an unreadable line as one it does not understand.
+    let mut out = serde_json::to_vec(message).unwrap_or_default();
+    out.push(b'\n');
+    out
 }
 
 /// One gossip round against every peer.
@@ -247,20 +341,139 @@ where
 {
     let (read, mut write) = tokio::io::split(stream);
 
-    let mut message = serde_json::to_vec(&DigestWire::from(&coordinator.outgoing()))
-        .unwrap_or_else(|_| Vec::new());
-    message.push(b'\n');
-    write.write_all(&message).await?;
+    let outgoing = Message::Digest(DigestWire::from(&coordinator.outgoing()));
+    write.write_all(&encode(&outgoing)).await?;
     write.flush().await?;
 
     let mut lines = BufReader::new(read.take(MAX_INCOMING)).lines();
     if let Some(line) = lines.next_line().await?
-        && let Ok(wire) = serde_json::from_str::<DigestWire>(&line)
+        && let Ok(Message::Digest(wire)) = serde_json::from_str::<Message>(&line)
         && let Some(incoming) = wire.parse()
     {
         coordinator.gossip(incoming);
     }
     Ok(())
+}
+
+/// Asks one peer for a lease, over its own connection.
+///
+/// # Errors
+///
+/// [`QuotaError::NoLeader`] when the peer cannot be reached or does not answer
+/// in time, which is the same answer the caller gets when there is no leader
+/// at all: both mean falling back to the guaranteed share, and the guaranteed
+/// share cannot breach the cap.
+pub async fn ask(
+    peer: SocketAddr,
+    server: &ServerId,
+    holder: NodeId,
+    want: u32,
+) -> Result<QuotaLease, QuotaError> {
+    let asked = tokio::time::timeout(PEER_TIMEOUT, ask_over(peer, server, holder, want))
+        .await
+        .map_err(|_| QuotaError::NoLeader)?;
+    asked.unwrap_or(Err(QuotaError::NoLeader))
+}
+
+/// The request itself, split out so a test can drive it over a duplex.
+async fn ask_over(
+    peer: SocketAddr,
+    server: &ServerId,
+    holder: NodeId,
+    want: u32,
+) -> Option<Result<QuotaLease, QuotaError>> {
+    let stream = tokio::net::TcpStream::connect(peer).await.ok()?;
+    request_over(stream, server, holder, want).await
+}
+
+/// Sends a quota request on an open stream and reads the answer.
+async fn request_over<S>(
+    stream: S,
+    server: &ServerId,
+    holder: NodeId,
+    want: u32,
+) -> Option<Result<QuotaLease, QuotaError>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (read, mut write) = tokio::io::split(stream);
+    let request = Message::QuotaRequest {
+        server: server.to_string(),
+        holder: holder.get(),
+        want,
+    };
+
+    // Timed across the round trip, because the lease's lifetime starts when the
+    // leader granted it and this node only learns of it afterwards. Counting
+    // from arrival would hold the lease for the transit time past its expiry,
+    // and over-holding is the one direction the cap has no tolerance for.
+    let sent = std::time::Instant::now();
+    write.write_all(&encode(&request)).await.ok()?;
+    write.flush().await.ok()?;
+
+    let mut lines = BufReader::new(read.take(MAX_INCOMING)).lines();
+    let line = lines.next_line().await.ok()??;
+    let elapsed = sent.elapsed();
+
+    match serde_json::from_str::<Message>(&line).ok()? {
+        Message::QuotaGrant {
+            server,
+            count,
+            ttl_ms,
+        } => {
+            let granted = ServerId::parse(&server)?;
+            let ttl = Duration::from_millis(ttl_ms).saturating_sub(elapsed);
+            Some(Ok(QuotaLease::new(
+                granted,
+                count,
+                std::time::Instant::now() + ttl,
+            )))
+        }
+        Message::QuotaRefused { reason } if reason == "exhausted" => {
+            Some(Err(QuotaError::Exhausted {
+                server: server.clone(),
+            }))
+        }
+        _ => Some(Err(QuotaError::NoLeader)),
+    }
+}
+
+/// The `QuotaTransport` the composition root fills in.
+///
+/// Holds the peer table and nothing else. Every rule about whether a lease may
+/// be granted lives in `pgprox-cluster`, on the node that answers.
+#[derive(Debug)]
+pub struct GossipTransport {
+    peers: std::collections::BTreeMap<NodeId, SocketAddr>,
+}
+
+impl GossipTransport {
+    /// A transport over a known peer table.
+    #[must_use]
+    pub fn new(peers: std::collections::BTreeMap<NodeId, SocketAddr>) -> Self {
+        Self { peers }
+    }
+}
+
+#[async_trait::async_trait]
+impl pgprox_cluster::service::QuotaTransport for GossipTransport {
+    async fn request(
+        &self,
+        leader: NodeId,
+        server: &ServerId,
+        holder: NodeId,
+        want: u32,
+    ) -> Result<QuotaLease, QuotaError> {
+        // A leader this node has no address for is the same as no leader: it
+        // falls back to its guaranteed share, which needs no coordination and
+        // cannot breach the cap.
+        let peer = self
+            .peers
+            .get(&leader)
+            .copied()
+            .ok_or(QuotaError::NoLeader)?;
+        ask(peer, server, holder, want).await
+    }
 }
 
 #[cfg(test)]
@@ -286,11 +499,11 @@ mod tests {
         source.set_mode(NodeMode::Draining);
 
         let outgoing = source.outgoing();
-        let encoded = serde_json::to_string(&DigestWire::from(&outgoing)).unwrap();
-        let decoded = serde_json::from_str::<DigestWire>(&encoded)
-            .unwrap()
-            .parse()
-            .unwrap();
+        let encoded = serde_json::to_string(&Message::Digest(DigestWire::from(&outgoing))).unwrap();
+        let Ok(Message::Digest(wire)) = serde_json::from_str::<Message>(&encoded) else {
+            panic!("a digest did not decode as one");
+        };
+        let decoded = wire.parse().unwrap();
 
         assert_eq!(decoded, outgoing);
     }
@@ -431,6 +644,121 @@ mod tests {
         serving.await.unwrap().unwrap();
     }
 
+    /// A coordinator that is the leader and has served its takeover wait.
+    ///
+    /// Built the way the real one gets there, by gossiping every second while
+    /// the wait elapses: advancing the clock in one jump costs the node its
+    /// quorum, which is correct behaviour and the wrong setup.
+    fn leading() -> (Arc<GossipCoordinator>, FakeClock) {
+        use pgprox_cluster::digest::VersionedDigest;
+
+        let clock = FakeClock::new();
+        let coordinator = GossipCoordinator::new(
+            NodeId::new(1),
+            CoordinatorConfig {
+                fleet_size: 3,
+                ..CoordinatorConfig::default()
+            },
+            Arc::new(clock.clone()),
+        );
+        coordinator.set_cap(ServerId::new("db-1", 5432), 100);
+
+        for round in 1..=12 {
+            for node in 1..=3 {
+                coordinator.gossip(VersionedDigest {
+                    digest: ClusterDigest {
+                        node: NodeId::new(node),
+                        ..ClusterDigest::default()
+                    },
+                    version: round,
+                });
+            }
+            clock.advance(Duration::from_secs(1));
+        }
+        coordinator.tick();
+        (coordinator, clock)
+    }
+
+    #[tokio::test]
+    async fn a_non_leader_obtains_a_lease_through_the_leader() {
+        // M6.16 built the rule and left the socket to the composition root,
+        // which never wrote one. Until this, every node fell back to its
+        // guaranteed share and the free pool was unreachable.
+        let (leader, _clock) = leading();
+        let server = ServerId::new("db-1", 5432);
+
+        let (theirs, ours) = tokio::io::duplex(64 * 1024);
+        let serving = tokio::spawn({
+            let leader = Arc::clone(&leader);
+            async move { answer(theirs, &leader).await }
+        });
+
+        let lease = request_over(ours, &server, NodeId::new(2), 3)
+            .await
+            .expect("the leader said nothing")
+            .expect("the leader refused a request it had room for");
+
+        assert_eq!(lease.server(), &server);
+        assert_eq!(lease.nominal_count(), 3);
+        assert!(
+            !lease.is_expired(std::time::Instant::now()),
+            "the lease arrived already expired"
+        );
+        drop(serving);
+    }
+
+    #[tokio::test]
+    async fn a_node_that_is_not_the_leader_refuses_rather_than_granting() {
+        // Two nodes granting from one free pool is the one failure the quota
+        // layer has no graceful degradation for.
+        let follower = coordinator(2);
+        follower.set_cap(ServerId::new("db-1", 5432), 100);
+
+        let (theirs, ours) = tokio::io::duplex(64 * 1024);
+        let serving = tokio::spawn({
+            let follower = Arc::clone(&follower);
+            async move { answer(theirs, &follower).await }
+        });
+
+        let answered = request_over(ours, &ServerId::new("db-1", 5432), NodeId::new(3), 3)
+            .await
+            .expect("nothing came back");
+
+        assert_eq!(answered, Err(QuotaError::NoLeader));
+        drop(serving);
+    }
+
+    #[tokio::test]
+    async fn a_leader_with_no_address_is_the_same_as_no_leader() {
+        // The safe direction: the asker falls back to its guaranteed share,
+        // which needs no coordination and cannot breach the cap.
+        use pgprox_cluster::service::QuotaTransport as _;
+
+        let transport = GossipTransport::new(std::collections::BTreeMap::new());
+        let refused = transport
+            .request(
+                NodeId::new(9),
+                &ServerId::new("db-1", 5432),
+                NodeId::new(2),
+                1,
+            )
+            .await;
+
+        assert_eq!(refused, Err(QuotaError::NoLeader));
+    }
+
+    #[tokio::test]
+    async fn a_leader_that_does_not_answer_is_the_same_as_no_leader() {
+        // A node blocked on an unreachable leader would hold its clients
+        // waiting for a connection it could have opened from its own share.
+        let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = dead.local_addr().unwrap();
+        drop(dead);
+
+        let refused = ask(addr, &ServerId::new("db-1", 5432), NodeId::new(2), 1).await;
+        assert_eq!(refused, Err(QuotaError::NoLeader));
+    }
+
     #[tokio::test]
     async fn a_message_that_is_not_a_digest_does_not_end_the_conversation() {
         // A rolling upgrade means talking to a node running a different build.
@@ -456,7 +784,10 @@ mod tests {
             .unwrap();
 
         assert!(
-            answered.is_some_and(|line| serde_json::from_str::<DigestWire>(&line).is_ok()),
+            answered.is_some_and(|line| matches!(
+                serde_json::from_str::<Message>(&line),
+                Ok(Message::Digest(_))
+            )),
             "a node that sent something unrecognised got no digest back"
         );
         drop(serving);

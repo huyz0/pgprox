@@ -188,7 +188,7 @@ pub fn probes(app: &App) -> Arc<Probes> {
 /// Fails when a listening socket does, which means there is nothing left to
 /// serve. A failure serving one client is that client's and never reaches here.
 pub async fn run(app: App, listeners: Listeners, shutdown: Shutdown) -> std::io::Result<()> {
-    run_with_peers(app, listeners, Vec::new(), shutdown).await
+    run_with_peers(app, listeners, std::collections::BTreeMap::new(), shutdown).await
 }
 
 /// Runs the node, gossiping to `peers`, until the signal fires.
@@ -199,9 +199,15 @@ pub async fn run(app: App, listeners: Listeners, shutdown: Shutdown) -> std::io:
 pub async fn run_with_peers(
     app: App,
     listeners: Listeners,
-    peers: Vec<SocketAddr>,
+    peers: std::collections::BTreeMap<pgprox_core::ids::NodeId, SocketAddr>,
     shutdown: Shutdown,
 ) -> std::io::Result<()> {
+    // Set here rather than at build time: the peer table is a deployment fact
+    // and `App::build` opens no sockets. A node with no peers keeps the
+    // fallback it had, which is its guaranteed share.
+    app.cluster
+        .set_transport(Arc::new(crate::gossip::GossipTransport::new(peers.clone())));
+    let addresses: Vec<SocketAddr> = peers.values().copied().collect();
     let ceiling = app.config.max_client_conns;
     let gate = Arc::new(Gate::new(ceiling));
     let context = Arc::new(context(&app));
@@ -242,7 +248,7 @@ pub async fn run_with_peers(
         }
     });
 
-    let _ticks = ticker(&app, &probes, &peers, &shutdown).await;
+    let _ticks = ticker(&app, &probes, &addresses, &shutdown).await;
 
     // Both were told to stop by the same signal, so this is waiting rather than
     // stopping. A task that panicked is reported as an error rather than
@@ -445,13 +451,13 @@ mod tests {
         let running = tokio::spawn(run_with_peers(
             first,
             one,
-            vec![two_at.gossip],
+            std::collections::BTreeMap::from([(NodeId::new(2), two_at.gossip)]),
             shutdown.clone(),
         ));
         let peer = tokio::spawn(run_with_peers(
             second,
             two,
-            vec![one_at.gossip],
+            std::collections::BTreeMap::from([(NodeId::new(1), one_at.gossip)]),
             shutdown.clone(),
         ));
 

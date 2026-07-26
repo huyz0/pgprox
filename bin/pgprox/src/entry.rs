@@ -63,12 +63,14 @@ pub struct Options {
     pub admin: SocketAddr,
     /// Where peers gossip.
     pub gossip: SocketAddr,
-    /// The peers this node gossips to.
+    /// The peers this node gossips to, by node number.
     ///
-    /// Addresses rather than names, and given rather than discovered: a node
-    /// that discovered its own fleet would decide the fleet size, and the
-    /// guaranteed share is divided by the configured size on purpose.
-    pub peers: Vec<SocketAddr>,
+    /// Given rather than discovered: a node that discovered its own fleet
+    /// would be deciding the fleet size, and the guaranteed share is divided
+    /// by the configured size on purpose. Keyed by node number because a quota
+    /// request has to reach one specific node, the leader, rather than
+    /// whichever peer answers first.
+    pub peers: std::collections::BTreeMap<NodeId, SocketAddr>,
 }
 
 impl Default for Options {
@@ -84,7 +86,7 @@ impl Default for Options {
             listen: SocketAddr::from(([0, 0, 0, 0], 6432)),
             admin: SocketAddr::from(([0, 0, 0, 0], 9090)),
             gossip: SocketAddr::from(([0, 0, 0, 0], 6433)),
-            peers: Vec::new(),
+            peers: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -127,10 +129,13 @@ impl Options {
                 "--listen" => options.listen = address(&value()?, "--listen")?,
                 "--admin" => options.admin = address(&value()?, "--admin")?,
                 "--gossip" => options.gossip = address(&value()?, "--gossip")?,
-                // Repeatable: one flag per peer, so a fleet of three is three
-                // flags rather than a comma-separated string with its own
-                // parsing rules.
-                "--peer" => options.peers.push(address(&value()?, "--peer")?),
+                // Repeatable, one flag per peer, and each carries the peer's
+                // node number: `--peer 2=10.0.0.2:6433`. The number is what
+                // lets a quota request reach the leader specifically.
+                "--peer" => {
+                    let (node, addr) = peer(&value()?)?;
+                    options.peers.insert(node, addr);
+                }
                 "--node" => {
                     let raw = value()?;
                     options.node =
@@ -158,6 +163,17 @@ impl Options {
             gossip: self.gossip,
         }
     }
+}
+
+/// Parses a `node=host:port` peer.
+fn peer(raw: &str) -> Result<(NodeId, SocketAddr), StartupError> {
+    let (node, addr) = raw.split_once('=').ok_or_else(|| StartupError::Arguments {
+        detail: format!("--peer must be node=host:port, got {raw}"),
+    })?;
+    let node = node.parse().map_err(|_| StartupError::Arguments {
+        detail: format!("--peer node must be a number, got {node}"),
+    })?;
+    Ok((NodeId::new(node), address(addr, "--peer")?))
 }
 
 /// Parses a listen address, naming the flag that carried it.
@@ -361,10 +377,19 @@ mod tests {
         // One flag per peer. A second --peer overwriting the first would leave
         // a three-node fleet gossiping to one node and never converging.
         let options =
-            Options::parse(["--peer", "10.0.0.2:6433", "--peer", "10.0.0.3:6433"]).unwrap();
+            Options::parse(["--peer", "2=10.0.0.2:6433", "--peer", "3=10.0.0.3:6433"]).unwrap();
 
         assert_eq!(options.peers.len(), 2);
-        assert_eq!(options.peers[0].port(), 6433);
+        assert_eq!(options.peers[&NodeId::new(2)].port(), 6433);
+    }
+
+    #[test]
+    fn a_peer_without_its_node_number_stops_the_start() {
+        // The number is what a quota request is addressed by. A peer table
+        // that guessed would send a request to the wrong node, and the wrong
+        // node would answer NoLeader forever.
+        let err = Options::parse(["--peer", "10.0.0.2:6433"]).unwrap_err();
+        assert!(err.to_string().contains("node=host:port"), "{err}");
     }
 
     #[test]
