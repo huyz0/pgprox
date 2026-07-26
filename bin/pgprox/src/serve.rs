@@ -282,6 +282,18 @@ where
         upstream.wire.flush().await?;
 
         if pump(wire, upstream, &mut relay, context, conn).await? {
+            // Before the connection goes back, and only when the transaction
+            // wrote: the position has to come from the primary, and this is
+            // the last moment a connection to it is held. A failure leaves the
+            // watermark where it was, so the session keeps reading from the
+            // primary rather than from a replica that may not have the write.
+            if relay.wrote()
+                && let Some((_, upstream)) = held.as_mut()
+                && let Ok(lsn) = pgprox_session::probe::primary_lsn(&mut upstream.wire).await
+            {
+                relay.record_write(lsn);
+            }
+
             let (mut guard, upstream) = held.take().ok_or(ShellError::Disconnected)?;
             context
                 .pool
@@ -640,8 +652,19 @@ mod tests {
                         // replica answers it: a replay position and t for
                         // pg_is_in_recovery. Every other query gets the canned
                         // completion below.
-                        if String::from_utf8_lossy(&body).contains("pg_last_wal_replay_lsn") {
-                            out.extend_from_slice(&replica_row());
+                        let sql = String::from_utf8_lossy(&body).into_owned();
+                        if sql.contains("pg_last_wal_replay_lsn") {
+                            out.extend_from_slice(&text_row(&[Some(REPLICA_REPLAYED), Some("t")]));
+                            encode::ready_for_query(&mut out, TxStatus::Idle);
+                            if socket.write_all(&out).await.is_err() {
+                                return;
+                            }
+                            continue;
+                        }
+                        // The position the proxy asks for after a write, ahead
+                        // of anything the replica reports having replayed.
+                        if sql.contains("pg_current_wal_insert_lsn") {
+                            out.extend_from_slice(&text_row(&[Some(PRIMARY_WRITTEN)]));
                             encode::ready_for_query(&mut out, TxStatus::Idle);
                             if socket.write_all(&out).await.is_err() {
                                 return;
@@ -666,12 +689,17 @@ mod tests {
         addr
     }
 
-    /// One `DataRow` carrying what a healthy replica reports.
-    fn replica_row() -> Vec<u8> {
-        let values: [Option<&str>; 2] = [Some("16/B374D848"), Some("t")];
+    /// How far the fake replica says it has replayed.
+    const REPLICA_REPLAYED: &str = "16/B374D848";
+
+    /// Where the fake primary says the last write landed, which is ahead of it.
+    const PRIMARY_WRITTEN: &str = "16/C0000000";
+
+    /// One `DataRow` carrying text values.
+    fn text_row(values: &[Option<&str>]) -> Vec<u8> {
         let mut body = i16::try_from(values.len()).unwrap().to_be_bytes().to_vec();
         for value in values {
-            match value {
+            match *value {
                 None => body.extend_from_slice(&(-1_i32).to_be_bytes()),
                 Some(text) => {
                     body.extend_from_slice(&i32::try_from(text.len()).unwrap().to_be_bytes());
@@ -823,18 +851,12 @@ mod tests {
         assert_eq!(context.sessions.transactions(), 1);
     }
 
-    #[tokio::test]
-    async fn a_read_lands_on_a_replica_once_one_has_been_polled() {
-        // M5 built the routing rule, M5.18 built the poller and M6.14 built
-        // the prober, and the session path used none of them: it made a fresh
-        // empty `Replicas` per session, so every replica was permanently
-        // ineligible and every read went to the primary.
-        let primary = fake_postgres().await;
-        let replica = fake_postgres().await;
-
+    /// A context whose grant names one replica, both fakes on real sockets.
+    ///
+    /// A real clock, because the poller's freshness window is measured on one
+    /// and a fake clock would leave every reading eternally new.
+    fn with_a_replica(primary: SocketAddr, replica: SocketAddr) -> Context {
         let mut context = context_for(primary);
-        // A real clock, because the poller's freshness window is measured on
-        // it and a fake one would leave every reading eternally new.
         let clock: Arc<dyn Clock> = Arc::new(pgprox_core::clock::SystemClock);
         context.clock = Arc::clone(&clock);
         context.replicas = Arc::new(crate::replicas::ReplicaSets::new(
@@ -844,13 +866,81 @@ mod tests {
             clock,
             crate::run::Shutdown::new(),
         ));
+
         let mut grant = grant_for(primary);
         grant.replicas = vec![Backend {
             server: ServerId::new("127.0.0.1", replica.port()),
             ..grant_for(replica).primary
         }];
         context.resolver = Arc::new(FakeCredentialResolver::new().with_grant("good.token", grant));
-        let context = Arc::new(context);
+        context
+    }
+
+    /// How many connections a pool holds for a server.
+    fn held_for(context: &Context, addr: SocketAddr) -> u32 {
+        let key = PoolKey::new(ServerId::new("127.0.0.1", addr.port()), "acme", "acme_app");
+        let stats = pgprox_core::pool::UpstreamPool::stats(context.pool.as_ref(), &key);
+        stats.active + stats.idle
+    }
+
+    #[tokio::test]
+    async fn a_session_that_wrote_does_not_read_from_a_replica_behind_its_write() {
+        // Read-your-writes. The replica reports a position behind where the
+        // primary says the write landed, so it is ineligible to this session
+        // and eligible to everyone else.
+        let primary = fake_postgres().await;
+        let replica = fake_postgres().await;
+        let context = Arc::new(with_a_replica(primary, replica));
+
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        // Long enough for the poll loop, which the first statement starts, to
+        // have made the replica eligible.
+        let mut write = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut write, "INSERT INTO t VALUES (1)");
+        client.write_all(&write).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        let mut read = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut read, "SELECT 1");
+        client.write_all(&read).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        assert_eq!(
+            held_for(&context, replica),
+            0,
+            "a session read from a replica that had not replayed its own write"
+        );
+        assert!(held_for(&context, primary) > 0);
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_read_lands_on_a_replica_once_one_has_been_polled() {
+        // M5 built the routing rule, M5.18 built the poller and M6.14 built
+        // the prober, and the session path used none of them: it made a fresh
+        // empty `Replicas` per session, so every replica was permanently
+        // ineligible and every read went to the primary.
+        let primary = fake_postgres().await;
+        let replica = fake_postgres().await;
+        let context = Arc::new(with_a_replica(primary, replica));
 
         let gate = Arc::new(Gate::new(10));
         let admitted = gate.admit().unwrap();
@@ -880,15 +970,9 @@ mod tests {
         expect(&mut client).await;
         expect(&mut client).await;
 
-        let replica_key = PoolKey::new(
-            ServerId::new("127.0.0.1", replica.port()),
-            "acme",
-            "acme_app",
-        );
-        let stats = pgprox_core::pool::UpstreamPool::stats(context.pool.as_ref(), &replica_key);
         assert!(
-            stats.active + stats.idle > 0,
-            "a read-only statement never reached the replica: {stats:?}"
+            held_for(&context, replica) > 0,
+            "a read-only statement never reached the replica"
         );
 
         drop(client);

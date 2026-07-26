@@ -309,6 +309,62 @@ where
     })
 }
 
+/// What the proxy asks the primary after a write.
+///
+/// `pg_current_wal_insert_lsn()` rather than `pg_current_wal_lsn()`: the
+/// insert position is at or ahead of the flush position, so a watermark taken
+/// from it can only be conservative, and conservative here means a replica is
+/// held ineligible slightly too long rather than serving a read that predates
+/// the write.
+pub const PRIMARY_LSN_QUERY: &str = "SELECT pg_current_wal_insert_lsn()";
+
+/// Asks the primary where the write it just ran landed.
+///
+/// One round trip on the connection the session already holds, run only for a
+/// transaction that wrote. A session that only reads never pays it.
+///
+/// # Errors
+///
+/// Fails when the connection does or the answer cannot be read. The caller
+/// treats that as "the position is unknown", which leaves the watermark where
+/// it was: the session keeps reading from the primary until it learns
+/// otherwise, which is the safe direction.
+pub async fn primary_lsn<S>(wire: &mut Wire<S>) -> Result<Lsn, String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    wire.queue(|out| encode_frontend::query(out, PRIMARY_LSN_QUERY));
+    wire.flush().await.map_err(|err| err.to_string())?;
+
+    let mut body = Vec::new();
+    let mut row: Option<Vec<Option<String>>> = None;
+
+    loop {
+        let tag = wire
+            .read_tagged(&mut body)
+            .await
+            .map_err(|err| err.to_string())?;
+
+        if tag == Tag::DATA_ROW {
+            row = Some(text_row(&body).ok_or("the primary sent an unreadable row")?);
+        } else if tag == Tag::ERROR_RESPONSE {
+            return Err("the primary refused the position query".to_owned());
+        } else if tag == Tag::READY_FOR_QUERY {
+            break;
+        }
+    }
+
+    match row.and_then(|row| row.into_iter().next()).flatten() {
+        Some(text) => text
+            .parse()
+            .map_err(|_| format!("the primary reported an unparseable LSN: {text}")),
+        // NULL, which a server not writing WAL answers. Unknown rather than
+        // zero: a watermark of zero admits every replica, which is the exact
+        // opposite of what an unknown position should mean.
+        None => Err("the primary reported no position".to_owned()),
+    }
+}
+
 /// Splits a `DataRow` body into its text fields.
 ///
 /// `None` is a SQL NULL, which the wire encodes as a length of -1 rather than
@@ -761,5 +817,80 @@ mod tests {
     #[test]
     fn a_row_with_no_fields_reads_as_no_fields() {
         assert_eq!(text_row(&[0, 0]), Some(Vec::new()));
+    }
+
+    /// Answers one query with the given frames, as a server would.
+    ///
+    /// Returns what `primary_lsn` made of them, over a real `Wire`.
+    async fn primary_answering(frames: Vec<u8>) -> Result<Lsn, String> {
+        let (ours, mut theirs) = duplex(4096);
+        tokio::spawn(async move {
+            // The query itself, which is read and discarded: what is under
+            // test is the reading of the answer.
+            let mut header = [0_u8; 5];
+            if theirs.read_exact(&mut header).await.is_err() {
+                return;
+            }
+            let len = u32::from_be_bytes(header[1..].try_into().unwrap_or([0; 4])) as usize;
+            let mut body = vec![0; len.saturating_sub(4)];
+            let _ = theirs.read_exact(&mut body).await;
+            let _ = theirs.write_all(&frames).await;
+        });
+
+        primary_lsn(&mut Wire::new(ours)).await
+    }
+
+    fn ready() -> Vec<u8> {
+        let mut out = Vec::new();
+        encode::ready_for_query(&mut out, pgprox_proto::backend::TxStatus::Idle);
+        out
+    }
+
+    #[tokio::test]
+    async fn the_primary_s_position_is_read_back() {
+        let mut frames = data_row(&[Some("16/B374D848")]);
+        frames.extend_from_slice(&ready());
+
+        assert_eq!(
+            primary_answering(frames).await,
+            Ok("16/B374D848".parse().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_null_position_is_unknown_rather_than_zero() {
+        // A watermark of zero admits every replica, which is the exact
+        // opposite of what an unknown position should mean.
+        let mut frames = data_row(&[None]);
+        frames.extend_from_slice(&ready());
+
+        assert!(primary_answering(frames).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_position_that_does_not_parse_is_an_error() {
+        let mut frames = data_row(&[Some("not an lsn")]);
+        frames.extend_from_slice(&ready());
+
+        let err = primary_answering(frames).await.unwrap_err();
+        assert!(err.contains("not an lsn"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_position_query_is_an_error_rather_than_a_hang() {
+        // A primary that refuses the query still has to end the exchange, or
+        // the session waits on it holding a connection.
+        let mut frames = vec![Tag::ERROR_RESPONSE.get()];
+        let fields = b"SERROR\0C42883\0Mfunction does not exist\0\0";
+        frames.extend_from_slice(&u32::try_from(fields.len() + 4).unwrap().to_be_bytes());
+        frames.extend_from_slice(fields);
+        frames.extend_from_slice(&ready());
+
+        assert!(primary_answering(frames).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_answer_with_no_row_is_an_error() {
+        assert!(primary_answering(ready()).await.is_err());
     }
 }

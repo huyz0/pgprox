@@ -59,6 +59,12 @@ pub struct SessionRouter {
     /// Whether the open transaction promised the server it would not write.
     read_only_transaction: bool,
     pinned: bool,
+    /// Whether a write has been routed since the watermark was last recorded.
+    ///
+    /// The classifier is the only thing that knows a statement was a write,
+    /// and the caller is the only thing that can ask the primary where the
+    /// write landed. This is how the first tells the second.
+    wrote: bool,
     /// Scratch for replica states, reused across statements.
     ///
     /// The route decision is a declared hot path, and for an autocommit
@@ -107,9 +113,20 @@ impl SessionRouter {
         self.pinned = pinned;
     }
 
+    /// Whether a write has been routed that the watermark does not yet cover.
+    ///
+    /// True from the moment a write is classified until [`Self::record_write`]
+    /// is told where it landed. A caller that ignores this reads its own
+    /// writes only by luck.
+    #[must_use]
+    pub const fn wrote(&self) -> bool {
+        self.wrote
+    }
+
     /// Records where a write committed, so later reads see it.
     pub fn record_write(&mut self, lsn: Lsn) {
         self.watermark.advance(lsn);
+        self.wrote = false;
     }
 
     /// Ends the session's routing state, as a new client on a reused
@@ -195,6 +212,11 @@ impl SessionRouter {
             // the more specific of the two.
             hint: statement_hint(sql).unwrap_or(self.hint),
         };
+
+        // Before the decision rather than after: a write is a write whether or
+        // not it ends up on the primary, and the flag is what makes the caller
+        // ask where it landed.
+        self.wrote |= class == StmtClass::Write;
 
         replicas.fill_states(&mut self.states, now);
         let target = decide(&ctx, &self.states);
@@ -433,6 +455,29 @@ mod tests {
         assert_eq!(
             router.route("SELECT * FROM t", false, &lagging, now),
             Routed::To(RouteTarget::Replica(0))
+        );
+    }
+
+    #[test]
+    fn a_write_is_reported_until_its_position_is_known() {
+        // The caller has to ask the primary where the write landed, and the
+        // classifier is the only thing that knows there was one. A session
+        // whose write went unreported reads its own writes only by luck.
+        let mut router = SessionRouter::new();
+        let replicas = Replicas::new(1, ReplicaConfig::default());
+        let now = Instant::now();
+
+        assert!(!router.wrote());
+        router.route("SELECT 1", false, &replicas, now);
+        assert!(!router.wrote(), "a read was reported as a write");
+
+        router.route("INSERT INTO t VALUES (1)", false, &replicas, now);
+        assert!(router.wrote());
+
+        router.record_write(Lsn::new(500));
+        assert!(
+            !router.wrote(),
+            "the write was still outstanding after it was recorded"
         );
     }
 

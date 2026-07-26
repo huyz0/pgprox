@@ -923,7 +923,7 @@ rule already allows `pgprox-proto`.
   behind the session watermark does not. Second half split out as `M6.34`: a
   read reaches a replica now, and nothing sets the watermark yet, so
   read-your-writes is not enforced.
-- [ ] `M6.34` The session write watermark. Found finishing `M6.28`:
+- [x] `M6.34` The session write watermark. Found finishing `M6.28`:
   `SessionRouter::record_write` exists and nothing calls it, so the watermark
   is always unset and every healthy replica is eligible to every session
   including one that just wrote. The position has to come from the primary,

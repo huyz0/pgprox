@@ -110,6 +110,21 @@ impl Relay {
         &self.session
     }
 
+    /// Whether a write has been routed whose position is not yet known.
+    ///
+    /// The shell asks the primary where it landed and feeds the answer back
+    /// through [`Self::record_write`]. Until it does, the session's reads keep
+    /// going to the primary, which is the safe direction.
+    #[must_use]
+    pub const fn wrote(&self) -> bool {
+        self.router.wrote()
+    }
+
+    /// Records where the session's writes have reached.
+    pub fn record_write(&mut self, lsn: pgprox_core::ids::Lsn) {
+        self.router.record_write(lsn);
+    }
+
     /// Records that the shell acquired the connection it was told to.
     pub const fn acquired(&mut self) {
         self.holding = true;
