@@ -27,6 +27,20 @@ x-proxy: &proxy
     PGPROX_MOCK_USER: acme_app
     PGPROX_MOCK_PASSWORD: acme-password
     PGPROX_MOCK_TLS: disabled
+  # A file descriptor per client connection, per upstream connection, per peer
+  # and per listener. The default soft limit of 1024 is a node that refuses its
+  # 1000th client for a reason that looks nothing like the truth in a log, so
+  # it is raised here rather than discovered under load.
+  #
+  # 65536 is right for the e2e stack and for a scale run at a few thousand. A
+  # node aiming at the roadmap's 100k needs 262144, which is what
+  # `product/plan.md` says and what a Kubernetes deployment sets in its pod
+  # spec; setting it that high here would only hide the fact that the number
+  # has to be chosen per deployment.
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
   # The sidecar and the proxy share a pod in production, which here is one
   # container running both over a socket neither exposes.
   entrypoint:

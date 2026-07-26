@@ -1289,7 +1289,7 @@ recorded runs say which they are.
   before and after M7.16 differ by an amount the commit message states.
   Committed with M7.16: the wire cannot borrow from a slab the composition
   root does not build, so neither half leaves the tree green on its own.
-- [ ] `M7.18` File descriptor and socket tuning in `deploy/`: `nofile`, the
+- [x] `M7.18` File descriptor and socket tuning in `deploy/`: `nofile`, the
   backlog, and the `tcp_rmem` and `tcp_wmem` minimums. Acceptance: the scale run
   at 1000 is not limited by a default, and the values are commented with what
   they cost at 100k.
@@ -1322,6 +1322,12 @@ recorded runs say which they are.
   the baseline's connection count as well, and the hop costs 348us at p50 and
   4.3ms at p99. Found by measuring rather than guessing: the proxy's own CPU
   was under half a core while Postgres had 49 of 50 backends active.
+- [ ] `M7.27` The node does not check its own descriptor limit. A ceiling of
+  20,000 clients under a soft `RLIMIT_NOFILE` of 1024 is a node that fails at
+  `accept` with something that reads as a network fault. Found writing M7.18.
+  Acceptance: the limit and the ceiling are compared at startup and the
+  mismatch is a refusal to start or a warning that names both numbers, and it
+  is decided which.
 - [ ] `M7.19` Close M7.
 
 ## M8 and later

@@ -24,6 +24,16 @@ services:
       - "15432:5432"
 
   pgprox-1:
+    # Bigger than the stack-wide 65536, because this is the node under test and
+    # a scale run puts every client on it.
+    #
+    # What is deliberately not set here is the socket buffer minimum. Kernel
+    # memory per socket does not go away with the userspace buffer slab: at
+    # 100k sockets `net.ipv4.tcp_rmem` and `tcp_wmem` minimums of 4 KiB each
+    # are 800 MB of kernel memory that no proxy design avoids, and they are a
+    # sysctl on the host rather than a container setting. A compose file that
+    # pretended otherwise would be teaching the wrong thing; the pod spec is
+    # where that belongs, in M8.
     environment:
       PGPROX_CONFIG: /etc/pgprox/scale.yaml
       # A space rather than an empty string: the entrypoint expands this
@@ -31,5 +41,5 @@ services:
       PGPROX_REQUIRE_TLS: " "
     ulimits:
       nofile:
-        soft: 65536
-        hard: 65536
+        soft: 262144
+        hard: 262144
