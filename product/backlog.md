@@ -1231,7 +1231,7 @@ recorded runs say which they are.
 - [x] `M7.10` Allocation budget, `pgprox-route`: classification plus replica
   eligibility. Acceptance: as above, with the per-statement path asserted rather
   than the session setup.
-- [ ] `M7.11` Allocation budget, `pgprox-auth`: grant cache lookup on connect.
+- [x] `M7.11` Allocation budget, `pgprox-auth`: grant cache lookup on connect.
   Acceptance: as above, and a hit is distinguished from a miss, since only the
   hit is the hot path.
 - [ ] `M7.12` Allocation budget, `pgprox-cluster`: gossip digest encode and

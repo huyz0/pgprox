@@ -1036,6 +1036,7 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "base64",
+ "dhat",
  "hyper-util",
  "pgprox-core",
  "pgprox-testkit",

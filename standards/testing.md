@@ -104,10 +104,12 @@ The declared hot paths, with budgets, are:
 5. Route decision: classification plus replica eligibility. **Zero**, asserted
    in `crates/pgprox-route/tests/budgets.rs`. It was one allocation per
    statement until M7.10 measured it.
-6. Grant cache lookup on connect.
+6. Grant cache lookup on connect. **At most 17 allocations** per connection on
+   a hit, asserted in `crates/pgprox-auth/tests/budgets.rs`. Not zero, and the
+   file says what the fifteen it measured are made of.
 7. Gossip digest encode and decode.
 
-Paths 6 and 7 were written to be allocation-free and are claims until the
+Path 7 was written to be allocation-free and are claims until the
 milestone that asserts them, and they are written down here so the assertion
 has something to check rather than a number to discover.
 
