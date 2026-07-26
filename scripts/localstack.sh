@@ -23,36 +23,11 @@
 
 LOCAL_DIR="${LOCAL_DIR:-$REPO_ROOT/target/localstack}"
 
-# A port that can actually be bound, starting from a candidate.
-#
-# Connecting to a port and finding nothing there does not mean it can be bound:
-# under WSL the Windows side reserves whole ranges, and every port in the
-# fifty-five thousands on this machine refuses a bind while looking free to
-# every tool that only tries to connect. So this binds, which is the question
-# being asked.
-_free_port() {
-  local port="$1" last=$((${1} + 200))
-  while (( port < last )); do
-    if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
-      exec 3>&- 2>/dev/null || true
-    elif nc -l 127.0.0.1 "$port" </dev/null >/dev/null 2>&1 &
-      then
-        local probe=$!
-        sleep 0.05
-        if kill -0 "$probe" 2>/dev/null; then
-          kill "$probe" 2>/dev/null
-          wait "$probe" 2>/dev/null
-          echo "$port"
-          return 0
-        fi
-    fi
-    port=$((port + 1))
-  done
-  return 1
-}
-
-# Low ports on purpose: see `_free_port`. The defaults are overridable, which
-# is how a second stack runs beside a first.
+# Low ports on purpose. Every port in the fifty-five-thousands on this machine
+# refuses a bind while looking free to anything that only tries to connect,
+# which is what WSL's reserved ranges do; the failure reads as "another
+# postmaster is already running" and there is none. The defaults are
+# overridable, which is how a second stack runs beside a first.
 LOCAL_PG_PORT="${LOCAL_PG_PORT:-15432}"
 LOCAL_PROXY_PORT="${LOCAL_PROXY_PORT:-16432}"
 LOCAL_ADMIN_PORT="${LOCAL_ADMIN_PORT:-19090}"

@@ -1346,6 +1346,10 @@ recorded runs say which they are.
   kind of drift that makes a skill worse than nothing: it sends whoever reads
   it to a command that fails. The M7 gate also tightened from grepping for the
   word `dhat` to grepping for `dhat::Profiler`, since a comment satisfied it.
+- [x] `M7.31` `_free_port` in `scripts/localstack.sh` was defined and never
+  called: written to work around WSL's reserved port ranges, then replaced by
+  low default ports and left behind forty minutes later. Found by the review
+  round that had just found three of the same in this milestone's Rust.
 - [x] `M7.19` Close the 1000-connection round of M7.
 
 ## M8 and later
