@@ -965,6 +965,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pgprox-load"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_yaml",
+ "thiserror",
+]
+
+[[package]]
 name = "pgprox-observe"
 version = "0.1.0"
 dependencies = [

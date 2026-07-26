@@ -1194,7 +1194,7 @@ recorded runs say which they are.
 - [ ] `M7.1` Define M7: this decomposition and `scripts/m7-complete.sh`.
   Acceptance: the gate runs against the current tree and reports what is
   missing rather than passing vacuously.
-- [ ] `M7.2` The reference workload document and its parser, in a new
+- [x] `M7.2` The reference workload document and its parser, in a new
   `pgprox-load` crate: tenant mix, query shape distribution, connection churn,
   transaction size, replica read fraction. Acceptance: the document is a
   committed file, a malformed one is refused with the field named, and nothing

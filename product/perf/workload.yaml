@@ -1,0 +1,72 @@
+# The reference workload.
+#
+# Everything in M7 measures against this file: allocation budgets, instruction
+# counts, the semantic coverage report and the scale runs. Two profiles taken a
+# week apart are only comparable if they replayed the same thing, which is why
+# this is a committed document with a version rather than a set of flags.
+#
+# Changing it is allowed and sometimes right. It happens in its own commit,
+# with the reasoning, and everything measured against the old version is
+# re-baselined. Changing it to make a number look better is not allowed, and
+# the version field is what makes that visible in a diff.
+version: 1
+
+# A handful of busy tenants and a long tail of near-idle ones, which is what a
+# multitenant proxy actually sees. A uniform mix would hide the two things this
+# proxy exists to get right: the grant cache working for the busy few, and
+# 100k idle connections costing almost nothing.
+tenants:
+  - name: hot
+    count: 4
+    share: 0.80
+  - name: tail
+    count: 200
+    share: 0.20
+
+# Query shapes, by weight. The SQL is what pgbench's default workload does,
+# because it is the shape everyone recognises and because the e2e stack already
+# runs it, so a number here can be checked against a number there.
+statements:
+  - name: point_select
+    weight: 60
+    kind: read
+    sql: "SELECT abalance FROM pgbench_accounts WHERE aid = 1"
+  - name: range_scan
+    weight: 10
+    kind: read
+    sql: "SELECT sum(abalance) FROM pgbench_accounts WHERE bid = 1"
+  - name: update_account
+    weight: 25
+    kind: write
+    sql: "UPDATE pgbench_accounts SET abalance = abalance + 1 WHERE aid = 1"
+  - name: insert_history
+    weight: 5
+    kind: write
+    sql: "INSERT INTO pgbench_history (tid, bid, aid, delta) VALUES (1, 1, 1, 1)"
+
+# Most transactions are one statement, which is what a pooled proxy is
+# optimised for, and a minority are long enough that holding a connection
+# across them matters.
+transactions:
+  - statements: 1
+    weight: 80
+  - statements: 4
+    weight: 15
+  - statements: 20
+    weight: 5
+
+# How often a client goes away and a new one arrives, in transactions per
+# connection. Connection churn is a cost the proxy pays and pgbench does not
+# generate, so it is declared here rather than left to whatever the load client
+# happens to do.
+churn:
+  transactions_per_connection: 500
+
+# Of the reads, how many are eligible to be served by a replica. The rest go to
+# the primary either because they are writes or because the session has written
+# and is behind its own watermark.
+replica_read_fraction: 0.50
+
+# Cluster size the gossip budgets measure at. A digest encode that is free at
+# one node and quadratic at ten is a fact this workload has to pin down.
+cluster_size: 3
