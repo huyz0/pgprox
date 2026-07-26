@@ -73,6 +73,13 @@ pub struct Options {
     pub tls_key: Option<PathBuf>,
     /// Whether a client may authenticate without TLS.
     pub require_tls: bool,
+    /// Where the certificate authority for upstream connections is.
+    ///
+    /// Without it the root store is empty, so a backend whose grant asks for a
+    /// verified connection fails to verify. That is the safe direction and it
+    /// is not a working deployment: a node that talks to a TLS-requiring
+    /// database needs this.
+    pub upstream_ca: Option<PathBuf>,
     /// The static user that may authenticate with SCRAM, if any.
     ///
     /// A name only: the password comes from the environment, because `ps` is
@@ -108,6 +115,7 @@ impl Default for Options {
             // refusing every client, which is a worse first experience than a
             // node that says what it is doing.
             require_tls: false,
+            upstream_ca: None,
             admin_user: None,
             peers: std::collections::BTreeMap::new(),
         }
@@ -156,6 +164,7 @@ impl Options {
                 "--tls-key" => options.tls_key = Some(PathBuf::from(value()?)),
                 "--require-tls" => options.require_tls = true,
                 "--admin-user" => options.admin_user = Some(value()?),
+                "--upstream-ca" => options.upstream_ca = Some(PathBuf::from(value()?)),
                 // Repeatable, one flag per peer, and each carries the peer's
                 // node number: `--peer 2=10.0.0.2:6433`. The number is what
                 // lets a quota request reach the leader specifically.
@@ -193,6 +202,24 @@ impl Options {
 }
 
 impl Options {
+    /// How upstream TLS is verified.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the certificate authority cannot be read or does not parse.
+    /// A node that started anyway would refuse every verified backend for a
+    /// reason nobody would find in a connection error.
+    pub fn upstream_tls(&self) -> Result<Arc<tokio_rustls::rustls::ClientConfig>, StartupError> {
+        let roots = match &self.upstream_ca {
+            Some(path) => pgprox_tls::root_store_from_pem(path).map_err(|err| tls_error(&err))?,
+            // Empty, so a backend that asks for a verified connection fails to
+            // verify. The alternative is trusting whatever answers, and there
+            // is deliberately no flag for that.
+            None => tokio_rustls::rustls::RootCertStore::empty(),
+        };
+        pgprox_tls::client_config(roots).map_err(|err| tls_error(&err))
+    }
+
     /// The static user this node accepts, if one was configured.
     ///
     /// # Errors
@@ -412,6 +439,7 @@ pub async fn start_with(
     resolver: Arc<dyn pgprox_core::auth::CredentialResolver>,
 ) -> Result<App, StartupError> {
     let listener_tls = options.tls()?;
+    let upstream_tls = options.upstream_tls()?;
     App::build(Deps {
         listener_tls,
         statics: options.static_admin()?,
@@ -422,11 +450,7 @@ pub async fn start_with(
         // An empty root store until certificates are configured. A backend
         // that asks for a verified connection therefore fails to verify, which
         // is the safe direction: the alternative is trusting whatever answers.
-        tls: pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).map_err(
-            |err| StartupError::Arguments {
-                detail: format!("could not build the upstream TLS configuration: {err}"),
-            },
-        )?,
+        tls: upstream_tls,
         config,
         resolver,
     })
@@ -519,6 +543,26 @@ mod tests {
         // address nobody configured, and unreachable at the one they did.
         let err = Options::parse(["--listen", "6432"]).unwrap_err();
         assert!(err.to_string().contains("--listen"), "{err}");
+    }
+
+    #[test]
+    fn a_node_told_no_certificate_authority_trusts_nothing() {
+        // Which is the safe direction rather than a working deployment: a
+        // backend asking for a verified connection fails to verify, and there
+        // is deliberately no flag that trusts whatever answers.
+        assert!(Options::default().upstream_tls().is_ok());
+    }
+
+    #[test]
+    fn a_certificate_authority_that_cannot_be_read_stops_the_start() {
+        // Rather than starting with an empty store and refusing every verified
+        // backend for a reason nobody would find in a connection error.
+        let options = Options {
+            upstream_ca: Some(PathBuf::from("/nonexistent/pgprox/ca.pem")),
+            ..Options::default()
+        };
+
+        assert!(options.upstream_tls().is_err());
     }
 
     #[test]

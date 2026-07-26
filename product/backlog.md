@@ -1087,6 +1087,23 @@ asking of each crate what the binary never touches.
   ceiling admits more clients without a restart, and lowering it refuses new
   ones without closing established ones.
 
+### Raised by the fourth review round
+
+- [x] `M6.54` The proxy cannot make a verified upstream connection.
+  `entry::start_with` builds the client configuration from an empty root
+  store, so every backend whose grant says `TlsMode::Verified` fails to
+  verify: the proxy can reach a database only in the clear. The e2e stack
+  uses `disabled`, which is why nothing noticed. `pgprox_tls::root_store_from_pem`
+  has existed since M1.10 with no caller. Acceptance: a node told where its
+  CA is connects to a TLS-requiring backend, and one told nothing still
+  refuses rather than trusting whatever answers.
+- [x] `M6.55` The tenant's statement timeout is ignored. `PoolHints` carries
+  `statement_timeout_ms`, the sidecar sends it, and nothing applies it, so a
+  tenant's cap on its own runaway queries does nothing. It is a `SET` on
+  acquire, next to the parameter replay that already happens there.
+  Acceptance: a grant naming a statement timeout has it in force on every
+  connection the session borrows, and one that names none changes nothing.
+
 - [ ] `M6.25` Close M6.
 
 ## M7 and later

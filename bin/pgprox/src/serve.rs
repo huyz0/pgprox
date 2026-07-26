@@ -513,7 +513,7 @@ where
                 // Before the client's own frame reaches the server, and only
                 // where the connection does not already match: a warm pool
                 // serving one tenant replays nothing.
-                resume(&mut borrowed.1, &session_state).await?;
+                resume(&mut borrowed.1, &session_state, grant).await?;
                 held = Some(borrowed);
                 relay.acquired();
             }
@@ -850,8 +850,24 @@ fn map_statement_name(
 async fn resume(
     upstream: &mut Upstreamed<crate::dial::Stream>,
     session: &pgprox_session::resume::SessionMemory,
+    grant: &Grant,
 ) -> Result<(), ShellError> {
     use pgprox_session::resume::Step;
+
+    // The tenant's own cap on its runaway queries, which the sidecar sends and
+    // which is per connection rather than per session: a connection borrowed
+    // from the pool carries whatever the last borrower set.
+    let mut statements: Vec<String> = grant
+        .pool
+        .statement_timeout
+        .map(|timeout| {
+            format!(
+                "SET statement_timeout = {}",
+                u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX)
+            )
+        })
+        .into_iter()
+        .collect();
 
     // The connection's own memory is not tracked across borrows yet, so this
     // replays onto a connection assumed to carry nothing. Correct and
@@ -860,10 +876,16 @@ async fn resume(
     // pool the memory that makes the skip safe.
     let connection = pgprox_session::resume::ConnectionMemory::default();
 
-    for step in pgprox_session::resume::on_acquire(session, &connection) {
-        let Step::Run(sql) = step else {
-            continue;
-        };
+    statements.extend(
+        pgprox_session::resume::on_acquire(session, &connection)
+            .into_iter()
+            .filter_map(|step| match step {
+                Step::Run(sql) => Some(sql),
+                _ => None,
+            }),
+    );
+
+    for sql in statements {
         upstream
             .wire
             .queue(|out| pgprox_proto::encode_frontend::query(out, &sql));
@@ -2042,6 +2064,49 @@ mod tests {
         .expect("the copy never finished: the relay is wedged");
 
         assert_eq!(finished.last(), Some(&Tag::READY_FOR_QUERY));
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_tenant_s_statement_timeout_reaches_the_connection_it_borrows() {
+        // The sidecar sends it and nothing applied it, so a tenant's cap on
+        // its own runaway queries did nothing. It is per connection, and a
+        // connection from the pool carries whatever the last borrower set.
+        let addr = fake_postgres().await;
+        let mut context = context_for(addr);
+        let mut grant = grant_for(addr);
+        grant.pool.statement_timeout = Some(Duration::from_secs(7));
+        context.resolver = Arc::new(FakeCredentialResolver::new().with_grant("good.token", grant));
+        let context = Arc::new(context);
+
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
+        client.write_all(&query).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        let seen = statements_seen(addr);
+        assert!(
+            seen.iter()
+                .any(|sql| sql.contains("statement_timeout = 7000")),
+            "the tenant's statement timeout never reached the server: {seen:?}"
+        );
+
         drop(client);
         let _ = served.await;
     }
