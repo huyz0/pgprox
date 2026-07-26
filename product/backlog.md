@@ -960,6 +960,59 @@ rule already allows `pgprox-proto`.
   drain with zero failed transactions, no replica read behind the session
   watermark. Acceptance: each assertion fails when its property is broken on
   purpose, verified once per assertion.
+### Raised by the first full review round
+
+Every one of these is the failure M6 exists to invert: a module built against
+fakes in an earlier milestone, with tests, and no caller in the composition
+root. They were found by asking of each crate "what in here does the binary
+never touch", which is the same question M5's and M4's reviews asked.
+
+- [ ] `M6.37` Spawn the configuration poll loop. `FileSource::run` is the
+  loop M4.3 and M4.4 built, and nothing starts it, so a `ConfigMap` edit never
+  reaches a running node: hot reload, the last-good-config rule, and a drain
+  written into the document are all unreachable from the binary. Acceptance: a
+  document rewritten on disk changes what `/v1/config` reports without a
+  restart, and a broken one leaves the previous config serving.
+- [ ] `M6.38` Reap idle upstream connections. `LivePool::reap_idle` exists and
+  nothing calls it on a timer, so M5.13's "a pool that goes quiet drops to
+  zero" is true of the type and false of the process. A proxy that never
+  releases an idle connection holds the database's connection budget for as
+  long as it runs. Acceptance: a pool left quiet past its idle timeout drops to
+  zero in a running node.
+- [ ] `M6.39` The node says nothing. There is no tracing subscriber, no span,
+  and no log line anywhere in the binary: a refused client, a dead upstream and
+  a failed gossip round are all silent. `standards/observability.md` and
+  `pgprox-observe::spans` describe what should be emitted and nothing emits.
+  Acceptance: a refusal, a drain and an upstream failure each produce one line
+  an operator can act on, and no line carries a credential.
+- [ ] `M6.40` Nothing emits a metric. `pgprox-observe::metrics` is a registry
+  of names, kinds and help text with no counter behind it and no exporter, so
+  every dashboard M4 designed reads nothing. Acceptance: `/metrics` serves the
+  registry's series, the numbers move when the thing they count happens, and
+  the per-tenant allowlist from M4.9 is what decides which get a tenant label.
+- [ ] `M6.41` Terminate client TLS. `run::context` hard-codes
+  `TlsPosture::Optional` and the shell refuses a client that asks to upgrade,
+  so every JWT crosses the network in cleartext. The mission is tokens over
+  TLS and `pgprox-tls` has had the server config since M1.10. Acceptance: a
+  client that sends `SSLRequest` gets a TLS session, `require_tls` refuses one
+  that does not, and the e2e stack runs with certificates.
+- [ ] `M6.42` Wire the static-user SCRAM path. M6.4 built it and `serve`
+  answers `Credential::Scram` with a refusal, so the admin surface ADR 0002
+  promised for non-JWT clients still cannot be reached. This is also `M1F.12`,
+  which was blocked on M6 existing. Acceptance: a configured static user
+  authenticates with SCRAM and reaches the `SHOW` surface, and an unknown one
+  is refused with the message a bad token gets.
+- [ ] `M6.43` Answer `clients` across the fleet. `NodeObservatory::clients`
+  returns `Partial` for any cluster-scoped read because the fan-out was not
+  built; the gossip transport that would carry it now exists. Acceptance: a
+  cluster-scoped client list returns every node's clients, and one that loses a
+  peer is still `Partial` rather than silently short.
+- [ ] `M6.44` Nothing sheds. M3.7 built the shed decision and its guard rails,
+  M6.19 wired the counter that reports sheds, and no code path ever decides to
+  shed a client, so tenant rebalancing does not happen in a running fleet.
+  Acceptance: a tenant over its share on a non-home node has an idle session
+  shed toward its home, and every guard rail M3.7 named still refuses.
+
 - [ ] `M6.25` Close M6.
 
 ## M7 and later
