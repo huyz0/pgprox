@@ -93,21 +93,26 @@ visible on noisy shared runners where `criterion` reports noise. Keep
 
 The declared hot paths, with budgets, are:
 
-1. The steady-state relay loop, both directions
-2. Frame boundary scanning (type byte plus length)
-3. `ReadyForQuery` status handling and the pool release decision
-4. Warm-pool acquire
-5. Route decision: classification plus replica eligibility
+1. The steady-state relay loop, both directions. **Zero allocations** per frame
+   once warm, asserted in `crates/pgprox-proto/tests/budgets.rs`.
+2. Frame boundary scanning (type byte plus length). **Zero**, same file. Decode
+   returns a borrowed frame, so finding a boundary copies nothing.
+3. `ReadyForQuery` status handling and the pool release decision.
+4. Warm-pool acquire.
+5. Route decision: classification plus replica eligibility.
+6. Grant cache lookup on connect.
+7. Gossip digest encode and decode.
 
-Two of these were written to be allocation-free in M5 and have not been
-measured. Warm-pool acquire moves a connection between two collections and
-touches no strings. The route decision iterates the shared lexer without
-lowercasing, and `SessionRouter` keeps a replica-states buffer for the life of
-the session rather than building one per statement. Both are claims until M7
-asserts them with `dhat`, and both are written down here so that assertion has
-something to check rather than a number to discover.
-6. Grant cache lookup on connect
-7. Gossip digest encode and decode
+Paths 3 to 7 were written to be allocation-free and are claims until the
+milestone that asserts them. Warm-pool acquire moves a connection between two
+collections and touches no strings. The route decision iterates the shared
+lexer without lowercasing, and `SessionRouter` keeps a replica-states buffer
+for the life of the session rather than building one per statement. They are
+written down here so the assertion has something to check rather than a number
+to discover.
+
+A budget test asserts its own harness first: it allocates deliberately once and
+checks the counter moved. A budget that measured nothing would pass forever.
 
 The reference workload profile also feeds a PGO build, which typically returns 5
 to 15% on branch-heavy code like a codec. It costs almost nothing extra since the

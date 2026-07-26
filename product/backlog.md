@@ -1220,7 +1220,7 @@ recorded runs say which they are.
   workload version, the connection count, the machine, and the numbers.
   Acceptance: two runs at different counts are comparable from the files alone,
   and the 1000-connection run is committed.
-- [ ] `M7.8` Allocation budgets, `pgprox-proto`: `dhat` in an ordinary test,
+- [x] `M7.8` Allocation budgets, `pgprox-proto`: `dhat` in an ordinary test,
   asserting counts for frame boundary scanning and the steady-state relay step.
   Acceptance: the budget is a number in `standards/testing.md`, and raising an
   allocation in either path fails the test.

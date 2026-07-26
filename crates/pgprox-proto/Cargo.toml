@@ -17,6 +17,9 @@ pgprox-core = { path = "../pgprox-core" }
 thiserror.workspace = true
 
 [dev-dependencies]
+# Allocation budgets, asserted as counts. Deterministic where a wall-clock
+# measurement on a shared runner is noise. See standards/testing.md.
+dhat = "0.3"
 # Shared probe classification, so the 57P03 bug lives in one place.
 pgprox-testkit = { path = "../pgprox-testkit" }
 proptest.workspace = true
