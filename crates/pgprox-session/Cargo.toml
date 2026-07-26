@@ -13,10 +13,13 @@ pgprox-core = { path = "../pgprox-core" }
 pgprox-proto = { path = "../pgprox-proto" }
 pgprox-pool = { path = "../pgprox-pool" }
 pgprox-route = { path = "../pgprox-route" }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
 
 [dev-dependencies]
 pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
 proptest.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "io-util", "time", "test-util"] }
 
 [lints]
 workspace = true

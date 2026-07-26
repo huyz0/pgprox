@@ -973,6 +973,8 @@ dependencies = [
  "pgprox-proto",
  "pgprox-route",
  "proptest",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

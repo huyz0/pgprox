@@ -812,7 +812,7 @@ rule already allows `pgprox-proto`.
   nothing for SASL, so the SCRAM path M6.4 built has no way onto the wire.
   Acceptance: the three messages round-trip through this crate's own decoder,
   which is the check a hand-written length prefix needs.
-- [ ] `M6.9` The I/O shell, generic over `AsyncRead + AsyncWrite + Unpin`.
+- [x] `M6.9` The I/O shell, generic over `AsyncRead + AsyncWrite + Unpin`.
   Acceptance: the whole session runs over `tokio::io::duplex` with no port
   opened, and cancelling the future mid-frame leaves no connection leaked.
 - [ ] `M6.10` The real `Connector`: open an upstream connection, authenticate to

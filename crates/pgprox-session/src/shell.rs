@@ -1,0 +1,861 @@
+//! The I/O shell: the only part of this crate that touches a socket.
+//!
+//! Everything else here is a state machine. This drives them, and it is
+//! deliberately thin, because every line in it is a line the sans-I/O tests
+//! cannot reach.
+//!
+//! Generic over `AsyncRead + AsyncWrite + Unpin`, so the tests run a whole
+//! session over `tokio::io::duplex` and never bind a port.
+//!
+//! # The buffer belongs to the connection
+//!
+//! A read pulls in whatever the kernel had, which routinely includes the start
+//! of the next stage's message. A helper that owned its read buffer locally
+//! would drop those bytes on return and the session would appear to hang. That
+//! has already happened once in this project, in the SCRAM tests, and this
+//! crate's `AGENTS.md` says so at length. So [`Wire`] owns the buffer and every
+//! stage borrows it.
+//!
+//! # Cancellation
+//!
+//! Dropping any of these futures mid-frame is safe: bytes that arrived stay in
+//! the buffer and the next call continues from where it stopped. Nothing here
+//! consumes from the buffer until a whole frame is present.
+
+use pgprox_core::auth::{CredentialResolver, Grant};
+use pgprox_core::error::ClientError;
+use pgprox_core::ids::ConnId;
+use pgprox_proto::backend::TxStatus;
+use pgprox_proto::frame::{DEFAULT_MAX_FRAME, Decoded, Tag, decode, decode_untagged};
+use pgprox_proto::{encode, startup};
+use std::time::SystemTime;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+use crate::auth::{Progress, SCRAM_SHA_256, SaslProgress, ScramAuth, StaticCredentials, TokenAuth};
+use crate::state::{Action, Credential, Handshake};
+
+/// Why a session could not be driven.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ShellError {
+    /// The client went away.
+    #[error("the client disconnected")]
+    Disconnected,
+    /// The socket failed.
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    /// The bytes were not a frame.
+    #[error("frame: {0}")]
+    Frame(#[from] pgprox_proto::frame::DecodeError),
+    /// The startup packet was not one.
+    #[error("startup: {0}")]
+    Startup(#[from] startup::StartupError),
+    /// The client was refused, and told why before the socket closed.
+    #[error("refused: {0}")]
+    Refused(ClientError),
+}
+
+/// What the startup phase ended in.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Handoff {
+    /// `S` was sent. Wrap the stream in TLS and negotiate again on the result.
+    Upgrade,
+    /// The client was asked for this credential.
+    Ask(Credential),
+    /// A cancellation for a key this proxy issued. Nothing else follows.
+    Cancel(ConnId),
+}
+
+/// A socket, its read buffer, and its write buffer.
+#[derive(Debug)]
+pub struct Wire<S> {
+    io: S,
+    read: Vec<u8>,
+    write: Vec<u8>,
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
+    /// Wraps a stream.
+    pub fn new(io: S) -> Self {
+        Self {
+            io,
+            read: Vec::new(),
+            write: Vec::new(),
+        }
+    }
+
+    /// The stream, and any bytes already read past the current stage.
+    ///
+    /// Returned together on purpose. A TLS upgrade takes the stream, and the
+    /// leftover bytes belong with it: dropping them is the hazard this module
+    /// opens by describing.
+    pub fn into_parts(self) -> (S, Vec<u8>) {
+        (self.io, self.read)
+    }
+
+    /// Whether anything has been read and not yet consumed.
+    #[must_use]
+    pub fn is_buffered(&self) -> bool {
+        !self.read.is_empty()
+    }
+
+    /// Reads until at least one more byte arrives.
+    async fn fill(&mut self) -> Result<(), ShellError> {
+        let mut chunk = [0_u8; 4096];
+        let read = self.io.read(&mut chunk).await?;
+        if read == 0 {
+            return Err(ShellError::Disconnected);
+        }
+        self.read.extend_from_slice(&chunk[..read]);
+        Ok(())
+    }
+
+    /// Reads one untagged message body into `body`.
+    ///
+    /// # Errors
+    ///
+    /// Fails on disconnect, on a socket error, or on a length the codec
+    /// refuses.
+    pub async fn read_untagged(&mut self, body: &mut Vec<u8>) -> Result<(), ShellError> {
+        loop {
+            match decode_untagged(&self.read, DEFAULT_MAX_FRAME)? {
+                Decoded::Frame(frame, consumed) => {
+                    body.clear();
+                    body.extend_from_slice(frame.body());
+                    self.read.drain(..consumed);
+                    return Ok(());
+                }
+                Decoded::Incomplete { .. } => self.fill().await?,
+            }
+        }
+    }
+
+    /// Reads one tagged message body into `body`, returning its tag.
+    ///
+    /// # Errors
+    ///
+    /// As [`Wire::read_untagged`].
+    pub async fn read_tagged(&mut self, body: &mut Vec<u8>) -> Result<Tag, ShellError> {
+        loop {
+            match decode(&self.read, DEFAULT_MAX_FRAME)? {
+                Decoded::Frame(frame, consumed) => {
+                    let tag = frame.tag();
+                    body.clear();
+                    body.extend_from_slice(frame.body());
+                    self.read.drain(..consumed);
+                    return Ok(tag);
+                }
+                Decoded::Incomplete { .. } => self.fill().await?,
+            }
+        }
+    }
+
+    /// Builds a message into the write buffer.
+    pub fn queue(&mut self, build: impl FnOnce(&mut Vec<u8>)) {
+        build(&mut self.write);
+    }
+
+    /// Sends everything queued.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the socket does.
+    pub async fn flush(&mut self) -> Result<(), ShellError> {
+        if self.write.is_empty() {
+            return Ok(());
+        }
+        self.io.write_all(&self.write).await?;
+        self.io.flush().await?;
+        self.write.clear();
+        Ok(())
+    }
+
+    /// Tells the client why it is being refused, then reports it.
+    ///
+    /// # Errors
+    ///
+    /// Always: the returned error is the refusal. A socket failure while
+    /// sending it is swallowed, because a client that has already gone is not
+    /// a more interesting fact than the refusal itself.
+    pub async fn refuse(&mut self, error: ClientError) -> ShellError {
+        self.queue(|out| encode::error_response(out, &error));
+        let _ = self.flush().await;
+        ShellError::Refused(error)
+    }
+}
+
+/// Drives the startup phase to the point a credential is asked for.
+///
+/// Called again on the upgraded stream after [`Handoff::Upgrade`], with the
+/// same [`Handshake`], which is what makes "TLS was accepted" survive the
+/// change of stream type.
+///
+/// # Errors
+///
+/// Fails on disconnect, on a malformed startup packet, or on any refusal, in
+/// which case the client has already been told.
+pub async fn negotiate<S: AsyncRead + AsyncWrite + Unpin>(
+    wire: &mut Wire<S>,
+    handshake: &mut Handshake,
+) -> Result<Handoff, ShellError> {
+    let mut body = Vec::new();
+    loop {
+        wire.read_untagged(&mut body).await?;
+        let message = startup::decode(&body)?;
+        let reply = handshake.on_startup(&message);
+
+        if let Some(minor) = reply.negotiate {
+            wire.queue(|out| encode::negotiate_protocol_version(out, minor, &[]));
+        }
+
+        match reply.action {
+            Action::AcceptTls => {
+                wire.queue(|out| out.push(b'S'));
+                wire.flush().await?;
+                return Ok(Handoff::Upgrade);
+            }
+            // Both refusals are the same byte. A client that asked for TLS and
+            // got N decides for itself whether to continue in the clear; one
+            // that asked for GSSAPI tries SSLRequest next.
+            Action::RefuseTls | Action::RefuseGss => {
+                wire.queue(|out| out.push(b'N'));
+                wire.flush().await?;
+            }
+            Action::Ask(credential) => {
+                wire.queue(|out| match credential {
+                    Credential::Jwt => encode::authentication_cleartext_password(out),
+                    Credential::Scram => encode::authentication_sasl(out, &[SCRAM_SHA_256]),
+                });
+                wire.flush().await?;
+                return Ok(Handoff::Ask(credential));
+            }
+            Action::Cancel(conn) => {
+                wire.flush().await?;
+                return Ok(Handoff::Cancel(conn));
+            }
+            Action::Fail(error) => return Err(wire.refuse(error).await),
+        }
+    }
+}
+
+/// Reads the client's password and resolves it.
+///
+/// # Errors
+///
+/// Fails on disconnect or on any refusal, in which case the client has been
+/// told. The message it gets is the same for a bad token and for a sidecar
+/// that is down; the distinction survives in the returned error.
+pub async fn authenticate_token<S, R>(
+    wire: &mut Wire<S>,
+    auth: &mut TokenAuth,
+    resolver: &R,
+    now: SystemTime,
+) -> Result<Grant, ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    R: CredentialResolver + ?Sized,
+{
+    let mut body = Vec::new();
+    let tag = wire.read_tagged(&mut body).await?;
+    if tag != Tag::PASSWORD {
+        return Err(wire
+            .refuse(ClientError::ProtocolViolation(
+                "expected a password message",
+            ))
+            .await);
+    }
+
+    let request = match auth.on_password(&body) {
+        Progress::Resolve(request) => request,
+        Progress::Fail(error) => return Err(wire.refuse(error).await),
+        // Not reachable: on_password never authenticates on its own. Refused
+        // rather than unwrapped, because this crate forbids panicking on a
+        // path a client can reach.
+        Progress::Ready(_) => {
+            return Err(wire
+                .refuse(ClientError::ProtocolViolation("authenticated too early"))
+                .await);
+        }
+    };
+
+    let answer = resolver.resolve(*request).await;
+    match auth.on_resolved(answer, now) {
+        Progress::Ready(grant) => Ok(*grant),
+        Progress::Fail(error) => Err(wire.refuse(error).await),
+        Progress::Resolve(_) => Err(wire
+            .refuse(ClientError::ProtocolViolation("resolution did not settle"))
+            .await),
+    }
+}
+
+/// Runs the SCRAM exchange for a static user.
+///
+/// # Errors
+///
+/// Fails on disconnect or on any refusal, in which case the client has been
+/// told, with the same message a bad token gets.
+pub async fn authenticate_scram<S, C>(
+    wire: &mut Wire<S>,
+    scram: &mut ScramAuth<C>,
+) -> Result<(), ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    C: StaticCredentials,
+{
+    let mut body = Vec::new();
+    let mut first = true;
+
+    loop {
+        let tag = wire.read_tagged(&mut body).await?;
+        if tag != Tag::PASSWORD {
+            return Err(wire
+                .refuse(ClientError::ProtocolViolation("expected a SASL message"))
+                .await);
+        }
+
+        let progress = if std::mem::take(&mut first) {
+            scram.on_initial(&body)
+        } else {
+            scram.on_response(&body)
+        };
+
+        match progress {
+            SaslProgress::Continue(payload) => {
+                wire.queue(|out| encode::authentication_sasl_continue(out, &payload));
+                wire.flush().await?;
+            }
+            SaslProgress::Final(payload) => {
+                wire.queue(|out| encode::authentication_sasl_final(out, &payload));
+                wire.flush().await?;
+                return Ok(());
+            }
+            SaslProgress::Fail(error) => return Err(wire.refuse(error).await),
+        }
+    }
+}
+
+/// Tells an authenticated client it is in.
+///
+/// `parameters` are the ones harvested from an upstream probe connection, so a
+/// driver reading `server_version` or `client_encoding` gets the real server's
+/// answer rather than something this proxy invented.
+///
+/// # Errors
+///
+/// Fails when the socket does.
+pub async fn accept<S: AsyncRead + AsyncWrite + Unpin>(
+    wire: &mut Wire<S>,
+    conn: ConnId,
+    parameters: &[(String, String)],
+) -> Result<(), ShellError> {
+    wire.queue(|out| {
+        encode::authentication_ok(out);
+        for (name, value) in parameters {
+            encode::parameter_status(out, name, value);
+        }
+        encode::backend_key_data(out, conn);
+        // Idle, and no upstream connection has been opened. That is the point:
+        // a client that connects and sits there costs a socket and no database
+        // connection at all.
+        encode::ready_for_query(out, TxStatus::Idle);
+    });
+    wire.flush().await
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap
+)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use pgprox_core::auth::{Backend, ClaimSet, FakeCredentialResolver, Grant, PoolHints, TlsMode};
+    use pgprox_core::ids::{NodeId, ServerId, TenantId};
+    use pgprox_core::secret::SecretString;
+    use pgprox_proto::backend::{AuthRequest, BackendMessage};
+    use tokio::io::{AsyncWriteExt, DuplexStream, duplex};
+
+    use crate::auth::{ScramChallenge, ScramConfig};
+    use crate::state::{HandshakeConfig, TlsPosture};
+
+    /// A client's end of a duplex pair.
+    struct Client(DuplexStream);
+
+    impl Client {
+        async fn send(&mut self, bytes: &[u8]) {
+            self.0.write_all(bytes).await.unwrap();
+        }
+
+        async fn read_bytes(&mut self, count: usize) -> Vec<u8> {
+            let mut buf = vec![0; count];
+            self.0.read_exact(&mut buf).await.unwrap();
+            buf
+        }
+
+        /// Reads one tagged message and decodes it.
+        async fn expect(&mut self) -> (Tag, Vec<u8>) {
+            let header = self.read_bytes(5).await;
+            let len = u32::from_be_bytes(header[1..5].try_into().unwrap()) as usize;
+            let body = self.read_bytes(len - 4).await;
+            (Tag(header[0]), body)
+        }
+
+        async fn expect_auth(&mut self) -> AuthRequest {
+            let (tag, body) = self.expect().await;
+            let frame = pgprox_proto::frame::Frame::new(tag, &body);
+            match pgprox_proto::backend::decode(&frame).unwrap() {
+                BackendMessage::Authentication(request) => request,
+                other => panic!("expected an authentication message, got {other:?}"),
+            }
+        }
+    }
+
+    fn pair() -> (Wire<DuplexStream>, Client) {
+        let (server, client) = duplex(4096);
+        (Wire::new(server), Client(client))
+    }
+
+    /// An untagged message: a length prefix and a body.
+    fn untagged(body: &[u8]) -> Vec<u8> {
+        let mut out = ((body.len() + 4) as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(body);
+        out
+    }
+
+    fn ssl_request() -> Vec<u8> {
+        untagged(&startup::SSL_REQUEST_CODE.to_be_bytes())
+    }
+
+    fn startup_packet(user: &str, database: &str) -> Vec<u8> {
+        let mut body = 196_608_i32.to_be_bytes().to_vec();
+        for (name, value) in [("user", user), ("database", database)] {
+            body.extend_from_slice(name.as_bytes());
+            body.push(0);
+            body.extend_from_slice(value.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        untagged(&body)
+    }
+
+    fn password(text: &str) -> Vec<u8> {
+        let mut out = vec![Tag::PASSWORD.get()];
+        out.extend_from_slice(&((text.len() + 5) as u32).to_be_bytes());
+        out.extend_from_slice(text.as_bytes());
+        out.push(0);
+        out
+    }
+
+    fn sasl_initial(mechanism: &str, payload: &str) -> Vec<u8> {
+        let mut body = mechanism.as_bytes().to_vec();
+        body.push(0);
+        body.extend_from_slice(&(payload.len() as i32).to_be_bytes());
+        body.extend_from_slice(payload.as_bytes());
+
+        let mut out = vec![Tag::PASSWORD.get()];
+        out.extend_from_slice(&((body.len() + 4) as u32).to_be_bytes());
+        out.extend_from_slice(&body);
+        out
+    }
+
+    fn sasl_response(payload: &str) -> Vec<u8> {
+        let mut out = vec![Tag::PASSWORD.get()];
+        out.extend_from_slice(&((payload.len() + 4) as u32).to_be_bytes());
+        out.extend_from_slice(payload.as_bytes());
+        out
+    }
+
+    fn grant() -> Grant {
+        Grant {
+            tenant: TenantId::new("acme"),
+            primary: Backend {
+                server: ServerId::new("db-1", 5432),
+                database: "acme".into(),
+                user: "acme_app".into(),
+                password: SecretString::new("hunter2"),
+                tls: TlsMode::Verified,
+            },
+            replicas: Vec::new(),
+            pool: PoolHints::default(),
+            ttl: Duration::from_secs(60),
+            claims: ClaimSet::default(),
+        }
+    }
+
+    fn optional_tls() -> Handshake {
+        Handshake::new(HandshakeConfig {
+            tls: TlsPosture::Optional,
+            ..HandshakeConfig::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn a_client_asking_for_tls_is_told_to_upgrade() {
+        let (mut wire, mut client) = pair();
+        let mut handshake = Handshake::new(HandshakeConfig::default());
+
+        client.send(&ssl_request()).await;
+        let handoff = negotiate(&mut wire, &mut handshake).await.unwrap();
+
+        assert_eq!(handoff, Handoff::Upgrade);
+        assert_eq!(client.read_bytes(1).await, b"S");
+        assert!(handshake.is_encrypted());
+    }
+
+    #[tokio::test]
+    async fn a_refused_ssl_request_is_answered_and_the_session_continues() {
+        // N is not the end of the conversation: libpq falls back to plaintext
+        // and sends its startup packet next.
+        let (mut wire, mut client) = pair();
+        let mut handshake = Handshake::new(HandshakeConfig {
+            tls: TlsPosture::Disabled,
+            ..HandshakeConfig::default()
+        });
+
+        client.send(&ssl_request()).await;
+        client.send(&startup_packet("acme_app", "acme")).await;
+
+        let handoff = negotiate(&mut wire, &mut handshake).await.unwrap();
+        assert_eq!(client.read_bytes(1).await, b"N");
+        assert_eq!(handoff, Handoff::Ask(Credential::Jwt));
+    }
+
+    #[tokio::test]
+    async fn a_token_client_is_asked_for_a_cleartext_password() {
+        let (mut wire, mut client) = pair();
+        let mut handshake = optional_tls();
+
+        client.send(&startup_packet("acme_app", "acme")).await;
+        let handoff = negotiate(&mut wire, &mut handshake).await.unwrap();
+
+        assert_eq!(handoff, Handoff::Ask(Credential::Jwt));
+        assert_eq!(client.expect_auth().await, AuthRequest::CleartextPassword);
+    }
+
+    #[tokio::test]
+    async fn a_static_user_is_offered_sasl() {
+        let (mut wire, mut client) = pair();
+        let mut handshake = Handshake::new(HandshakeConfig {
+            tls: TlsPosture::Optional,
+            static_users: vec!["pgprox_admin".to_owned()],
+        });
+
+        client.send(&startup_packet("pgprox_admin", "pgprox")).await;
+        let handoff = negotiate(&mut wire, &mut handshake).await.unwrap();
+
+        assert_eq!(handoff, Handoff::Ask(Credential::Scram));
+        assert_eq!(client.expect_auth().await, AuthRequest::Sasl);
+    }
+
+    #[tokio::test]
+    async fn a_client_that_skipped_tls_where_it_is_required_is_told_why() {
+        let (mut wire, mut client) = pair();
+        let mut handshake = Handshake::new(HandshakeConfig::default());
+
+        client.send(&startup_packet("acme_app", "acme")).await;
+        let err = negotiate(&mut wire, &mut handshake).await.unwrap_err();
+
+        assert!(matches!(err, ShellError::Refused(ClientError::TlsRequired)));
+        let (tag, body) = client.expect().await;
+        assert_eq!(tag, Tag::ERROR_RESPONSE);
+        assert!(
+            String::from_utf8_lossy(&body).contains("28000"),
+            "the error carried no SQLSTATE a driver could act on"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancel_request_ends_the_conversation() {
+        let (mut wire, mut client) = pair();
+        let mut handshake = Handshake::new(HandshakeConfig::default());
+        let conn = ConnId::new(NodeId::new(2), 77);
+
+        let mut body = startup::CANCEL_REQUEST_CODE.to_be_bytes().to_vec();
+        let (process_id, secret) = pgprox_proto::backend::key_from_conn_id(conn);
+        body.extend_from_slice(&process_id.to_be_bytes());
+        body.extend_from_slice(&secret.to_be_bytes());
+
+        client.send(&untagged(&body)).await;
+        assert_eq!(
+            negotiate(&mut wire, &mut handshake).await.unwrap(),
+            Handoff::Cancel(conn)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_whole_token_session_runs_over_a_duplex_pair() {
+        // The acceptance criterion: no port opened, no TLS, no sidecar
+        // process, and every message on the wire is a real one.
+        let (mut wire, mut client) = pair();
+        let mut handshake = optional_tls();
+        let resolver = Arc::new(FakeCredentialResolver::new().with_grant("good.token", grant()));
+
+        client.send(&startup_packet("acme_app", "acme")).await;
+        assert_eq!(
+            negotiate(&mut wire, &mut handshake).await.unwrap(),
+            Handoff::Ask(Credential::Jwt)
+        );
+        assert_eq!(client.expect_auth().await, AuthRequest::CleartextPassword);
+
+        let mut auth = TokenAuth::new(
+            handshake.startup().unwrap(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        );
+        client.send(&password("good.token")).await;
+        let granted =
+            authenticate_token(&mut wire, &mut auth, resolver.as_ref(), SystemTime::now())
+                .await
+                .unwrap();
+        assert_eq!(granted.tenant, TenantId::new("acme"));
+
+        let parameters = vec![("server_version".to_owned(), "17.2".to_owned())];
+        accept(&mut wire, ConnId::new(NodeId::new(1), 5), &parameters)
+            .await
+            .unwrap();
+
+        assert_eq!(client.expect_auth().await, AuthRequest::Ok);
+        assert_eq!(client.expect().await.0, Tag::PARAMETER_STATUS);
+        assert_eq!(client.expect().await.0, Tag::BACKEND_KEY_DATA);
+        let (tag, body) = client.expect().await;
+        assert_eq!(tag, Tag::READY_FOR_QUERY);
+        assert_eq!(body, b"I", "the client was told a transaction was open");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_token_reaches_the_client_as_an_error_response() {
+        let (mut wire, mut client) = pair();
+        let mut handshake = optional_tls();
+        let resolver = Arc::new(FakeCredentialResolver::new());
+
+        client.send(&startup_packet("acme_app", "acme")).await;
+        negotiate(&mut wire, &mut handshake).await.unwrap();
+        client.expect_auth().await;
+
+        let mut auth = TokenAuth::new(
+            handshake.startup().unwrap(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        );
+        client.send(&password("no.such.token")).await;
+        let err = authenticate_token(&mut wire, &mut auth, resolver.as_ref(), SystemTime::now())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            ShellError::Refused(ClientError::AuthRefused(_))
+        ));
+        assert_eq!(client.expect().await.0, Tag::ERROR_RESPONSE);
+    }
+
+    #[tokio::test]
+    async fn a_client_that_sends_the_wrong_message_instead_of_a_password_is_refused() {
+        let (mut wire, mut client) = pair();
+        let resolver = Arc::new(FakeCredentialResolver::new());
+        let mut auth = TokenAuth::new(
+            &crate::state::StartupInfo {
+                user: "acme_app".to_owned(),
+                database: "acme".to_owned(),
+                options: Vec::new(),
+            },
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        );
+
+        // A Query, where a PasswordMessage was asked for.
+        client.send(&[b'Q', 0, 0, 0, 5, 0]).await;
+        let err = authenticate_token(&mut wire, &mut auth, resolver.as_ref(), SystemTime::now())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            ShellError::Refused(ClientError::ProtocolViolation(_))
+        ));
+    }
+
+    /// One user, one proof, no crypto: the arithmetic lives outside this crate.
+    #[derive(Debug)]
+    struct OneUser;
+
+    impl StaticCredentials for OneUser {
+        fn challenge(&self, user: &str) -> Option<ScramChallenge> {
+            (user == "pgprox_admin").then(|| ScramChallenge {
+                salt: "QSXCR+Q6sek8bf92".to_owned(),
+                iterations: 4096,
+            })
+        }
+
+        fn verify(&self, _user: &str, _auth_message: &str, proof: &str) -> Option<String> {
+            (proof == "cHJvb2Y=").then(|| "c2lnbmF0dXJl".to_owned())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_whole_scram_session_runs_over_a_duplex_pair() {
+        let (mut wire, mut client) = pair();
+        let mut scram = ScramAuth::new(
+            OneUser,
+            ScramConfig {
+                mock_salt: "bW9jaw==".to_owned(),
+                mock_iterations: 4096,
+            },
+            "pgprox_admin",
+            "SERVERNONCE",
+        );
+
+        client
+            .send(&sasl_initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE"))
+            .await;
+        client
+            .send(&sasl_response("c=biws,r=CLIENTNONCESERVERNONCE,p=cHJvb2Y="))
+            .await;
+
+        authenticate_scram(&mut wire, &mut scram).await.unwrap();
+
+        assert_eq!(client.expect_auth().await, AuthRequest::SaslContinue);
+        assert_eq!(client.expect_auth().await, AuthRequest::SaslFinal);
+    }
+
+    #[tokio::test]
+    async fn a_scram_client_with_the_wrong_proof_gets_an_error_response() {
+        let (mut wire, mut client) = pair();
+        let mut scram = ScramAuth::new(
+            OneUser,
+            ScramConfig {
+                mock_salt: "bW9jaw==".to_owned(),
+                mock_iterations: 4096,
+            },
+            "pgprox_admin",
+            "SERVERNONCE",
+        );
+
+        client
+            .send(&sasl_initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE"))
+            .await;
+        client
+            .send(&sasl_response("c=biws,r=CLIENTNONCESERVERNONCE,p=d3Jvbmc="))
+            .await;
+
+        let err = authenticate_scram(&mut wire, &mut scram).await.unwrap_err();
+        assert!(matches!(
+            err,
+            ShellError::Refused(ClientError::AuthRefused(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_client_that_disconnects_mid_handshake_is_reported_rather_than_hung() {
+        let (mut wire, client) = pair();
+        let mut handshake = optional_tls();
+        drop(client);
+
+        assert!(matches!(
+            negotiate(&mut wire, &mut handshake).await.unwrap_err(),
+            ShellError::Disconnected
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_frame_split_across_reads_is_reassembled() {
+        // The kernel decides where a read ends, not the protocol. A shell that
+        // assumed one read is one message would fail against any client whose
+        // packet happened to split, which is most of them under load.
+        let (mut wire, mut client) = pair();
+        let mut handshake = optional_tls();
+        let packet = startup_packet("acme_app", "acme");
+        let (head, tail) = packet.split_at(6);
+
+        client.send(head).await;
+        let task = tokio::spawn(async move {
+            let handoff = negotiate(&mut wire, &mut handshake).await.unwrap();
+            (handoff, wire)
+        });
+        client.send(tail).await;
+
+        let (handoff, _wire) = task.await.unwrap();
+        assert_eq!(handoff, Handoff::Ask(Credential::Jwt));
+    }
+
+    #[tokio::test]
+    async fn bytes_read_past_a_stage_survive_into_the_next_one() {
+        // The hazard this crate's AGENTS.md names. The client pipelines its
+        // password behind its startup packet, so one read pulls in both; a
+        // shell that dropped the remainder would wait for a message it had
+        // already been sent.
+        let (mut wire, mut client) = pair();
+        let mut handshake = optional_tls();
+        let resolver = Arc::new(FakeCredentialResolver::new().with_grant("good.token", grant()));
+
+        let mut pipelined = startup_packet("acme_app", "acme");
+        pipelined.extend_from_slice(&password("good.token"));
+        client.send(&pipelined).await;
+
+        negotiate(&mut wire, &mut handshake).await.unwrap();
+        assert!(
+            wire.is_buffered(),
+            "the pipelined password was not read, so this proves nothing"
+        );
+
+        let mut auth = TokenAuth::new(
+            handshake.startup().unwrap(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        );
+        let granted =
+            authenticate_token(&mut wire, &mut auth, resolver.as_ref(), SystemTime::now())
+                .await
+                .unwrap();
+        assert_eq!(granted.tenant, TenantId::new("acme"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_read_loses_no_bytes() {
+        // Dropping the future mid-frame is normal: it happens whenever a
+        // session loses a select! race against a drain. The bytes that arrived
+        // belong to the connection, so the next call continues from them.
+        //
+        // The clock is paused, so the timeout below fires without the suite
+        // spending twenty real milliseconds on it.
+        let (mut wire, mut client) = pair();
+        let packet = startup_packet("acme_app", "acme");
+        let (head, tail) = packet.split_at(6);
+        client.send(head).await;
+
+        let mut body = Vec::new();
+        let cancelled =
+            tokio::time::timeout(Duration::from_millis(20), wire.read_untagged(&mut body)).await;
+        assert!(
+            cancelled.is_err(),
+            "the read completed, so nothing was cancelled"
+        );
+
+        client.send(tail).await;
+        wire.read_untagged(&mut body).await.unwrap();
+        assert!(
+            !body.is_empty(),
+            "the bytes read before the cancellation were lost"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_leftover_buffer_travels_with_the_stream_on_upgrade() {
+        // into_parts returns both together on purpose: a TLS upgrade takes the
+        // stream, and anything read past the SSLRequest belongs with it.
+        let (mut wire, mut client) = pair();
+        let mut handshake = Handshake::new(HandshakeConfig::default());
+
+        client.send(&ssl_request()).await;
+        negotiate(&mut wire, &mut handshake).await.unwrap();
+
+        let (_stream, leftover) = wire.into_parts();
+        assert!(
+            leftover.is_empty(),
+            "bytes were read past the SSLRequest, and a client would not have sent any"
+        );
+    }
+}

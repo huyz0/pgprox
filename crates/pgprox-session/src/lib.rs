@@ -22,6 +22,7 @@
 pub mod auth;
 pub mod relay;
 pub mod resume;
+pub mod shell;
 pub mod state;
 
 pub use auth::{
@@ -30,4 +31,7 @@ pub use auth::{
 };
 pub use relay::{ClientAction, ClientOutcome, Relay, ServerOutcome};
 pub use resume::{ConnectionMemory, SessionMemory, Step, before_bind, on_acquire, replayed};
+pub use shell::{
+    Handoff, ShellError, Wire, accept, authenticate_scram, authenticate_token, negotiate,
+};
 pub use state::{Action, Credential, Handshake, HandshakeConfig, Reply, StartupInfo, TlsPosture};
