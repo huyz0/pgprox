@@ -914,13 +914,23 @@ rule already allows `pgprox-proto`.
   `check-crate.sh` runs clippy with `--all-features`, where the import is used.
   Acceptance: the default build is warning-free, and the check that missed it
   covers the default feature set too.
-- [ ] `M6.28` Poll the replicas a grant names, and route from that. Found
+- [x] `M6.28` Poll the replicas a grant names, and route from that. Found
   wiring the run loop: `M5.18` built `ReplicaWatch`, `M6.14` built
   `SqlReplicaProbe`, and the session path builds a fresh empty `Replicas` per
   session and polls nothing. Every replica is therefore permanently ineligible,
   which makes `M6.24`'s watermark assertion pass for the wrong reason: no read
   ever reaches a replica at all. Acceptance: a read lands on a replica, and one
-  behind the session watermark does not.
+  behind the session watermark does not. Second half split out as `M6.34`: a
+  read reaches a replica now, and nothing sets the watermark yet, so
+  read-your-writes is not enforced.
+- [ ] `M6.34` The session write watermark. Found finishing `M6.28`:
+  `SessionRouter::record_write` exists and nothing calls it, so the watermark
+  is always unset and every healthy replica is eligible to every session
+  including one that just wrote. The position has to come from the primary,
+  which means asking it: `pg_current_wal_insert_lsn()` on the same connection
+  before release, on write transactions only. Acceptance: a session that wrote
+  does not read from a replica that has not replayed the write, and a session
+  that never wrote pays no extra round trip.
 - [ ] `M6.22` The drain sequence, end to end. Acceptance: `/readyz` fails
   first, gossip announces before any client is closed, in-flight transactions
   finish, and the grace timer force-closes the remainder.

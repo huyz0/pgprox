@@ -150,7 +150,7 @@ impl Listeners {
 /// Here rather than in `serve`, because it is the one place the node's parts
 /// and a session's needs meet, and two places building it would be two nodes.
 #[must_use]
-pub fn context(app: &App) -> Context {
+pub fn context(app: &App, shutdown: &Shutdown) -> Context {
     Context {
         node: app.deps.node,
         clock: Arc::clone(&app.deps.clock),
@@ -169,6 +169,11 @@ pub fn context(app: &App) -> Context {
         cancels: Arc::new(Registry::new(app.deps.node, Box::new(SystemEntropy))),
         acquire_timeout: ACQUIRE_TIMEOUT,
         peers: BTreeMap::new(),
+        replicas: Arc::new(crate::replicas::ReplicaSets::new(
+            crate::dial::TcpUpstream::new(Arc::clone(&app.deps.tls)),
+            Arc::clone(&app.deps.clock),
+            shutdown.clone(),
+        )),
     }
 }
 
@@ -214,7 +219,7 @@ pub async fn run_with_peers(
     let gate = Arc::new(Gate::new(ceiling));
     let context = Arc::new(Context {
         peers: peers.clone(),
-        ..context(&app)
+        ..context(&app, &shutdown)
     });
     let probes = probes(&app);
 
@@ -491,7 +496,7 @@ mod tests {
         // Two pools or two connectors would mean the grant path teaching one
         // and the sessions using the other.
         let app = App::build(deps()).await.unwrap();
-        let context = context(&app);
+        let context = context(&app, &Shutdown::new());
 
         assert!(Arc::ptr_eq(&context.pool, &app.pool));
         assert!(Arc::ptr_eq(&context.connector, &app.connector));

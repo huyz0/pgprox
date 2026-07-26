@@ -120,6 +120,8 @@ pub struct Context {
     pub acquire_timeout: Duration,
     /// Where the other nodes are, for a cancel this node does not own.
     pub peers: std::collections::BTreeMap<NodeId, std::net::SocketAddr>,
+    /// The replica sets this node is watching, one per primary.
+    pub replicas: Arc<crate::replicas::ReplicaSets>,
 }
 
 impl std::fmt::Debug for Context {
@@ -222,10 +224,12 @@ where
     let mut relay = Relay::new();
     let mut held: Option<(UpstreamGuard, Upstreamed<crate::dial::Stream>)> = None;
     let mut body = Vec::new();
-    let replicas = Replicas::new(
-        grant.replicas.len(),
-        pgprox_route::replica::ReplicaConfig::default(),
-    );
+    // The watch this grant's replicas are polled into, shared with every other
+    // session on the same primary. A grant with no replicas gets none, and
+    // every route decision for it lands on the primary by the same rule that
+    // sends a read to the primary when no replica is eligible.
+    let watch = context.replicas.watch_for(grant);
+    let none = Replicas::new(0, pgprox_route::replica::ReplicaConfig::default());
 
     loop {
         let tag = wire.read_tagged(&mut body).await?;
@@ -236,7 +240,11 @@ where
                 .await);
         };
 
-        let outcome = relay.on_client(&message, &replicas, context.clock.now());
+        let now = context.clock.now();
+        let outcome = match watch.as_ref() {
+            Some(watch) => watch.with_replicas(|replicas| relay.on_client(&message, replicas, now)),
+            None => relay.on_client(&message, &none, now),
+        };
         if let Some(reason) = outcome.pinned {
             context.sessions.set_pinned(conn, reason.as_str());
         }
@@ -250,8 +258,11 @@ where
                 wire.flush().await?;
                 continue;
             }
-            ClientAction::Send { acquire: true, .. } => {
-                held = Some(borrow(context, grant, conn).await?);
+            ClientAction::Send {
+                acquire: true,
+                target,
+            } => {
+                held = Some(borrow(context, grant, target, conn).await?);
                 relay.acquired();
             }
             ClientAction::Send { acquire: false, .. } => {}
@@ -293,8 +304,12 @@ where
 async fn borrow(
     context: &Context,
     grant: &Grant,
+    target: pgprox_core::route::RouteTarget,
     conn: ConnId,
 ) -> Result<(UpstreamGuard, Upstreamed<crate::dial::Stream>), ShellError> {
+    // The route decision names a replica by its index in the grant. This is
+    // where that becomes a backend, and therefore a pool.
+    let backend = crate::replicas::backend_for(grant, target);
     let deadline = context.clock.now() + context.acquire_timeout;
     context
         .sessions
@@ -302,7 +317,7 @@ async fn borrow(
 
     let guard = context
         .pool
-        .acquire(&grant.primary.pool_key(), deadline)
+        .acquire(&backend.pool_key(), deadline)
         .await
         .map_err(|err| ShellError::Refused(err.into()))?;
     let taken = context
@@ -315,7 +330,7 @@ async fn borrow(
     context.cancels.hold(
         conn,
         pgprox_session::cancel::Cancellation {
-            server: grant.primary.server.clone(),
+            server: backend.server.clone(),
             key: guard.key().clone(),
             backend_key: taken.backend_key.unwrap_or((0, 0)),
         },
@@ -621,6 +636,18 @@ mod tests {
                         }
 
                         let mut out = Vec::new();
+                        // The replica poller's own question, answered as a
+                        // replica answers it: a replay position and t for
+                        // pg_is_in_recovery. Every other query gets the canned
+                        // completion below.
+                        if String::from_utf8_lossy(&body).contains("pg_last_wal_replay_lsn") {
+                            out.extend_from_slice(&replica_row());
+                            encode::ready_for_query(&mut out, TxStatus::Idle);
+                            if socket.write_all(&out).await.is_err() {
+                                return;
+                            }
+                            continue;
+                        }
                         out.push(Tag::COMMAND_COMPLETE.get());
                         let text = b"SELECT 1\0";
                         out.extend_from_slice(
@@ -637,6 +664,25 @@ mod tests {
         });
 
         addr
+    }
+
+    /// One `DataRow` carrying what a healthy replica reports.
+    fn replica_row() -> Vec<u8> {
+        let values: [Option<&str>; 2] = [Some("16/B374D848"), Some("t")];
+        let mut body = i16::try_from(values.len()).unwrap().to_be_bytes().to_vec();
+        for value in values {
+            match value {
+                None => body.extend_from_slice(&(-1_i32).to_be_bytes()),
+                Some(text) => {
+                    body.extend_from_slice(&i32::try_from(text.len()).unwrap().to_be_bytes());
+                    body.extend_from_slice(text.as_bytes());
+                }
+            }
+        }
+        let mut out = vec![Tag::DATA_ROW.get()];
+        out.extend_from_slice(&u32::try_from(body.len() + 4).unwrap().to_be_bytes());
+        out.extend_from_slice(&body);
+        out
     }
 
     fn grant_for(addr: SocketAddr) -> Grant {
@@ -681,6 +727,14 @@ mod tests {
             cancels: Arc::new(Registry::new(NodeId::new(1), Box::new(Fixed))),
             acquire_timeout: Duration::from_secs(5),
             peers: std::collections::BTreeMap::new(),
+            replicas: Arc::new(crate::replicas::ReplicaSets::new(
+                TcpUpstream::new(
+                    pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty())
+                        .unwrap(),
+                ),
+                Arc::new(FakeClock::new()),
+                crate::run::Shutdown::new(),
+            )),
         }
     }
 
@@ -767,6 +821,78 @@ mod tests {
         );
         assert_eq!(stats.active, 0);
         assert_eq!(context.sessions.transactions(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_read_lands_on_a_replica_once_one_has_been_polled() {
+        // M5 built the routing rule, M5.18 built the poller and M6.14 built
+        // the prober, and the session path used none of them: it made a fresh
+        // empty `Replicas` per session, so every replica was permanently
+        // ineligible and every read went to the primary.
+        let primary = fake_postgres().await;
+        let replica = fake_postgres().await;
+
+        let mut context = context_for(primary);
+        // A real clock, because the poller's freshness window is measured on
+        // it and a fake one would leave every reading eternally new.
+        let clock: Arc<dyn Clock> = Arc::new(pgprox_core::clock::SystemClock);
+        context.clock = Arc::clone(&clock);
+        context.replicas = Arc::new(crate::replicas::ReplicaSets::new(
+            TcpUpstream::new(
+                pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).unwrap(),
+            ),
+            clock,
+            crate::run::Shutdown::new(),
+        ));
+        let mut grant = grant_for(primary);
+        grant.replicas = vec![Backend {
+            server: ServerId::new("127.0.0.1", replica.port()),
+            ..grant_for(replica).primary
+        }];
+        context.resolver = Arc::new(FakeCredentialResolver::new().with_grant("good.token", grant));
+        let context = Arc::new(context);
+
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        // The first statement starts the poll loop and routes before it has an
+        // answer, so it goes to the primary. That is the safe direction and it
+        // is what the second statement is here to move past.
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
+        client.write_all(&query).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        client.write_all(&query).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        let replica_key = PoolKey::new(
+            ServerId::new("127.0.0.1", replica.port()),
+            "acme",
+            "acme_app",
+        );
+        let stats = pgprox_core::pool::UpstreamPool::stats(context.pool.as_ref(), &replica_key);
+        assert!(
+            stats.active + stats.idle > 0,
+            "a read-only statement never reached the replica: {stats:?}"
+        );
+
+        drop(client);
+        let _ = served.await;
     }
 
     #[tokio::test]

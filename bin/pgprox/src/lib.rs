@@ -26,6 +26,7 @@ pub mod entry;
 pub mod gossip;
 pub mod http;
 pub mod observatory;
+pub mod replicas;
 pub mod run;
 pub mod serve;
 pub mod sessions;

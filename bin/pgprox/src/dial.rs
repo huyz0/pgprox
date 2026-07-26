@@ -86,7 +86,11 @@ impl tokio::io::AsyncWrite for Stream {
 }
 
 /// Dials backends over TCP, with TLS where the backend asks for it.
-#[derive(Debug)]
+///
+/// `Clone` because a node has one TLS configuration and several things that
+/// dial with it: the pool's connector and one replica prober per replica set.
+/// The configuration itself is shared rather than copied.
+#[derive(Debug, Clone)]
 pub struct TcpUpstream {
     tls: Arc<ClientConfig>,
 }
