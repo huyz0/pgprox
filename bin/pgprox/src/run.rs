@@ -524,6 +524,8 @@ async fn ticker(
     let gate = &drainer.gate;
     let mut ticks = tokio::time::interval(TICK);
     let mut ran = 0;
+    // The tenants reported last tick, so one that has gone can be forgotten.
+    let mut tracked: Vec<pgprox_core::ids::TenantId> = Vec::new();
     loop {
         tokio::select! {
             () = shutdown.waited() => return ran,
@@ -546,7 +548,19 @@ async fn ticker(
                 .map(|(key, stats)| (key.server, stats.active + stats.idle))
                 .collect(),
         );
-        app.cluster.report_tenants(app.sessions.per_tenant());
+        let per_tenant = app.sessions.per_tenant();
+        app.cluster.report_tenants(per_tenant.clone());
+
+        // A tenant this node no longer serves is one it should stop reserving
+        // for. Without this the tracked set only ever grows, which in a proxy
+        // built for five thousand tenants is a leak with a slow fuse, and the
+        // reservations it holds are capacity peers could have used.
+        for tenant in tracked.drain(..) {
+            if !per_tenant.iter().any(|(seen, _)| seen == &tenant) {
+                app.cluster.forget_tenant(&tenant);
+            }
+        }
+        tracked.extend(per_tenant.into_iter().map(|(tenant, _)| tenant));
 
         // A node serving a stale document looks exactly like one serving the
         // current document, which is when an operator most needs to be told
@@ -982,6 +996,64 @@ mod tests {
 
         shutdown.fire();
         let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
+    }
+
+    #[tokio::test]
+    async fn a_tenant_that_has_gone_is_forgotten_by_the_next_tick() {
+        // Without this the tracked set only ever grows, which in a proxy built
+        // for five thousand tenants is a leak with a slow fuse, and the
+        // reservations it holds are capacity peers could have used.
+        let app = App::build(deps()).await.unwrap();
+        let probes = probes(&app);
+        let shutdown = Shutdown::new();
+        let context = Arc::new(context(&app, &shutdown));
+        let gate = Arc::new(Gate::new(10));
+        let drainer = Drainer {
+            context: &context,
+            gate: &gate,
+            addresses: &[],
+            grace: Duration::from_millis(50),
+        };
+
+        let tenant = pgprox_core::ids::TenantId::new("acme");
+        let held = app.sessions.register(
+            pgprox_core::ids::ConnId::new(NodeId::new(1), 1),
+            tenant.clone(),
+            NodeId::new(1),
+            app.deps.clock.now(),
+            16,
+            Shutdown::new(),
+        );
+
+        tokio::spawn({
+            let shutdown = shutdown.clone();
+            async move {
+                // Two ticks: the first sees the tenant, the second sees it
+                // gone. One tick could not tell the two states apart.
+                tokio::time::sleep(Duration::from_millis(1100)).await;
+                drop(held);
+                tokio::time::sleep(Duration::from_millis(1100)).await;
+                shutdown.fire();
+            }
+        });
+
+        let ran = tokio::time::timeout(
+            Duration::from_secs(10),
+            ticker(&app, &probes, &[], &drainer, &shutdown),
+        )
+        .await
+        .expect("the tick did not stop");
+
+        assert!(ran >= 2, "the tick ran {ran} times");
+        assert!(
+            !app.cluster
+                .outgoing()
+                .digest
+                .tenant_usage
+                .iter()
+                .any(|(seen, _)| seen == &tenant),
+            "a tenant with no sessions was still being reported"
+        );
     }
 
     #[tokio::test]

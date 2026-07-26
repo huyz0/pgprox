@@ -1128,6 +1128,14 @@ asking of each crate what the binary never touches.
   document reaching the mount produces one warning an operator can act on and
   a metric that stays wrong until it is fixed.
 
+### Raised by the seventh review round
+
+- [x] `M6.58` A tenant this node stopped serving was never forgotten.
+  `ClusterCoordinator::forget_tenant` had no caller, so the tracked set only
+  ever grew: a leak with a slow fuse in a proxy built for five thousand
+  tenants, and the reservations it held were capacity peers could have used.
+  The tick forgets a tenant it reported last time and does not serve now.
+
 - [ ] `M6.25` Close M6.
 
 ## M7 and later
