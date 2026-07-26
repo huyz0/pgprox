@@ -1020,6 +1020,28 @@ never touch", which is the same question M5's and M4's reviews asked.
   than the configured number of times in a minute is refused by
   `ShedRefusal::RateLimited`, and the window is per tenant rather than per
   node.
+### Raised by the second review round
+
+Both gates pass, so these were found the same way the first eight were: by
+asking of each crate what the binary never touches.
+
+- [ ] `M6.47` Nothing replays a session's state onto a new connection.
+  `pgprox-session::resume` is M6.7, with `on_acquire`, `replayed` and
+  `before_bind`, and `serve::relay` calls none of them. In a transaction
+  pooling proxy a session gets a different upstream connection per
+  transaction, so a `SET` that was replayable is silently lost at the next
+  boundary and a `Parse` the new connection does not hold is never replayed
+  before the `Bind` that needs it. Both are correctness bugs a tenant sees as
+  their session forgetting things. Acceptance: a replayable parameter survives
+  a change of upstream connection, a prepared statement is replayed before the
+  `Bind` that uses it, and `SET LOCAL` is still never replayed.
+- [ ] `M6.48` No metric carries a tenant. `pgprox-observe::tenants` is M4.9's
+  per-tenant series allowlist with its configured ceiling, and nothing calls
+  it: the exporter emits no per-tenant series at all, so the allowlist governs
+  nothing and an operator cannot see which tenant is using the connections.
+  Acceptance: a tenant on the allowlist gets its own series, one off it is
+  aggregated, and the ceiling is what stops the label becoming unbounded.
+
 - [ ] `M6.25` Close M6.
 
 ## M7 and later
