@@ -1346,7 +1346,7 @@ recorded runs say which they are.
   kind of drift that makes a skill worse than nothing: it sends whoever reads
   it to a command that fails. The M7 gate also tightened from grepping for the
   word `dhat` to grepping for `dhat::Profiler`, since a comment satisfied it.
-- [ ] `M7.19` Close M7.
+- [x] `M7.19` Close the 1000-connection round of M7.
 
 ## M8 and later
 

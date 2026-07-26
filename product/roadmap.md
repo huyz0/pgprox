@@ -23,7 +23,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M4 | Operations (track D) | complete |
 | M5 | Pooling and routing (track E) | complete |
 | M6 | Integration | complete |
-| M7 | Scale and performance | next |
+| M7 | Scale and performance | apparatus built, measured at 1000 connections, 100k outstanding |
 | M8 | FIPS and release | blocked by M7 |
 | M9 | Query cache (post-MVP) | blocked by M8 |
 
@@ -164,17 +164,31 @@ transactions; replica reads never land behind the session watermark.
 
 ## M7: scale and performance
 
-Reference workload, semantic coverage report, allocation budgets, `iai`
-benchmarks, buffer reclaim, the 100k-connection harness.
+Reference workload, semantic coverage report, allocation budgets,
+instruction-count benchmarks, buffer reclaim, the connection harness.
 
 ```bash
-scripts/scale.sh
+scripts/m7-complete.sh        # the apparatus, without Docker
+scripts/scale.sh 1000         # a run, against the compose stack
+scripts/scale.sh 1000 --local # a run, against one node on this machine
 ```
 
 Checks: 100k connections against one node with userspace RSS under 500 MB,
 added p99 latency under 1ms against a direct connection, and upstream
 connection count at or under the configured cap. Allocation budget tests pass
 for every declared hot path.
+
+**Where it stands.** The apparatus is built and every declared hot path has an
+allocation budget and an instruction count. The runs so far are at 1000
+connections, recorded in `product/perf/`: clean, the upstream cap respected,
+348us added at p50 and 4.3ms at p99 at matched load, and 21 KB of userspace
+per connection.
+
+The 100k condition above is unchanged and unmet. Meeting it needs a machine
+that can hold 100k sockets, which is not the development one, and the numbers
+at a thousand are a slope rather than a prediction of it. The p99 target is
+the one to watch: it is four times over at a thousand connections on a
+loopback.
 
 ## M8: FIPS and release
 
