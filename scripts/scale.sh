@@ -382,7 +382,7 @@ echo "=== SCALE: $CONNECTIONS connections, $MODE stack ==="
 require_tools || finish
 build_client || finish
 
-if [[ "$KEEP" != "--keep" ]]; then
+if [[ -z "$KEEP" ]]; then
   trap tear_down EXIT
 fi
 

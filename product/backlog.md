@@ -1303,6 +1303,29 @@ recorded runs say which they are.
   that are idle most of the time. Acceptance: the workload states a think time
   and its distribution, the recorded runs are re-taken, and the added p50 at
   1000 connections is a number a proxy hop could plausibly account for.
+- [ ] `M7.33` A node never leases past its guaranteed share, so two thirds of
+  the upstream cap goes unused. Found by the first scale run against the
+  compose stack, which the local one-node stack could not show: with three
+  nodes and `guaranteed_fraction: 0.5`, node 1 sits at exactly 10 of 60 while
+  600 clients queue behind it, `pgprox_quota_leased` reads 0, and nodes 2 and
+  3 hold nothing. At 1000 connections this is 150 refused transactions.
+  `run::apply_quota` does ask when `held >= guaranteed + leased`, and its
+  result is discarded with `.is_ok()`, so a refusal leaves no log line and the
+  failure is invisible from outside. Acceptance: the request's outcome is
+  logged either way, the reason it does not lease is named, and a scale run at
+  1000 against the compose stack is clean.
+- [ ] `M7.34` No read reached a replica during the compose scale run: both
+  replica pools stayed at zero while the workload marked half its reads
+  eligible with `/* pgprox:replica */`. Either the watermark rule is sending
+  them to the primary, which is correct behaviour for a session that has
+  written and would explain a lot of it but not all, or the hint is not
+  reaching the router. Acceptance: the split between the two is measured
+  rather than argued, and a run reports how many reads landed on a replica.
+- [ ] `M7.35` `scripts/scale.sh --keep` did not keep the stack: the flag set a
+  variable and the trap still compared against the old literal, so every run
+  tore the stack down and the failure above could not be investigated without
+  running it again. Fixed while investigating M7.33; the task is here so the
+  fix has a number.
 - [ ] `M7.21` `bin/pgload` speaks TLS, so a run can measure the deployed
   posture. Today `deploy/docker-compose.scale.yml` turns off `--require-tls`
   on the node under test, which means no scale run has measured what
