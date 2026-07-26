@@ -243,6 +243,7 @@ pub async fn run_with_peers(
         http::router(
             Arc::clone(&app.observatory) as pgprox_admin::Shared,
             Arc::clone(&probes),
+            app.deps.node,
         ),
         {
             let shutdown = shutdown.clone();

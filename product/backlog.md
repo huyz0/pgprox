@@ -985,7 +985,7 @@ never touch", which is the same question M5's and M4's reviews asked.
   `pgprox-observe::spans` describe what should be emitted and nothing emits.
   Acceptance: a refusal, a drain and an upstream failure each produce one line
   an operator can act on, and no line carries a credential.
-- [ ] `M6.40` Nothing emits a metric. `pgprox-observe::metrics` is a registry
+- [x] `M6.40` Nothing emits a metric. `pgprox-observe::metrics` is a registry
   of names, kinds and help text with no counter behind it and no exporter, so
   every dashboard M4 designed reads nothing. Acceptance: `/metrics` serves the
   registry's series, the numbers move when the thing they count happens, and

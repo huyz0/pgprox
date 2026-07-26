@@ -113,6 +113,26 @@ async fn healthz(State(probes): State<Arc<Probes>>) -> impl IntoResponse {
     render(probes.liveness())
 }
 
+/// `GET /metrics`
+///
+/// Text, not JSON: this is the one endpoint whose format is somebody else's.
+async fn metrics(State(state): State<MetricsState>) -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
+        crate::metrics::render(state.observatory.as_ref(), state.node).await,
+    )
+}
+
+/// What the exporter needs: somewhere to read from, and whose numbers they are.
+#[derive(Clone)]
+struct MetricsState {
+    observatory: Shared,
+    node: pgprox_core::ids::NodeId,
+}
+
 /// The probe routes.
 pub fn probe_routes(probes: Arc<Probes>) -> Router {
     Router::new()
@@ -125,8 +145,17 @@ pub fn probe_routes(probes: Arc<Probes>) -> Router {
 ///
 /// The admin routes come from `pgprox-admin` rather than being restated here,
 /// so a route added there is served here without anyone remembering to.
-pub fn router(observatory: Shared, probes: Arc<Probes>) -> Router {
-    probe_routes(probes).merge(pgprox_admin::routes().with_state(observatory))
+pub fn router(observatory: Shared, probes: Arc<Probes>, node: pgprox_core::ids::NodeId) -> Router {
+    let exporter = Router::new()
+        .route("/metrics", axum::routing::get(metrics))
+        .with_state(MetricsState {
+            observatory: Arc::clone(&observatory),
+            node,
+        });
+
+    probe_routes(probes)
+        .merge(exporter)
+        .merge(pgprox_admin::routes().with_state(observatory))
 }
 
 /// Serves until the shutdown future resolves.
@@ -287,7 +316,7 @@ mod tests {
         let (probes, drain, source) = probes_over(Config::default());
         let observatory: Shared = Arc::new(observatory_over(source, drain));
 
-        let router = router(observatory, probes);
+        let router = router(observatory, probes, pgprox_core::ids::NodeId::new(1));
         assert_eq!(get(&router, "/healthz").await.0, 200);
         assert_eq!(get(&router, "/v1/cluster").await.0, 200);
     }
@@ -331,6 +360,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_exporter_is_served_beside_the_probes() {
+        // One port for everything an operator or a collector asks a node, so a
+        // deployment exposes one thing rather than three.
+        let (probes, drain, source) = probes_over(Config::default());
+        let observatory: Shared = Arc::new(observatory_over(source, drain));
+        let router = router(observatory, probes, pgprox_core::ids::NodeId::new(1));
+
+        let (status, body) = get(&router, "/metrics").await;
+        assert_eq!(status, 200);
+        assert!(body.contains("# HELP pgprox_client_conns "), "{body}");
+        assert!(body.contains("node=\"1\""), "{body}");
+    }
+
+    #[tokio::test]
     async fn a_drain_posted_to_the_api_fails_the_probe() {
         // The seam M6.26 exists to close: two DrainStates meant the API said
         // draining, the probe said ready, and Kubernetes kept sending clients
@@ -338,7 +381,11 @@ mod tests {
         // through the trait, because the wiring is what was wrong.
         let (probes, drain, source) = probes_over(Config::default());
         let observatory: Shared = Arc::new(observatory_over(source, drain));
-        let router = router(observatory, Arc::clone(&probes));
+        let router = router(
+            observatory,
+            Arc::clone(&probes),
+            pgprox_core::ids::NodeId::new(1),
+        );
 
         assert_eq!(get(&router, "/readyz").await, (200, "ok".to_owned()));
         assert_eq!(post(&router, "/v1/drain").await.0, 200);
