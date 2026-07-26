@@ -22,3 +22,7 @@ tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "hot_paths"
+harness = false

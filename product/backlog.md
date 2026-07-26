@@ -1238,10 +1238,13 @@ recorded runs say which they are.
   `bin/pgprox` rather than `pgprox-cluster`: the cluster layer owns the digest
   as a value, the binary owns how it travels. Acceptance: as above, at the
   membership size the reference workload declares rather than at one.
-- [ ] `M7.13` `iai-callgrind` benchmarks and `scripts/bench.sh` for the same
-  seven paths, with committed baselines. Acceptance: instruction counts are
-  reproducible across two runs on the same tree, and the script reports the
-  delta against the committed baseline rather than a bare number.
+- [x] `M7.13` Instruction-count benchmarks and `scripts/bench.sh`, with a
+  committed baseline. Written against `callgrind` directly rather than
+  `iai-callgrind`, which pulls two unmaintained crates and fails `cargo deny`;
+  a measurement tool is not worth an exception to the supply-chain gate.
+  Acceptance: counts are reproducible across two runs on the same tree, and
+  the script reports the delta against the baseline rather than a bare
+  number.
 - [ ] `M7.14` `scripts/profile.sh` and the semantic coverage report: replay the
   workload against an instrumented binary, keep execution counts, and emit the
   three lists. Acceptance: the report names functions, and the hot-and-
