@@ -561,7 +561,12 @@ where
             continue;
         }
 
-        if pump(
+        // Session pooling is the tenant asking to keep its connection: the
+        // relay still says when a transaction ended, and this decides whether
+        // that is a reason to give the connection back. A tenant that asked
+        // for it and silently got transaction pooling loses temporary tables
+        // and advisory locks between statements.
+        let releasable = pump(
             wire,
             upstream,
             &mut relay,
@@ -569,8 +574,9 @@ where
             conn,
             &mut swallow_parse_complete,
         )
-        .await?
-        {
+        .await?;
+
+        if releasable && grant.pool.mode != pgprox_core::auth::PoolMode::Session {
             release(&mut held, &mut relay, context, conn).await?;
         }
     }
@@ -2036,6 +2042,52 @@ mod tests {
         .expect("the copy never finished: the relay is wedged");
 
         assert_eq!(finished.last(), Some(&Tag::READY_FOR_QUERY));
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_tenant_that_asked_for_session_pooling_keeps_its_connection() {
+        // The sidecar sends the mode and nothing read it, so every tenant got
+        // transaction pooling. One that asked for session pooling and did not
+        // get it loses temporary tables and advisory locks between statements,
+        // which the pin list catches only for the cases it knows.
+        let addr = fake_postgres().await;
+        let mut context = context_for(addr);
+        let mut grant = grant_for(addr);
+        grant.pool.mode = pgprox_core::auth::PoolMode::Session;
+        context.resolver = Arc::new(FakeCredentialResolver::new().with_grant("good.token", grant));
+        let context = Arc::new(context);
+
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
+        client.write_all(&query).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        // The transaction ended and the connection did not go back.
+        let key = PoolKey::new(ServerId::new("127.0.0.1", addr.port()), "acme", "acme_app");
+        let stats = pgprox_core::pool::UpstreamPool::stats(context.pool.as_ref(), &key);
+        assert_eq!(
+            stats.idle, 0,
+            "a session-pooled connection was returned at a transaction boundary: {stats:?}"
+        );
+        assert_eq!(stats.active, 1);
+
         drop(client);
         let _ = served.await;
     }

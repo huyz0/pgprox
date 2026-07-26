@@ -1071,7 +1071,7 @@ asking of each crate what the binary never touches.
   credentials and no traffic, which is the cheapest denial of service there
   is. Acceptance: a client that sends nothing is closed after the configured
   time, the limit is configurable, and a slow but real client is not affected.
-- [ ] `M6.52` The pool mode a grant asks for is ignored. `PoolHints::mode`
+- [x] `M6.52` The pool mode a grant asks for is ignored. `PoolHints::mode`
   carries transaction, session or statement pooling, the sidecar sends it, and
   nothing reads it: every tenant gets transaction pooling. A tenant that asked
   for session pooling and silently got transaction pooling loses temporary
