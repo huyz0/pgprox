@@ -73,7 +73,7 @@ pub struct Drain<'a> {
     /// Who is still here.
     pub sessions: &'a Arc<Sessions>,
     /// Peers to announce to, so the news does not wait for the next tick.
-    pub peers: &'a [std::net::SocketAddr],
+    pub peers: &'a [String],
     /// Fired to ask idle clients to leave.
     pub draining: &'a Shutdown,
     /// Fired when the grace runs out.

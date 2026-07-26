@@ -17,6 +17,20 @@
 //! | `broken-`    | Returns a response with no primary backend |
 //! | `boom-`      | `Internal`, a sidecar failure rather than a refusal |
 //! | anything else| A valid grant naming the token in its tenant id |
+//!
+//! Where that grant points is read from the environment, so the same binary
+//! serves a unit test (defaults, which resolve to nothing) and the e2e stack
+//! (the compose services). A mock that hard-coded its backends could only ever
+//! be used by tests that never connect to one.
+//!
+//! | Variable | Default |
+//! | --- | --- |
+//! | `PGPROX_MOCK_PRIMARY`   | `db-1.internal:5432` |
+//! | `PGPROX_MOCK_REPLICAS`  | `db-1-replica.internal:5432`, comma separated |
+//! | `PGPROX_MOCK_DATABASE`  | the startup database the client asked for |
+//! | `PGPROX_MOCK_USER`      | the startup user the client asked for |
+//! | `PGPROX_MOCK_PASSWORD`  | `mock-password` |
+//! | `PGPROX_MOCK_TLS`       | `verified`, or `disabled` |
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stdout)]
 
@@ -29,6 +43,31 @@ use tonic::{Request, Response, Status};
 
 #[derive(Default)]
 struct MockSidecar;
+
+/// Splits a `host:port` into its parts, falling back to 5432.
+fn address(text: &str) -> (String, u32) {
+    match text.rsplit_once(':') {
+        Some((host, port)) => (host.to_owned(), port.parse().unwrap_or(5432)),
+        None => (text.to_owned(), 5432),
+    }
+}
+
+/// One backend, as the environment describes it.
+fn backend(text: &str, database: &str, user: &str) -> pb::Backend {
+    let (host, port) = address(text);
+    pb::Backend {
+        host,
+        port,
+        database: database.to_owned(),
+        user: user.to_owned(),
+        password: std::env::var("PGPROX_MOCK_PASSWORD").unwrap_or_else(|_| "mock-password".into()),
+        tls: if std::env::var("PGPROX_MOCK_TLS").as_deref() == Ok("disabled") {
+            pb::TlsMode::Disabled as i32
+        } else {
+            pb::TlsMode::Verified as i32
+        },
+    }
+}
 
 #[tonic::async_trait]
 impl pb::credential_resolver_server::CredentialResolver for MockSidecar {
@@ -63,24 +102,22 @@ impl pb::credential_resolver_server::CredentialResolver for MockSidecar {
             }));
         }
 
+        let database =
+            std::env::var("PGPROX_MOCK_DATABASE").unwrap_or_else(|_| req.startup_database.clone());
+        let user = std::env::var("PGPROX_MOCK_USER").unwrap_or_else(|_| req.startup_user.clone());
+        let primary =
+            std::env::var("PGPROX_MOCK_PRIMARY").unwrap_or_else(|_| "db-1.internal:5432".into());
+        let replicas = std::env::var("PGPROX_MOCK_REPLICAS")
+            .unwrap_or_else(|_| "db-1-replica.internal:5432".into());
+
         Ok(Response::new(pb::ResolveResponse {
             tenant_id: format!("tenant-for-{}", &token[..token.len().min(8)]),
-            primary: Some(pb::Backend {
-                host: "db-1.internal".into(),
-                port: 5432,
-                database: req.startup_database,
-                user: req.startup_user,
-                password: "mock-password".into(),
-                tls: pb::TlsMode::Verified as i32,
-            }),
-            replicas: vec![pb::Backend {
-                host: "db-1-replica.internal".into(),
-                port: 5432,
-                database: "tenant_acme".into(),
-                user: "acme_app".into(),
-                password: "mock-password".into(),
-                tls: pb::TlsMode::Verified as i32,
-            }],
+            primary: Some(backend(&primary, &database, &user)),
+            replicas: replicas
+                .split(',')
+                .filter(|entry| !entry.trim().is_empty())
+                .map(|entry| backend(entry.trim(), &database, &user))
+                .collect(),
             ttl_seconds: 60,
             pool: Some(pb::PoolHints {
                 max_upstream: 16,

@@ -119,7 +119,7 @@ pub struct Context {
     /// How long a client waits for an upstream connection.
     pub acquire_timeout: Duration,
     /// Where the other nodes are, for a cancel this node does not own.
-    pub peers: std::collections::BTreeMap<NodeId, std::net::SocketAddr>,
+    pub peers: std::collections::BTreeMap<NodeId, String>,
     /// The replica sets this node is watching, one per primary.
     pub replicas: Arc<crate::replicas::ReplicaSets>,
     /// Fired when the node has begun draining.
@@ -398,9 +398,58 @@ where
 
         forward(wire, tag, &body);
 
+        // A copy reverses the direction the conversation is going in, and this
+        // loop is one-way. Everything else the proxy relays is a request the
+        // client made and an answer the server gives, so reading until
+        // `ReadyForQuery` is exactly right; a copy-in is the server asking the
+        // client for data, and waiting for a `ReadyForQuery` that cannot
+        // arrive until the client has sent it wedges both sides. `pgprox-proto`
+        // has tracked COPY since M1.8 and nothing here used it.
+        if matches!(
+            decoded,
+            BackendMessage::CopyInResponse | BackendMessage::CopyBothResponse
+        ) {
+            wire.flush().await?;
+            copying(wire, upstream, &mut body).await?;
+            continue;
+        }
+
         if matches!(decoded, BackendMessage::ReadyForQuery(_)) {
             wire.flush().await?;
             return Ok(server.release);
+        }
+    }
+}
+
+/// Moves the client's copy data upstream until the copy ends.
+///
+/// Returns when the client has said it is finished, with `CopyDone` or
+/// `CopyFail`, or when it has sent something else: `Terminate` and a stray
+/// `Query` both end the copy from the protocol's point of view, and the
+/// server's answer to either comes back through the caller's loop.
+///
+/// The direction is one-way on purpose. During a copy-in the server sends
+/// nothing until the stream ends, apart from an `ErrorResponse` it is entitled
+/// to send at any point; that error arrives on the caller's next read, which is
+/// where every other server message is handled. Racing both directions here
+/// would put two readers on the same connection for no case that needs one.
+async fn copying<S>(
+    wire: &mut Wire<S>,
+    upstream: &mut Upstreamed<crate::dial::Stream>,
+    body: &mut Vec<u8>,
+) -> Result<(), ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    use pgprox_proto::frame::Tag;
+
+    loop {
+        let tag = wire.read_tagged(body).await?;
+        forward(&mut upstream.wire, tag, body);
+        upstream.wire.flush().await?;
+
+        if tag != Tag::COPY_DATA {
+            return Ok(());
         }
     }
 }
@@ -450,7 +499,7 @@ impl Context {
             // A peer this node has no address for is a cancel that cannot be
             // delivered, which is the same outcome as an unknown key: nothing.
             Routing::Peer(node) => {
-                if let Some(peer) = self.peers.get(&node).copied() {
+                if let Some(peer) = self.peers.get(&node) {
                     crate::gossip::forward(peer, conn).await;
                 }
             }
@@ -720,6 +769,16 @@ mod tests {
                             }
                             continue;
                         }
+                        // A copy-in, answered as the server answers one: an
+                        // invitation, then nothing until the client says it is
+                        // done.
+                        if sql.contains("COPY") && sql.contains("FROM STDIN") {
+                            if serve_copy_in(&mut socket).await.is_err() {
+                                return;
+                            }
+                            continue;
+                        }
+
                         // The transaction status is what the relay releases on,
                         // so the fake has to track it: answering Idle to a
                         // BEGIN would make every session look releasable while
@@ -760,6 +819,37 @@ mod tests {
 
     /// Where the fake primary says the last write landed, which is ahead of it.
     const PRIMARY_WRITTEN: &str = "16/C0000000";
+
+    /// Answers a `COPY ... FROM STDIN` the way a server does: an invitation,
+    /// silence until the client finishes, then a completion.
+    ///
+    /// Silence is the point. A server that answered a copy-in immediately
+    /// would not reproduce the deadlock this fake exists to catch.
+    async fn serve_copy_in(socket: &mut tokio::net::TcpStream) -> std::io::Result<()> {
+        let mut invitation = vec![Tag::COPY_IN_RESPONSE.get()];
+        // Length, the overall format (text), and no per-column formats.
+        invitation.extend_from_slice(&7_u32.to_be_bytes());
+        invitation.extend_from_slice(&[0, 0, 0]);
+        socket.write_all(&invitation).await?;
+
+        loop {
+            let mut header = [0_u8; 5];
+            socket.read_exact(&mut header).await?;
+            let len = u32::from_be_bytes(header[1..].try_into().unwrap_or([0; 4])) as usize;
+            let mut chunk = vec![0; len.saturating_sub(4)];
+            socket.read_exact(&mut chunk).await?;
+            if header[0] != Tag::COPY_DATA.get() {
+                break;
+            }
+        }
+
+        let mut done = vec![Tag::COMMAND_COMPLETE.get()];
+        let text = b"COPY 2\0";
+        done.extend_from_slice(&u32::try_from(text.len() + 4).unwrap().to_be_bytes());
+        done.extend_from_slice(text);
+        encode::ready_for_query(&mut done, TxStatus::Idle);
+        socket.write_all(&done).await
+    }
 
     /// One `DataRow` carrying text values.
     fn text_row(values: &[Option<&str>]) -> Vec<u8> {
@@ -1043,6 +1133,66 @@ mod tests {
             "a read-only statement never reached the replica"
         );
 
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_copy_from_stdin_completes_rather_than_wedging() {
+        // The first pgbench run the e2e stack ever did found this: the server
+        // answers a COPY with CopyInResponse and then waits for the client,
+        // while a one-way pump waits for a ReadyForQuery that cannot arrive
+        // until the client has been let through. Both sides waited forever and
+        // the session held an upstream connection while they did.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut copy = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut copy, "COPY t FROM STDIN");
+        client.write_all(&copy).await.unwrap();
+
+        // The server's invitation reaches the client.
+        let (tag, _) = expect(&mut client).await;
+        assert_eq!(tag, Tag::COPY_IN_RESPONSE);
+
+        // Which the client answers with data and an end, and only then does
+        // the exchange finish.
+        let mut rows = Vec::new();
+        for row in ["1\tone\n", "2\ttwo\n"] {
+            rows.push(Tag::COPY_DATA.get());
+            rows.extend_from_slice(&u32::try_from(row.len() + 4).unwrap().to_be_bytes());
+            rows.extend_from_slice(row.as_bytes());
+        }
+        rows.push(Tag::COPY_DONE.get());
+        rows.extend_from_slice(&4_u32.to_be_bytes());
+
+        client.write_all(&rows).await.unwrap();
+
+        let finished = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut seen = Vec::new();
+            while seen.len() < 2 {
+                seen.push(expect(&mut client).await.0);
+            }
+            seen
+        })
+        .await
+        .expect("the copy never finished: the relay is wedged");
+
+        assert_eq!(finished.last(), Some(&Tag::READY_FOR_QUERY));
         drop(client);
         let _ = served.await;
     }
@@ -1437,7 +1587,8 @@ mod tests {
         let mut elsewhere = context_for(upstream);
         elsewhere.node = NodeId::new(2);
         elsewhere.cancels = Arc::new(Registry::new(NodeId::new(2), Box::new(Fixed)));
-        elsewhere.peers = std::collections::BTreeMap::from([(NodeId::new(1), gossip_at)]);
+        elsewhere.peers =
+            std::collections::BTreeMap::from([(NodeId::new(1), gossip_at.to_string())]);
         elsewhere.deliver(conn).await;
 
         let key = tokio::time::timeout(Duration::from_secs(5), caught)
@@ -1465,8 +1616,10 @@ mod tests {
         // A peer address that would answer, so the assertion is about the rule
         // rather than about the address being missing.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        context.peers =
-            std::collections::BTreeMap::from([(NodeId::new(1), listener.local_addr().unwrap())]);
+        context.peers = std::collections::BTreeMap::from([(
+            NodeId::new(1),
+            listener.local_addr().unwrap().to_string(),
+        )]);
 
         crate::gossip::CancelSink::cancel(&context, ConnId::new(NodeId::new(1), 7)).await;
 

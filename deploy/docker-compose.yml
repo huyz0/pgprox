@@ -1,0 +1,158 @@
+# The e2e stack: three proxy nodes, a primary, two replicas, a sidecar each.
+#
+# The shape is the deployment shape rather than the smallest thing that would
+# run. Three nodes because quota, gossip and cancellation all behave
+# differently with one. Two replicas because one cannot show a read being
+# steered away from a replica that has fallen behind. A sidecar per node
+# because that is how it ships: over a Unix socket in the same pod, never over
+# the network.
+
+name: pgprox-e2e
+
+x-proxy: &proxy
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  depends_on:
+    primary:
+      condition: service_healthy
+  volumes:
+    - ./config:/etc/pgprox:ro
+  environment:
+    # Where the mock sidecar sends every tenant. A real sidecar reads this from
+    # the control plane; the mock is told.
+    PGPROX_MOCK_PRIMARY: primary:5432
+    PGPROX_MOCK_REPLICAS: replica-1:5432,replica-2:5432
+    PGPROX_MOCK_DATABASE: tenant_acme
+    PGPROX_MOCK_USER: acme_app
+    PGPROX_MOCK_PASSWORD: acme-password
+    PGPROX_MOCK_TLS: disabled
+  # The sidecar and the proxy share a pod in production, which here is one
+  # container running both over a socket neither exposes.
+  entrypoint:
+    - /bin/sh
+    - -c
+    - |
+      /usr/local/bin/mock_sidecar /tmp/sidecar.sock &
+      # The proxy refuses to start without its sidecar, which is right: a node
+      # that cannot resolve credentials authenticates nobody. In a pod the
+      # kubelet restarts it until the sidecar is up; here the two share a
+      # container, so waiting is both simpler and closer to the intent.
+      for _ in $$(seq 1 60); do
+        [ -S /tmp/sidecar.sock ] && break
+        sleep 0.5
+      done
+      exec /usr/local/bin/pgprox \
+        --config /etc/pgprox/config.yaml \
+        --sidecar /tmp/sidecar.sock \
+        --listen 0.0.0.0:6432 \
+        --admin 0.0.0.0:9090 \
+        --gossip 0.0.0.0:6433 \
+        --node "$${PGPROX_NODE}" \
+        --node-name "$${PGPROX_NODE_NAME}" \
+        --peer "$${PGPROX_PEER_A}" \
+        --peer "$${PGPROX_PEER_B}"
+  healthcheck:
+    # The proxy's own readiness, which is what the drain assertion then watches
+    # change. A node that is up but not ready is not a node the stack should
+    # start running assertions against.
+    test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9090/readyz"]
+    interval: 2s
+    timeout: 2s
+    retries: 30
+
+services:
+  primary:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - ./primary/init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  replica-1: &replica
+    image: postgres:17-alpine
+    depends_on:
+      primary:
+        condition: service_healthy
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      PRIMARY_HOST: primary
+    user: postgres
+    entrypoint: ["/bin/bash", "/replica-entrypoint.sh"]
+    volumes:
+      - ./replica/entrypoint.sh:/replica-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  replica-2:
+    <<: *replica
+
+  pgprox-1:
+    <<: *proxy
+    environment:
+      PGPROX_NODE: "1"
+      PGPROX_NODE_NAME: pgprox-1
+      PGPROX_PEER_A: 2=pgprox-2:6433
+      PGPROX_PEER_B: 3=pgprox-3:6433
+      PGPROX_MOCK_PRIMARY: primary:5432
+      PGPROX_MOCK_REPLICAS: replica-1:5432,replica-2:5432
+      PGPROX_MOCK_DATABASE: tenant_acme
+      PGPROX_MOCK_USER: acme_app
+      PGPROX_MOCK_PASSWORD: acme-password
+      PGPROX_MOCK_TLS: disabled
+    ports:
+      - "16432:6432"
+      - "19090:9090"
+
+  pgprox-2:
+    <<: *proxy
+    environment:
+      PGPROX_NODE: "2"
+      PGPROX_NODE_NAME: pgprox-2
+      PGPROX_PEER_A: 1=pgprox-1:6433
+      PGPROX_PEER_B: 3=pgprox-3:6433
+      PGPROX_MOCK_PRIMARY: primary:5432
+      PGPROX_MOCK_REPLICAS: replica-1:5432,replica-2:5432
+      PGPROX_MOCK_DATABASE: tenant_acme
+      PGPROX_MOCK_USER: acme_app
+      PGPROX_MOCK_PASSWORD: acme-password
+      PGPROX_MOCK_TLS: disabled
+    ports:
+      - "16433:6432"
+      - "19091:9090"
+
+  pgprox-3:
+    <<: *proxy
+    environment:
+      PGPROX_NODE: "3"
+      PGPROX_NODE_NAME: pgprox-3
+      PGPROX_PEER_A: 1=pgprox-1:6433
+      PGPROX_PEER_B: 2=pgprox-2:6433
+      PGPROX_MOCK_PRIMARY: primary:5432
+      PGPROX_MOCK_REPLICAS: replica-1:5432,replica-2:5432
+      PGPROX_MOCK_DATABASE: tenant_acme
+      PGPROX_MOCK_USER: acme_app
+      PGPROX_MOCK_PASSWORD: acme-password
+      PGPROX_MOCK_TLS: disabled
+    ports:
+      - "16434:6432"
+      - "19092:9090"
+
+  # Where pgbench and psql run from, so the e2e script needs no Postgres client
+  # installed on the machine running it.
+  client:
+    image: postgres:17-alpine
+    depends_on:
+      pgprox-1:
+        condition: service_healthy
+    entrypoint: ["sleep", "infinity"]

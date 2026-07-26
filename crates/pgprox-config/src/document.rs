@@ -75,7 +75,15 @@ pub struct ServerDocument {
 #[serde(deny_unknown_fields)]
 pub struct NodeDocument {
     /// `active` or `drain`.
-    pub mode: String,
+    ///
+    /// Optional, because listing a node is also how the fleet is declared:
+    /// `max_client_conns` is per node but the guaranteed share is divided by
+    /// the configured fleet size, so an operator has to be able to write
+    /// `pgprox-2: {}` and mean "exists, taking work". Requiring the field made
+    /// the only way to declare a node a line that also said something about
+    /// its mode.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 impl ConfigDocument {
@@ -115,9 +123,13 @@ impl ConfigDocument {
 
         let mut nodes = BTreeMap::new();
         for (name, node) in self.nodes {
-            let mode = parse_mode(&node.mode).ok_or_else(|| ConfigError::Invalid {
+            let Some(text) = node.mode else {
+                nodes.insert(name, NodeOverride::default());
+                continue;
+            };
+            let mode = parse_mode(&text).ok_or_else(|| ConfigError::Invalid {
                 field: format!("nodes.{name}.mode"),
-                reason: format!("expected `active` or `drain`, got `{}`", node.mode),
+                reason: format!("expected `active` or `drain`, got `{text}`"),
             })?;
             nodes.insert(name, NodeOverride { mode });
         }
@@ -414,6 +426,15 @@ nodes:
         }
 
         let config = parse("nodes:\n  pgprox-2: { mode: active }\n").unwrap();
+        assert_eq!(config.mode_for("pgprox-2"), NodeMode::Active);
+
+        // And a node listed with nothing said about it, which is how the fleet
+        // is declared: the guaranteed share is divided by the configured size,
+        // so an operator has to be able to write a node down without saying
+        // anything about its mode.
+        let listed = parse("nodes:\n  pgprox-2: {}\n  pgprox-3: {}\n").unwrap();
+        assert_eq!(listed.nodes.len(), 2);
+        assert_eq!(listed.mode_for("pgprox-3"), NodeMode::Active);
         assert_eq!(config.mode_for("pgprox-2"), NodeMode::Active);
     }
 

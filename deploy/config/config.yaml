@@ -1,0 +1,18 @@
+# The configuration every node in the e2e stack reads.
+#
+# One document for the fleet, with per-node overrides, because that is how a
+# ConfigMap works: the same mount on every pod, and a node finds itself in it
+# by name.
+max_client_conns: 200
+drain_grace: 10s
+grant_ttl_cap: 300s
+
+servers:
+  - server: primary:5432
+    max_connections: 60
+    guaranteed_fraction: 0.5
+
+nodes:
+  pgprox-1: {}
+  pgprox-2: {}
+  pgprox-3: {}

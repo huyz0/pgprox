@@ -70,7 +70,7 @@ pub struct Options {
     /// by the configured size on purpose. Keyed by node number because a quota
     /// request has to reach one specific node, the leader, rather than
     /// whichever peer answers first.
-    pub peers: std::collections::BTreeMap<NodeId, SocketAddr>,
+    pub peers: std::collections::BTreeMap<NodeId, String>,
 }
 
 impl Default for Options {
@@ -166,14 +166,22 @@ impl Options {
 }
 
 /// Parses a `node=host:port` peer.
-fn peer(raw: &str) -> Result<(NodeId, SocketAddr), StartupError> {
+fn peer(raw: &str) -> Result<(NodeId, String), StartupError> {
     let (node, addr) = raw.split_once('=').ok_or_else(|| StartupError::Arguments {
         detail: format!("--peer must be node=host:port, got {raw}"),
     })?;
     let node = node.parse().map_err(|_| StartupError::Arguments {
         detail: format!("--peer node must be a number, got {node}"),
     })?;
-    Ok((NodeId::new(node), address(addr, "--peer")?))
+    // Not parsed into an address: a peer is a service name in every deployment
+    // this is built for, and the address behind it changes when a pod is
+    // replaced. Only the shape is checked here.
+    if !addr.contains(':') {
+        return Err(StartupError::Arguments {
+            detail: format!("--peer address must be host:port, got {addr}"),
+        });
+    }
+    Ok((NodeId::new(node), addr.to_owned()))
 }
 
 /// Parses a listen address, naming the flag that carried it.
@@ -377,10 +385,14 @@ mod tests {
         // One flag per peer. A second --peer overwriting the first would leave
         // a three-node fleet gossiping to one node and never converging.
         let options =
-            Options::parse(["--peer", "2=10.0.0.2:6433", "--peer", "3=10.0.0.3:6433"]).unwrap();
+            Options::parse(["--peer", "2=pgprox-2:6433", "--peer", "3=10.0.0.3:6433"]).unwrap();
 
         assert_eq!(options.peers.len(), 2);
-        assert_eq!(options.peers[&NodeId::new(2)].port(), 6433);
+        assert_eq!(
+            options.peers[&NodeId::new(2)],
+            "pgprox-2:6433",
+            "a peer named by service name was rejected or rewritten"
+        );
     }
 
     #[test]

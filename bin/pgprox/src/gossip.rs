@@ -19,6 +19,15 @@
 //! response bodies: a field can be renamed in core without silently changing
 //! what a running fleet speaks.
 //!
+//! # Peers are names, resolved per connection
+//!
+//! A peer is kept as it was written and handed to `connect` each time, rather
+//! than parsed into a `SocketAddr` at startup. Two reasons, and either alone
+//! would decide it: a fleet is addressed by service name, which is not an IP
+//! and cannot be parsed as one, and the address behind that name changes when
+//! a pod is replaced. A node that resolved once at startup would gossip at a
+//! peer that has moved.
+//!
 //! # An exchange, not a broadcast
 //!
 //! A round opens a connection, sends this node's digest, and reads the peer's
@@ -38,7 +47,6 @@
 //! a peer that keeps talking on one connection is doing something a peer does
 //! not do.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -324,14 +332,14 @@ fn encode(message: &Message) -> Vec<u8> {
 /// Peers are contacted concurrently: a round that walked them in sequence
 /// would take the sum of the timeouts when several were down, and the failure
 /// detector would start suspecting nodes that are perfectly healthy.
-pub async fn round(peers: &[SocketAddr], coordinator: &Arc<GossipCoordinator>) -> usize {
+pub async fn round(peers: &[String], coordinator: &Arc<GossipCoordinator>) -> usize {
     let mut reached = Vec::new();
     for peer in peers {
         reached.push(tokio::spawn({
             let coordinator = Arc::clone(coordinator);
-            let peer = *peer;
+            let peer = peer.clone();
             async move {
-                tokio::time::timeout(PEER_TIMEOUT, exchange(peer, &coordinator))
+                tokio::time::timeout(PEER_TIMEOUT, exchange(&peer, &coordinator))
                     .await
                     .is_ok_and(|result| result.is_ok())
             }
@@ -354,7 +362,7 @@ pub async fn round(peers: &[SocketAddr], coordinator: &Arc<GossipCoordinator>) -
 /// Fails when the peer cannot be reached or does not answer. Both are ordinary:
 /// a node that is restarting is unreachable for a few seconds and the failure
 /// detector is what decides that it matters.
-pub async fn exchange(peer: SocketAddr, coordinator: &GossipCoordinator) -> std::io::Result<()> {
+pub async fn exchange(peer: &str, coordinator: &GossipCoordinator) -> std::io::Result<()> {
     let stream = tokio::net::TcpStream::connect(peer).await?;
     speak(stream, coordinator).await
 }
@@ -389,7 +397,7 @@ where
 /// at all: both mean falling back to the guaranteed share, and the guaranteed
 /// share cannot breach the cap.
 pub async fn ask(
-    peer: SocketAddr,
+    peer: &str,
     server: &ServerId,
     holder: NodeId,
     want: u32,
@@ -402,7 +410,7 @@ pub async fn ask(
 
 /// The request itself, split out so a test can drive it over a duplex.
 async fn ask_over(
-    peer: SocketAddr,
+    peer: &str,
     server: &ServerId,
     holder: NodeId,
     want: u32,
@@ -488,13 +496,13 @@ impl CancelSink for NoCancels {
 /// Nothing comes back and nothing is awaited beyond the send: a `CancelRequest`
 /// is unacknowledged in the protocol itself, and making this one answer would
 /// give a prober an oracle the real thing does not have.
-pub async fn forward(peer: SocketAddr, conn: ConnId) {
+pub async fn forward(peer: &str, conn: ConnId) {
     let message = Message::Cancel {
         node: conn.node().get(),
         secret: conn.secret(),
     };
 
-    let _ = tokio::time::timeout(PEER_TIMEOUT, async move {
+    let _ = tokio::time::timeout(PEER_TIMEOUT, async {
         let mut stream = tokio::net::TcpStream::connect(peer).await.ok()?;
         stream.write_all(&encode(&message)).await.ok()?;
         stream.flush().await.ok()
@@ -508,13 +516,13 @@ pub async fn forward(peer: SocketAddr, conn: ConnId) {
 /// be granted lives in `pgprox-cluster`, on the node that answers.
 #[derive(Debug)]
 pub struct GossipTransport {
-    peers: std::collections::BTreeMap<NodeId, SocketAddr>,
+    peers: std::collections::BTreeMap<NodeId, String>,
 }
 
 impl GossipTransport {
     /// A transport over a known peer table.
     #[must_use]
-    pub fn new(peers: std::collections::BTreeMap<NodeId, SocketAddr>) -> Self {
+    pub fn new(peers: std::collections::BTreeMap<NodeId, String>) -> Self {
         Self { peers }
     }
 }
@@ -531,11 +539,7 @@ impl pgprox_cluster::service::QuotaTransport for GossipTransport {
         // A leader this node has no address for is the same as no leader: it
         // falls back to its guaranteed share, which needs no coordination and
         // cannot breach the cap.
-        let peer = self
-            .peers
-            .get(&leader)
-            .copied()
-            .ok_or(QuotaError::NoLeader)?;
+        let peer = self.peers.get(&leader).ok_or(QuotaError::NoLeader)?;
         ask(peer, server, holder, want).await
     }
 }
@@ -702,7 +706,10 @@ mod tests {
         let dead_addr = dead.local_addr().unwrap();
         drop(dead);
 
-        assert_eq!(round(&[addr, dead_addr], &node).await, 1);
+        assert_eq!(
+            round(&[addr.to_string(), dead_addr.to_string()], &node).await,
+            1
+        );
         assert!(
             node.digests()
                 .iter()
@@ -824,7 +831,13 @@ mod tests {
         let addr = dead.local_addr().unwrap();
         drop(dead);
 
-        let refused = ask(addr, &ServerId::new("db-1", 5432), NodeId::new(2), 1).await;
+        let refused = ask(
+            &addr.to_string(),
+            &ServerId::new("db-1", 5432),
+            NodeId::new(2),
+            1,
+        )
+        .await;
         assert_eq!(refused, Err(QuotaError::NoLeader));
     }
 

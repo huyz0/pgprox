@@ -1,0 +1,7 @@
+# The build context is the whole repository, so what it must not carry is
+# everything a build produces. `target/` alone is gigabytes, and sending it
+# costs more than the compile it would save: the build has its own cache mount.
+target/
+target-coverage/
+reference/
+.git/

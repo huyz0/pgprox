@@ -219,7 +219,7 @@ pub async fn run(app: App, listeners: Listeners, shutdown: Shutdown) -> std::io:
 pub async fn run_with_peers(
     app: App,
     listeners: Listeners,
-    peers: BTreeMap<pgprox_core::ids::NodeId, SocketAddr>,
+    peers: BTreeMap<pgprox_core::ids::NodeId, String>,
     shutdown: Shutdown,
 ) -> std::io::Result<()> {
     // Set here rather than at build time: the peer table is a deployment fact
@@ -227,7 +227,7 @@ pub async fn run_with_peers(
     // fallback it had, which is its guaranteed share.
     app.cluster
         .set_transport(Arc::new(crate::gossip::GossipTransport::new(peers.clone())));
-    let addresses: Vec<SocketAddr> = peers.values().copied().collect();
+    let addresses: Vec<String> = peers.values().cloned().collect();
     let ceiling = app.config.max_client_conns;
     let gate = Arc::new(Gate::new(ceiling));
     let context = Arc::new(Context {
@@ -318,7 +318,7 @@ pub async fn run_with_peers(
 /// What the tick needs to start or reverse a drain.
 struct Drainer<'a> {
     context: &'a Arc<Context>,
-    addresses: &'a [SocketAddr],
+    addresses: &'a [String],
     grace: Duration,
 }
 
@@ -355,7 +355,7 @@ async fn follow_drain(app: &App, probes: &Arc<Probes>, drainer: &Drainer<'_>) {
 async fn ticker(
     app: &App,
     probes: &Arc<Probes>,
-    peers: &[SocketAddr],
+    peers: &[String],
     drainer: &Drainer<'_>,
     shutdown: &Shutdown,
 ) -> u64 {
@@ -550,13 +550,13 @@ mod tests {
         let running = tokio::spawn(run_with_peers(
             first,
             one,
-            BTreeMap::from([(NodeId::new(2), two_at.gossip)]),
+            BTreeMap::from([(NodeId::new(2), two_at.gossip.to_string())]),
             shutdown.clone(),
         ));
         let peer = tokio::spawn(run_with_peers(
             second,
             two,
-            BTreeMap::from([(NodeId::new(1), one_at.gossip)]),
+            BTreeMap::from([(NodeId::new(1), one_at.gossip.to_string())]),
             shutdown.clone(),
         ));
 

@@ -914,6 +914,15 @@ rule already allows `pgprox-proto`.
   `check-crate.sh` runs clippy with `--all-features`, where the import is used.
   Acceptance: the default build is warning-free, and the check that missed it
   covers the default feature set too.
+- [ ] `M6.35` `check-coverage.sh` reports stale numbers. Its `cargo llvm-cov
+  clean --profraw-only` keeps the instrumented build, which is the point, but
+  it also keeps object files from a previous run of a different crate, and the
+  report then attributes zero coverage to functions the run did execute. Seen
+  twice: `pgprox-config` read 85% and 98% for the same tree minutes apart, and
+  `pgprox-route` read 94% and 99%. A gate that reports a different number each
+  time is a gate nobody can act on, and the direction it errs in is not always
+  the safe one. Acceptance: two consecutive runs over the same tree report the
+  same number, and the fix does not put the six-minute rebuild back.
 - [x] `M6.28` Poll the replicas a grant names, and route from that. Found
   wiring the run loop: `M5.18` built `ReplicaWatch`, `M6.14` built
   `SqlReplicaProbe`, and the session path builds a fresh empty `Replicas` per
@@ -934,7 +943,16 @@ rule already allows `pgprox-proto`.
 - [x] `M6.22` The drain sequence, end to end. Acceptance: `/readyz` fails
   first, gossip announces before any client is closed, in-flight transactions
   finish, and the grace timer force-closes the remainder.
-- [ ] `M6.23` `deploy/` and `scripts/e2e.sh`: three proxy nodes, a primary, two
+- [x] `M6.36` The relay deadlocks on `COPY ... FROM STDIN`. Found by the first
+  pgbench run the stack ever did, during `--initialize`. `pump` reads server
+  frames until `ReadyForQuery`, which never arrives during a copy-in: the
+  server answers `CopyInResponse` and then waits for the client, while the
+  proxy waits for the server. Both sides wait forever and the session is
+  wedged, holding an upstream connection. `pgprox-proto` has tracked COPY mode
+  since M1.8 and the shell does not use it. Acceptance: a `COPY FROM STDIN`
+  completes through the proxy, a `COPY TO STDOUT` still does, and a session in
+  copy-in is never released.
+- [x] `M6.23` `deploy/` and `scripts/e2e.sh`: three proxy nodes, a primary, two
   replicas, the mock sidecar. Acceptance: the script brings the stack up and
   reports which component failed when it does not, rather than a compose exit
   code.
