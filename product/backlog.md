@@ -956,7 +956,7 @@ rule already allows `pgprox-proto`.
   replicas, the mock sidecar. Acceptance: the script brings the stack up and
   reports which component failed when it does not, rather than a compose exit
   code.
-- [ ] `M6.24` The e2e assertions the milestone is judged on: pgbench clean,
+- [x] `M6.24` The e2e assertions the milestone is judged on: pgbench clean,
   drain with zero failed transactions, no replica read behind the session
   watermark. Acceptance: each assertion fails when its property is broken on
   purpose, verified once per assertion.

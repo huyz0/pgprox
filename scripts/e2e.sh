@@ -4,6 +4,7 @@
 #   scripts/e2e.sh          bring the stack up, run every assertion, tear down
 #   scripts/e2e.sh up       bring it up and leave it running
 #   scripts/e2e.sh down     tear it down
+#   scripts/e2e.sh prove    break each property on purpose and check it is caught
 #
 # The point of this script over `docker compose up` is that a failure says
 # which component failed and what it last said, rather than an exit code. A
@@ -225,6 +226,109 @@ assert_no_read_behind_the_watermark() {
 }
 
 # ---------------------------------------------------------------------------
+# Proving the assertions are not vacuous
+#
+# An assertion that cannot fail is worse than no assertion, because it is
+# believed. Each of these breaks the property the assertion above it checks and
+# requires the same predicate to notice. They run against the same stack, so
+# what is being proven is the check rather than a copy of it.
+
+# pgbench's summary is what says a run was clean, and this is a run that was
+# not: a drained node refuses new connections, so the client cannot open the
+# eight it wants.
+prove_pgbench_check_catches_failures() {
+  in_admin pgprox-3 POST /v1/drain >/dev/null
+  sleep 3
+
+  local out
+  out="$("${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" client \
+    pgbench --host pgprox-3 --port "$PROXY_PORT" --username acme_app \
+      --client 4 --jobs 2 --time 5 --no-vacuum tenant_acme 2>&1)" || true
+
+  if grep -qE 'number of failed transactions: 0 ' <<<"$out"; then
+    fail "the pgbench check reported a clean run against a node refusing connections"
+  else
+    ok "proven: the pgbench check catches a run that was not clean"
+  fi
+
+  in_admin pgprox-3 POST /v1/undrain >/dev/null
+  sleep 2
+}
+
+# The drain assertion says a drain loses no transactions. This is what losing
+# them looks like: the node is killed rather than drained, so whatever it was
+# holding dies with it.
+prove_drain_check_catches_losses() {
+  local out
+  "${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" client \
+    pgbench --host pgprox-3 --port "$PROXY_PORT" --username acme_app \
+      --client 4 --jobs 2 --time 15 --no-vacuum tenant_acme >/tmp/pgprox-killed.out 2>&1 &
+  local bench=$!
+
+  sleep 5
+  "${COMPOSE[@]}" kill pgprox-3 >/dev/null 2>&1
+  wait "$bench" || true
+  out="$(cat /tmp/pgprox-killed.out)"
+
+  if grep -qE 'number of failed transactions: 0 ' <<<"$out"; then
+    fail "the drain check reported no losses after the node was killed mid-transaction"
+  else
+    ok "proven: the drain check catches transactions lost to a node going away"
+  fi
+
+  "${COMPOSE[@]}" start pgprox-3 >/dev/null 2>&1
+}
+
+# The watermark assertion is a write followed by a read of the same row. This
+# is what a stale read looks like: the same pair, against a replica whose
+# replay is paused, with the proxy out of the way. If the predicate cannot see
+# it here, it could not have seen it above.
+prove_watermark_check_catches_a_stale_read() {
+  local answer
+  direct primary 'CREATE TABLE IF NOT EXISTS stale_probe (id int primary key, n int)' >/dev/null
+  direct primary 'INSERT INTO stale_probe VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET n = 1' >/dev/null
+  # Let the replica catch up to the row existing, then stop it there.
+  sleep 2
+  # As the superuser: pausing replay is not a privilege a tenant's role has,
+  # and the first version of this hid the refusal in /dev/null and concluded
+  # the replica was up to date.
+  local paused
+  paused="$(as_superuser replica-1 'SELECT pg_wal_replay_pause()' 2>&1)"
+  if grep -qi 'error' <<<"$paused"; then
+    fail "could not pause replay, so nothing was proven: $paused"
+    return 1
+  fi
+
+  direct primary 'UPDATE stale_probe SET n = 2 WHERE id = 1' >/dev/null
+  answer="$(direct replica-1 'SELECT n FROM stale_probe WHERE id = 1' | tr -d '[:space:]')"
+
+  if [[ "$answer" == "2" ]]; then
+    fail "a replica with replay paused answered with the new value: the setup proves nothing"
+  else
+    ok "proven: the watermark check catches a read behind a write (replica said '${answer:-nothing}')"
+  fi
+
+  as_superuser replica-1 'SELECT pg_wal_replay_resume()' >/dev/null
+}
+
+# psql at a database as the superuser, for the things a tenant's role may not
+# do. Only the negative tests need this.
+as_superuser() {
+  local host="$1" sql="$2"
+  "${COMPOSE[@]}" exec -T -e PGPASSWORD=postgres client \
+    psql --host "$host" --port 5432 --username postgres --dbname tenant_acme \
+      --no-align --tuples-only --quiet -c "$sql" 2>&1
+}
+
+# psql straight at a database, with no proxy in the way.
+direct() {
+  local host="$1" sql="$2"
+  "${COMPOSE[@]}" exec -T -e PGPASSWORD=acme-password client \
+    psql --host "$host" --port 5432 --username acme_app --dbname tenant_acme \
+      --no-align --tuples-only --quiet -c "$sql" 2>&1
+}
+
+# ---------------------------------------------------------------------------
 
 case "${1:-all}" in
   down)
@@ -236,7 +340,7 @@ case "${1:-all}" in
     bring_up || { fail "see above"; finish; }
     finish
     ;;
-  all) ;;
+  all | prove) ;;
   *)
     fail "usage: e2e.sh [up|down]"
     finish
@@ -246,10 +350,16 @@ esac
 trap tear_down EXIT
 
 if bring_up; then
-  assert_every_node_serves || true
-  assert_pgbench_is_clean || true
-  assert_drain_loses_no_transactions || true
-  assert_no_read_behind_the_watermark || true
+  if [[ "${1:-all}" == "prove" ]]; then
+    prove_pgbench_check_catches_failures || true
+    prove_drain_check_catches_losses || true
+    prove_watermark_check_catches_a_stale_read || true
+  else
+    assert_every_node_serves || true
+    assert_pgbench_is_clean || true
+    assert_drain_loses_no_transactions || true
+    assert_no_read_behind_the_watermark || true
+  fi
 fi
 
 finish
