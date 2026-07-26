@@ -14,7 +14,7 @@ pgprox-proto = { path = "../pgprox-proto" }
 pgprox-pool = { path = "../pgprox-pool" }
 pgprox-route = { path = "../pgprox-route" }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util"] }
+tokio = { workspace = true, features = ["io-util", "sync"] }
 async-trait.workspace = true
 
 [dev-dependencies]

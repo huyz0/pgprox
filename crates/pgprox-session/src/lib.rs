@@ -32,7 +32,7 @@ pub use auth::{
     StaticCredentials, TokenAuth,
 };
 pub use connect::{Need, UpstreamHandshake, UpstreamScram};
-pub use probe::{ParameterCache, Parameters};
+pub use probe::{ParameterCache, Parameters, REPLICA_QUERY, SqlReplicaProbe};
 pub use relay::{ClientAction, ClientOutcome, Relay, ServerOutcome};
 pub use resume::{ConnectionMemory, SessionMemory, Step, before_bind, on_acquire, replayed};
 pub use shell::{

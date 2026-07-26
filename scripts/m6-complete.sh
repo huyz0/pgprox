@@ -29,10 +29,13 @@ done
 # The two seams left open on purpose through M1 to M5, because implementing
 # either needs a socket and the crates that own them are sans-I/O. A milestone
 # that composes everything and leaves these as fakes has composed nothing.
-grep -rqs "impl Connector for" "$SESSION" \
+# Named by the implementing type rather than by the trait. "impl Connector
+# for" matched a fake in a test module, which is the failure this pair of
+# checks exists to catch, so it was catching itself.
+grep -rqsE "Connector for PgConnector" "$SESSION" \
   && ok "Connector has a real implementation" \
   || fail "Connector is still only a fake"
-grep -rqs "impl ReplicaProbe for" "$SESSION" \
+grep -rqsE "ReplicaProbe for SqlReplicaProbe" "$SESSION" \
   && ok "ReplicaProbe has a real implementation" \
   || fail "ReplicaProbe is still only a fake"
 

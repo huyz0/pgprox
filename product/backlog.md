@@ -834,7 +834,7 @@ rule already allows `pgprox-proto`.
 - [x] `M6.13` The `ParameterStatus` probe cache, keyed per `(host, db)`.
   Acceptance: a second pool for the same host and database opens no second
   probe connection.
-- [ ] `M6.14` The real `ReplicaProbe` over `pg_last_wal_replay_lsn()` and
+- [x] `M6.14` The real `ReplicaProbe` over `pg_last_wal_replay_lsn()` and
   `pg_is_in_recovery()`. Acceptance: a replica that stops replaying leaves the
   eligible set within one poll interval, and a probe failure is a stale reading
   with an age rather than a silent zero.

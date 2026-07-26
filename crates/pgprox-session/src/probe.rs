@@ -23,14 +23,20 @@
 //! overwriting what it set in its own startup packet.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use pgprox_core::auth::Backend;
-use pgprox_core::ids::ServerId;
+use pgprox_core::ids::{Lsn, ServerId};
 use pgprox_core::pool::PoolError;
+use pgprox_proto::backend::{self, BackendMessage};
+use pgprox_proto::encode_frontend;
+use pgprox_proto::frame::{Frame, Tag};
+use pgprox_route::poller::{Probe, ReplicaProbe};
 
-use crate::connect::{PgConnector, Upstream};
+use crate::connect::{PgConnector, Upstream, Upstreamed};
+use crate::shell::Wire;
 
 /// Parameters a client is told about, in the order the server sent them.
 pub type Parameters = Arc<[(String, String)]>;
@@ -138,6 +144,196 @@ impl ParameterCache {
         // node down over that would be the larger failure.
         self.entries.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// The query a replica is asked, once per poll.
+///
+/// Two functions in one round trip. `pg_last_wal_replay_lsn()` answers how far
+/// it has replayed, and `pg_is_in_recovery()` answers whether it is still a
+/// replica at all: a promoted one keeps answering queries and its replay
+/// position stops moving, which is the shape of a stale read that never
+/// recovers.
+pub const REPLICA_QUERY: &str = "SELECT pg_last_wal_replay_lsn(), pg_is_in_recovery()";
+
+/// Asks replicas where they have got to, over a real connection.
+///
+/// Holds one connection per replica rather than dialing per poll. At a quarter
+/// second per poll a fresh TCP, TLS and authentication handshake each time
+/// would cost more than the question, and would show up on the database as a
+/// login storm from the proxy.
+pub struct SqlReplicaProbe<U: Upstream> {
+    connector: PgConnector<U>,
+    replicas: Vec<Backend>,
+    /// One live connection per replica, opened lazily and dropped on failure.
+    held: Vec<tokio::sync::Mutex<Option<Upstreamed<U::Stream>>>>,
+}
+
+impl<U: Upstream> fmt::Debug for SqlReplicaProbe<U> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SqlReplicaProbe")
+            .field("replicas", &self.replicas.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<U: Upstream + 'static> SqlReplicaProbe<U> {
+    /// A prober for the replicas in a grant, in the order the grant lists them.
+    ///
+    /// The order is the index the router uses, so it has to be preserved
+    /// exactly: probing them in a different order would attribute one
+    /// replica's position to another and route reads at a replica that never
+    /// replayed them.
+    #[must_use]
+    pub fn new(upstream: U, replicas: Vec<Backend>) -> Self {
+        let connector = PgConnector::new(upstream);
+        for replica in &replicas {
+            connector.learn(replica);
+        }
+        let held = replicas
+            .iter()
+            .map(|_| tokio::sync::Mutex::new(None))
+            .collect();
+        Self {
+            connector,
+            replicas,
+            held,
+        }
+    }
+
+    /// How many replicas are watched.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.replicas.len()
+    }
+
+    /// Whether there are none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.replicas.is_empty()
+    }
+
+    /// Runs the query on `index`, opening a connection if there is none.
+    async fn ask(&self, index: usize) -> Result<Probe, String> {
+        let backend = self
+            .replicas
+            .get(index)
+            .ok_or_else(|| format!("no replica at index {index}"))?;
+        let slot = self
+            .held
+            .get(index)
+            .ok_or_else(|| format!("no replica at index {index}"))?;
+        let mut held = slot.lock().await;
+
+        if held.is_none() {
+            *held = Some(
+                self.connector
+                    .open(&backend.pool_key())
+                    .await
+                    .map_err(|err| err.to_string())?,
+            );
+        }
+        let connection = held.as_mut().ok_or("the connection vanished")?;
+
+        // A failure drops the connection rather than keeping it, because the
+        // most likely reason a query failed is that the connection is no
+        // longer usable, and reusing it would fail every poll from here on.
+        match run_replica_query(&mut connection.wire).await {
+            Ok(probe) => Ok(probe),
+            Err(reason) => {
+                *held = None;
+                Err(reason)
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<U: Upstream + 'static> ReplicaProbe for SqlReplicaProbe<U> {
+    async fn probe(&self, index: usize) -> Result<Probe, String> {
+        self.ask(index).await
+    }
+}
+
+/// Sends the query and reads its answer.
+async fn run_replica_query<S>(wire: &mut Wire<S>) -> Result<Probe, String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    wire.queue(|out| encode_frontend::query(out, REPLICA_QUERY));
+    wire.flush().await.map_err(|err| err.to_string())?;
+
+    let mut body = Vec::new();
+    let mut row: Option<Vec<Option<String>>> = None;
+
+    loop {
+        let tag = wire
+            .read_tagged(&mut body)
+            .await
+            .map_err(|err| err.to_string())?;
+
+        if tag == Tag::DATA_ROW {
+            // The one place this project parses a DataRow, and it is parsing
+            // its own query's answer rather than a tenant's result. Relayed
+            // rows stay opaque; see pgprox-proto's module docs.
+            row = Some(text_row(&body).ok_or("the replica sent an unreadable row")?);
+        } else if tag == Tag::ERROR_RESPONSE {
+            let frame = Frame::new(tag, &body);
+            let reason = match backend::decode(&frame) {
+                Ok(BackendMessage::ErrorResponse(error)) => {
+                    format!("{} ({})", error.message, error.code)
+                }
+                _ => "the replica refused the query".to_owned(),
+            };
+            return Err(reason);
+        } else if tag == Tag::READY_FOR_QUERY {
+            break;
+        }
+    }
+
+    let row = row.ok_or("the replica answered with no rows")?;
+    let replayed = match row.first().and_then(Option::as_deref) {
+        // NULL, which is what a server that is not replaying answers. Not an
+        // error: pg_is_in_recovery below is what decides whether this is still
+        // a replica, and reporting the pair honestly lets the router take it
+        // out of service for the right reason.
+        None => Lsn::ZERO,
+        Some(text) => text
+            .parse()
+            .map_err(|_| format!("the replica reported an unparseable LSN: {text}"))?,
+    };
+    let in_recovery = matches!(row.get(1).and_then(Option::as_deref), Some("t"));
+
+    Ok(Probe {
+        replayed,
+        in_recovery,
+    })
+}
+
+/// Splits a `DataRow` body into its text fields.
+///
+/// `None` is a SQL NULL, which the wire encodes as a length of -1 rather than
+/// as an empty value. Treating the two the same would read a NULL replay
+/// position as LSN zero, and a replica at zero is a replica that has replayed
+/// nothing, which is a very different claim.
+fn text_row(body: &[u8]) -> Option<Vec<Option<String>>> {
+    let count = i16::from_be_bytes(body.get(..2)?.try_into().ok()?);
+    let mut at = 2;
+    let mut fields = Vec::with_capacity(usize::try_from(count.max(0)).ok()?);
+
+    for _ in 0..count.max(0) {
+        let len = i32::from_be_bytes(body.get(at..at + 4)?.try_into().ok()?);
+        at += 4;
+        if len < 0 {
+            fields.push(None);
+            continue;
+        }
+        let len = usize::try_from(len).ok()?;
+        let value = body.get(at..at + len)?;
+        at += len;
+        fields.push(Some(String::from_utf8(value.to_vec()).ok()?));
+    }
+
+    Some(fields)
 }
 
 #[cfg(test)]
@@ -346,5 +542,224 @@ mod tests {
         let parameters = cache.get(&server(), "acme").unwrap();
         assert_eq!(parameters.len(), 1);
         assert_eq!(parameters[0].1, "18.0");
+    }
+
+    /// A replica that answers the probe query with a scripted row.
+    #[derive(Debug)]
+    struct Replica {
+        /// The replay position, or None for a SQL NULL.
+        replayed: Option<&'static str>,
+        in_recovery: bool,
+        /// Answer the first query with an error instead.
+        refuse: bool,
+    }
+
+    fn data_row(values: &[Option<&str>]) -> Vec<u8> {
+        let mut body = i16::try_from(values.len()).unwrap().to_be_bytes().to_vec();
+        for value in values {
+            match value {
+                None => body.extend_from_slice(&(-1_i32).to_be_bytes()),
+                Some(text) => {
+                    body.extend_from_slice(&i32::try_from(text.len()).unwrap().to_be_bytes());
+                    body.extend_from_slice(text.as_bytes());
+                }
+            }
+        }
+        let mut out = vec![Tag::DATA_ROW.get()];
+        out.extend_from_slice(&u32::try_from(body.len() + 4).unwrap().to_be_bytes());
+        out.extend_from_slice(&body);
+        out
+    }
+
+    #[async_trait::async_trait]
+    impl Upstream for Replica {
+        type Stream = DuplexStream;
+
+        async fn dial(&self, _backend: &Backend) -> Result<Self::Stream, PoolError> {
+            let (ours, mut theirs) = duplex(4096);
+            let replayed = self.replayed;
+            let in_recovery = self.in_recovery;
+            let refuse = self.refuse;
+
+            tokio::spawn(async move {
+                // The startup packet.
+                let mut len = [0_u8; 4];
+                theirs.read_exact(&mut len).await.unwrap();
+                let mut body = vec![0; u32::from_be_bytes(len) as usize - 4];
+                theirs.read_exact(&mut body).await.unwrap();
+
+                let mut out = Vec::new();
+                encode::authentication_ok(&mut out);
+                encode::ready_for_query(&mut out, pgprox_proto::backend::TxStatus::Idle);
+                theirs.write_all(&out).await.unwrap();
+
+                // Then answer every query the same way.
+                loop {
+                    let mut header = [0_u8; 5];
+                    if theirs.read_exact(&mut header).await.is_err() {
+                        return;
+                    }
+                    let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+                    let mut body = vec![0; len - 4];
+                    if theirs.read_exact(&mut body).await.is_err() {
+                        return;
+                    }
+
+                    let mut out = Vec::new();
+                    if refuse {
+                        out.push(Tag::ERROR_RESPONSE.get());
+                        let fields = b"SERROR\0C57P03\0Mthe database system is starting up\0\0";
+                        out.extend_from_slice(
+                            &u32::try_from(fields.len() + 4).unwrap().to_be_bytes(),
+                        );
+                        out.extend_from_slice(fields);
+                    } else {
+                        out.extend_from_slice(&data_row(&[
+                            replayed,
+                            Some(if in_recovery { "t" } else { "f" }),
+                        ]));
+                    }
+                    encode::ready_for_query(&mut out, pgprox_proto::backend::TxStatus::Idle);
+                    if theirs.write_all(&out).await.is_err() {
+                        return;
+                    }
+                }
+            });
+
+            Ok(ours)
+        }
+
+        fn scram(&self) -> Box<dyn UpstreamScram> {
+            unreachable!("this replica never asks for SASL")
+        }
+    }
+
+    fn prober(replica: Replica, count: usize) -> SqlReplicaProbe<Replica> {
+        let replicas = (0..count).map(|n| backend(&format!("r{n}"))).collect();
+        SqlReplicaProbe::new(replica, replicas)
+    }
+
+    #[tokio::test]
+    async fn a_replica_reports_its_replay_position() {
+        let prober = prober(
+            Replica {
+                replayed: Some("16/B374D848"),
+                in_recovery: true,
+                refuse: false,
+            },
+            1,
+        );
+
+        assert_eq!(
+            prober.probe(0).await.unwrap(),
+            Probe {
+                replayed: "16/B374D848".parse().unwrap(),
+                in_recovery: true,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_promoted_replica_reports_that_it_is_no_longer_one() {
+        // The failure this query's second half exists for. A promoted replica
+        // keeps answering and its replay position stops moving, which is a
+        // stale read that never recovers.
+        let prober = prober(
+            Replica {
+                replayed: None,
+                in_recovery: false,
+                refuse: false,
+            },
+            1,
+        );
+
+        let probe = prober.probe(0).await.unwrap();
+        assert!(!probe.in_recovery);
+        assert_eq!(probe.replayed, Lsn::ZERO);
+    }
+
+    #[tokio::test]
+    async fn a_replica_that_refuses_the_query_is_a_failure_rather_than_a_reading() {
+        let prober = prober(
+            Replica {
+                replayed: Some("16/B374D848"),
+                in_recovery: true,
+                refuse: true,
+            },
+            1,
+        );
+
+        let err = prober.probe(0).await.unwrap_err();
+        assert!(err.contains("57P03"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_index_that_names_no_replica_fails_rather_than_reading_another() {
+        // Attributing one replica's position to another routes reads at a
+        // replica that never replayed them.
+        let prober = prober(
+            Replica {
+                replayed: Some("0/1"),
+                in_recovery: true,
+                refuse: false,
+            },
+            1,
+        );
+
+        assert!(prober.probe(7).await.is_err());
+        assert_eq!(prober.len(), 1);
+        assert!(!prober.is_empty());
+    }
+
+    #[tokio::test]
+    async fn polling_twice_reuses_one_connection() {
+        // At four polls a second per replica, dialing each time would cost a
+        // TCP, TLS and authentication handshake per question and would look
+        // like a login storm from the database's side.
+        let prober = prober(
+            Replica {
+                replayed: Some("0/10"),
+                in_recovery: true,
+                refuse: false,
+            },
+            1,
+        );
+
+        prober.probe(0).await.unwrap();
+        prober.probe(0).await.unwrap();
+        assert_eq!(
+            prober.connector.known(),
+            1,
+            "the prober learned a second backend for one replica"
+        );
+    }
+
+    #[test]
+    fn a_null_field_is_not_an_empty_one() {
+        // The wire encodes NULL as a length of -1. Reading it as an empty
+        // string would make a NULL replay position parse as LSN zero, which
+        // claims the replica has replayed nothing rather than that it is not
+        // replaying at all.
+        let row = data_row(&[None, Some("t")]);
+        let fields = text_row(&row[5..]).unwrap();
+
+        assert_eq!(fields, vec![None, Some("t".to_owned())]);
+    }
+
+    #[test]
+    fn a_truncated_row_is_rejected_rather_than_panicking() {
+        // These bytes come from the network like any others.
+        let row = data_row(&[Some("16/B374D848"), Some("t")]);
+        for cut in 5..row.len() {
+            assert!(
+                text_row(&row[5..cut]).is_none(),
+                "a row truncated at {cut} was read as complete"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_with_no_fields_reads_as_no_fields() {
+        assert_eq!(text_row(&[0, 0]), Some(Vec::new()));
     }
 }
