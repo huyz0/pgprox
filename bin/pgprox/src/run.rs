@@ -173,6 +173,7 @@ impl Listeners {
 #[must_use]
 pub fn context(app: &App, shutdown: &Shutdown) -> Context {
     Context {
+        slab: Arc::clone(&app.slab),
         statics: app.statics.clone(),
         observatory: Arc::clone(&app.observatory) as Arc<dyn pgprox_core::admin::Observatory>,
         // A node with certificates terminates TLS; one without answers `N` and
@@ -209,6 +210,7 @@ pub fn context(app: &App, shutdown: &Shutdown) -> Context {
             crate::dial::TcpUpstream::new(Arc::clone(&app.deps.tls)),
             Arc::clone(&app.deps.clock),
             shutdown.clone(),
+            Arc::clone(&app.slab),
         )),
     }
 }
@@ -268,6 +270,7 @@ pub async fn run_with_peers(
             Arc::clone(&probes),
             app.deps.node,
             Arc::clone(&app.tenants),
+            Arc::clone(&app.slab),
         ),
         {
             let shutdown = shutdown.clone();

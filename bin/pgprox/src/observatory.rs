@@ -349,6 +349,11 @@ impl Observatory for NodeObservatory {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+
+    /// A slab for a test wire.
+    fn test_slab() -> std::sync::Arc<pgprox_core::buf::BufferSlab> {
+        pgprox_core::buf::BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8)
+    }
     use super::*;
     use pgprox_cluster::coordinator::CoordinatorConfig;
     use pgprox_core::clock::FakeClock;
@@ -416,7 +421,7 @@ mod tests {
 
         let tls = pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).unwrap();
         let pool = LivePool::new(
-            Arc::new(PgConnector::new(TcpUpstream::new(tls))),
+            Arc::new(PgConnector::new(TcpUpstream::new(tls), test_slab())),
             Arc::clone(&shared),
             PoolConfig::default(),
         );

@@ -133,6 +133,13 @@ pub struct Context {
     pub resolver: Arc<dyn CredentialResolver>,
     /// Where upstream connections come from.
     pub connector: Arc<PgConnector<TcpUpstream>>,
+    /// Where every connection's read and write buffers come from.
+    ///
+    /// Shared with the connector, so client and upstream connections draw on
+    /// one bound. A connection borrows when its socket has something to say
+    /// and gives back when it is quiet, which is what makes an idle connection
+    /// cost a socket rather than 32 KiB.
+    pub slab: Arc<pgprox_core::buf::BufferSlab>,
     /// The pool they are held in.
     pub pool: Arc<NodePool>,
     /// What a client is told about the server before it has one.
@@ -204,7 +211,7 @@ where
     // its slot for as long as it liked. It ends where the client is told it is
     // in, because after that the session is the client's to keep idle.
     let deadline = tokio::time::Instant::now() + context.login_timeout;
-    let mut wire = Wire::new(stream);
+    let mut wire = Wire::new(stream, Arc::clone(&context.slab));
     let mut handshake = Handshake::new(context.handshake.clone());
 
     match until(deadline, negotiate(&mut wire, &mut handshake)).await? {
@@ -236,7 +243,7 @@ where
                     .map_err(|_| ShellError::Disconnected)
             })
             .await?;
-            let mut wire = Wire::new(upgraded);
+            let mut wire = Wire::new(upgraded, Arc::clone(&context.slab));
 
             // The same handshake, which is what makes "TLS was accepted"
             // survive the change of stream type.
@@ -1081,11 +1088,15 @@ impl crate::gossip::CancelSink for Context {
 ///
 /// Fails when the socket does. The refusal itself is not an error here: it is
 /// the point.
-pub async fn refuse_full<S>(stream: S, cap: u32) -> Result<(), ShellError>
+pub async fn refuse_full<S>(
+    stream: S,
+    cap: u32,
+    slab: Arc<pgprox_core::buf::BufferSlab>,
+) -> Result<(), ShellError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut wire = Wire::new(stream);
+    let mut wire = Wire::new(stream, slab);
     // Read whatever the client opened with, so the error lands where a driver
     // expects one rather than in the middle of its startup.
     let mut body = Vec::new();
@@ -1133,7 +1144,7 @@ pub async fn accept_loop(
             // drain reversible: nothing had to be torn down to start it.
             if context.draining.fired() {
                 tracing::debug!("refused a client: this node is draining");
-                let _ = refuse_draining(socket).await;
+                let _ = refuse_draining(socket, Arc::clone(&context.slab)).await;
                 return;
             }
             // Then admission, and that refusal is a message too. A driver told
@@ -1144,7 +1155,7 @@ pub async fn accept_loop(
                 // which is a capacity decision somebody has to take.
                 let ceiling = gate.ceiling();
                 tracing::warn!(ceiling, "refused a client: at the connection ceiling");
-                let _ = refuse_full(socket, ceiling).await;
+                let _ = refuse_full(socket, ceiling, Arc::clone(&context.slab)).await;
                 return;
             };
             let _ = session(socket, context.as_ref(), admitted).await;
@@ -1157,11 +1168,14 @@ pub async fn accept_loop(
 /// # Errors
 ///
 /// Fails when the socket does.
-pub async fn refuse_draining<S>(stream: S) -> Result<(), ShellError>
+pub async fn refuse_draining<S>(
+    stream: S,
+    slab: Arc<pgprox_core::buf::BufferSlab>,
+) -> Result<(), ShellError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut wire = Wire::new(stream);
+    let mut wire = Wire::new(stream, slab);
     let mut body = Vec::new();
     let _ = wire.read_untagged(&mut body).await;
 
@@ -1172,6 +1186,15 @@ where
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+
+    /// A slab for a test wire.
+    ///
+    /// Sized for one connection's worth of borrowing, which is what a test
+    /// has. The bound is what makes an exhausted slab reachable in a test at
+    /// all, so it is small on purpose.
+    fn test_slab() -> std::sync::Arc<pgprox_core::buf::BufferSlab> {
+        pgprox_core::buf::BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8)
+    }
     use super::*;
     use pgprox_proto::frame::Tag;
 
@@ -1313,7 +1336,7 @@ mod tests {
             (Tag(header[0]), body)
         });
 
-        refuse_full(ours, 10).await.unwrap();
+        refuse_full(ours, 10, test_slab()).await.unwrap();
         let (tag, body) = client.await.unwrap();
 
         assert_eq!(tag, Tag::ERROR_RESPONSE);
@@ -1561,9 +1584,10 @@ mod tests {
     fn context_for(addr: SocketAddr) -> Context {
         let clock: Arc<dyn Clock> = Arc::new(FakeClock::new());
         let tls = pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).unwrap();
-        let connector = Arc::new(PgConnector::new(TcpUpstream::new(tls)));
+        let connector = Arc::new(PgConnector::new(TcpUpstream::new(tls), test_slab()));
 
         Context {
+            slab: test_slab(),
             node: NodeId::new(1),
             clock: Arc::clone(&clock),
             handshake: HandshakeConfig {
@@ -1596,6 +1620,7 @@ mod tests {
                 ),
                 Arc::new(FakeClock::new()),
                 crate::run::Shutdown::new(),
+                test_slab(),
             )),
         }
     }
@@ -1699,6 +1724,7 @@ mod tests {
             ),
             clock,
             crate::run::Shutdown::new(),
+            test_slab(),
         ));
 
         let mut grant = grant_for(primary);

@@ -16,6 +16,13 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::dial::TcpUpstream;
+
+/// The fewest buffers a node's slab holds, whatever its client ceiling says.
+///
+/// A node configured for a handful of clients still has a handshake, a probe
+/// and a pool behind it, and a slab of two would make them wait on each other.
+const BUFFER_FLOOR: usize = 256;
+
 use crate::observatory::NodeObservatory;
 use crate::sessions::Sessions;
 
@@ -23,6 +30,7 @@ use pgprox_cluster::coordinator::CoordinatorConfig;
 use pgprox_cluster::service::GossipCoordinator;
 use pgprox_config::drain::{DrainConfig, DrainState};
 use pgprox_core::auth::CredentialResolver;
+use pgprox_core::buf::{BufferSlab, DEFAULT_BUFFER_SIZE};
 use pgprox_core::clock::Clock;
 use pgprox_core::config::{Config, ConfigError, ConfigSource};
 use pgprox_core::ids::NodeId;
@@ -166,6 +174,12 @@ pub struct App {
     pub connector: NodeConnector,
     /// The upstream connections this node holds.
     pub pool: Arc<NodePool>,
+    /// Where every connection's buffers come from.
+    ///
+    /// One slab for the whole node, shared by client and upstream
+    /// connections, so the bound is on the node's buffer memory rather than on
+    /// each side of it separately.
+    pub slab: Arc<BufferSlab>,
 }
 
 impl App {
@@ -210,7 +224,26 @@ impl App {
             cluster.set_cap(server.server.clone(), server.max_connections);
         }
 
-        let connector = Arc::new(PgConnector::new(TcpUpstream::new(Arc::clone(&deps.tls))));
+        // Buffers are borrowed while a connection has something to say and
+        // returned when it goes quiet, so the slab is sized for the
+        // connections active at once rather than for the connections open. A
+        // tenth of the client ceiling is generous against the workload this is
+        // measured on, where a connection spends milliseconds busy and
+        // hundreds of milliseconds thinking, and the floor keeps a small
+        // deployment from being bounded at nothing.
+        //
+        // Being wrong here costs latency, not correctness: an exhausted slab
+        // makes a connection wait, which is the direction ADR 0004 says to
+        // fail in.
+        let buffers = usize::try_from(config.max_client_conns / 10)
+            .unwrap_or(BUFFER_FLOOR)
+            .max(BUFFER_FLOOR);
+        let slab = BufferSlab::new(DEFAULT_BUFFER_SIZE, buffers);
+
+        let connector = Arc::new(PgConnector::new(
+            TcpUpstream::new(Arc::clone(&deps.tls)),
+            Arc::clone(&slab),
+        ));
         let pool = LivePool::new(
             Arc::clone(&connector),
             Arc::clone(&deps.clock),
@@ -254,6 +287,7 @@ impl App {
             tenants: Arc::new(pgprox_observe::tenants::TenantAllowlist::new()),
             connector,
             pool,
+            slab,
             replicas: ReplicaWatch::new(0, ReplicaConfig::default(), Arc::clone(&deps.clock)),
             drain,
             health,

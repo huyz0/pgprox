@@ -1252,16 +1252,18 @@ recorded runs say which they are.
 - [ ] `M7.15` Turn the report's findings into tasks. Acceptance: each entry in
   the hot-and-under-tested and cold-and-complex lists is either a task here or
   has a recorded reason it is not.
-- [ ] `M7.16` Buffer reclaim, part one: `Wire` borrows from `BufferSlab` when
+- [x] `M7.16` Buffer reclaim, part one: `Wire` borrows from `BufferSlab` when
   its socket becomes readable and returns when quiescent. Found decomposing:
   the slab has been in `pgprox-core` since M0 with tests, a bound, and no
   caller, and every connection instead holds two `Vec`s for its lifetime.
   Acceptance: a session idle between transactions holds no buffer, and slab
   exhaustion delays a connection rather than allocating past the bound.
-- [ ] `M7.17` Buffer reclaim, part two: the slab in the composition root, sized
+- [x] `M7.17` Buffer reclaim, part two: the slab in the composition root, sized
   from config, with its outstanding and idle counts exported. Acceptance: the
   metric moves under load in the scale run, and the per-connection RSS recorded
   before and after M7.16 differ by an amount the commit message states.
+  Committed with M7.16: the wire cannot borrow from a slab the composition
+  root does not build, so neither half leaves the tree green on its own.
 - [ ] `M7.18` File descriptor and socket tuning in `deploy/`: `nofile`, the
   backlog, and the `tcp_rmem` and `tcp_wmem` minimums. Acceptance: the scale run
   at 1000 is not limited by a default, and the values are commented with what

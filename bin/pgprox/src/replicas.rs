@@ -48,6 +48,9 @@ pub struct ReplicaSets {
     upstream: TcpUpstream,
     clock: Arc<dyn Clock>,
     shutdown: Shutdown,
+    /// The node's buffer slab, which a probe's connection borrows from like
+    /// any other.
+    slab: Arc<pgprox_core::buf::BufferSlab>,
 }
 
 impl std::fmt::Debug for ReplicaSets {
@@ -61,9 +64,15 @@ impl std::fmt::Debug for ReplicaSets {
 impl ReplicaSets {
     /// A registry that has been told about nothing yet.
     #[must_use]
-    pub fn new(upstream: TcpUpstream, clock: Arc<dyn Clock>, shutdown: Shutdown) -> Self {
+    pub fn new(
+        upstream: TcpUpstream,
+        clock: Arc<dyn Clock>,
+        shutdown: Shutdown,
+        slab: Arc<pgprox_core::buf::BufferSlab>,
+    ) -> Self {
         Self {
             watches: Mutex::new(HashMap::new()),
+            slab,
             upstream,
             clock,
             shutdown,
@@ -114,6 +123,7 @@ impl ReplicaSets {
             Arc::new(SqlReplicaProbe::new(
                 self.upstream.clone(),
                 grant.replicas.clone(),
+                Arc::clone(&self.slab),
             )),
             self.shutdown.clone(),
         ));
@@ -163,6 +173,12 @@ pub fn backend_for(grant: &Grant, target: pgprox_core::route::RouteTarget) -> &B
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+
+    /// A slab for a test wire. Small on purpose: the bound is what makes an
+    /// exhausted slab reachable in a test at all.
+    fn test_slab() -> std::sync::Arc<pgprox_core::buf::BufferSlab> {
+        pgprox_core::buf::BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8)
+    }
     use super::*;
     use pgprox_core::auth::{ClaimSet, PoolHints, TlsMode};
     use pgprox_core::clock::FakeClock;
@@ -199,6 +215,7 @@ mod tests {
             TcpUpstream::new(tls),
             Arc::new(FakeClock::new()),
             Shutdown::new(),
+            test_slab(),
         )
     }
 

@@ -7,14 +7,26 @@
 //! Generic over `AsyncRead + AsyncWrite + Unpin`, so the tests run a whole
 //! session over `tokio::io::duplex` and never bind a port.
 //!
-//! # The buffer belongs to the connection
+//! # The buffer belongs to the connection, and the connection borrows it
 //!
 //! A read pulls in whatever the kernel had, which routinely includes the start
 //! of the next stage's message. A helper that owned its read buffer locally
 //! would drop those bytes on return and the session would appear to hang. That
 //! has already happened once in this project, in the SCRAM tests, and this
-//! crate's `AGENTS.md` says so at length. So [`Wire`] owns the buffer and every
-//! stage borrows it.
+//! crate's `AGENTS.md` says so at length. So [`Wire`] owns the buffer for as
+//! long as there are bytes in it, and every stage borrows it.
+//!
+//! What it does not do is hold one while idle. At 100k connections a 16 KiB
+//! read buffer and a 16 KiB write buffer per connection is 3.2 GB of memory
+//! doing nothing, which is the entire reason this proxy exists. So the buffers
+//! come from [`BufferSlab`] when the socket has something to say and go back
+//! the moment the wire is quiet: after a flush, and after a frame that
+//! consumed everything read. An idle connection costs a socket and this
+//! struct.
+//!
+//! When the slab is empty the wire waits rather than allocating, which turns a
+//! synchronised burst into latency instead of a memory spike. That is the
+//! correct direction to fail and it is the whole point of the bound.
 //!
 //! # Cancellation
 //!
@@ -22,7 +34,11 @@
 //! the buffer and the next call continues from where it stopped. Nothing here
 //! consumes from the buffer until a whole frame is present.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use pgprox_core::auth::{CredentialResolver, Grant};
+use pgprox_core::buf::{BufferSlab, PooledBuf};
 use pgprox_core::error::ClientError;
 use pgprox_core::ids::ConnId;
 use pgprox_proto::backend::TxStatus;
@@ -66,21 +82,43 @@ pub enum Handoff {
     Cancel(ConnId),
 }
 
-/// A socket, its read buffer, and its write buffer.
+/// How long a wire waits for a buffer before it gives up on the connection.
+///
+/// Long enough that a burst is absorbed as latency, which is what the bound is
+/// for. Short enough that a node whose slab is genuinely exhausted tells its
+/// clients so rather than holding them open forever.
+const BUFFER_WAIT: Duration = Duration::from_secs(5);
+
+/// How often it retries while waiting.
+const BUFFER_RETRY: Duration = Duration::from_millis(1);
+
+/// A socket and the buffers it is currently borrowing.
 #[derive(Debug)]
 pub struct Wire<S> {
     io: S,
-    read: Vec<u8>,
-    write: Vec<u8>,
+    slab: Arc<BufferSlab>,
+    /// Bytes read and not yet consumed. Absent when there are none.
+    read: Option<PooledBuf>,
+    /// Bytes queued and not yet written. Absent when there are none.
+    write: Option<PooledBuf>,
+    /// What was queued while the slab had nothing to lend.
+    ///
+    /// Empty in every ordinary run. It exists because `queue` is synchronous
+    /// and its callers have already decided to send something: dropping an
+    /// `ErrorResponse` because memory was tight would leave a client with a
+    /// closed socket and no reason for it.
+    spare: Vec<u8>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
-    /// Wraps a stream.
-    pub fn new(io: S) -> Self {
+    /// Wraps a stream, borrowing buffers from `slab` as it needs them.
+    pub fn new(io: S, slab: Arc<BufferSlab>) -> Self {
         Self {
             io,
-            read: Vec::new(),
-            write: Vec::new(),
+            slab,
+            read: None,
+            write: None,
+            spare: Vec::new(),
         }
     }
 
@@ -89,24 +127,77 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     /// Returned together on purpose. A TLS upgrade takes the stream, and the
     /// leftover bytes belong with it: dropping them is the hazard this module
     /// opens by describing.
+    ///
+    /// The borrowed buffer goes back to the slab here rather than travelling
+    /// with the bytes, because the upgraded stream gets a new wire and would
+    /// otherwise hold two.
     pub fn into_parts(self) -> (S, Vec<u8>) {
-        (self.io, self.read)
+        let leftover = self
+            .read
+            .map(|buf| buf.as_slice().to_vec())
+            .unwrap_or_default();
+        (self.io, leftover)
     }
 
     /// Whether anything has been read and not yet consumed.
     #[must_use]
     pub fn is_buffered(&self) -> bool {
-        !self.read.is_empty()
+        self.read.as_ref().is_some_and(|buf| !buf.is_empty())
+    }
+
+    /// The bytes read and not yet consumed.
+    fn buffered(&self) -> &[u8] {
+        self.read.as_ref().map_or(&[][..], |buf| buf.as_slice())
+    }
+
+    /// Gives a buffer back once it holds nothing.
+    ///
+    /// Called at both ends of the relay loop, which is what makes an idle
+    /// connection cost a socket rather than 32 KiB.
+    fn reclaim(&mut self) {
+        if self.read.as_ref().is_some_and(|buf| buf.is_empty()) {
+            self.read = None;
+        }
+        if self.write.as_ref().is_some_and(|buf| buf.is_empty()) {
+            self.write = None;
+        }
+    }
+
+    /// Borrows from the slab, waiting rather than allocating when it is empty.
+    async fn borrow(slab: &Arc<BufferSlab>) -> Result<PooledBuf, ShellError> {
+        let deadline = tokio::time::Instant::now() + BUFFER_WAIT;
+        loop {
+            if let Some(buf) = slab.try_borrow() {
+                return Ok(buf);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(ShellError::Refused(ClientError::Internal(
+                    "no buffer available",
+                )));
+            }
+            tokio::time::sleep(BUFFER_RETRY).await;
+        }
     }
 
     /// Reads until at least one more byte arrives.
     async fn fill(&mut self) -> Result<(), ShellError> {
+        // Borrowed here rather than at construction: a connection that is
+        // waiting for its client to say something holds nothing.
+        if self.read.is_none() {
+            self.read = Some(Self::borrow(&self.slab).await?);
+        }
+
         let mut chunk = [0_u8; 4096];
         let read = self.io.read(&mut chunk).await?;
         if read == 0 {
+            // Returned before the error, so a disconnect during a burst frees
+            // its buffer for the connections still going.
+            self.read = None;
             return Err(ShellError::Disconnected);
         }
-        self.read.extend_from_slice(&chunk[..read]);
+        if let Some(buf) = self.read.as_mut() {
+            buf.extend_from_slice(&chunk[..read]);
+        }
         Ok(())
     }
 
@@ -118,16 +209,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     /// refuses.
     pub async fn read_untagged(&mut self, body: &mut Vec<u8>) -> Result<(), ShellError> {
         loop {
-            match decode_untagged(&self.read, DEFAULT_MAX_FRAME)? {
+            match decode_untagged(self.buffered(), DEFAULT_MAX_FRAME)? {
                 Decoded::Frame(frame, consumed) => {
                     body.clear();
                     body.extend_from_slice(frame.body());
-                    self.read.drain(..consumed);
+                    self.consume(consumed);
                     return Ok(());
                 }
                 Decoded::Incomplete { .. } => self.fill().await?,
             }
         }
+    }
+
+    /// Drops the bytes a frame used, and the buffer with them if it is now
+    /// empty.
+    fn consume(&mut self, consumed: usize) {
+        if let Some(buf) = self.read.as_mut() {
+            buf.as_mut_vec().drain(..consumed);
+        }
+        self.reclaim();
     }
 
     /// Reads one tagged message body into `body`, returning its tag.
@@ -137,12 +237,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     /// As [`Wire::read_untagged`].
     pub async fn read_tagged(&mut self, body: &mut Vec<u8>) -> Result<Tag, ShellError> {
         loop {
-            match decode(&self.read, DEFAULT_MAX_FRAME)? {
+            match decode(self.buffered(), DEFAULT_MAX_FRAME)? {
                 Decoded::Frame(frame, consumed) => {
                     let tag = frame.tag();
                     body.clear();
                     body.extend_from_slice(frame.body());
-                    self.read.drain(..consumed);
+                    self.consume(consumed);
                     return Ok(tag);
                 }
                 Decoded::Incomplete { .. } => self.fill().await?,
@@ -151,8 +251,26 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     }
 
     /// Builds a message into the write buffer.
+    ///
+    /// Synchronous, so it cannot wait for the slab. An exhausted slab here
+    /// allocates one buffer rather than dropping a message the caller has
+    /// already decided to send: losing an `ErrorResponse` because memory was
+    /// tight would leave a client with a closed socket and no reason.
     pub fn queue(&mut self, build: impl FnOnce(&mut Vec<u8>)) {
-        build(&mut self.write);
+        // Once anything has overflowed, everything after it does too, or the
+        // messages would go out in the wrong order.
+        if !self.spare.is_empty() {
+            build(&mut self.spare);
+            return;
+        }
+
+        match self.write.take().or_else(|| self.slab.try_borrow()) {
+            Some(mut buf) => {
+                build(buf.as_mut_vec());
+                self.write = Some(buf);
+            }
+            None => build(&mut self.spare),
+        }
     }
 
     /// Sends everything queued.
@@ -161,12 +279,26 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     ///
     /// Fails when the socket does.
     pub async fn flush(&mut self) -> Result<(), ShellError> {
-        if self.write.is_empty() {
+        let queued = self.write.as_ref().is_some_and(|buf| !buf.is_empty());
+        if !queued && self.spare.is_empty() {
+            self.write = None;
             return Ok(());
         }
-        self.io.write_all(&self.write).await?;
+
+        // The borrowed buffer first, then the overflow, because that is the
+        // order they were built in.
+        if let Some(buf) = self.write.as_ref() {
+            self.io.write_all(buf.as_slice()).await?;
+        }
+        if !self.spare.is_empty() {
+            let spare = std::mem::take(&mut self.spare);
+            self.io.write_all(&spare).await?;
+        }
         self.io.flush().await?;
-        self.write.clear();
+
+        // Emptied and handed straight back: a connection between transactions
+        // holds nothing.
+        self.write = None;
         Ok(())
     }
 
@@ -371,6 +503,15 @@ pub async fn accept<S: AsyncRead + AsyncWrite + Unpin>(
     clippy::cast_possible_wrap
 )]
 mod tests {
+
+    /// A slab for a test wire.
+    ///
+    /// Sized for one connection's worth of borrowing, which is what a test
+    /// has. The bound is what makes an exhausted slab reachable in a test at
+    /// all, so it is small on purpose.
+    fn test_slab() -> std::sync::Arc<pgprox_core::buf::BufferSlab> {
+        pgprox_core::buf::BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8)
+    }
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
@@ -417,9 +558,127 @@ mod tests {
         }
     }
 
+    // --- buffer reclaim -----------------------------------------------------
+
+    #[tokio::test]
+    async fn a_wire_that_has_read_everything_holds_no_buffer() {
+        // The property the whole slab exists for: at 100k connections, an idle
+        // one has to cost a socket rather than 32 KiB.
+        let slab = test_slab();
+        let (server, client) = duplex(4096);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+
+        assert_eq!(slab.outstanding(), 0, "a new wire borrowed something");
+
+        peer.send(&untagged(b"hello")).await;
+        let mut body = Vec::new();
+        wire.read_untagged(&mut body).await.unwrap();
+        assert_eq!(body, b"hello");
+
+        assert!(!wire.is_buffered());
+        assert_eq!(
+            slab.outstanding(),
+            0,
+            "the read buffer was held after the frame was consumed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wire_mid_frame_keeps_its_buffer() {
+        // The other half of the same rule. Returning a buffer with bytes still
+        // in it would lose them, which is the hazard this module's header
+        // describes.
+        let slab = test_slab();
+        let (server, client) = duplex(4096);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+
+        let mut two = untagged(b"first");
+        two.extend_from_slice(&untagged(b"second"));
+        peer.send(&two).await;
+
+        let mut body = Vec::new();
+        wire.read_untagged(&mut body).await.unwrap();
+        assert_eq!(body, b"first");
+        assert!(wire.is_buffered(), "the second message was dropped");
+        assert_eq!(slab.outstanding(), 1, "the buffer was returned too early");
+
+        wire.read_untagged(&mut body).await.unwrap();
+        assert_eq!(body, b"second");
+        assert_eq!(slab.outstanding(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_flushed_wire_holds_no_write_buffer() {
+        let slab = test_slab();
+        let (server, client) = duplex(4096);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+
+        wire.queue(encode::authentication_ok);
+        assert_eq!(slab.outstanding(), 1, "queueing borrowed nothing");
+        wire.flush().await.unwrap();
+        assert_eq!(
+            slab.outstanding(),
+            0,
+            "the write buffer was held after the flush"
+        );
+
+        assert_eq!(peer.expect_auth().await, AuthRequest::Ok);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_exhausted_slab_makes_a_read_wait_and_then_says_so() {
+        // Backpressure, not allocation: a burst becomes latency rather than a
+        // memory spike. And a slab that never frees up refuses the connection
+        // rather than holding it open forever.
+        let slab = BufferSlab::new(64, 1);
+        let held = slab.try_borrow().unwrap();
+
+        let (server, client) = duplex(4096);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+        peer.send(&untagged(b"hello")).await;
+
+        let mut body = Vec::new();
+        let error = wire.read_untagged(&mut body).await.unwrap_err();
+        assert!(
+            matches!(error, ShellError::Refused(ClientError::Internal(_))),
+            "{error}"
+        );
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn an_exhausted_slab_still_sends_the_message_a_caller_queued() {
+        // A refusal that never reaches the client leaves a driver with a
+        // closed socket and no reason, which is worse than the memory.
+        let slab = BufferSlab::new(64, 1);
+        let held = slab.try_borrow().unwrap();
+
+        let (server, client) = duplex(4096);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+
+        wire.queue(|out| encode::error_response(out, &ClientError::Draining));
+        wire.flush().await.unwrap();
+
+        let (tag, body) = peer.expect().await;
+        assert_eq!(tag, Tag::ERROR_RESPONSE);
+        // The message text is `ClientError::Draining`'s; what matters here is
+        // that the frame arrived at all.
+        assert!(
+            String::from_utf8_lossy(&body).contains("57P01"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+        drop(held);
+    }
+
     fn pair() -> (Wire<DuplexStream>, Client) {
         let (server, client) = duplex(4096);
-        (Wire::new(server), Client(client))
+        (Wire::new(server, test_slab()), Client(client))
     }
 
     /// An untagged message: a length prefix and a body.

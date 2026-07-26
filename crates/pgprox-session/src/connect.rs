@@ -26,6 +26,9 @@
 //! crate.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use pgprox_core::buf::BufferSlab;
 use std::fmt;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -307,15 +310,23 @@ impl<S> fmt::Debug for Upstreamed<S> {
 pub struct PgConnector<U> {
     upstream: U,
     backends: Mutex<HashMap<PoolKey, Backend>>,
+    /// Where an upstream connection's buffers come from.
+    ///
+    /// The same slab the client side borrows from, on purpose. Upstream
+    /// connections are capped and client connections are not, so a shared
+    /// bound means a burst of clients cannot starve the connections that
+    /// serve them without the node noticing.
+    slab: Arc<BufferSlab>,
 }
 
 impl<U: Upstream> PgConnector<U> {
     /// A connector over `upstream`, knowing no backends yet.
     #[must_use]
-    pub fn new(upstream: U) -> Self {
+    pub fn new(upstream: U, slab: Arc<BufferSlab>) -> Self {
         Self {
             upstream,
             backends: Mutex::new(HashMap::new()),
+            slab,
         }
     }
 
@@ -381,7 +392,10 @@ impl<U: Upstream> PgConnector<U> {
         };
 
         let stream = self.upstream.dial(&backend).await?;
-        drive(Wire::new(stream), &backend, || self.upstream.scram()).await
+        drive(Wire::new(stream, Arc::clone(&self.slab)), &backend, || {
+            self.upstream.scram()
+        })
+        .await
     }
 }
 
@@ -512,6 +526,15 @@ where
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+
+    /// A slab for a test wire.
+    ///
+    /// Sized for one connection's worth of borrowing, which is what a test
+    /// has. The bound is what makes an exhausted slab reachable in a test at
+    /// all, so it is small on purpose.
+    fn test_slab() -> std::sync::Arc<pgprox_core::buf::BufferSlab> {
+        pgprox_core::buf::BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8)
+    }
     use super::*;
     use pgprox_proto::encode;
 
@@ -823,7 +846,7 @@ mod tests {
 
     fn duplex_pair() -> (Wire<DuplexStream>, Scripted) {
         let (ours, theirs) = duplex(4096);
-        (Wire::new(ours), Scripted { io: theirs })
+        (Wire::new(ours, test_slab()), Scripted { io: theirs })
     }
 
     /// A SCRAM exchange with no arithmetic in it.
@@ -1086,12 +1109,16 @@ mod tests {
     #[tokio::test]
     async fn the_fake_and_the_real_connector_agree_about_an_unknown_key() {
         a_connector_refuses_a_key_it_knows_nothing_about(&FakeConnector).await;
-        a_connector_refuses_a_key_it_knows_nothing_about(&PgConnector::new(Unreachable)).await;
+        a_connector_refuses_a_key_it_knows_nothing_about(&PgConnector::new(
+            Unreachable,
+            test_slab(),
+        ))
+        .await;
     }
 
     #[tokio::test]
     async fn a_dial_failure_reaches_the_caller_unchanged() {
-        let connector = PgConnector::new(Unreachable);
+        let connector = PgConnector::new(Unreachable, test_slab());
         connector.learn(&backend());
 
         let Err(PoolError::ConnectFailed { reason, .. }) =
@@ -1104,9 +1131,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_learned_backend_is_opened_through_the_dialer() {
-        let connector = std::sync::Arc::new(PgConnector::new(Duplexer {
-            server: Mutex::new(None),
-        }));
+        let connector = std::sync::Arc::new(PgConnector::new(
+            Duplexer {
+                server: Mutex::new(None),
+            },
+            test_slab(),
+        ));
         connector.learn(&backend());
         assert_eq!(connector.known(), 1);
 
@@ -1138,7 +1168,7 @@ mod tests {
         // A tenant's password can be rotated, and the newest grant is the one
         // to believe. Keeping the first would keep authenticating with a
         // password that has been withdrawn.
-        let connector = PgConnector::new(Unreachable);
+        let connector = PgConnector::new(Unreachable, test_slab());
         connector.learn(&backend());
 
         let mut rotated = backend();
@@ -1158,7 +1188,7 @@ mod tests {
                 statements: pgprox_pool::statements::ConnectionStatements::new(
                     pgprox_pool::statements::StatementConfig::default(),
                 ),
-                wire: Wire::new(duplex(8).0),
+                wire: Wire::new(duplex(8).0, test_slab()),
                 parameters: vec![("server_version".to_owned(), "17.2".to_owned())],
                 backend_key: Some((4242, 0x0bad_beef)),
             }
@@ -1172,9 +1202,12 @@ mod tests {
         // What a cancel request needs: a fresh socket carrying nothing but the
         // key. Taking one from the pool would count it against a cap it is
         // never going to use.
-        let connector = PgConnector::new(Duplexer {
-            server: Mutex::new(None),
-        });
+        let connector = PgConnector::new(
+            Duplexer {
+                server: Mutex::new(None),
+            },
+            test_slab(),
+        );
         connector.learn(&backend());
 
         let known = connector.backend(&backend().pool_key()).expect("known");
@@ -1184,7 +1217,7 @@ mod tests {
 
     #[test]
     fn a_key_the_connector_never_learned_names_no_backend() {
-        let connector = PgConnector::new(Unreachable);
+        let connector = PgConnector::new(Unreachable, test_slab());
         assert!(connector.backend(&backend().pool_key()).is_none());
     }
 }

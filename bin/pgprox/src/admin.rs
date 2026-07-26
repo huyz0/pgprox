@@ -228,6 +228,15 @@ pub const fn not_configured() -> ClientError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+
+    /// A slab for a test wire.
+    ///
+    /// Sized for one connection's worth of borrowing, which is what a test
+    /// has. The bound is what makes an exhausted slab reachable in a test at
+    /// all, so it is small on purpose.
+    fn test_slab() -> std::sync::Arc<pgprox_core::buf::BufferSlab> {
+        pgprox_core::buf::BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8)
+    }
     use super::*;
     use pgprox_core::admin::FakeObservatory;
     use pgprox_core::ids::NodeId;
@@ -305,7 +314,7 @@ mod tests {
         let observatory: Arc<dyn Observatory> = FakeObservatory::new(NodeId::new(1));
 
         let served = tokio::spawn(async move {
-            let mut wire = Wire::new(ours);
+            let mut wire = Wire::new(ours, test_slab());
             serve(&mut wire, &observatory).await
         });
 

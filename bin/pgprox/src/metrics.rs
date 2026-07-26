@@ -63,6 +63,7 @@ pub async fn render(
     observatory: &dyn Observatory,
     node: NodeId,
     tenants: &TenantAllowlist,
+    slab: &pgprox_core::buf::BufferSlab,
 ) -> String {
     let node = node.get().to_string();
     // The one read that fans out is asked for locally, because a scrape is of
@@ -73,7 +74,15 @@ pub async fn render(
 
     for metric in metrics::ALL {
         out.push_str(&metric.describe());
-        samples(&mut out, metric, observatory, &clients, &node, tenants);
+        samples(
+            &mut out,
+            metric,
+            observatory,
+            &clients,
+            &node,
+            tenants,
+            slab,
+        );
     }
     out
 }
@@ -127,6 +136,30 @@ fn client_samples(
     }
 }
 
+/// The node's buffer slab, in the three numbers that describe it.
+///
+/// The bound is a sample rather than a comment, because "47 outstanding" means
+/// nothing without it and an operator should not have to find the config to
+/// read the graph.
+fn slab_samples(
+    out: &mut String,
+    metric: &Metric,
+    node: &str,
+    slab: &pgprox_core::buf::BufferSlab,
+) {
+    for (state, count) in [
+        ("outstanding", slab.outstanding()),
+        ("idle", slab.idle()),
+        ("bound", slab.capacity()),
+    ] {
+        let _ = writeln!(
+            out,
+            "{}{{node=\"{node}\",state=\"{state}\"}} {count}",
+            metric.name
+        );
+    }
+}
+
 /// The samples for one metric, or none where nothing can answer it.
 fn samples(
     out: &mut String,
@@ -135,8 +168,10 @@ fn samples(
     clients: &[pgprox_core::admin::ClientView],
     node: &str,
     tenants: &TenantAllowlist,
+    slab: &pgprox_core::buf::BufferSlab,
 ) {
     match metric.name {
+        "pgprox_buffer_slab" => slab_samples(out, metric, node, slab),
         "pgprox_client_conns" => client_samples(out, metric, clients, node, tenants),
         "pgprox_upstream_conns" => {
             for pool in observatory.pools(Scope::Local) {
@@ -226,6 +261,11 @@ fn samples(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+
+    /// A slab for the exporter's tests, with a bound the assertions can name.
+    fn test_slab() -> std::sync::Arc<pgprox_core::buf::BufferSlab> {
+        pgprox_core::buf::BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8)
+    }
     use super::*;
     use pgprox_core::admin::FakeObservatory;
     use pgprox_core::ids::TenantId;
@@ -268,13 +308,19 @@ mod tests {
     }
 
     async fn rendered() -> String {
-        render(seeded().as_ref(), NodeId::new(1), &TenantAllowlist::new()).await
+        render(
+            seeded().as_ref(),
+            NodeId::new(1),
+            &TenantAllowlist::new(),
+            &test_slab(),
+        )
+        .await
     }
 
     async fn rendered_allowing(tenant: &str) -> String {
         let mut allowlist = TenantAllowlist::new();
         allowlist.add(TenantId::new(tenant)).unwrap();
-        render(seeded().as_ref(), NodeId::new(1), &allowlist).await
+        render(seeded().as_ref(), NodeId::new(1), &allowlist, &test_slab()).await
     }
 
     #[tokio::test]

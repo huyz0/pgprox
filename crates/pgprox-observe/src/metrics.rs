@@ -244,6 +244,19 @@ pub const CLUSTER_VIEW_HASH: Metric = Metric {
     labels: &[],
 };
 
+/// Buffers borrowed from the node's slab, by state.
+///
+/// The number that says whether buffer reclaim is working. `outstanding` at or
+/// near the bound with `idle` at zero is a node whose connections are waiting
+/// for memory, which shows up to a client as latency and to an operator as
+/// nothing at all without this.
+pub const BUFFER_SLAB: Metric = Metric {
+    name: "pgprox_buffer_slab",
+    kind: Kind::Gauge,
+    help: "Buffers in the node's slab, by state: outstanding, idle, or the bound",
+    labels: &[STATE],
+};
+
 /// Configuration reloads, by outcome.
 ///
 /// A node serving a stale configuration looks identical to one serving a
@@ -281,6 +294,7 @@ pub const ALL: &[Metric] = &[
     CLUSTER_MEMBERS,
     CLUSTER_VIEW_HASH,
     CONFIG_RELOAD_TOTAL,
+    BUFFER_SLAB,
 ];
 
 impl Metric {

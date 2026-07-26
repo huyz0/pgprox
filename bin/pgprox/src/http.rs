@@ -126,6 +126,7 @@ async fn metrics(State(state): State<MetricsState>) -> impl IntoResponse {
             state.observatory.as_ref(),
             state.node,
             state.tenants.as_ref(),
+            state.slab.as_ref(),
         )
         .await,
     )
@@ -138,6 +139,8 @@ struct MetricsState {
     node: pgprox_core::ids::NodeId,
     /// Which tenants get their own series. See `pgprox_observe::tenants`.
     tenants: Arc<pgprox_observe::tenants::TenantAllowlist>,
+    /// The node's buffer slab, whose occupancy is a metric of its own.
+    slab: Arc<pgprox_core::buf::BufferSlab>,
 }
 
 /// The probe routes.
@@ -157,6 +160,7 @@ pub fn router(
     probes: Arc<Probes>,
     node: pgprox_core::ids::NodeId,
     tenants: Arc<pgprox_observe::tenants::TenantAllowlist>,
+    slab: Arc<pgprox_core::buf::BufferSlab>,
 ) -> Router {
     let exporter = Router::new()
         .route("/metrics", axum::routing::get(metrics))
@@ -164,6 +168,7 @@ pub fn router(
             observatory: Arc::clone(&observatory),
             node,
             tenants,
+            slab,
         });
 
     probe_routes(probes)
@@ -192,6 +197,12 @@ where
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+
+    /// A slab for a test wire. Small on purpose: the bound is what makes an
+    /// exhausted slab reachable in a test at all.
+    fn test_slab() -> std::sync::Arc<pgprox_core::buf::BufferSlab> {
+        pgprox_core::buf::BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8)
+    }
     use super::*;
     use pgprox_config::drain::{DrainConfig, DrainState};
     use pgprox_core::clock::FakeClock;
@@ -302,6 +313,7 @@ mod tests {
             crate::dial::TcpUpstream::new(
                 pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).unwrap(),
             ),
+            test_slab(),
         ));
         crate::observatory::NodeObservatory::new(
             pgprox_core::ids::NodeId::new(1),
@@ -334,6 +346,7 @@ mod tests {
             probes,
             pgprox_core::ids::NodeId::new(1),
             Arc::new(pgprox_observe::tenants::TenantAllowlist::new()),
+            test_slab(),
         );
         assert_eq!(get(&router, "/healthz").await.0, 200);
         assert_eq!(get(&router, "/v1/cluster").await.0, 200);
@@ -388,6 +401,7 @@ mod tests {
             probes,
             pgprox_core::ids::NodeId::new(1),
             Arc::new(pgprox_observe::tenants::TenantAllowlist::new()),
+            test_slab(),
         );
 
         let (status, body) = get(&router, "/metrics").await;
@@ -409,6 +423,7 @@ mod tests {
             Arc::clone(&probes),
             pgprox_core::ids::NodeId::new(1),
             Arc::new(pgprox_observe::tenants::TenantAllowlist::new()),
+            test_slab(),
         );
 
         assert_eq!(get(&router, "/readyz").await, (200, "ok".to_owned()));

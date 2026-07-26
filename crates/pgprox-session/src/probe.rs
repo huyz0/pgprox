@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use pgprox_core::auth::Backend;
+use pgprox_core::buf::BufferSlab;
 use pgprox_core::ids::{Lsn, ServerId};
 use pgprox_core::pool::PoolError;
 use pgprox_proto::backend::{self, BackendMessage};
@@ -184,8 +185,8 @@ impl<U: Upstream + 'static> SqlReplicaProbe<U> {
     /// replica's position to another and route reads at a replica that never
     /// replayed them.
     #[must_use]
-    pub fn new(upstream: U, replicas: Vec<Backend>) -> Self {
-        let connector = PgConnector::new(upstream);
+    pub fn new(upstream: U, replicas: Vec<Backend>, slab: Arc<BufferSlab>) -> Self {
+        let connector = PgConnector::new(upstream, slab);
         for replica in &replicas {
             connector.learn(replica);
         }
@@ -395,6 +396,15 @@ fn text_row(body: &[u8]) -> Option<Vec<Option<String>>> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+
+    /// A slab for a test wire.
+    ///
+    /// Sized for one connection's worth of borrowing, which is what a test
+    /// has. The bound is what makes an exhausted slab reachable in a test at
+    /// all, so it is small on purpose.
+    fn test_slab() -> std::sync::Arc<pgprox_core::buf::BufferSlab> {
+        pgprox_core::buf::BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8)
+    }
     use super::*;
     use pgprox_core::auth::TlsMode;
     use pgprox_core::secret::SecretString;
@@ -483,10 +493,13 @@ mod tests {
     }
 
     fn connector(version: &'static str) -> PgConnector<Scripted> {
-        let connector = PgConnector::new(Scripted {
-            version,
-            dials: AtomicU64::new(0),
-        });
+        let connector = PgConnector::new(
+            Scripted {
+                version,
+                dials: AtomicU64::new(0),
+            },
+            test_slab(),
+        );
         for database in ["acme", "globex"] {
             connector.learn(&backend(database));
         }
@@ -572,7 +585,7 @@ mod tests {
         // database silently gets no parameters at all, which presents as a
         // driver misbehaving rather than as a server being down.
         let cache = ParameterCache::new();
-        let connector = PgConnector::new(Unreachable);
+        let connector = PgConnector::new(Unreachable, test_slab());
         connector.learn(&backend("acme"));
 
         assert!(cache.ensure(&connector, &backend("acme")).await.is_err());
@@ -692,7 +705,7 @@ mod tests {
 
     fn prober(replica: Replica, count: usize) -> SqlReplicaProbe<Replica> {
         let replicas = (0..count).map(|n| backend(&format!("r{n}"))).collect();
-        SqlReplicaProbe::new(replica, replicas)
+        SqlReplicaProbe::new(replica, replicas, test_slab())
     }
 
     #[tokio::test]
@@ -837,7 +850,7 @@ mod tests {
             let _ = theirs.write_all(&frames).await;
         });
 
-        primary_lsn(&mut Wire::new(ours)).await
+        primary_lsn(&mut Wire::new(ours, test_slab())).await
     }
 
     fn ready() -> Vec<u8> {
