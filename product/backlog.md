@@ -1249,9 +1249,34 @@ recorded runs say which they are.
   workload against an instrumented binary, keep execution counts, and emit the
   three lists. Acceptance: the report names functions, and the hot-and-
   under-tested list is non-empty or the report explains why it is not.
-- [ ] `M7.15` Turn the report's findings into tasks. Acceptance: each entry in
-  the hot-and-under-tested and cold-and-complex lists is either a task here or
-  has a recorded reason it is not.
+- [x] `M7.15` Turn the report's findings into tasks: M7.24 through M7.26 below,
+  plus one recorded non-finding. The cold-and-complex list's top entries are
+  the TLS-carrying instantiations of `relay`, `serve_client` and `drive`, and
+  the generic instantiations of the same functions the replay did exercise:
+  the local stack speaks plaintext, so the TLS monomorphisations never ran and
+  the list is naming the stack rather than the code. That is a property of
+  where the profile was taken, and it is what M7.21 changes.
+- [ ] `M7.24` The SQL lexer is the top of the optimization queue.
+  `pgprox_core::sql::is_word_char` ran 3.6 million times in a 200-connection
+  25-second replay, `next` and `skip_trivia` another 1.3 million between them,
+  which is roughly ninety token calls per statement, and the route decision
+  that drives it costs 7,778 instructions against 20 for a frame scan.
+  Acceptance: a baseline before, a number after, and no correctness test
+  weakened. The classifier's rule that an unsure answer goes to the primary
+  does not move.
+- [ ] `M7.25` The report's hot-and-under-tested list measures what one replay
+  covered, not what the tests cover, and `standards/testing.md` means the
+  second. Every crate holds 95% from tier 1, so a function at 18% in the
+  report may be fully tested and merely not exercised by this workload.
+  Acceptance: the list is cross-referenced against tier-1 coverage, so an
+  entry means "hot, and the tests do not reach this either", which is the
+  thing worth acting on.
+- [ ] `M7.26` The prepared-statement path runs on every statement and the
+  replay reaches little of it: `map_statement_name` 8%, `ready_statement` 18%,
+  `statement_of` 29%. It is also the path that deadlocked twice in M6.
+  Acceptance: either the workload exercises the extended protocol, which is
+  what a real driver uses and what this workload does not currently send, or
+  the reason it does not is recorded.
 - [x] `M7.16` Buffer reclaim, part one: `Wire` borrows from `BufferSlab` when
   its socket becomes readable and returns when quiescent. Found decomposing:
   the slab has been in `pgprox-core` since M0 with tests, a bound, and no
