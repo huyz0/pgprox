@@ -84,6 +84,8 @@ pub struct Deps {
     /// different: a node with no certificate cannot offer TLS at all, and a
     /// node that requires it must refuse rather than serve in the clear.
     pub require_tls: bool,
+    /// The static user this node accepts over SCRAM, if one is configured.
+    pub statics: Option<Arc<crate::admin::StaticAdmin>>,
     /// Where configuration comes from.
     pub config: Arc<dyn ConfigSource>,
     /// Who resolves a token into a backend.
@@ -144,6 +146,8 @@ pub struct App {
     pub health: SharedHealth,
     /// What this node presents to clients, carried from [`Deps`].
     pub listener_tls: Option<Arc<tokio_rustls::rustls::ServerConfig>>,
+    /// The static user this node accepts, carried from [`Deps`].
+    pub statics: Option<Arc<crate::admin::StaticAdmin>>,
     /// Who this node is serving.
     pub sessions: Arc<Sessions>,
     /// What the admin surfaces read.
@@ -240,6 +244,7 @@ impl App {
 
         Ok(Self {
             listener_tls: deps.listener_tls.clone(),
+            statics: deps.statics.clone(),
             connector,
             pool,
             replicas: ReplicaWatch::new(0, ReplicaConfig::default(), Arc::clone(&deps.clock)),
@@ -251,6 +256,12 @@ impl App {
             cluster,
             deps,
         })
+    }
+
+    /// Whether a static user could authenticate here.
+    #[must_use]
+    pub fn has_static_users(&self) -> bool {
+        self.statics.is_some()
     }
 
     /// What the handshake tells a client about TLS.
@@ -311,6 +322,7 @@ mod tests {
             clock: Arc::new(FakeClock::new()),
             tls: pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty())
                 .expect("an empty root store is a valid client config"),
+            statics: None,
             config: FakeConfigSource::new(config).expect("the test's config is valid"),
             resolver: Arc::new(FakeCredentialResolver::new()),
         }

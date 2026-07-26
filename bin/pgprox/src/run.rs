@@ -164,6 +164,8 @@ impl Listeners {
 #[must_use]
 pub fn context(app: &App, shutdown: &Shutdown) -> Context {
     Context {
+        statics: app.statics.clone(),
+        observatory: Arc::clone(&app.observatory) as Arc<dyn pgprox_core::admin::Observatory>,
         // A node with certificates terminates TLS; one without answers `N` and
         // the handshake config decides whether that is allowed.
         tls: app
@@ -176,7 +178,14 @@ pub fn context(app: &App, shutdown: &Shutdown) -> Context {
         clock: Arc::clone(&app.deps.clock),
         handshake: HandshakeConfig {
             tls: app.tls_posture(),
-            static_users: Vec::new(),
+            // The names the handshake answers with SASL rather than a token
+            // request. A user not in this list is a tenant, whatever it is
+            // called.
+            static_users: app
+                .statics
+                .as_ref()
+                .map(|statics| vec![statics.user().to_owned()])
+                .unwrap_or_default(),
         },
         resolver: Arc::clone(&app.deps.resolver),
         connector: Arc::clone(&app.connector),
@@ -451,6 +460,7 @@ mod tests {
         Deps {
             listener_tls: None,
             require_tls: false,
+            statics: None,
             node: NodeId::new(1),
             node_name: "pgprox-1".to_owned(),
             clock: Arc::new(SystemClock),

@@ -36,7 +36,9 @@ use pgprox_session::cancel::Registry;
 use pgprox_session::connect::Upstreamed;
 use pgprox_session::probe::ParameterCache;
 use pgprox_session::relay::{ClientAction, Relay};
-use pgprox_session::shell::{Handoff, ShellError, Wire, accept, authenticate_token, negotiate};
+use pgprox_session::shell::{
+    Handoff, ShellError, Wire, accept, authenticate_scram, authenticate_token, negotiate,
+};
 use pgprox_session::state::{Credential, Handshake, HandshakeConfig};
 use pgprox_session::{TokenAuth, connect::PgConnector};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -132,6 +134,14 @@ pub struct Context {
     ///
     /// Whatever is still connected is closed, mid-transaction or not.
     pub closing: crate::run::Shutdown,
+    /// The static users this node accepts, if any.
+    ///
+    /// `None` is a node with none, which refuses a SCRAM client with the same
+    /// message a bad token gets: telling a caller that static users exist here
+    /// but they are not one is an oracle.
+    pub statics: Option<Arc<crate::admin::StaticAdmin>>,
+    /// What the static-user surface reads.
+    pub observatory: Arc<dyn pgprox_core::admin::Observatory>,
     /// How a client's connection is upgraded, when the node has certificates.
     ///
     /// `None` is a node with none, which answers `N` to an `SSLRequest` and
@@ -208,6 +218,21 @@ where
     }
 }
 
+/// What a static user is told about the server it reached.
+///
+/// The proxy itself, rather than a database: this connection has no upstream,
+/// and a `server_version` copied from one would name a server this session
+/// cannot reach. The version is what a driver checks before deciding which
+/// syntax to use, and every statement here is `SHOW`.
+fn proxy_parameters() -> Vec<(String, String)> {
+    vec![
+        ("server_version".to_owned(), "17.0 (pgprox)".to_owned()),
+        ("server_encoding".to_owned(), "UTF8".to_owned()),
+        ("client_encoding".to_owned(), "UTF8".to_owned()),
+        ("DateStyle".to_owned(), "ISO, MDY".to_owned()),
+    ]
+}
+
 /// Everything after the handshake has settled, whatever the stream turned out
 /// to be.
 ///
@@ -226,11 +251,41 @@ where
 {
     let grant = match credential {
         Credential::Scram => {
-            return Err(wire
-                .refuse(ClientError::AuthRefused(
-                    pgprox_core::error::AuthRejection::NotPermitted,
-                ))
-                .await);
+            // A static user never reaches a database: it authenticates against
+            // this node and gets the `SHOW` surface. An operator credential
+            // that could reach a tenant's data would be a way around the whole
+            // token path.
+            let Some(statics) = context.statics.clone() else {
+                return Err(wire.refuse(crate::admin::not_configured()).await);
+            };
+            let startup = handshake.startup().ok_or(ShellError::Disconnected)?.clone();
+            let mut scram = pgprox_session::auth::ScramAuth::new(
+                statics,
+                pgprox_session::auth::ScramConfig {
+                    mock_salt: crate::admin::MOCK_SALT.to_owned(),
+                    mock_iterations: crate::admin::ITERATIONS,
+                },
+                startup.user.clone(),
+                // Generated here because entropy is I/O, and the crate that
+                // owns the exchange holds none. See its AGENTS.md.
+                pgprox_auth::scram::generate_nonce(),
+            );
+            authenticate_scram(wire, &mut scram).await?;
+
+            // The exchange ends at SASLFinal, and a client is still waiting to
+            // be told it is in: `accept` is what sends AuthenticationOk, the
+            // parameters and the first ReadyForQuery. Without it psql hangs
+            // after a successful authentication, which is the worst possible
+            // shape for a bug in an admin path.
+            let Some(conn) = context.cancels.issue() else {
+                return Err(wire
+                    .refuse(ClientError::Internal("no entropy for a cancel key"))
+                    .await);
+            };
+            accept(wire, conn, &proxy_parameters()).await?;
+
+            drop(admitted);
+            return crate::admin::serve(wire, &context.observatory).await;
         }
         Credential::Jwt => {
             let startup = handshake.startup().ok_or(ShellError::Disconnected)?.clone();
@@ -972,6 +1027,8 @@ mod tests {
             sessions: Sessions::new(),
             cancels: Arc::new(Registry::new(NodeId::new(1), Box::new(Fixed))),
             acquire_timeout: Duration::from_secs(5),
+            statics: None,
+            observatory: pgprox_core::admin::FakeObservatory::new(NodeId::new(1)),
             tls: None,
             draining: crate::run::Shutdown::new(),
             closing: crate::run::Shutdown::new(),
@@ -1592,10 +1649,97 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_static_user_is_refused_until_the_admin_path_is_wired() {
-        // The SCRAM exchange exists and the admin surface it leads to is not
-        // reachable from the listener yet. Refusing says so; accepting would
-        // authenticate somebody into nothing.
+    async fn a_static_user_reaches_the_show_surface_over_scram() {
+        // ADR 0002 chose SCRAM for the clients that have no token, M6.4 built
+        // the exchange, and the listener refused every one of them until now.
+        let addr = fake_postgres().await;
+        let mut context = context_for(addr);
+        let admin = Arc::new(
+            crate::admin::StaticAdmin::new("pgprox_admin", "hunter2", b"salted".to_vec()).unwrap(),
+        );
+        context.handshake.static_users = vec!["pgprox_admin".to_owned()];
+        context.statics = Some(Arc::clone(&admin));
+        let context = Arc::new(context);
+
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        let mut packet = Vec::new();
+        pgprox_proto::encode_frontend::startup_message(
+            &mut packet,
+            pgprox_proto::encode::PROTOCOL_3_0,
+            &[("user", "pgprox_admin"), ("database", "pgprox")],
+        );
+        client.write_all(&packet).await.unwrap();
+
+        // AuthenticationSASL, then the exchange, driven with this project's
+        // own client-side SCRAM so the two halves are held together.
+        assert_eq!(expect(&mut client).await.0, Tag::AUTHENTICATION);
+
+        let nonce = pgprox_auth::scram::generate_nonce();
+        let first = pgprox_auth::scram::client_first("", &nonce);
+        let mut out = Vec::new();
+        pgprox_proto::encode_frontend::sasl_initial_response(&mut out, "SCRAM-SHA-256", &first);
+        client.write_all(&out).await.unwrap();
+
+        let (tag, body) = expect(&mut client).await;
+        assert_eq!(tag, Tag::AUTHENTICATION);
+        // The payload follows the four-byte authentication type.
+        let server_first = String::from_utf8_lossy(&body[4..]).into_owned();
+        let parsed = pgprox_auth::scram::parse_server_first(&server_first, &nonce).unwrap();
+        let keys =
+            pgprox_auth::scram::ScramKeys::derive(b"hunter2", &parsed.salt, parsed.iterations)
+                .unwrap();
+        let without_proof = pgprox_auth::scram::client_final_without_proof(&parsed.nonce);
+        let auth_message = pgprox_auth::scram::auth_message(
+            &pgprox_auth::scram::client_first_bare("", &nonce),
+            &server_first,
+            &without_proof,
+        );
+        let proof = pgprox_auth::scram::client_proof(&keys, &auth_message);
+
+        let final_message = format!(
+            "{without_proof},p={}",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, proof)
+        );
+        let mut out = Vec::new();
+        pgprox_proto::encode_frontend::sasl_response(&mut out, &final_message);
+        client.write_all(&out).await.unwrap();
+
+        // SASLFinal, then AuthenticationOk, the parameters this proxy reports
+        // about itself, the key, and the first ReadyForQuery.
+        assert_eq!(expect(&mut client).await.0, Tag::AUTHENTICATION);
+        assert_eq!(expect(&mut client).await.0, Tag::AUTHENTICATION);
+        let mut seen = Vec::new();
+        loop {
+            let (tag, _) = expect(&mut client).await;
+            seen.push(tag);
+            if tag == Tag::READY_FOR_QUERY {
+                break;
+            }
+        }
+        assert!(
+            seen.contains(&Tag::PARAMETER_STATUS),
+            "an authenticated admin was told nothing about the server it reached: {seen:?}"
+        );
+
+        // And the surface answers.
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SHOW STATS");
+        client.write_all(&query).await.unwrap();
+        assert_eq!(expect(&mut client).await.0, Tag::ROW_DESCRIPTION);
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_static_user_is_refused_when_the_node_has_none_configured() {
+        // The same message a bad token gets: telling a caller that static
+        // users exist here but they are not one is an oracle.
         let addr = fake_postgres().await;
         let mut context = context_for(addr);
         context.handshake.static_users = vec!["pgprox_admin".to_owned()];

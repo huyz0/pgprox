@@ -20,6 +20,7 @@
 
 #![warn(missing_docs)]
 
+pub mod admin;
 pub mod dial;
 pub mod drain;
 pub mod entropy;

@@ -25,6 +25,7 @@
 
 use std::fmt;
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use pgprox_core::auth::{AuthError, AuthRequest, Grant};
@@ -192,6 +193,21 @@ pub trait StaticCredentials: Send + Sync + fmt::Debug {
     /// and `proof` are passed as they appear on the wire, so an implementation
     /// needs no knowledge of the message format.
     fn verify(&self, user: &str, auth_message: &str, proof: &str) -> Option<String>;
+}
+
+/// So a composition root can share one set of credentials between every
+/// session without cloning the keys into each.
+///
+/// Here rather than in the binary, because the orphan rule puts it here: the
+/// trait is this crate's and `Arc` is the standard library's.
+impl<T: StaticCredentials + ?Sized> StaticCredentials for Arc<T> {
+    fn challenge(&self, user: &str) -> Option<ScramChallenge> {
+        self.as_ref().challenge(user)
+    }
+
+    fn verify(&self, user: &str, auth_message: &str, proof: &str) -> Option<String> {
+        self.as_ref().verify(user, auth_message, proof)
+    }
 }
 
 /// How the SCRAM exchange behaves.

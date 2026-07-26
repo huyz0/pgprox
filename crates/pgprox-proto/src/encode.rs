@@ -88,6 +88,55 @@ pub fn ready_for_query(out: &mut Vec<u8>, status: TxStatus) {
     tagged(out, Tag::READY_FOR_QUERY, |b| b.push(byte));
 }
 
+/// `T`: the shape of a result the proxy answered itself.
+///
+/// Every column is text (`OID` 25), because the only results this proxy
+/// produces are `SHOW` output, and a `SHOW` is text. A relayed result is never
+/// built here: the server's own `RowDescription` passes through untouched.
+pub fn row_description(out: &mut Vec<u8>, columns: &[&str]) {
+    tagged(out, Tag::ROW_DESCRIPTION, |b| {
+        b.extend_from_slice(
+            &i16::try_from(columns.len())
+                .unwrap_or(i16::MAX)
+                .to_be_bytes(),
+        );
+        for column in columns {
+            cstr(b, column);
+            // No table and no column: this row came from the proxy, not from a
+            // relation, and claiming otherwise would make a client's metadata
+            // lookup point at something that does not exist.
+            b.extend_from_slice(&0_i32.to_be_bytes());
+            b.extend_from_slice(&0_i16.to_be_bytes());
+            // text
+            b.extend_from_slice(&25_i32.to_be_bytes());
+            b.extend_from_slice(&(-1_i16).to_be_bytes());
+            b.extend_from_slice(&(-1_i32).to_be_bytes());
+            // Text format, matching the type above.
+            b.extend_from_slice(&0_i16.to_be_bytes());
+        }
+    });
+}
+
+/// `D`: one row of a result the proxy answered itself.
+pub fn data_row(out: &mut Vec<u8>, values: &[String]) {
+    tagged(out, Tag::DATA_ROW, |b| {
+        b.extend_from_slice(
+            &i16::try_from(values.len())
+                .unwrap_or(i16::MAX)
+                .to_be_bytes(),
+        );
+        for value in values {
+            b.extend_from_slice(&i32::try_from(value.len()).unwrap_or(i32::MAX).to_be_bytes());
+            b.extend_from_slice(value.as_bytes());
+        }
+    });
+}
+
+/// `C`: the tag that ends a result the proxy answered itself.
+pub fn command_complete(out: &mut Vec<u8>, tag: &str) {
+    tagged(out, Tag::COMMAND_COMPLETE, |b| cstr(b, tag));
+}
+
 /// `E`: an error, built from the shared taxonomy.
 ///
 /// The SQLSTATE comes from [`ClientError::sqlstate`] and the text from
@@ -165,6 +214,71 @@ pub fn authentication_sasl_final(out: &mut Vec<u8>, payload: &str) {
         b.extend_from_slice(&12_i32.to_be_bytes());
         b.extend_from_slice(payload.as_bytes());
     });
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod answered_tests {
+    use super::*;
+
+    /// Splits one frame into its tag and body.
+    fn frame(bytes: &[u8]) -> (Tag, Vec<u8>) {
+        let len = u32::from_be_bytes(bytes[1..5].try_into().unwrap()) as usize;
+        assert_eq!(len + 1, bytes.len(), "the length prefix is wrong");
+        (Tag(bytes[0]), bytes[5..].to_vec())
+    }
+
+    #[test]
+    fn a_row_description_names_its_columns_as_text() {
+        // Everything this proxy answers itself is SHOW output, and a SHOW is
+        // text. A column claiming another type would have a client parse the
+        // bytes as something they are not.
+        let mut out = Vec::new();
+        row_description(&mut out, &["database", "pool_mode"]);
+
+        let (tag, body) = frame(&out);
+        assert_eq!(tag, Tag::ROW_DESCRIPTION);
+        assert_eq!(i16::from_be_bytes(body[..2].try_into().unwrap()), 2);
+        assert!(body.windows(9).any(|w| w == b"database\0"));
+        // The type OID follows the name, the table OID and the column index.
+        let at = 2 + "database\0".len() + 4 + 2;
+        assert_eq!(i32::from_be_bytes(body[at..at + 4].try_into().unwrap()), 25);
+    }
+
+    #[test]
+    fn a_data_row_carries_its_values_with_lengths() {
+        let mut out = Vec::new();
+        data_row(&mut out, &["acme".to_owned(), "transaction".to_owned()]);
+
+        let (tag, body) = frame(&out);
+        assert_eq!(tag, Tag::DATA_ROW);
+        assert_eq!(i16::from_be_bytes(body[..2].try_into().unwrap()), 2);
+        assert_eq!(i32::from_be_bytes(body[2..6].try_into().unwrap()), 4);
+        assert_eq!(&body[6..10], b"acme");
+    }
+
+    #[test]
+    fn an_empty_result_is_a_row_description_with_no_rows() {
+        // Which is what a SHOW that matched nothing looks like. A client that
+        // got no RowDescription at all would have no columns to render.
+        let mut description = Vec::new();
+        row_description(&mut description, &["node"]);
+        let mut completion = Vec::new();
+        command_complete(&mut completion, "SHOW");
+
+        assert_eq!(frame(&description).0, Tag::ROW_DESCRIPTION);
+        assert_eq!(frame(&completion).0, Tag::COMMAND_COMPLETE);
+    }
+
+    #[test]
+    fn a_command_complete_carries_its_tag() {
+        let mut out = Vec::new();
+        command_complete(&mut out, "SHOW");
+
+        let (tag, body) = frame(&out);
+        assert_eq!(tag, Tag::COMMAND_COMPLETE);
+        assert_eq!(body, b"SHOW\0");
+    }
 }
 
 #[cfg(test)]

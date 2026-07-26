@@ -283,7 +283,7 @@ this is the largest single gap.
 - [x] `M1F.11` Channel binding (`SCRAM-SHA-256-PLUS`). Decide and record: it
   requires the TLS exporter and interacts with the FIPS suite list. Refusing is
   acceptable; refusing without saying so is not.
-- [!] `M1F.12` **Blocked on M6.** Wire SCRAM into the auth path as the non-JWT
+- [x] `M1F.12` Done in `M6.42`. Was blocked on M6. Wire SCRAM into the auth path as the non-JWT
   branch, selected by a configured static-credential rule. There is no auth path
   to wire into until `pgprox-session` exists, so this was an ordering error when
   written, not work anyone skipped. Move it into M6's decomposition when that
@@ -996,7 +996,7 @@ never touch", which is the same question M5's and M4's reviews asked.
   TLS and `pgprox-tls` has had the server config since M1.10. Acceptance: a
   client that sends `SSLRequest` gets a TLS session, `require_tls` refuses one
   that does not, and the e2e stack runs with certificates.
-- [ ] `M6.42` Wire the static-user SCRAM path. M6.4 built it and `serve`
+- [x] `M6.42` Wire the static-user SCRAM path. M6.4 built it and `serve`
   answers `Credential::Scram` with a refusal, so the admin surface ADR 0002
   promised for non-JWT clients still cannot be reached. This is also `M1F.12`,
   which was blocked on M6 existing. Acceptance: a configured static user

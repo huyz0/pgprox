@@ -73,6 +73,11 @@ pub struct Options {
     pub tls_key: Option<PathBuf>,
     /// Whether a client may authenticate without TLS.
     pub require_tls: bool,
+    /// The static user that may authenticate with SCRAM, if any.
+    ///
+    /// A name only: the password comes from the environment, because `ps` is
+    /// readable by every process on the host and a command line is in it.
+    pub admin_user: Option<String>,
     /// The peers this node gossips to, by node number.
     ///
     /// Given rather than discovered: a node that discovered its own fleet
@@ -103,6 +108,7 @@ impl Default for Options {
             // refusing every client, which is a worse first experience than a
             // node that says what it is doing.
             require_tls: false,
+            admin_user: None,
             peers: std::collections::BTreeMap::new(),
         }
     }
@@ -149,6 +155,7 @@ impl Options {
                 "--tls-cert" => options.tls_cert = Some(PathBuf::from(value()?)),
                 "--tls-key" => options.tls_key = Some(PathBuf::from(value()?)),
                 "--require-tls" => options.require_tls = true,
+                "--admin-user" => options.admin_user = Some(value()?),
                 // Repeatable, one flag per peer, and each carries the peer's
                 // node number: `--peer 2=10.0.0.2:6433`. The number is what
                 // lets a quota request reach the leader specifically.
@@ -186,6 +193,42 @@ impl Options {
 }
 
 impl Options {
+    /// The static user this node accepts, if one was configured.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a user is named and `PGPROX_ADMIN_PASSWORD` is not set, or
+    /// when the keys cannot be derived. A node that started without them would
+    /// answer every SCRAM client with a refusal for a reason nobody could see.
+    pub fn static_admin(&self) -> Result<Option<Arc<crate::admin::StaticAdmin>>, StartupError> {
+        let Some(user) = &self.admin_user else {
+            return Ok(None);
+        };
+        let password =
+            std::env::var(crate::admin::PASSWORD_VAR).map_err(|_| StartupError::Arguments {
+                detail: format!(
+                    "--admin-user needs {} in the environment",
+                    crate::admin::PASSWORD_VAR
+                ),
+            })?;
+
+        // A per-node salt, so two nodes with the same password store different
+        // keys and a stolen verifier from one is useless against the other.
+        let salt = {
+            use pgprox_session::cancel::Entropy as _;
+            let entropy = crate::entropy::SystemEntropy;
+            let mut salt = Vec::with_capacity(16);
+            for _ in 0..2 {
+                salt.extend_from_slice(&entropy.next().unwrap_or_default().to_be_bytes());
+            }
+            salt
+        };
+
+        let admin = crate::admin::StaticAdmin::new(user, &password, salt)
+            .map_err(|detail| StartupError::Arguments { detail })?;
+        Ok(Some(Arc::new(admin)))
+    }
+
     /// The listener's TLS configuration, if certificates were given.
     ///
     /// # Errors
@@ -371,6 +414,7 @@ pub async fn start_with(
     let listener_tls = options.tls()?;
     App::build(Deps {
         listener_tls,
+        statics: options.static_admin()?,
         require_tls: options.require_tls,
         node: options.node,
         node_name: options.node_name,
