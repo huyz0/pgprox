@@ -1211,7 +1211,7 @@ recorded runs say which they are.
   counted rather than swallowed, and `main.rs` holds no logic a test cannot
   reach. Architecture gains it as a stated composer, since it speaks the wire
   protocol and so composes `pgprox-proto`.
-- [ ] `M7.6` `scripts/scale.sh <connections>`: brings up the stack, measures the
+- [x] `M7.6` `scripts/scale.sh <connections>`: brings up the stack, measures the
   direct-to-Postgres baseline and the through-proxy run, and reports
   per-connection RSS, added p50 and p99, and the upstream connection count
   against the configured cap. Acceptance: it fails when the cap is breached,
@@ -1262,6 +1262,21 @@ recorded runs say which they are.
   backlog, and the `tcp_rmem` and `tcp_wmem` minimums. Acceptance: the scale run
   at 1000 is not limited by a default, and the values are commented with what
   they cost at 100k.
+- [ ] `M7.20` The workload declares think time, and the load client honours it.
+  Found running the first scale run: with no pause between transactions, N
+  connections means N requests in flight, so a run at any interesting count
+  measures queueing rather than the proxy. The first run at 200 connections
+  reported a p50 of 101ms against a direct baseline of 4ms, which is a
+  saturated database and not a proxy overhead. It also makes the workload
+  wrong in the way that matters most: the design point is 100k connections
+  that are idle most of the time. Acceptance: the workload states a think time
+  and its distribution, the recorded runs are re-taken, and the added p50 at
+  1000 connections is a number a proxy hop could plausibly account for.
+- [ ] `M7.21` `bin/pgload` speaks TLS, so a run can measure the deployed
+  posture. Today `deploy/docker-compose.scale.yml` turns off `--require-tls`
+  on the node under test, which means no scale run has measured what
+  termination costs. Acceptance: a run with TLS and a run without it are both
+  possible from one flag, and the difference between them is recorded.
 - [ ] `M7.19` Close M7.
 
 ## M8 and later

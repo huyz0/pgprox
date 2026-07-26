@@ -50,15 +50,19 @@ x-proxy: &proxy
         [ -S /tmp/sidecar.sock ] && break
         sleep 0.5
       done
+      # Both parameterised so a measurement run can use a different document
+      # and speak plaintext, without a second copy of this entrypoint that
+      # would drift from it. The defaults are the posture the e2e run asserts:
+      # the shipped config, and TLS required.
       exec /usr/local/bin/pgprox \
-        --config /etc/pgprox/config.yaml \
+        --config "$${PGPROX_CONFIG:-/etc/pgprox/config.yaml}" \
         --sidecar /tmp/sidecar.sock \
         --listen 0.0.0.0:6432 \
         --admin 0.0.0.0:9090 \
         --gossip 0.0.0.0:6433 \
         --tls-cert /tmp/tls.crt \
         --tls-key /tmp/tls.key \
-        --require-tls \
+        $${PGPROX_REQUIRE_TLS:---require-tls} \
         --node "$${PGPROX_NODE}" \
         --node-name "$${PGPROX_NODE_NAME}" \
         --peer "$${PGPROX_PEER_A}" \

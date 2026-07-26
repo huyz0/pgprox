@@ -1,0 +1,35 @@
+# What a scale run changes about the e2e stack, and nothing else.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml up
+#
+# Three differences, each with a reason a measurement needs:
+#
+#   1. A higher client cap. The shipped document allows 200 connections per
+#      node, which is the right number for an e2e run and refuses the 201st
+#      connection of a scale run.
+#   2. Plaintext on pgprox-1. `bin/pgload` does not speak TLS yet, and the
+#      comparison a scale run makes is proxy-hop against direct-hop, so both
+#      sides of it have to be the same on that axis. The other two nodes keep
+#      requiring TLS, so the stack still holds the posture M6 asserts.
+#   3. Published ports. The load client runs on the host rather than in a
+#      container, so that the memory it uses is not counted in the memory the
+#      proxy uses.
+#
+# The upstream cap is deliberately not raised. A thousand clients multiplexed
+# onto sixty upstream connections is the property being measured.
+
+services:
+  primary:
+    ports:
+      - "15432:5432"
+
+  pgprox-1:
+    environment:
+      PGPROX_CONFIG: /etc/pgprox/scale.yaml
+      # A space rather than an empty string: the entrypoint expands this
+      # unquoted, and `:-` would substitute the default for an empty value.
+      PGPROX_REQUIRE_TLS: " "
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536

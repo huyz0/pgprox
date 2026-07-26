@@ -1,0 +1,19 @@
+# The document a scale run uses. Identical to config.yaml except for the client
+# cap, which the shipped one sets to the number an e2e run wants.
+#
+# The upstream cap stays at sixty. A scale run's whole point is that a thousand
+# clients are multiplexed onto it, and raising it here would measure a proxy
+# that was not doing the thing it exists to do.
+max_client_conns: 20000
+drain_grace: 10s
+grant_ttl_cap: 300s
+
+servers:
+  - server: primary:5432
+    max_connections: 60
+    guaranteed_fraction: 0.5
+
+nodes:
+  pgprox-1: {}
+  pgprox-2: {}
+  pgprox-3: {}

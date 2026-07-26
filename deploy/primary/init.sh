@@ -9,6 +9,13 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" <<-SQL
 	CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'replicator';
 	CREATE ROLE acme_app WITH LOGIN PASSWORD 'acme-password';
 	CREATE DATABASE tenant_acme OWNER acme_app;
+	-- The direct-connection baseline a scale run measures against. It has no
+	-- password because it authenticates by trust from inside the compose
+	-- network only, which is what lets `bin/pgload` connect to Postgres with
+	-- the same code it uses to connect to the proxy. Giving the proxy's own
+	-- tenant role a trust rule instead would have changed what the proxy does
+	-- on its upstream connections, which is part of what is being measured.
+	CREATE ROLE pgload WITH LOGIN;
 SQL
 
 # Replication and the tenant both connect from inside the compose network, so
@@ -18,6 +25,14 @@ cat >> "$PGDATA/pg_hba.conf" <<-HBA
 	host replication replicator all md5
 	host all         all        all md5
 HBA
+
+# The load client's rule goes first, because pg_hba stops at the first match
+# and everything above already matches every user.
+{
+	echo "host all pgload all trust"
+	cat "$PGDATA/pg_hba.conf"
+} > "$PGDATA/pg_hba.conf.new"
+mv "$PGDATA/pg_hba.conf.new" "$PGDATA/pg_hba.conf"
 
 cat >> "$PGDATA/postgresql.conf" <<-CONF
 	wal_level = replica
