@@ -1199,7 +1199,7 @@ recorded runs say which they are.
   transaction size, replica read fraction. Acceptance: the document is a
   committed file, a malformed one is refused with the field named, and nothing
   in the crate touches a socket.
-- [ ] `M7.3` The sampler: a workload plus a seed yields a deterministic stream
+- [x] `M7.3` The sampler: a workload plus a seed yields a deterministic stream
   of statements. Acceptance: two samplers on the same seed produce identical
   streams, and the observed mix converges on the declared distribution.
 - [ ] `M7.4` The latency histogram and the run report. Acceptance: p50 and p99
