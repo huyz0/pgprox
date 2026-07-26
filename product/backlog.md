@@ -1052,6 +1052,15 @@ asking of each crate what the binary never touches.
   Acceptance: a tenant on the allowlist gets its own series, one off it is
   aggregated, and the ceiling is what stops the label becoming unbounded.
 
+- [ ] `M6.50` The pool does not remember what each connection holds. `M6.49`
+  sends `Close` and `Parse` before every `Bind`, because it cannot know
+  whether the connection it was just lent has seen the statement, and Postgres
+  refuses a second `Parse` under a name it already holds. Correct on a cold
+  connection and on a warm one, and a re-parse per transaction is the thing
+  prepared statements exist to avoid. `ConnectionStatements` is M5.10 and
+  exists; what is missing is somewhere to keep one per pooled connection.
+  Acceptance: a `Bind` on a connection that already holds the statement sends
+  no extra messages, and one on a connection that does not still works.
 - [ ] `M6.25` Close M6.
 
 ## M7 and later

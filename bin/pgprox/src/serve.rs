@@ -473,6 +473,16 @@ where
         forward(&mut upstream.wire, tag, &outgoing);
         upstream.wire.flush().await?;
 
+        // An extended-query frame is one of several the client will send
+        // before it expects anything back: `Parse`, `Bind`, `Describe`,
+        // `Execute` and `Close` are answered together, after the `Sync` that
+        // ends the sequence. Waiting for a `ReadyForQuery` after each one
+        // deadlocks exactly like the copy-in did, with the proxy waiting for
+        // the server and the server waiting for the rest of the sequence.
+        if awaits_more(&message) {
+            continue;
+        }
+
         if pump(
             wire,
             upstream,
@@ -530,16 +540,45 @@ async fn borrow(
     Ok((guard, taken))
 }
 
-/// Sends the `Parse` a `Bind` needs, when the connection may not hold it.
+/// Whether the client will send more before it expects an answer.
 ///
-/// Returns how many `ParseComplete`s the client must not be shown. The client
-/// did not send this `Parse`, and a driver counting replies would be one
-/// ahead of the server for the rest of the session.
+/// True for the frames in the middle of an extended-query sequence, false for
+/// the ones that end one: `Sync` and `Flush` both make the server answer, and
+/// a simple `Query` is a sequence of one.
 ///
-/// Always, rather than only when the connection is known not to hold it: the
-/// pool does not yet remember what each connection carries, so preparing again
-/// is the answer that cannot be wrong. `Parse` of a statement a connection
-/// already holds is accepted by Postgres.
+/// `Flush` is included as an ending because a client that sends one is waiting
+/// on the answer to what it has sent so far, which is the whole reason the
+/// message exists.
+fn awaits_more(message: &pgprox_proto::frontend::FrontendMessage<'_>) -> bool {
+    use pgprox_proto::frontend::FrontendMessage as Message;
+
+    matches!(
+        message,
+        Message::Parse { .. }
+            | Message::Bind { .. }
+            | Message::Describe { .. }
+            | Message::Execute { .. }
+            | Message::Close { .. }
+    )
+}
+
+/// Makes sure the connection about to serve a `Bind` holds the statement.
+///
+/// Returns how many replies the client must not be shown: it sent neither of
+/// these messages, and a driver counting replies would be one ahead of the
+/// server for the rest of the session.
+///
+/// `Close` and then `Parse`, rather than `Parse` alone. Postgres refuses a
+/// second `Parse` under a name it already holds, and this proxy cannot know
+/// whether the connection it was just lent is one that has seen this
+/// statement: the pool does not yet remember what each connection carries.
+/// `Close` of a statement that does not exist is not an error, so the pair is
+/// correct on a cold connection and on a warm one.
+///
+/// The cost is a re-parse per transaction, which is the thing prepared
+/// statements exist to avoid. `M6.50` gives the pool the memory that turns
+/// this into a no-op on a connection that already holds the statement; until
+/// then, correct and slow beats fast and wrong.
 fn prepare_for_bind(
     upstream: &mut Upstreamed<crate::dial::Stream>,
     message: &pgprox_proto::frontend::FrontendMessage<'_>,
@@ -555,9 +594,10 @@ fn prepare_for_bind(
     let global = prepared.global.as_str().to_owned();
     let sql = prepared.sql.clone();
     upstream.wire.queue(|out| {
+        pgprox_proto::encode_frontend::close_statement(out, &global);
         pgprox_proto::encode_frontend::parse(out, &global, &sql);
     });
-    1
+    2
 }
 
 /// Records what this statement does to the session, and maps its name.
@@ -732,10 +772,14 @@ where
             context.sessions.set_pinned(conn, reason.as_str());
         }
 
-        // The reply to a `Parse` this proxy sent on the client's behalf. The
-        // client never sent that `Parse` and must not see its completion, or
-        // every reply after it is one out of step.
-        if tag == pgprox_proto::frame::Tag::PARSE_COMPLETE && *swallow_parse_complete > 0 {
+        // The replies to the `Close` and `Parse` this proxy sent on the
+        // client's behalf. The client sent neither and must not see their
+        // completions, or every reply after them is one out of step.
+        if matches!(
+            tag,
+            pgprox_proto::frame::Tag::PARSE_COMPLETE | pgprox_proto::frame::Tag::CLOSE_COMPLETE
+        ) && *swallow_parse_complete > 0
+        {
             *swallow_parse_complete -= 1;
             continue;
         }

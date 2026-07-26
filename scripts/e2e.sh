@@ -140,6 +140,25 @@ assert_pgbench_is_clean() {
     return 1
   }
 
+  # And again with named prepared statements, which is the protocol every
+  # mainstream driver actually uses and the one that breaks the moment a
+  # session's statement is bound on a connection that never parsed it.
+  local prepared
+  prepared="$("${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" -e PGSSLMODE=require client \
+    pgbench --host pgprox-1 --port "$PROXY_PORT" --username acme_app \
+      --protocol prepared --client 4 --jobs 2 --time 10 --no-vacuum tenant_acme 2>&1)" || {
+    fail "pgbench with prepared statements failed: $prepared"
+    last_words pgprox-1
+    return 1
+  }
+  if grep -qE 'number of failed transactions: 0 ' <<<"$prepared"; then
+    ok "pgbench: clean with prepared statements"
+  else
+    fail "pgbench reported failed transactions with prepared statements"
+    sed 's/^/  /' <<<"$prepared"
+    return 1
+  fi
+
   # "number of failed transactions: 0 (0.000%)" on a clean run. Anything else,
   # including the line being absent, is a failure: a run that cannot be checked
   # has not been checked.
