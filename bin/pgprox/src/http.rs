@@ -122,7 +122,12 @@ async fn metrics(State(state): State<MetricsState>) -> impl IntoResponse {
             axum::http::header::CONTENT_TYPE,
             "text/plain; version=0.0.4",
         )],
-        crate::metrics::render(state.observatory.as_ref(), state.node).await,
+        crate::metrics::render(
+            state.observatory.as_ref(),
+            state.node,
+            state.tenants.as_ref(),
+        )
+        .await,
     )
 }
 
@@ -131,6 +136,8 @@ async fn metrics(State(state): State<MetricsState>) -> impl IntoResponse {
 struct MetricsState {
     observatory: Shared,
     node: pgprox_core::ids::NodeId,
+    /// Which tenants get their own series. See `pgprox_observe::tenants`.
+    tenants: Arc<pgprox_observe::tenants::TenantAllowlist>,
 }
 
 /// The probe routes.
@@ -145,12 +152,18 @@ pub fn probe_routes(probes: Arc<Probes>) -> Router {
 ///
 /// The admin routes come from `pgprox-admin` rather than being restated here,
 /// so a route added there is served here without anyone remembering to.
-pub fn router(observatory: Shared, probes: Arc<Probes>, node: pgprox_core::ids::NodeId) -> Router {
+pub fn router(
+    observatory: Shared,
+    probes: Arc<Probes>,
+    node: pgprox_core::ids::NodeId,
+    tenants: Arc<pgprox_observe::tenants::TenantAllowlist>,
+) -> Router {
     let exporter = Router::new()
         .route("/metrics", axum::routing::get(metrics))
         .with_state(MetricsState {
             observatory: Arc::clone(&observatory),
             node,
+            tenants,
         });
 
     probe_routes(probes)
@@ -316,7 +329,12 @@ mod tests {
         let (probes, drain, source) = probes_over(Config::default());
         let observatory: Shared = Arc::new(observatory_over(source, drain));
 
-        let router = router(observatory, probes, pgprox_core::ids::NodeId::new(1));
+        let router = router(
+            observatory,
+            probes,
+            pgprox_core::ids::NodeId::new(1),
+            Arc::new(pgprox_observe::tenants::TenantAllowlist::new()),
+        );
         assert_eq!(get(&router, "/healthz").await.0, 200);
         assert_eq!(get(&router, "/v1/cluster").await.0, 200);
     }
@@ -365,7 +383,12 @@ mod tests {
         // deployment exposes one thing rather than three.
         let (probes, drain, source) = probes_over(Config::default());
         let observatory: Shared = Arc::new(observatory_over(source, drain));
-        let router = router(observatory, probes, pgprox_core::ids::NodeId::new(1));
+        let router = router(
+            observatory,
+            probes,
+            pgprox_core::ids::NodeId::new(1),
+            Arc::new(pgprox_observe::tenants::TenantAllowlist::new()),
+        );
 
         let (status, body) = get(&router, "/metrics").await;
         assert_eq!(status, 200);
@@ -385,6 +408,7 @@ mod tests {
             observatory,
             Arc::clone(&probes),
             pgprox_core::ids::NodeId::new(1),
+            Arc::new(pgprox_observe::tenants::TenantAllowlist::new()),
         );
 
         assert_eq!(get(&router, "/readyz").await, (200, "ok".to_owned()));

@@ -1045,7 +1045,7 @@ asking of each crate what the binary never touches.
   Acceptance: two sessions preparing identical SQL share one global name, a
   `Bind` whose connection does not hold the statement replays the `Parse`
   first, and a client's own statement name never reaches a server.
-- [ ] `M6.48` No metric carries a tenant. `pgprox-observe::tenants` is M4.9's
+- [x] `M6.48` No metric carries a tenant. `pgprox-observe::tenants` is M4.9's
   per-tenant series allowlist with its configured ceiling, and nothing calls
   it: the exporter emits no per-tenant series at all, so the allowlist governs
   nothing and an operator cannot see which tenant is using the connections.

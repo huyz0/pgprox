@@ -35,6 +35,7 @@ use std::fmt::Write as _;
 use pgprox_core::admin::{Observatory, Scope};
 use pgprox_core::ids::NodeId;
 use pgprox_observe::metrics::{self, Metric};
+use pgprox_observe::tenants::TenantAllowlist;
 
 /// The metrics the registry declares that nothing can yet answer.
 ///
@@ -58,7 +59,11 @@ pub const UNSOURCED: &[&str] = &[
 ///
 /// Every metric the registry declares appears, so a scrape is a complete
 /// picture of what exists rather than of what happened to have a value.
-pub async fn render(observatory: &dyn Observatory, node: NodeId) -> String {
+pub async fn render(
+    observatory: &dyn Observatory,
+    node: NodeId,
+    tenants: &TenantAllowlist,
+) -> String {
     let node = node.get().to_string();
     // The one read that fans out is asked for locally, because a scrape is of
     // this node: Prometheus scrapes every pod, and a cluster-scoped answer
@@ -68,7 +73,7 @@ pub async fn render(observatory: &dyn Observatory, node: NodeId) -> String {
 
     for metric in metrics::ALL {
         out.push_str(&metric.describe());
-        samples(&mut out, metric, observatory, &clients, &node);
+        samples(&mut out, metric, observatory, &clients, &node, tenants);
     }
     out
 }
@@ -80,6 +85,7 @@ fn samples(
     observatory: &dyn Observatory,
     clients: &[pgprox_core::admin::ClientView],
     node: &str,
+    tenants: &TenantAllowlist,
 ) {
     match metric.name {
         "pgprox_client_conns" => {
@@ -100,6 +106,25 @@ fn samples(
                 let _ = writeln!(
                     out,
                     "{}{{node=\"{node}\",state=\"{state}\"}} {count}",
+                    metric.name
+                );
+            }
+
+            // And per tenant, for the tenants an operator asked to see. The
+            // allowlist decides which: a `tenant` label taken from the data
+            // would be one series per tenant, which is the unbounded label the
+            // registry's own test names as the example of what not to do.
+            let mut per_tenant: std::collections::BTreeMap<&str, u32> =
+                std::collections::BTreeMap::new();
+            for view in clients {
+                *per_tenant
+                    .entry(tenants.label_for(&view.tenant))
+                    .or_default() += 1;
+            }
+            for (tenant, count) in per_tenant {
+                let _ = writeln!(
+                    out,
+                    "{}{{node=\"{node}\",state=\"any\",tenant=\"{tenant}\"}} {count}",
                     metric.name
                 );
             }
@@ -185,13 +210,14 @@ fn samples(
 mod tests {
     use super::*;
     use pgprox_core::admin::FakeObservatory;
+    use pgprox_core::ids::TenantId;
     use std::sync::Arc;
 
     /// An observatory with one of everything, so a metric whose samples come
     /// from a list has a list to come from.
     fn seeded() -> Arc<FakeObservatory> {
         use pgprox_core::admin::{ClientState, ClientView, PoolView, ServerView};
-        use pgprox_core::ids::{PoolKey, ServerId, TenantId};
+        use pgprox_core::ids::{PoolKey, ServerId};
         use pgprox_core::pool::PoolStats;
 
         let observatory = FakeObservatory::new(NodeId::new(1));
@@ -224,7 +250,13 @@ mod tests {
     }
 
     async fn rendered() -> String {
-        render(seeded().as_ref(), NodeId::new(1)).await
+        render(seeded().as_ref(), NodeId::new(1), &TenantAllowlist::new()).await
+    }
+
+    async fn rendered_allowing(tenant: &str) -> String {
+        let mut allowlist = TenantAllowlist::new();
+        allowlist.add(TenantId::new(tenant)).unwrap();
+        render(seeded().as_ref(), NodeId::new(1), &allowlist).await
     }
 
     #[tokio::test]
@@ -259,6 +291,23 @@ mod tests {
                 metric.name
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_tenant_off_the_allowlist_is_aggregated() {
+        // The unbounded label the registry's own cardinality test names as the
+        // example: one series per tenant is five thousand series per node.
+        let out = rendered().await;
+
+        assert!(out.contains("tenant=\"other\""), "{out}");
+        assert!(!out.contains("tenant=\"acme\""), "{out}");
+    }
+
+    #[tokio::test]
+    async fn a_tenant_on_the_allowlist_gets_its_own_series() {
+        let out = rendered_allowing("acme").await;
+
+        assert!(out.contains("tenant=\"acme\""), "{out}");
     }
 
     #[tokio::test]

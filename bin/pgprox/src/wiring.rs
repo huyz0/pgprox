@@ -148,6 +148,12 @@ pub struct App {
     pub listener_tls: Option<Arc<tokio_rustls::rustls::ServerConfig>>,
     /// The static user this node accepts, carried from [`Deps`].
     pub statics: Option<Arc<crate::admin::StaticAdmin>>,
+    /// Which tenants get their own metric series.
+    ///
+    /// Empty by default, which aggregates every tenant under one label. That
+    /// is the direction M4.9 chose: a `tenant` label taken from the data is
+    /// one series per tenant, and a proxy is built for five thousand of them.
+    pub tenants: Arc<pgprox_observe::tenants::TenantAllowlist>,
     /// Who this node is serving.
     pub sessions: Arc<Sessions>,
     /// What the admin surfaces read.
@@ -245,6 +251,7 @@ impl App {
         Ok(Self {
             listener_tls: deps.listener_tls.clone(),
             statics: deps.statics.clone(),
+            tenants: Arc::new(pgprox_observe::tenants::TenantAllowlist::new()),
             connector,
             pool,
             replicas: ReplicaWatch::new(0, ReplicaConfig::default(), Arc::clone(&deps.clock)),
