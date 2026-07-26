@@ -1350,6 +1350,10 @@ recorded runs say which they are.
   called: written to work around WSL's reserved port ranges, then replaced by
   low default ports and left behind forty minutes later. Found by the review
   round that had just found three of the same in this milestone's Rust.
+- [x] `M7.32` CI ran only the M-1 completion gate. Every milestone since has
+  had one, each passing on the commit that closed it, and none of them ran
+  again afterwards. Found in the review round. M6's and M7's now run on every
+  push, where a failure means a regression rather than unfinished work.
 - [x] `M7.19` Close the 1000-connection round of M7.
 
 ## M8 and later

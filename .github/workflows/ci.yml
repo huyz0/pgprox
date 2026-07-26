@@ -84,8 +84,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup show && rustup component add llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
       - name: M-1
-        # Reported, not enforced, until M-1 closes. Once it passes it becomes a
-        # required check so the system cannot regress.
-        continue-on-error: true
         run: scripts/m-1-complete.sh
+      # The gates for the milestones that have closed. Each one passed on the
+      # commit that closed it, so a failure here is a regression rather than
+      # unfinished work. The parts that need Docker are in the scripts these
+      # call out to and are not run here: e2e.sh and scale.sh want a stack.
+      - name: M6
+        run: scripts/m6-complete.sh
+      - name: M7
+        run: scripts/m7-complete.sh
