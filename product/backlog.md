@@ -868,6 +868,21 @@ rule already allows `pgprox-proto`.
 - [x] `M6.21` The accept loop and listener, with TLS and the client connection
   ceiling. Acceptance: a node at its ceiling refuses with a message naming the
   limit, and refusal never takes down connections already established.
+- [x] `M6.26` The node's HTTP surface: `/healthz`, `/readyz`, and the admin
+  routes over the live `Observatory`. Split out of `M6.22` while starting it:
+  the drain sequence is judged on `/readyz` failing first, and nothing answers
+  `/readyz`, because `M4.8` built the `Health` type and `M4.10` built a router
+  and neither was ever bound. Found the second seam at the same time: `App` and
+  `NodeObservatory` each owned a `DrainState`, so a drain through the API and
+  the drain a probe reads were different facts. Acceptance: a drain posted to
+  the API makes `/readyz` fail on the same node, `/healthz` keeps passing, and
+  there is one `DrainState` in the process.
+- [ ] `M6.27` The run loop: bind the client listener and the admin listener,
+  spawn the accept loop and the periodic work, and run until signalled. Split
+  out of `M6.22` with `M6.26`: `start` builds a node and returns it, so the
+  binary as committed opens no port at all and a drain has nothing to drain.
+  Acceptance: the binary serves a query end to end over a real socket, and the
+  run loop returns when its shutdown signal fires rather than being aborted.
 - [ ] `M6.22` The drain sequence, end to end. Acceptance: `/readyz` fails
   first, gossip announces before any client is closed, in-flight transactions
   finish, and the grace timer force-closes the remainder.

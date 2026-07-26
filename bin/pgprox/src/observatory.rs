@@ -22,7 +22,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use pgprox_cluster::service::GossipCoordinator;
-use pgprox_config::drain::DrainState;
 use pgprox_core::admin::{
     AdminError, ClientView, ClusterView, Observatory, PoolView, Scope, ServerView, Stats,
     TenantView,
@@ -33,10 +32,9 @@ use pgprox_core::config::{Config, ConfigSource};
 use pgprox_core::ids::{NodeId, PoolKey, TenantId};
 use pgprox_core::pool::PoolStats;
 use pgprox_pool::reap::ReapConfig;
-use tokio::sync::Mutex;
 
 use crate::sessions::Sessions;
-use crate::wiring::NodePool;
+use crate::wiring::{NodePool, SharedDrain};
 
 /// The live [`Observatory`].
 #[derive(Debug)]
@@ -47,12 +45,17 @@ pub struct NodeObservatory {
     cluster: Arc<GossipCoordinator>,
     pool: Arc<NodePool>,
     sessions: Arc<Sessions>,
-    /// The imperative drain overlay.
+    /// The imperative drain overlay, shared with the node that owns it.
     ///
-    /// A `tokio::sync::Mutex` rather than a `std` one because the trait's
-    /// write methods are async, and a std guard held across an await is the
-    /// deadlock this project's async standard forbids.
-    drain: Mutex<DrainState>,
+    /// Shared rather than owned, because `/readyz` and this API have to be
+    /// reading the same fact. They were two `DrainState`s until `M6.26`, which
+    /// meant a drain posted here left the probe passing and the node kept
+    /// taking traffic it had just been told to stop taking.
+    ///
+    /// A `std` mutex despite the trait's write methods being async: no guard
+    /// here is held across an await, and a `tokio` mutex could not be read from
+    /// the probe path, which is sync.
+    drain: SharedDrain,
 }
 
 impl NodeObservatory {
@@ -65,7 +68,7 @@ impl NodeObservatory {
         cluster: Arc<GossipCoordinator>,
         pool: Arc<NodePool>,
         sessions: Arc<Sessions>,
-        drain: DrainState,
+        drain: SharedDrain,
     ) -> Self {
         Self {
             node,
@@ -74,7 +77,7 @@ impl NodeObservatory {
             cluster,
             pool,
             sessions,
-            drain: Mutex::new(drain),
+            drain,
         }
     }
 
@@ -259,7 +262,7 @@ impl Observatory for NodeObservatory {
 
     async fn drain(&self, ttl: Duration) -> Result<Duration, AdminError> {
         let now = self.clock.now();
-        let mut drain = self.drain.lock().await;
+        let mut drain = crate::wiring::lock(&self.drain);
         let expires_at = drain.set(NodeMode::Draining, Some(ttl), now);
         Ok(expires_at.saturating_duration_since(now))
     }
@@ -267,7 +270,7 @@ impl Observatory for NodeObservatory {
     async fn undrain(&self) -> Result<(), AdminError> {
         let now = self.clock.now();
         let config = self.config();
-        let mut drain = self.drain.lock().await;
+        let mut drain = crate::wiring::lock(&self.drain);
 
         // Refused rather than silently ineffective. The next config poll would
         // put the drain back, so the node would oscillate and the operator
@@ -391,7 +394,12 @@ mod tests {
             cluster,
             Arc::clone(&pool),
             Arc::clone(&sessions),
-            DrainState::new("pgprox-1", pgprox_config::drain::DrainConfig::default()),
+            Arc::new(std::sync::Mutex::new(
+                pgprox_config::drain::DrainState::new(
+                    "pgprox-1",
+                    pgprox_config::drain::DrainConfig::default(),
+                ),
+            )),
         );
 
         Fixture {

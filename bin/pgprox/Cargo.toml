@@ -32,6 +32,7 @@ pgprox-route = { path = "../../crates/pgprox-route" }
 pgprox-session = { path = "../../crates/pgprox-session" }
 pgprox-tls = { path = "../../crates/pgprox-tls" }
 async-trait.workspace = true
+axum = { workspace = true, features = ["json", "query", "tokio", "http1"] }
 base64 = "0.22"
 tokio-rustls = { version = "0.26", default-features = false }
 thiserror.workspace = true
@@ -40,6 +41,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time"
 [dev-dependencies]
 pgprox-core = { path = "../../crates/pgprox-core", features = ["test-fakes"] }
 tempfile.workspace = true
+tower = { workspace = true, features = ["util"] }
 
 [lints]
 workspace = true

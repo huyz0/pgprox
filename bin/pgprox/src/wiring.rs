@@ -13,9 +13,11 @@
 //! mistake is found before anything is bound, and so the wiring itself can be
 //! exercised without a port. The run loop is a later task's problem.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::dial::TcpUpstream;
+use crate::observatory::NodeObservatory;
+use crate::sessions::Sessions;
 
 use pgprox_cluster::coordinator::CoordinatorConfig;
 use pgprox_cluster::service::GossipCoordinator;
@@ -95,6 +97,25 @@ pub type NodeConnector = Arc<PgConnector<TcpUpstream>>;
 /// The pool this node holds.
 pub type NodePool = LivePool<NodeConnector>;
 
+/// The one drain overlay in the process.
+///
+/// Shared rather than copied: `/readyz`, the admin API and the drain sequence
+/// all read and write it, and two of them holding different answers is a node
+/// that reports itself out of rotation while still taking work.
+pub type SharedDrain = Arc<Mutex<DrainState>>;
+
+/// What the probes answer, shared for the same reason.
+pub type SharedHealth = Arc<Mutex<Health>>;
+
+/// Locks a shared value, ignoring poisoning.
+///
+/// A panicked holder leaves the drain overlay readable, because the alternative
+/// is a probe that panics in turn and a node that can no longer say whether it
+/// is draining.
+pub fn lock<T>(shared: &Mutex<T>) -> MutexGuard<'_, T> {
+    shared.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// One built node.
 #[derive(Debug)]
 pub struct App {
@@ -110,9 +131,13 @@ pub struct App {
     /// Replica positions, polled on their own schedule.
     pub replicas: Arc<ReplicaWatch>,
     /// Whether this node is draining, and until when.
-    pub drain: DrainState,
+    pub drain: SharedDrain,
     /// What the probes answer.
-    pub health: Health,
+    pub health: SharedHealth,
+    /// Who this node is serving.
+    pub sessions: Arc<Sessions>,
+    /// What the admin surfaces read.
+    pub observatory: Arc<NodeObservatory>,
     /// Where upstream connections come from.
     ///
     /// Held alongside the pool rather than only inside it, because the grant
@@ -172,12 +197,36 @@ impl App {
             },
         );
 
+        let drain: SharedDrain = Arc::new(Mutex::new(DrainState::new(
+            deps.node_name.clone(),
+            DrainConfig::default(),
+        )));
+        let sessions = Sessions::new();
+        let observatory = Arc::new(NodeObservatory::new(
+            deps.node,
+            Arc::clone(&deps.clock),
+            Arc::clone(&deps.config),
+            Arc::clone(&cluster),
+            Arc::clone(&pool),
+            Arc::clone(&sessions),
+            Arc::clone(&drain),
+        ));
+
+        // Started, because a node reaches this line only with a configuration
+        // that loaded and validated, which is exactly what `Starting` means it
+        // has not done.
+        let health = Health::new(HealthConfig::default());
+        let health: SharedHealth = Arc::new(Mutex::new(health));
+        lock(&health).started();
+
         Ok(Self {
             connector,
             pool,
             replicas: ReplicaWatch::new(0, ReplicaConfig::default(), Arc::clone(&deps.clock)),
-            drain: DrainState::new(deps.node_name.clone(), DrainConfig::default()),
-            health: Health::new(HealthConfig::default()),
+            drain,
+            health,
+            sessions,
+            observatory,
             config,
             cluster,
             deps,
@@ -187,7 +236,11 @@ impl App {
     /// Whether this node is draining, from either the document or the API.
     #[must_use]
     pub fn is_draining(&self) -> bool {
-        self.drain.is_draining(&self.config, self.deps.clock.now())
+        // The live document rather than the one the node booted with: a drain
+        // added to the `ConfigMap` after start is the ordinary way one is
+        // requested.
+        let config = self.deps.config.watch().borrow().clone();
+        lock(&self.drain).is_draining(&config, self.deps.clock.now())
     }
 }
 
