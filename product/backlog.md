@@ -1224,7 +1224,7 @@ recorded runs say which they are.
   asserting counts for frame boundary scanning and the steady-state relay step.
   Acceptance: the budget is a number in `standards/testing.md`, and raising an
   allocation in either path fails the test.
-- [ ] `M7.9` Allocation budgets, `pgprox-pool`: warm acquire and the
+- [x] `M7.9` Allocation budgets, `pgprox-pool`: warm acquire and the
   `ReadyForQuery` release decision. Acceptance: as above, and the claim in
   `standards/testing.md` that these were written allocation-free is either
   confirmed by the assertion or corrected by it.

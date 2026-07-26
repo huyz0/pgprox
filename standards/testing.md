@@ -97,15 +97,16 @@ The declared hot paths, with budgets, are:
    once warm, asserted in `crates/pgprox-proto/tests/budgets.rs`.
 2. Frame boundary scanning (type byte plus length). **Zero**, same file. Decode
    returns a borrowed frame, so finding a boundary copies nothing.
-3. `ReadyForQuery` status handling and the pool release decision.
-4. Warm-pool acquire.
+3. `ReadyForQuery` status handling and the pool release decision. **Zero**,
+   asserted in `crates/pgprox-pool/tests/budgets.rs`.
+4. Warm-pool acquire. **Zero** once warm, same file. Acquire and release move a
+   connection between two collections that keep their capacity.
 5. Route decision: classification plus replica eligibility.
 6. Grant cache lookup on connect.
 7. Gossip digest encode and decode.
 
-Paths 3 to 7 were written to be allocation-free and are claims until the
-milestone that asserts them. Warm-pool acquire moves a connection between two
-collections and touches no strings. The route decision iterates the shared
+Paths 5 to 7 were written to be allocation-free and are claims until the
+milestone that asserts them. The route decision iterates the shared
 lexer without lowercasing, and `SessionRouter` keeps a replica-states buffer
 for the life of the session rather than building one per statement. They are
 written down here so the assertion has something to check rather than a number
