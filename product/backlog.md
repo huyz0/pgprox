@@ -967,13 +967,13 @@ fakes in an earlier milestone, with tests, and no caller in the composition
 root. They were found by asking of each crate "what in here does the binary
 never touch", which is the same question M5's and M4's reviews asked.
 
-- [ ] `M6.37` Spawn the configuration poll loop. `FileSource::run` is the
+- [x] `M6.37` Spawn the configuration poll loop. `FileSource::run` is the
   loop M4.3 and M4.4 built, and nothing starts it, so a `ConfigMap` edit never
   reaches a running node: hot reload, the last-good-config rule, and a drain
   written into the document are all unreachable from the binary. Acceptance: a
   document rewritten on disk changes what `/v1/config` reports without a
   restart, and a broken one leaves the previous config serving.
-- [ ] `M6.38` Reap idle upstream connections. `LivePool::reap_idle` exists and
+- [x] `M6.38` Reap idle upstream connections. `LivePool::reap_idle` exists and
   nothing calls it on a timer, so M5.13's "a pool that goes quiet drops to
   zero" is true of the type and false of the process. A proxy that never
   releases an idle connection holds the database's connection budget for as

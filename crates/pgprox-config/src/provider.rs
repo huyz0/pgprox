@@ -233,6 +233,12 @@ impl ConfigSource for FileSource {
     fn watch(&self) -> watch::Receiver<Arc<Config>> {
         self.tx.subscribe()
     }
+
+    async fn run_loop(self: Arc<Self>) {
+        // The poll loop below, reached through the trait so the composition
+        // root can start it without knowing which source it holds.
+        Self::run(self).await;
+    }
 }
 
 /// Reads and parses one file.

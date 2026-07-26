@@ -32,6 +32,7 @@ use tokio::sync::watch;
 use crate::entropy::SystemEntropy;
 use crate::http::{self, Probes};
 use crate::serve::{Context, Gate, accept_loop};
+use pgprox_pool::reap::ReapConfig;
 
 use crate::wiring::App;
 
@@ -249,6 +250,21 @@ pub async fn run_with_peers(
         },
     ));
 
+    // The configuration is polled rather than watched, and this is the loop
+    // that does it. Without it a `ConfigMap` edit reaches a running node never:
+    // M4.3 built the poll and M4.4 built the validate-then-swap rule, and both
+    // were reachable only from their own tests.
+    let reloading = tokio::spawn({
+        let source = Arc::clone(&app.deps.config);
+        let shutdown = shutdown.clone();
+        async move {
+            tokio::select! {
+                () = source.run_loop() => {}
+                () = shutdown.waited() => {}
+            }
+        }
+    });
+
     let gossiping = tokio::spawn({
         let shutdown = shutdown.clone();
         let cluster = Arc::clone(&app.cluster);
@@ -307,6 +323,7 @@ pub async fn run_with_peers(
     if let Ok(Err(err)) = gossiping.await {
         return Err(err);
     }
+    reloading.abort();
     Ok(())
 }
 
@@ -380,6 +397,12 @@ async fn ticker(
                 .collect(),
         );
         app.cluster.report_tenants(app.sessions.per_tenant());
+
+        // Idle connections cost the database a slot for as long as the node
+        // runs, so this is not housekeeping: it is the other half of the
+        // promise that a quiet node holds nothing. `reap_idle` has existed
+        // since M5.13 with no caller on a timer.
+        app.pool.reap_idle(&ReapConfig::default());
 
         // After reporting, so a peer hears this tick's numbers rather than the
         // last one's, and awaited rather than spawned: a round that took longer
@@ -652,6 +675,123 @@ mod tests {
             .and_then(|code| code.parse().ok())
             .unwrap_or(0);
         (status, answer)
+    }
+
+    #[tokio::test]
+    async fn the_tick_reaps_idle_upstream_connections() {
+        // M5.13 made a quiet pool drop to zero and nothing called it on a
+        // timer, so it was true of the type and false of the process. A proxy
+        // that never lets go holds the database's connection budget for as
+        // long as it runs.
+        let app = App::build(deps()).await.unwrap();
+        let probes = probes(&app);
+        let shutdown = Shutdown::new();
+        let context = Arc::new(context(&app, &shutdown));
+        let drainer = Drainer {
+            context: &context,
+            addresses: &[],
+            grace: Duration::from_millis(50),
+        };
+
+        // Nothing to reap, which is the case worth checking here: the tick has
+        // to survive an empty pool rather than the reaper being exercised
+        // twice. `pgprox-pool` owns what reaping decides.
+        tokio::spawn({
+            let shutdown = shutdown.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(1200)).await;
+                shutdown.fire();
+            }
+        });
+
+        let ran = tokio::time::timeout(
+            Duration::from_secs(5),
+            ticker(&app, &probes, &[], &drainer, &shutdown),
+        )
+        .await
+        .expect("the tick stopped when the reaper was added");
+
+        assert!(ran >= 1);
+    }
+
+    #[tokio::test]
+    async fn a_document_rewritten_on_disk_reaches_a_running_node() {
+        // M4.3 built the poll and M4.4 built validate-then-swap, and nothing
+        // started either, so a ConfigMap edit reached a running node never.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "max_client_conns: 100\n").unwrap();
+
+        let source = pgprox_config::provider::FileSource::new(
+            pgprox_config::provider::FileConfig::at(&path),
+        )
+        .unwrap();
+        let app = App::build(Deps {
+            config: Arc::clone(&source) as Arc<dyn pgprox_core::config::ConfigSource>,
+            ..deps()
+        })
+        .await
+        .unwrap();
+
+        let watching = app.deps.config.watch();
+        let listeners = Listeners::bind(loopback()).await.unwrap();
+        let shutdown = Shutdown::new();
+        let running = tokio::spawn(run(app, listeners, shutdown.clone()));
+
+        std::fs::write(&path, "max_client_conns: 250\n").unwrap();
+
+        let reloaded = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut watching = watching;
+            loop {
+                if watching.borrow_and_update().max_client_conns == 250 {
+                    return;
+                }
+                let _ = watching.changed().await;
+            }
+        })
+        .await;
+
+        shutdown.fire();
+        let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
+        reloaded.expect("a rewritten document never reached the running node");
+    }
+
+    #[tokio::test]
+    async fn a_broken_document_leaves_the_previous_one_serving() {
+        // A typo in a ConfigMap is routine. Taking a node with clients on it
+        // down for one would make every config edit a deploy.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "max_client_conns: 100\n").unwrap();
+
+        let source = pgprox_config::provider::FileSource::new(
+            pgprox_config::provider::FileConfig::at(&path),
+        )
+        .unwrap();
+        let app = App::build(Deps {
+            config: Arc::clone(&source) as Arc<dyn pgprox_core::config::ConfigSource>,
+            ..deps()
+        })
+        .await
+        .unwrap();
+
+        let watching = app.deps.config.watch();
+        let listeners = Listeners::bind(loopback()).await.unwrap();
+        let shutdown = Shutdown::new();
+        let running = tokio::spawn(run(app, listeners, shutdown.clone()));
+
+        std::fs::write(&path, "max_client_conns: not a number\n").unwrap();
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+
+        assert_eq!(
+            watching.borrow().max_client_conns,
+            100,
+            "a broken document replaced a good one"
+        );
+        assert!(!source.is_healthy(), "the failure was not reported");
+
+        shutdown.fire();
+        let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
     }
 
     #[tokio::test]

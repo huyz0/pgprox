@@ -160,6 +160,21 @@ pub trait ConfigSource: Send + Sync + fmt::Debug {
 
     /// Observes changes. The receiver always holds the latest value.
     fn watch(&self) -> watch::Receiver<Arc<Config>>;
+
+    /// Runs whatever loop this source needs to notice a change, until dropped.
+    ///
+    /// Defaulted to never returning, because most sources have no loop: the
+    /// fake publishes when a test tells it to, and a source that had to be
+    /// driven would make every test drive it. The file provider overrides
+    /// this with its poll.
+    ///
+    /// It exists so the composition root can start the loop without knowing
+    /// which source it holds. Without it, `FileSource::run` was reachable only
+    /// by downcasting, and in practice was not started at all: a `ConfigMap`
+    /// edit never reached a running node.
+    async fn run_loop(self: Arc<Self>) {
+        std::future::pending::<()>().await;
+    }
 }
 
 #[async_trait::async_trait]
