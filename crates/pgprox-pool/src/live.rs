@@ -167,6 +167,24 @@ impl<K: Connector + 'static> LivePool<K> {
         f(&mut entry.pool)
     }
 
+    /// Every pool this node holds, with its counts.
+    ///
+    /// For the admin surfaces, which have no other way to learn which pools
+    /// exist: a pool is created by the first client of a database, so the list
+    /// is not derivable from configuration.
+    #[must_use]
+    pub fn all_stats(&self) -> Vec<(PoolKey, PoolStats)> {
+        let mut all: Vec<(PoolKey, PoolStats)> = self
+            .lock()
+            .iter()
+            .map(|(key, keyed)| (key.clone(), keyed.pool.stats()))
+            .collect();
+        // Sorted so two pods rendering the same node agree on the order, and so
+        // a dashboard's rows do not shuffle between refreshes.
+        all.sort_by(|a, b| a.0.cmp(&b.0));
+        all
+    }
+
     /// Closes idle connections that have outstayed their welcome.
     ///
     /// Called from a background task on a timer. Returns how many were closed,
@@ -793,5 +811,21 @@ mod tests {
         let (pool, _clock) = pool(1);
         pool.release(UpstreamId(1), &key(), ReleaseOutcome::Reusable);
         assert_eq!(pool.stats(&key()).total(), 0);
+    }
+
+    #[tokio::test]
+    async fn every_pool_the_node_holds_is_reportable() {
+        // The admin surfaces have no other way to learn which pools exist: one
+        // is created by the first client of a database, not by configuration.
+        let (pool, clock) = pool(4);
+        let other = PoolKey::new(ServerId::new("db-1", 5432), "tenant_globex", "globex_app");
+
+        let _first = pool.acquire(&key(), never(&clock)).await.unwrap();
+        let _second = pool.acquire(&other, never(&clock)).await.unwrap();
+
+        let all = pool.all_stats();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].0, key(), "the pools came back in an unstable order");
+        assert_eq!(all[0].1.active, 1);
     }
 }

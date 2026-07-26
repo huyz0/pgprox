@@ -94,6 +94,21 @@ impl DigestStore {
         self.latest.is_empty()
     }
 
+    /// Every digest currently held, in node order.
+    ///
+    /// Sorted so two pods rendering the same fleet produce the same list, which
+    /// is what makes a diff between two pods' answers meaningful.
+    #[must_use]
+    pub fn all(&self) -> Vec<ClusterDigest> {
+        let mut all: Vec<ClusterDigest> = self
+            .latest
+            .values()
+            .map(|versioned| versioned.digest.clone())
+            .collect();
+        all.sort_by_key(|digest| digest.node);
+        all
+    }
+
     /// Forgets a node, for when membership declares it gone.
     pub fn forget(&mut self, node: NodeId) {
         self.latest.remove(&node);

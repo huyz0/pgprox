@@ -856,7 +856,7 @@ rule already allows `pgprox-proto`.
   not exist. Acceptance: a backend that asks for TLS gets it, one that does not
   is refused a plaintext connection only if the document says so, and the pool
   the node holds is the one the `Connector` opens through.
-- [ ] `M6.19` The live `Observatory`, reading the real components. Acceptance:
+- [x] `M6.19` The live `Observatory`, reading the real components. Acceptance:
   the surfaces-agree suite from `M4.18` passes against the live implementation
   unchanged, since it was written against the contract rather than the fake.
 - [ ] `M6.20` The accept loop and listener, with TLS and the client connection

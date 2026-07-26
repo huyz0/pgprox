@@ -208,6 +208,37 @@ impl GossipCoordinator {
         self.with(|c| c.request(server, holder, want, now))
     }
 
+    /// Every node's last digest, this one included.
+    ///
+    /// What lets any pod answer a cluster-wide question locally, which is the
+    /// property ADR 0007 is about: an operator asking a question should not
+    /// have to know which pod to ask.
+    #[must_use]
+    pub fn digests(&self) -> Vec<ClusterDigest> {
+        self.with(|c| c.digests().all())
+    }
+
+    /// The hash of the current membership view.
+    ///
+    /// Two pods reporting different hashes is split brain, stated directly
+    /// rather than inferred from two lists that look similar.
+    #[must_use]
+    pub fn view_hash(&self) -> u64 {
+        self.with(|c| c.digests().view_hash())
+    }
+
+    /// Upstream connections every known node reports holding for a server.
+    #[must_use]
+    pub fn cluster_usage(&self, server: &ServerId) -> u32 {
+        self.with(|c| c.digests().cluster_usage(server))
+    }
+
+    /// Client connections every known node reports.
+    #[must_use]
+    pub fn cluster_clients(&self) -> u32 {
+        self.with(|c| c.digests().cluster_clients())
+    }
+
     /// What this node may open for a server right now.
     #[must_use]
     pub fn allowance(&self, server: &ServerId) -> NodeAllowance {
@@ -776,5 +807,31 @@ mod tests {
             })),
             "a second transport replaced the first"
         );
+    }
+
+    #[test]
+    fn the_aggregate_reads_answer_from_gossip_without_a_fan_out() {
+        // ADR 0007's property: an operator asking any pod gets the fleet's
+        // answer, so they never have to know which pod to ask.
+        let (coordinator, _clock) = serving();
+
+        assert_eq!(coordinator.digests().len(), 3);
+        assert_eq!(coordinator.cluster_clients(), 0);
+        assert_eq!(coordinator.cluster_usage(&server()), 0);
+        assert_ne!(coordinator.view_hash(), 0);
+    }
+
+    #[test]
+    fn two_nodes_seeing_the_same_fleet_report_the_same_view_hash() {
+        // The whole point of exporting it. Two pods that disagree are split
+        // brain, and comparing two lists by eye is how that goes unnoticed.
+        let clock = FakeClock::new();
+        let (first, _) = serving();
+        let second = following(&clock);
+        for round in 1..=12 {
+            second.gossip(digest_for(1, round));
+        }
+
+        assert_eq!(first.view_hash(), second.view_hash());
     }
 }

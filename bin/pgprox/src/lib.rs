@@ -22,8 +22,12 @@
 
 pub mod dial;
 pub mod entry;
+pub mod observatory;
+pub mod sessions;
 pub mod wiring;
 
 pub use dial::{ClientScram, Stream, TcpUpstream};
 pub use entry::{Options, run_with, start, start_with};
+pub use observatory::NodeObservatory;
+pub use sessions::{Registration, Sessions};
 pub use wiring::{App, Deps, StartupError};
