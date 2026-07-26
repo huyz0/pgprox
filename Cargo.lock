@@ -857,6 +857,7 @@ name = "pgprox"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "base64",
  "pgprox-admin",

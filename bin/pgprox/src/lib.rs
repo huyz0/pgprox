@@ -21,17 +21,21 @@
 #![warn(missing_docs)]
 
 pub mod dial;
+pub mod entropy;
 pub mod entry;
 pub mod http;
 pub mod observatory;
+pub mod run;
 pub mod serve;
 pub mod sessions;
 pub mod wiring;
 
 pub use dial::{ClientScram, Stream, TcpUpstream};
+pub use entropy::SystemEntropy;
 pub use entry::{Options, run_with, start, start_with};
 pub use http::{Probes, probe_routes, router};
 pub use observatory::NodeObservatory;
+pub use run::{Addrs, Listeners, Shutdown, run};
 pub use serve::{Admitted, Context, Gate};
 pub use sessions::{Registration, Sessions};
 pub use wiring::{App, Deps, SharedDrain, SharedHealth, StartupError};

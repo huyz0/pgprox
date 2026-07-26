@@ -19,6 +19,13 @@ path = "src/lib.rs"
 name = "pgprox"
 path = "src/main.rs"
 
+[features]
+default = []
+# The FIPS build, forwarded to every crate that holds a crypto provider. Set
+# here so one flag on the binary cannot leave half the process on a validated
+# module and half on the default one.
+fips = ["pgprox-tls/fips", "pgprox-auth/fips", "aws-lc-rs/fips"]
+
 [dependencies]
 pgprox-core = { path = "../../crates/pgprox-core" }
 pgprox-admin = { path = "../../crates/pgprox-admin" }
@@ -32,6 +39,9 @@ pgprox-route = { path = "../../crates/pgprox-route" }
 pgprox-session = { path = "../../crates/pgprox-session" }
 pgprox-tls = { path = "../../crates/pgprox-tls" }
 async-trait.workspace = true
+# The same provider rustls and the SCRAM implementation use: a cancel key is a
+# bearer token, and the binary needs system entropy to issue one.
+aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"] }
 axum = { workspace = true, features = ["json", "query", "tokio", "http1"] }
 base64 = "0.22"
 tokio-rustls = { version = "0.26", default-features = false }

@@ -877,12 +877,34 @@ rule already allows `pgprox-proto`.
   the drain a probe reads were different facts. Acceptance: a drain posted to
   the API makes `/readyz` fail on the same node, `/healthz` keeps passing, and
   there is one `DrainState` in the process.
-- [ ] `M6.27` The run loop: bind the client listener and the admin listener,
+- [x] `M6.27` The run loop: bind the client listener and the admin listener,
   spawn the accept loop and the periodic work, and run until signalled. Split
   out of `M6.22` with `M6.26`: `start` builds a node and returns it, so the
   binary as committed opens no port at all and a drain has nothing to drain.
   Acceptance: the binary serves a query end to end over a real socket, and the
   run loop returns when its shutdown signal fires rather than being aborted.
+- [ ] `M6.29` The gossip transport: one socket per node carrying digests,
+  quota requests and forwarded cancels. Found wiring the run loop: `M6.16`
+  built quota forwarding behind `QuotaTransport` and `M6.15` built cancel
+  routing behind `Routing::Peer`, and both are answered by the composition
+  root, which never implemented either. So a node's gossip is a trait with one
+  fake, every node believes it is alone, and a drain that "announces before any
+  client is closed" has nothing to announce over. Acceptance: two nodes in one
+  process converge on each other's digests, a non-leader obtains a lease
+  through the socket, and a cancel for a peer's connection is forwarded rather
+  than dropped. Note found while writing the run loop's tick: a node's own
+  digest never enters its digest store and `GossipCoordinator` exposes no way
+  to read it, so `report` and `report_tenants` are currently write-only and
+  `Observatory::stats` at cluster scope omits the node answering. The transport
+  needs that accessor, which makes it part of this task rather than a separate
+  one.
+- [ ] `M6.28` Poll the replicas a grant names, and route from that. Found
+  wiring the run loop: `M5.18` built `ReplicaWatch`, `M6.14` built
+  `SqlReplicaProbe`, and the session path builds a fresh empty `Replicas` per
+  session and polls nothing. Every replica is therefore permanently ineligible,
+  which makes `M6.24`'s watermark assertion pass for the wrong reason: no read
+  ever reaches a replica at all. Acceptance: a read lands on a replica, and one
+  behind the session watermark does not.
 - [ ] `M6.22` The drain sequence, end to end. Acceptance: `/readyz` fails
   first, gossip announces before any client is closed, in-flight transactions
   finish, and the grace timer force-closes the remainder.

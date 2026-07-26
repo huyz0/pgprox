@@ -2,15 +2,20 @@
 //!
 //! Everything `main.rs` would otherwise hold, put where a test can call it.
 //!
-//! # What this does today
+//! # The order of a start
 //!
-//! Builds a node and returns. The listener, the accept loop and the drain
-//! sequence are separate tasks, so the binary as it stands starts, validates
-//! its configuration, wires the node together and exits. That is deliberately
-//! short of useful and deliberately not a stub: everything it does is what the
-//! running node will do first, and a configuration mistake fails here rather
-//! than after a port is bound.
+//! Configuration, then sidecar, then ports, then serving. Everything that can
+//! fail on a deployment mistake fails before a port is bound, so a bad rollout
+//! is a pod that never became ready rather than one accepting clients it
+//! cannot serve.
+//!
+//! # Stopping
+//!
+//! `SIGTERM` fires the same [`Shutdown`] the drain sequence uses. Kubernetes
+//! sends it on pod termination, and a proxy that ignored it would have every
+//! client cut when the grace period ran out instead of finishing what it held.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +25,7 @@ use pgprox_config::provider::{FileConfig, FileSource};
 use pgprox_core::clock::SystemClock;
 use pgprox_core::ids::NodeId;
 
+use crate::run::{Addrs, Listeners, Shutdown};
 use crate::wiring::{App, Deps, StartupError};
 
 /// The default place a `ConfigMap` is mounted.
@@ -27,6 +33,15 @@ pub const DEFAULT_CONFIG_PATH: &str = "/etc/pgprox/config.yaml";
 
 /// The default sidecar socket.
 pub const DEFAULT_SIDECAR_SOCKET: &str = "/var/run/pgprox/sidecar.sock";
+
+/// Where clients arrive by default.
+///
+/// 6432 rather than 5432: a proxy sharing a port with the database it fronts
+/// makes every connection string ambiguous about which one answered.
+pub const DEFAULT_LISTEN: &str = "0.0.0.0:6432";
+
+/// Where the probes and the admin API are served by default.
+pub const DEFAULT_ADMIN: &str = "0.0.0.0:9090";
 
 /// What the process was told to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +54,10 @@ pub struct Options {
     pub node: NodeId,
     /// This node's name in the configuration document.
     pub node_name: String,
+    /// Where clients arrive.
+    pub listen: SocketAddr,
+    /// Where the probes and the admin API are served.
+    pub admin: SocketAddr,
 }
 
 impl Default for Options {
@@ -48,6 +67,11 @@ impl Default for Options {
             sidecar: PathBuf::from(DEFAULT_SIDECAR_SOCKET),
             node: NodeId::new(1),
             node_name: "pgprox-1".to_owned(),
+            // Both parse, and a default that could fail to would make every
+            // caller handle an error that cannot happen. Asserted by a test
+            // rather than by unwrapping here.
+            listen: SocketAddr::from(([0, 0, 0, 0], 6432)),
+            admin: SocketAddr::from(([0, 0, 0, 0], 9090)),
         }
     }
 }
@@ -87,6 +111,8 @@ impl Options {
                 "--config" => options.config = PathBuf::from(value()?),
                 "--sidecar" => options.sidecar = PathBuf::from(value()?),
                 "--node-name" => options.node_name = value()?,
+                "--listen" => options.listen = address(&value()?, "--listen")?,
+                "--admin" => options.admin = address(&value()?, "--admin")?,
                 "--node" => {
                     let raw = value()?;
                     options.node =
@@ -104,6 +130,22 @@ impl Options {
 
         Ok(options)
     }
+
+    /// Both ports, as the run loop wants them.
+    #[must_use]
+    pub const fn addrs(&self) -> Addrs {
+        Addrs {
+            client: self.listen,
+            admin: self.admin,
+        }
+    }
+}
+
+/// Parses a listen address, naming the flag that carried it.
+fn address(raw: &str, flag: &str) -> Result<SocketAddr, StartupError> {
+    raw.parse().map_err(|_| StartupError::Arguments {
+        detail: format!("{flag} must be host:port, got {raw}"),
+    })
 }
 
 /// Builds the real dependencies and starts a node.
@@ -123,7 +165,64 @@ where
     let runtime = tokio::runtime::Runtime::new().map_err(|err| StartupError::Arguments {
         detail: format!("could not start the async runtime: {err}"),
     })?;
-    runtime.block_on(async { start(options).await.map(drop) })
+    runtime.block_on(serve(options))
+}
+
+/// Starts a node and runs it until it is told to stop.
+///
+/// # Errors
+///
+/// As [`start`], plus a port that cannot be bound.
+pub async fn serve(options: Options) -> Result<(), StartupError> {
+    let addrs = options.addrs();
+    let app = start(options).await?;
+    let listeners = Listeners::bind(addrs)
+        .await
+        .map_err(|err| StartupError::Arguments {
+            detail: format!("could not bind {}: {err}", addrs.client),
+        })?;
+
+    let shutdown = Shutdown::new();
+    tokio::spawn({
+        let shutdown = shutdown.clone();
+        async move {
+            terminated().await;
+            shutdown.fire();
+        }
+    });
+
+    crate::run::run(app, listeners, shutdown)
+        .await
+        .map_err(|err| StartupError::Arguments {
+            detail: format!("the node stopped serving: {err}"),
+        })
+}
+
+/// Resolves when the process is asked to stop.
+///
+/// `SIGTERM` is what Kubernetes sends; `SIGINT` is what an operator running it
+/// by hand sends. A platform without signals waits forever, which is right:
+/// there is nothing there to ask it to stop.
+async fn terminated() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        // Nothing left to listen with means the node runs until it is killed,
+        // which beats exiting because a handler could not be installed.
+        let Ok(mut term) = signal(SignalKind::terminate()) else {
+            return std::future::pending().await;
+        };
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = tokio::signal::ctrl_c() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Builds a node from real dependencies.
@@ -212,6 +311,33 @@ mod tests {
         assert_eq!(options.sidecar, PathBuf::from("/tmp/s.sock"));
         assert_eq!(options.node, NodeId::new(7));
         assert_eq!(options.node_name, "pgprox-7");
+    }
+
+    #[test]
+    fn the_ports_are_read_and_the_defaults_parse() {
+        let options =
+            Options::parse(["--listen", "127.0.0.1:1", "--admin", "127.0.0.1:2"]).unwrap();
+        assert_eq!(options.addrs().client.port(), 1);
+        assert_eq!(options.addrs().admin.port(), 2);
+
+        // The defaults are built rather than parsed, so this is what says they
+        // are the addresses the documentation claims.
+        assert_eq!(
+            Options::default().listen,
+            DEFAULT_LISTEN.parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(
+            Options::default().admin,
+            DEFAULT_ADMIN.parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn an_address_that_is_not_one_stops_the_start() {
+        // A node that fell back to the default port would be reachable at an
+        // address nobody configured, and unreachable at the one they did.
+        let err = Options::parse(["--listen", "6432"]).unwrap_err();
+        assert!(err.to_string().contains("--listen"), "{err}");
     }
 
     #[test]
