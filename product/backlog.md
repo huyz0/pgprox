@@ -1061,6 +1061,32 @@ asking of each crate what the binary never touches.
   exists; what is missing is somewhere to keep one per pooled connection.
   Acceptance: a `Bind` on a connection that already holds the statement sends
   no extra messages, and one on a connection that does not still works.
+### Raised by the third review round
+
+- [ ] `M6.51` A client that connects and says nothing holds a slot forever.
+  Nothing on the handshake path has a deadline: `negotiate` and
+  `authenticate_token` await a read that may never come, and the connection
+  counts against `max_client_conns` while it does. Opening the ceiling's worth
+  of sockets and sending nothing takes a node out of service with no
+  credentials and no traffic, which is the cheapest denial of service there
+  is. Acceptance: a client that sends nothing is closed after the configured
+  time, the limit is configurable, and a slow but real client is not affected.
+- [ ] `M6.52` The pool mode a grant asks for is ignored. `PoolHints::mode`
+  carries transaction, session or statement pooling, the sidecar sends it, and
+  nothing reads it: every tenant gets transaction pooling. A tenant that asked
+  for session pooling and silently got transaction pooling loses temporary
+  tables and advisory locks between statements, which the pin list catches
+  only for the cases it knows. Acceptance: a grant asking for session pooling
+  holds its connection for the session, and one asking for transaction pooling
+  is unchanged.
+- [ ] `M6.53` `max_client_conns` is read once at startup. The gate is built
+  from the configuration the node booted with, so raising the ceiling in the
+  `ConfigMap` does nothing until a restart, which is exactly what an operator
+  does when a node is refusing connections. `M6.37` made the document reload;
+  this is one of the things that did not follow. Acceptance: raising the
+  ceiling admits more clients without a restart, and lowering it refuses new
+  ones without closing established ones.
+
 - [ ] `M6.25` Close M6.
 
 ## M7 and later
