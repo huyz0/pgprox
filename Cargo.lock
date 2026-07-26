@@ -997,6 +997,7 @@ dependencies = [
  "pgprox-cluster",
  "pgprox-config",
  "pgprox-core",
+ "pgprox-load",
  "pgprox-observe",
  "pgprox-pool",
  "pgprox-proto",

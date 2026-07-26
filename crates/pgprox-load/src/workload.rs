@@ -167,12 +167,6 @@ impl Workload {
         Ok(workload)
     }
 
-    /// How many tenants the workload describes in total.
-    #[must_use]
-    pub fn tenant_count(&self) -> u32 {
-        self.tenants.iter().map(|group| group.count).sum()
-    }
-
     fn validate(&self) -> Result<(), WorkloadError> {
         if self.version != SUPPORTED_VERSION {
             return Err(WorkloadError::field(
@@ -375,7 +369,7 @@ mod tests {
         let workload = Workload::parse(yaml).unwrap();
 
         assert_eq!(workload.version, SUPPORTED_VERSION);
-        assert_eq!(workload.tenant_count(), 204);
+        assert_eq!(workload.tenants.iter().map(|g| g.count).sum::<u32>(), 204);
         assert_eq!(workload.statements.len(), 4);
         assert!(workload.statements.iter().any(|s| s.kind == Kind::Write));
         assert_eq!(workload.churn.transactions_per_connection, 500);
@@ -385,7 +379,7 @@ mod tests {
     fn a_valid_document_round_trips_its_values() {
         let workload = Workload::parse(&document()).unwrap();
         assert_eq!(workload.tenants[0].name, "hot");
-        assert_eq!(workload.tenant_count(), 52);
+        assert_eq!(workload.tenants.iter().map(|g| g.count).sum::<u32>(), 52);
         assert_eq!(workload.statements[1].kind, Kind::Write);
         assert_eq!(workload.transactions[0].statements, 1);
         assert!((workload.replica_read_fraction - 0.5).abs() < f64::EPSILON);

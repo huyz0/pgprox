@@ -53,17 +53,6 @@ pub struct Transaction {
     pub think_ms: u64,
 }
 
-impl Transaction {
-    /// Whether anything in it writes, so the whole transaction goes to the
-    /// primary.
-    #[must_use]
-    pub fn writes(&self) -> bool {
-        self.statements
-            .iter()
-            .any(|statement| statement.kind == Kind::Write)
-    }
-}
-
 /// A reproducible stream of transactions drawn from a workload.
 #[derive(Debug)]
 pub struct Sampler<'w> {
@@ -362,29 +351,6 @@ mod tests {
             (eligible - 0.50).abs() < 0.02,
             "{eligible:.3} of reads were eligible, workload declares 0.50"
         );
-    }
-
-    #[test]
-    fn a_transaction_that_writes_says_so() {
-        let workload = workload();
-        let mut sampler = Sampler::new(&workload, 23);
-        let mixed = (0..1_000)
-            .map(|_| sampler.next_transaction())
-            .find(Transaction::writes)
-            .unwrap();
-        assert!(mixed.statements.iter().any(|s| s.kind == Kind::Write));
-
-        let read_only = Transaction {
-            think_ms: 0,
-            tenant: "hot-0".into(),
-            statements: vec![Planned {
-                name: "point".into(),
-                sql: "SELECT 1".into(),
-                kind: Kind::Read,
-                replica_eligible: true,
-            }],
-        };
-        assert!(!read_only.writes());
     }
 
     #[test]

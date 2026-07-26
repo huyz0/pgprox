@@ -13,7 +13,7 @@
 //! shape, such as a digest that starts allocating per tenant rather than per
 //! node.
 
-#![allow(clippy::unwrap_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use pgprox_app::gossip::{DigestWire, Message};
 use pgprox_cluster::digest::VersionedDigest;
@@ -24,7 +24,16 @@ use pgprox_core::ids::{NodeId, ServerId, TenantId};
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 /// The cluster size the reference workload declares.
-const CLUSTER_SIZE: usize = 3;
+///
+/// Read from the document rather than repeated here. A budget measured at a
+/// membership the workload does not describe is a budget about nothing, and
+/// the field would otherwise be one nothing reads.
+fn cluster_size() -> usize {
+    let workload =
+        pgprox_load::Workload::parse(include_str!("../../../product/perf/workload.yaml"))
+            .expect("the committed workload does not parse");
+    workload.cluster_size as usize
+}
 
 /// What one digest's encode and one digest's decode may cost.
 ///
@@ -109,10 +118,13 @@ fn gossip_encode_and_decode_stay_inside_their_budgets() {
     // peer's. Stated as a total so the fleet-size term is visible, since a
     // digest that started allocating per tenant per peer would still pass the
     // two budgets above.
+    // Read before the measurement: parsing a YAML document allocates, and it
+    // is not what a gossip round does.
+    let peers = cluster_size() - 1;
     let round = allocations(|| {
         let wire = DigestWire::from(&versioned);
         std::hint::black_box(serde_json::to_string(&Message::Digest(wire)).unwrap());
-        for _ in 0..CLUSTER_SIZE - 1 {
+        for _ in 0..peers {
             let message: Message = serde_json::from_str(&line).unwrap();
             let Message::Digest(wire) = message else {
                 panic!("a digest decoded as something else");
@@ -121,7 +133,7 @@ fn gossip_encode_and_decode_stay_inside_their_budgets() {
         }
     });
     assert!(
-        round <= ENCODE_BUDGET + DECODE_BUDGET * (CLUSTER_SIZE as u64 - 1),
+        round <= ENCODE_BUDGET + DECODE_BUDGET * peers as u64,
         "a gossip round allocated {round} times"
     );
 }

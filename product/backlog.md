@@ -1333,6 +1333,12 @@ recorded runs say which they are.
   an instruction-count regression would have been caught by whoever happened
   to run it. This repository's own words, from `check-layering.sh`: a rule
   with no gate is a preference.
+- [x] `M7.29` Three things in M7's own work that nothing outside a test called:
+  `Workload::tenant_count`, `Transaction::writes`, and the workload's
+  `cluster_size`, which the gossip budget was supposed to measure at and had
+  hard-coded instead. The first two are deleted and the third is now read. The
+  same failure M6's first review round found eight times, in code written to
+  measure for that failure.
 - [ ] `M7.19` Close M7.
 
 ## M8 and later

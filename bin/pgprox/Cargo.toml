@@ -53,6 +53,10 @@ tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
 
 [dev-dependencies]
+# The reference workload, read by the gossip budget so it measures at the
+# membership the workload declares. Test-only: the proxy has no business
+# knowing about a load generator.
+pgprox-load = { path = "../../crates/pgprox-load" }
 # Allocation budgets. See standards/testing.md.
 dhat = "0.3"
 pgprox-core = { path = "../../crates/pgprox-core", features = ["test-fakes"] }
