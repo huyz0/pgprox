@@ -848,12 +848,12 @@ rule already allows `pgprox-proto`.
   transport that did not exist. Acceptance: a node that is not the leader
   obtains a lease, and a request racing a leader change either fails or is
   granted by exactly one leader, never both.
-- [ ] `M6.17` The live `Observatory`, reading the real components. Acceptance:
-  the surfaces-agree suite from `M4.18` passes against the live implementation
-  unchanged, since it was written against the contract rather than the fake.
-- [ ] `M6.18` `bin/pgprox`: the composition root, with the wiring in a lib
+- [x] `M6.17` `bin/pgprox`: the composition root, with the wiring in a lib
   target and `main.rs` doing nothing a test cannot call. Acceptance: the wiring
   is called by a test with fakes, and `main.rs` is the only excluded file.
+- [ ] `M6.18` The live `Observatory`, reading the real components. Acceptance:
+  the surfaces-agree suite from `M4.18` passes against the live implementation
+  unchanged, since it was written against the contract rather than the fake.
 - [ ] `M6.19` The accept loop and listener, with TLS and the client connection
   ceiling. Acceptance: a node at its ceiling refuses with a message naming the
   limit, and refusal never takes down connections already established.

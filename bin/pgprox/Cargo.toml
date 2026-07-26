@@ -1,0 +1,43 @@
+[package]
+name = "pgprox"
+description = "The proxy binary: the one place concrete types meet."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# A library target with the wiring in it, and a binary that does nothing a test
+# cannot call. Only main.rs is excluded from coverage, and it is five lines, so
+# the exclusion is worth almost nothing to hide behind.
+[lib]
+name = "pgprox_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pgprox"
+path = "src/main.rs"
+
+[dependencies]
+pgprox-core = { path = "../../crates/pgprox-core" }
+pgprox-admin = { path = "../../crates/pgprox-admin" }
+pgprox-auth = { path = "../../crates/pgprox-auth" }
+pgprox-cluster = { path = "../../crates/pgprox-cluster" }
+pgprox-config = { path = "../../crates/pgprox-config" }
+pgprox-observe = { path = "../../crates/pgprox-observe" }
+pgprox-pool = { path = "../../crates/pgprox-pool" }
+pgprox-proto = { path = "../../crates/pgprox-proto" }
+pgprox-route = { path = "../../crates/pgprox-route" }
+pgprox-session = { path = "../../crates/pgprox-session" }
+pgprox-tls = { path = "../../crates/pgprox-tls" }
+async-trait.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
+
+[dev-dependencies]
+pgprox-core = { path = "../../crates/pgprox-core", features = ["test-fakes"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true
