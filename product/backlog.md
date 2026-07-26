@@ -1163,7 +1163,108 @@ says whether the thing behind them is real.
 
 - [x] `M6.25` Close M6.
 
-## M7 and later
+## M7: scale and performance
+
+The reference workload, the measurement apparatus, allocation budgets on the
+declared hot paths, `iai` benchmarks, buffer reclaim, and the connection
+harness.
+
+### Order is the point
+
+`plan.md` states it directly: build the measurement before the optimization, or
+the optimization is guesswork. So the workload description, the load client and
+the scale script come first, then the budgets that turn a claim into an
+assertion, and only then anything that changes code for speed. A task here that
+makes something faster without a recorded baseline is not done, whatever the
+number says.
+
+### What this milestone is judged on, and what it is run at
+
+The roadmap's condition is 100k connections against one node, userspace RSS
+under 500 MB, added p99 under 1ms, upstream connections at or under the cap.
+That number is unchanged and stays unmet until a run at 100k produces it.
+
+The runs in this milestone are at 1000 connections on a developer machine,
+which is enough to show the per-connection slope and to catch anything that
+breaks between one connection and a thousand. `scripts/scale.sh` takes the count
+as an argument for exactly that reason, and every run is recorded so the slope
+is comparable. Extrapolating a number is not the same as meeting it, and the
+recorded runs say which they are.
+
+- [ ] `M7.1` Define M7: this decomposition and `scripts/m7-complete.sh`.
+  Acceptance: the gate runs against the current tree and reports what is
+  missing rather than passing vacuously.
+- [ ] `M7.2` The reference workload document and its parser, in a new
+  `pgprox-load` crate: tenant mix, query shape distribution, connection churn,
+  transaction size, replica read fraction. Acceptance: the document is a
+  committed file, a malformed one is refused with the field named, and nothing
+  in the crate touches a socket.
+- [ ] `M7.3` The sampler: a workload plus a seed yields a deterministic stream
+  of statements. Acceptance: two samplers on the same seed produce identical
+  streams, and the observed mix converges on the declared distribution.
+- [ ] `M7.4` The latency histogram and the run report. Acceptance: p50 and p99
+  over a known set of samples are the values computed by hand, and the report
+  serialises to JSON a script can read without parsing prose.
+- [ ] `M7.5` `bin/pgload`, the load client: opens N connections, replays the
+  sampled workload, prints the report. Acceptance: it runs against a real
+  Postgres and against a proxy with the same arguments, its own errors are
+  counted rather than swallowed, and `main.rs` holds no logic a test cannot
+  reach. Architecture gains it as a stated composer, since it speaks the wire
+  protocol and so composes `pgprox-proto`.
+- [ ] `M7.6` `scripts/scale.sh <connections>`: brings up the stack, measures the
+  direct-to-Postgres baseline and the through-proxy run, and reports
+  per-connection RSS, added p50 and p99, and the upstream connection count
+  against the configured cap. Acceptance: it fails when the cap is breached,
+  and a run at 1000 reports four numbers rather than a pass or fail alone.
+- [ ] `M7.7` Record the runs: `product/perf/` holds one file per run with the
+  workload version, the connection count, the machine, and the numbers.
+  Acceptance: two runs at different counts are comparable from the files alone,
+  and the 1000-connection run is committed.
+- [ ] `M7.8` Allocation budgets, `pgprox-proto`: `dhat` in an ordinary test,
+  asserting counts for frame boundary scanning and the steady-state relay step.
+  Acceptance: the budget is a number in `standards/testing.md`, and raising an
+  allocation in either path fails the test.
+- [ ] `M7.9` Allocation budgets, `pgprox-pool`: warm acquire and the
+  `ReadyForQuery` release decision. Acceptance: as above, and the claim in
+  `standards/testing.md` that these were written allocation-free is either
+  confirmed by the assertion or corrected by it.
+- [ ] `M7.10` Allocation budget, `pgprox-route`: classification plus replica
+  eligibility. Acceptance: as above, with the per-statement path asserted rather
+  than the session setup.
+- [ ] `M7.11` Allocation budget, `pgprox-auth`: grant cache lookup on connect.
+  Acceptance: as above, and a hit is distinguished from a miss, since only the
+  hit is the hot path.
+- [ ] `M7.12` Allocation budget, `pgprox-cluster`: gossip digest encode and
+  decode. Acceptance: as above, at a membership size the reference workload
+  declares rather than at one.
+- [ ] `M7.13` `iai-callgrind` benchmarks and `scripts/bench.sh` for the same
+  seven paths, with committed baselines. Acceptance: instruction counts are
+  reproducible across two runs on the same tree, and the script reports the
+  delta against the committed baseline rather than a bare number.
+- [ ] `M7.14` `scripts/profile.sh` and the semantic coverage report: replay the
+  workload against an instrumented binary, keep execution counts, and emit the
+  three lists. Acceptance: the report names functions, and the hot-and-
+  under-tested list is non-empty or the report explains why it is not.
+- [ ] `M7.15` Turn the report's findings into tasks. Acceptance: each entry in
+  the hot-and-under-tested and cold-and-complex lists is either a task here or
+  has a recorded reason it is not.
+- [ ] `M7.16` Buffer reclaim, part one: `Wire` borrows from `BufferSlab` when
+  its socket becomes readable and returns when quiescent. Found decomposing:
+  the slab has been in `pgprox-core` since M0 with tests, a bound, and no
+  caller, and every connection instead holds two `Vec`s for its lifetime.
+  Acceptance: a session idle between transactions holds no buffer, and slab
+  exhaustion delays a connection rather than allocating past the bound.
+- [ ] `M7.17` Buffer reclaim, part two: the slab in the composition root, sized
+  from config, with its outstanding and idle counts exported. Acceptance: the
+  metric moves under load in the scale run, and the per-connection RSS recorded
+  before and after M7.16 differ by an amount the commit message states.
+- [ ] `M7.18` File descriptor and socket tuning in `deploy/`: `nofile`, the
+  backlog, and the `tcp_rmem` and `tcp_wmem` minimums. Acceptance: the scale run
+  at 1000 is not limited by a default, and the values are commented with what
+  they cost at 100k.
+- [ ] `M7.19` Close M7.
+
+## M8 and later
 
 Not yet decomposed. See [roadmap.md](roadmap.md). The `next-task` skill
 decomposes the next milestone when the current one closes.
