@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The scale run. M7's completion condition.
 #
-#   scripts/scale.sh [connections]     default 1000
+#   scripts/scale.sh [connections]     default 1000, against the compose stack
+#   scripts/scale.sh 1000 --local      against a one-node stack on this machine
 #   scripts/scale.sh 1000 --keep       leave the stack running afterwards
 #
 # Four numbers come out of it, and they are the four the roadmap states the
@@ -21,12 +22,30 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 cd "$REPO_ROOT"
 
-CONNECTIONS="${1:-1000}"
-KEEP="${2:-}"
+CONNECTIONS=1000
+KEEP=""
+MODE="compose"
+for arg in "$@"; do
+  case "$arg" in
+    --keep) KEEP=1 ;;
+    # A one-node stack of local processes rather than containers. The compose
+    # stack is the deployment shape and is what a reported number should come
+    # from; this exists because a machine without a working Docker is still a
+    # machine that can measure, and because the difference between the two is
+    # recorded with every run.
+    --local) MODE="local" ;;
+    *[!0-9]*) fail "unknown argument $arg"; finish ;;
+    *) CONNECTIONS="$arg" ;;
+  esac
+done
 DURATION="${SCALE_DURATION:-30}"
 SEED="${SCALE_SEED:-1}"
 
 COMPOSE=(docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.scale.yml)
+
+if [[ "$MODE" == "local" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/localstack.sh"
+fi
 
 # Where the proxy and the primary are reachable from the host, published by
 # the scale override. The load client runs here rather than in a container so
@@ -51,8 +70,9 @@ mkdir -p "$OUT_DIR"
 # ---------------------------------------------------------------------------
 
 require_tools() {
-  require_tool docker || return 1
   require_tool cargo || return 1
+  [[ "$MODE" == "compose" ]] && { require_tool docker || return 1; }
+  return 0
 }
 
 build_client() {
@@ -65,6 +85,15 @@ build_client() {
 }
 
 bring_up() {
+  if [[ "$MODE" == "local" ]]; then
+    local_up || return 1
+    PROXY_ADDR="$LOCAL_PROXY"
+    DIRECT_ADDR="$LOCAL_DIRECT"
+    TOKEN="$LOCAL_TOKEN"
+    UPSTREAM_CAP="$(awk '/max_connections:/ { print $2; exit }' "$LOCAL_DIR/config.yaml")"
+    return 0
+  fi
+
   echo "building the image"
   if ! "${COMPOSE[@]}" build >/dev/null 2>&1; then
     fail "the image did not build"
@@ -82,12 +111,23 @@ bring_up() {
 }
 
 tear_down() {
+  if [[ "$MODE" == "local" ]]; then
+    local_down
+    return
+  fi
   "${COMPOSE[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
 }
 
 # pgbench's tables, created through the proxy so the tenant owns them, and then
 # opened to the load role that measures the direct baseline.
 prepare_data() {
+  # The local stack loads them while coming up, since it owns its own Postgres
+  # and has no container to exec into.
+  if [[ "$MODE" == "local" ]]; then
+    ok "the workload's tables exist"
+    return 0
+  fi
+
   if ! "${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" client \
       pgbench --host pgprox-1 --port 6432 --username acme_app \
         --initialize --scale 1 --quiet tenant_acme >/dev/null 2>&1; then
@@ -108,12 +148,26 @@ prepare_data() {
 # proxy itself: the entrypoint execs it, so the shell is replaced rather than
 # left as a parent.
 proxy_rss_kb() {
+  if [[ "$MODE" == "local" ]]; then
+    local pid
+    pid="$(cat "$LOCAL_DIR/proxy.pid" 2>/dev/null)"
+    [[ -n "$pid" ]] || return 0
+    awk '/^VmRSS:/ { print $2 }' "/proc/$pid/status" 2>/dev/null
+    return 0
+  fi
   "${COMPOSE[@]}" exec -T pgprox-1 \
     awk '/^VmRSS:/ { print $2 }' /proc/1/status 2>/dev/null | tr -d '\r'
 }
 
 # How many connections the fleet is holding on the primary right now.
 upstream_connections() {
+  if [[ "$MODE" == "local" ]]; then
+    psql "postgresql://postgres@127.0.0.1:$LOCAL_PG_PORT/tenant_acme" \
+      --no-align --tuples-only --quiet \
+      -c "SELECT count(*) FROM pg_stat_activity WHERE usename = 'acme_app'" 2>/dev/null \
+      | tr -d '[:space:]'
+    return 0
+  fi
   "${COMPOSE[@]}" exec -T primary \
     psql --username postgres --dbname tenant_acme --no-align --tuples-only --quiet \
       -c "SELECT count(*) FROM pg_stat_activity WHERE usename = 'acme_app'" 2>/dev/null \
@@ -276,6 +330,7 @@ run_scale() {
     "p99_direct_us=$direct_p99" \
     "upstream_peak=$peak_upstream" \
     "upstream_cap=$UPSTREAM_CAP" \
+    "mode=$MODE" \
     "direct_connections=$direct_connections" \
     "direct_errors=$direct_errors" \
     > "$OUT_DIR/summary.env"
@@ -284,7 +339,7 @@ run_scale() {
 
 # ---------------------------------------------------------------------------
 
-echo "=== SCALE: $CONNECTIONS connections ==="
+echo "=== SCALE: $CONNECTIONS connections, $MODE stack ==="
 
 require_tools || finish
 build_client || finish

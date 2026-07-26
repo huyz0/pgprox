@@ -1283,6 +1283,21 @@ recorded runs say which they are.
   on the node under test, which means no scale run has measured what
   termination costs. Acceptance: a run with TLS and a run without it are both
   possible from one flag, and the difference between them is recorded.
+- [x] `M7.22` A one-node stack of local processes, and `scripts/scale.sh
+  --local`. Found when Docker Desktop stopped on the development machine
+  mid-milestone: every measurement in M7 depended on it, and Postgres was
+  installed on the machine all along. The compose stack stays the deployment
+  shape and stays what a reported number should come from; every run records
+  which stack it was.
+- [ ] `M7.23` The proxy adds a second of latency at 1000 connections. Found by
+  the first honest scale run: p50 of 1.18s through the proxy against 2.2ms
+  direct, 512 transactions per second against a demand of roughly 3,600, and
+  only 30 of the 60 allowed upstream connections in use. The cap is respected
+  and nothing fails, so `scripts/scale.sh` passes; the number is still four
+  orders off the roadmap's target and nothing about the workload explains it.
+  Acceptance: the cause is named from a profile rather than guessed, the fix
+  is measured against the recorded run, and the upstream pool either fills or
+  the reason it does not is written down.
 - [ ] `M7.19` Close M7.
 
 ## M8 and later
