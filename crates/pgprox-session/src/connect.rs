@@ -278,6 +278,14 @@ pub struct Upstreamed<S> {
     pub parameters: Vec<(String, String)>,
     /// The server's own cancel key, for cancelling queries on this connection.
     pub backend_key: Option<(i32, i32)>,
+    /// The prepared statements this connection holds.
+    ///
+    /// Here rather than in a map beside the pool, because it is a property of
+    /// the connection and this is the thing the pool lends: a map keyed by
+    /// connection id would have to be kept in step with connections opening
+    /// and closing, and the first missed entry is a `Bind` for a statement the
+    /// server does not have.
+    pub statements: pgprox_pool::statements::ConnectionStatements,
 }
 
 impl<S> fmt::Debug for Upstreamed<S> {
@@ -488,6 +496,9 @@ where
             }
             Need::Ready => {
                 return Ok(Upstreamed {
+                    statements: pgprox_pool::statements::ConnectionStatements::new(
+                        pgprox_pool::statements::StatementConfig::default(),
+                    ),
                     wire,
                     parameters: handshake.parameters().to_vec(),
                     backend_key: handshake.backend_key(),
@@ -1144,6 +1155,9 @@ mod tests {
         let rendered = format!(
             "{:?}",
             Upstreamed::<DuplexStream> {
+                statements: pgprox_pool::statements::ConnectionStatements::new(
+                    pgprox_pool::statements::StatementConfig::default(),
+                ),
                 wire: Wire::new(duplex(8).0),
                 parameters: vec![("server_version".to_owned(), "17.2".to_owned())],
                 backend_key: Some((4242, 0x0bad_beef)),

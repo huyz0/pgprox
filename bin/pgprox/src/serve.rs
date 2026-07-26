@@ -446,16 +446,6 @@ where
             ClientAction::Send { acquire: false, .. } => {}
         }
 
-        // A `Bind` names a statement the target connection may never have
-        // seen: this session prepared it, and the pool has since handed the
-        // session a different connection. The `Parse` goes first, and its
-        // `ParseComplete` is swallowed below, because the client did not ask
-        // for it and a driver counting replies would be one ahead.
-        let injected = matches!(
-            message,
-            pgprox_proto::frontend::FrontendMessage::Bind { .. }
-        );
-
         let Some((_guard, upstream)) = held.as_mut() else {
             return Err(wire
                 .refuse(ClientError::ProtocolViolation(
@@ -464,8 +454,22 @@ where
                 .await);
         };
 
-        if injected {
-            swallow_parse_complete += prepare_for_bind(upstream, &message, &session_state);
+        // A `Parse` or a `Bind` names a statement the connection this session
+        // was just lent may never have seen, or may already hold. Both are the
+        // connection's own record to answer, and both are settled before the
+        // client's frame goes anywhere.
+        match ready_statement(upstream, &message, &session_state) {
+            Statement::Nothing => {}
+            Statement::Prepared(swallow) => swallow_parse_complete += swallow,
+            // Forwarding the client's `Parse` would collide with the name the
+            // connection already holds, and Postgres refuses that. The client
+            // is owed a `ParseComplete`, so it gets one from here: it is true,
+            // and it arrives before anything the server sends for the rest of
+            // this sequence.
+            Statement::AlreadyPrepared => {
+                wire.queue(|out| out.extend_from_slice(&[b'1', 0, 0, 0, 4]));
+                continue;
+            }
         }
 
         // Forwarded with the statement name mapped and nothing else touched:
@@ -562,42 +566,97 @@ fn awaits_more(message: &pgprox_proto::frontend::FrontendMessage<'_>) -> bool {
     )
 }
 
-/// Makes sure the connection about to serve a `Bind` holds the statement.
+/// What had to happen before a `Parse` or a `Bind` could be forwarded.
+enum Statement {
+    /// Not a statement-bearing frame.
+    Nothing,
+    /// The connection is ready, and this many replies are not the client's.
+    Prepared(usize),
+    /// The connection already holds it, so the client's `Parse` must not go.
+    AlreadyPrepared,
+}
+
+/// Brings the connection up to what this frame is about to assume.
 ///
-/// Returns how many replies the client must not be shown: it sent neither of
-/// these messages, and a driver counting replies would be one ahead of the
-/// server for the rest of the session.
-///
-/// `Close` and then `Parse`, rather than `Parse` alone. Postgres refuses a
-/// second `Parse` under a name it already holds, and this proxy cannot know
-/// whether the connection it was just lent is one that has seen this
-/// statement: the pool does not yet remember what each connection carries.
-/// `Close` of a statement that does not exist is not an error, so the pair is
-/// correct on a cold connection and on a warm one.
-///
-/// The cost is a re-parse per transaction, which is the thing prepared
-/// statements exist to avoid. `M6.50` gives the pool the memory that turns
-/// this into a no-op on a connection that already holds the statement; until
-/// then, correct and slow beats fast and wrong.
-fn prepare_for_bind(
+/// A `Bind` for a statement the connection does not hold gets the `Parse`
+/// first. A `Parse` for one it already holds gets nothing, because Postgres
+/// refuses a second `Parse` under a name it holds and the caller answers the
+/// client itself.
+fn ready_statement(
     upstream: &mut Upstreamed<crate::dial::Stream>,
     message: &pgprox_proto::frontend::FrontendMessage<'_>,
     session: &pgprox_session::resume::SessionMemory,
-) -> usize {
-    let pgprox_proto::frontend::FrontendMessage::Bind { statement, .. } = message else {
-        return 0;
+) -> Statement {
+    use pgprox_proto::frontend::FrontendMessage as Message;
+
+    let Some((global, sql)) = statement_of(message, session) else {
+        return Statement::Nothing;
     };
-    let Some(prepared) = session.statements.get(statement) else {
+    let held = upstream.statements.holds(&global);
+
+    if matches!(message, Message::Parse { .. }) {
+        if held {
+            return Statement::AlreadyPrepared;
+        }
+        // The client's own `Parse` is about to go, so the connection records
+        // it and this only makes room.
+        return Statement::Prepared(evict_for(upstream, &global));
+    }
+
+    if held {
+        return Statement::Prepared(0);
+    }
+
+    let swallow = evict_for(upstream, &global) + 1;
+    upstream.wire.queue(|out| {
+        pgprox_proto::encode_frontend::parse(out, global.as_str(), &sql);
+    });
+    Statement::Prepared(swallow)
+}
+
+/// The statement a `Parse` or a `Bind` names, as this proxy calls it.
+fn statement_of(
+    message: &pgprox_proto::frontend::FrontendMessage<'_>,
+    session: &pgprox_session::resume::SessionMemory,
+) -> Option<(pgprox_pool::statements::GlobalName, String)> {
+    use pgprox_proto::frontend::FrontendMessage as Message;
+
+    let (Message::Parse {
+        statement: name, ..
+    }
+    | Message::Bind {
+        statement: name, ..
+    }) = message
+    else {
+        return None;
+    };
+    let prepared = session.statements.get(name)?;
+    Some((prepared.global.clone(), prepared.sql.clone()))
+}
+
+/// Makes room on the connection for one more statement.
+///
+/// Returns how many `CloseComplete`s the client must not be shown. Eviction is
+/// what keeps a long-lived connection from accumulating every statement every
+/// session that borrowed it ever prepared.
+fn evict_for(
+    upstream: &mut Upstreamed<crate::dial::Stream>,
+    global: &pgprox_pool::statements::GlobalName,
+) -> usize {
+    // Already held, or a variant added later: neither is a reason to close
+    // anything.
+    let pgprox_pool::statements::Preparation::Replay { evict } =
+        upstream.statements.prepare_for(global)
+    else {
         return 0;
     };
 
-    let global = prepared.global.as_str().to_owned();
-    let sql = prepared.sql.clone();
     upstream.wire.queue(|out| {
-        pgprox_proto::encode_frontend::close_statement(out, &global);
-        pgprox_proto::encode_frontend::parse(out, &global, &sql);
+        for victim in &evict {
+            pgprox_proto::encode_frontend::close_statement(out, victim.as_str());
+        }
     });
-    2
+    evict.len()
 }
 
 /// Records what this statement does to the session, and maps its name.
@@ -1559,6 +1618,70 @@ mod tests {
         assert!(
             !seen.iter().any(|sql| sql.contains("s1")),
             "the client's private statement name reached the server: {seen:?}"
+        );
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_statement_is_prepared_once_per_connection_rather_than_once_per_bind() {
+        // The whole point of a prepared statement. The connection carries its
+        // own record of what it holds, so the second transaction to bind the
+        // same SQL sends no extra messages.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(16384);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut first = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut first, "s1", "SELECT $1");
+        pgprox_proto::encode_frontend::bind(&mut first, "", "s1");
+        pgprox_proto::encode_frontend::sync(&mut first);
+        client.write_all(&first).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        let after_first = statements_seen(addr).len();
+        assert!(
+            after_first > 0,
+            "nothing reached the server for the first statement"
+        );
+
+        // The same statement again, on a connection that has now seen it.
+        let mut again = Vec::new();
+        pgprox_proto::encode_frontend::bind(&mut again, "", "s1");
+        pgprox_proto::encode_frontend::sync(&mut again);
+        client.write_all(&again).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        // Counting `Parse`s rather than frames: the second `Bind` and its
+        // `Sync` are new frames and are supposed to be.
+        let parses = |from: usize| {
+            statements_seen(addr)
+                .into_iter()
+                .skip(from)
+                .filter(|sql| sql.contains("SELECT $1"))
+                .count()
+        };
+        assert_eq!(
+            parses(after_first),
+            0,
+            "the statement was prepared again on a connection that already held it: {:?}",
+            statements_seen(addr)
         );
 
         drop(client);

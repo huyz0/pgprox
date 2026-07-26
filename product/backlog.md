@@ -1052,7 +1052,7 @@ asking of each crate what the binary never touches.
   Acceptance: a tenant on the allowlist gets its own series, one off it is
   aggregated, and the ceiling is what stops the label becoming unbounded.
 
-- [ ] `M6.50` The pool does not remember what each connection holds. `M6.49`
+- [x] `M6.50` The pool does not remember what each connection holds. `M6.49`
   sends `Close` and `Parse` before every `Bind`, because it cannot know
   whether the connection it was just lent has seen the statement, and Postgres
   refuses a second `Parse` under a name it already holds. Correct on a cold
