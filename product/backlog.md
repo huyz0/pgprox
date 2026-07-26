@@ -1234,9 +1234,10 @@ recorded runs say which they are.
 - [x] `M7.11` Allocation budget, `pgprox-auth`: grant cache lookup on connect.
   Acceptance: as above, and a hit is distinguished from a miss, since only the
   hit is the hot path.
-- [ ] `M7.12` Allocation budget, `pgprox-cluster`: gossip digest encode and
-  decode. Acceptance: as above, at a membership size the reference workload
-  declares rather than at one.
+- [x] `M7.12` Allocation budget for gossip digest encode and decode, in
+  `bin/pgprox` rather than `pgprox-cluster`: the cluster layer owns the digest
+  as a value, the binary owns how it travels. Acceptance: as above, at the
+  membership size the reference workload declares rather than at one.
 - [ ] `M7.13` `iai-callgrind` benchmarks and `scripts/bench.sh` for the same
   seven paths, with committed baselines. Acceptance: instruction counts are
   reproducible across two runs on the same tree, and the script reports the

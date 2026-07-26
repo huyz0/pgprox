@@ -991,6 +991,7 @@ dependencies = [
  "aws-lc-rs",
  "axum",
  "base64",
+ "dhat",
  "pgprox-admin",
  "pgprox-auth",
  "pgprox-cluster",

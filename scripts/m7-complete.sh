@@ -63,10 +63,14 @@ declare -A BUDGETS=(
   [pgprox-pool]="warm acquire and the release decision"
   [pgprox-route]="the route decision"
   [pgprox-auth]="the grant cache lookup"
-  [pgprox-cluster]="gossip digest encode and decode"
 )
+# The gossip digest is encoded in the binary rather than in pgprox-cluster:
+# the cluster layer owns the digest as a value, this owns how it travels.
+BUDGETS[pgprox]="gossip digest encode and decode"
 for crate in "${!BUDGETS[@]}"; do
-  if grep -rqs --include='*.rs' 'dhat' "crates/$crate/src" "crates/$crate/tests" 2>/dev/null; then
+  if grep -rqs --include='*.rs' 'dhat' \
+       "crates/$crate/src" "crates/$crate/tests" \
+       "bin/$crate/src" "bin/$crate/tests" 2>/dev/null; then
     ok "allocation budget: $crate (${BUDGETS[$crate]})"
   else
     fail "no allocation budget in $crate: ${BUDGETS[$crate]} is still a claim"

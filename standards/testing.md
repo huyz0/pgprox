@@ -107,11 +107,13 @@ The declared hot paths, with budgets, are:
 6. Grant cache lookup on connect. **At most 17 allocations** per connection on
    a hit, asserted in `crates/pgprox-auth/tests/budgets.rs`. Not zero, and the
    file says what the fifteen it measured are made of.
-7. Gossip digest encode and decode.
+7. Gossip digest encode and decode. **At most 14 to encode and 32 to decode**
+   per digest, asserted in `bin/pgprox/tests/budgets.rs`. Decoding costs more
+   because JSON hands every field over as an owned string first.
 
-Path 7 was written to be allocation-free and are claims until the
-milestone that asserts them, and they are written down here so the assertion
-has something to check rather than a number to discover.
+Every declared path now has a number rather than a claim. Two of them are not
+zero, and each states what its allocations are made of, because a budget
+nobody can account for is a number that gets raised the first time it fails.
 
 A budget test asserts its own harness first: it allocates deliberately once and
 checks the counter moved. A budget that measured nothing would pass forever.

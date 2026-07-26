@@ -53,6 +53,8 @@ tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
 
 [dev-dependencies]
+# Allocation budgets. See standards/testing.md.
+dhat = "0.3"
 pgprox-core = { path = "../../crates/pgprox-core", features = ["test-fakes"] }
 rcgen = "0.14"
 tempfile.workspace = true
