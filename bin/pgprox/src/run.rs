@@ -47,6 +47,14 @@ const TICK: Duration = Duration::from_secs(1);
 /// How long a client waits for an upstream connection before being refused.
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a client has to finish authenticating.
+///
+/// Generous against a real handshake, which is two round trips and a sidecar
+/// call, and short against a socket that will never say anything. pgbouncer's
+/// `client_login_timeout` defaults to a minute; this is tighter because the
+/// ceiling here is the thing being protected.
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The stop signal every long-lived task watches.
 ///
 /// A watch channel rather than a `CancellationToken` from a new dependency, and
@@ -195,6 +203,7 @@ pub fn context(app: &App, shutdown: &Shutdown) -> Context {
         sessions: Arc::clone(&app.sessions),
         cancels: Arc::new(Registry::new(app.deps.node, Box::new(SystemEntropy))),
         acquire_timeout: ACQUIRE_TIMEOUT,
+        login_timeout: LOGIN_TIMEOUT,
         peers: BTreeMap::new(),
         replicas: Arc::new(crate::replicas::ReplicaSets::new(
             crate::dial::TcpUpstream::new(Arc::clone(&app.deps.tls)),
@@ -244,8 +253,7 @@ pub async fn run_with_peers(
     // The same table, to the one read that fans out.
     app.observatory.set_peers(peers.clone());
     let addresses: Vec<String> = peers.values().cloned().collect();
-    let ceiling = app.config.max_client_conns;
-    let gate = Arc::new(Gate::new(ceiling));
+    let gate = Arc::new(Gate::new(app.config.max_client_conns));
     let context = Arc::new(Context {
         peers: peers.clone(),
         ..context(&app, &shutdown)
@@ -303,7 +311,7 @@ pub async fn run_with_peers(
                 // Accepting stops the moment the signal fires. The sessions
                 // already accepted keep running: they hold transactions, and
                 // ending them here is what the drain sequence exists to avoid.
-                result = accept_loop(listeners.client, context, gate, ceiling) => result,
+                result = accept_loop(listeners.client, context, gate) => result,
                 () = shutdown.waited() => Ok(()),
             }
         }
@@ -315,6 +323,7 @@ pub async fn run_with_peers(
         &addresses,
         &Drainer {
             context: &context,
+            gate: &gate,
             addresses: &addresses_for_drain,
             grace: app.config.drain_grace,
         },
@@ -404,6 +413,8 @@ fn shed_pass(app: &App, sessions: &Arc<Sessions>) -> usize {
 /// What the tick needs to start or reverse a drain.
 struct Drainer<'a> {
     context: &'a Arc<Context>,
+    /// The admission gate, so the tick can follow the document's ceiling.
+    gate: &'a Arc<Gate>,
     addresses: &'a [String],
     grace: Duration,
 }
@@ -451,6 +462,7 @@ async fn ticker(
     drainer: &Drainer<'_>,
     shutdown: &Shutdown,
 ) -> u64 {
+    let gate = &drainer.gate;
     let mut ticks = tokio::time::interval(TICK);
     let mut ran = 0;
     loop {
@@ -462,6 +474,10 @@ async fn ticker(
         // Liveness first: a node whose gossip is failing is still alive, and
         // restarting it would drop every client on it.
         probes.beat();
+
+        // The ceiling follows the document, because an operator raising it is
+        // usually doing so while the node is refusing connections.
+        gate.set_ceiling(app.deps.config.watch().borrow().max_client_conns);
         app.cluster.tick();
         app.cluster.report(
             app.sessions.len(),
@@ -627,8 +643,10 @@ mod tests {
             let shutdown = shutdown.clone();
             async move {
                 let context = Arc::new(context(&app, &shutdown));
+                let gate = Arc::new(Gate::new(10));
                 let drainer = Drainer {
                     context: &context,
+                    gate: &gate,
                     addresses: &[],
                     grace: Duration::from_millis(50),
                 };
@@ -785,8 +803,10 @@ mod tests {
         let probes = probes(&app);
         let shutdown = Shutdown::new();
         let context = Arc::new(context(&app, &shutdown));
+        let gate = Arc::new(Gate::new(10));
         let drainer = Drainer {
             context: &context,
+            gate: &gate,
             addresses: &[],
             grace: Duration::from_millis(50),
         };

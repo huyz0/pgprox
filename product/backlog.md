@@ -1063,7 +1063,7 @@ asking of each crate what the binary never touches.
   no extra messages, and one on a connection that does not still works.
 ### Raised by the third review round
 
-- [ ] `M6.51` A client that connects and says nothing holds a slot forever.
+- [x] `M6.51` A client that connects and says nothing holds a slot forever.
   Nothing on the handshake path has a deadline: `negotiate` and
   `authenticate_token` await a read that may never come, and the connection
   counts against `max_client_conns` while it does. Opening the ceiling's worth
@@ -1079,7 +1079,7 @@ asking of each crate what the binary never touches.
   only for the cases it knows. Acceptance: a grant asking for session pooling
   holds its connection for the session, and one asking for transaction pooling
   is unchanged.
-- [ ] `M6.53` `max_client_conns` is read once at startup. The gate is built
+- [x] `M6.53` `max_client_conns` is read once at startup. The gate is built
   from the configuration the node booted with, so raising the ceiling in the
   `ConfigMap` does nothing until a restart, which is exactly what an operator
   does when a node is refusing connections. `M6.37` made the document reload;

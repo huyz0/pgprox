@@ -55,7 +55,13 @@ use crate::wiring::NodePool;
 #[derive(Debug)]
 pub struct Gate {
     live: AtomicU32,
-    ceiling: u32,
+    /// The ceiling, which a configuration reload can move.
+    ///
+    /// Atomic rather than fixed, because an operator raising it in the
+    /// `ConfigMap` is usually doing so while the node is refusing
+    /// connections, and a value read once at startup would need the restart
+    /// they are trying to avoid.
+    ceiling: AtomicU32,
 }
 
 /// A client's place under the ceiling, released on drop.
@@ -77,8 +83,24 @@ impl Gate {
     pub const fn new(ceiling: u32) -> Self {
         Self {
             live: AtomicU32::new(0),
-            ceiling,
+            ceiling: AtomicU32::new(ceiling),
         }
+    }
+
+    /// The ceiling in force.
+    #[must_use]
+    pub fn ceiling(&self) -> u32 {
+        self.ceiling.load(Ordering::SeqCst)
+    }
+
+    /// Moves the ceiling.
+    ///
+    /// Lowering it refuses the next client rather than closing an established
+    /// one: a limit is about what a node takes on, and taking connections away
+    /// from clients that already have them is a drain, which is a different
+    /// thing with its own sequence.
+    pub fn set_ceiling(&self, ceiling: u32) {
+        self.ceiling.store(ceiling, Ordering::SeqCst);
     }
 
     /// How many clients are being served.
@@ -89,9 +111,10 @@ impl Gate {
 
     /// Admits a client, or refuses because the node is full.
     pub fn admit(self: &Arc<Self>) -> Option<Admitted> {
+        let ceiling = self.ceiling();
         self.live
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |live| {
-                (live < self.ceiling).then_some(live + 1)
+                (live < ceiling).then_some(live + 1)
             })
             .ok()
             .map(|_| Admitted(Arc::clone(self)))
@@ -120,6 +143,14 @@ pub struct Context {
     pub cancels: Arc<Registry>,
     /// How long a client waits for an upstream connection.
     pub acquire_timeout: Duration,
+    /// How long a client has to finish authenticating.
+    ///
+    /// From the moment its socket is accepted to the moment it is told it is
+    /// in. A connection that has said nothing costs a slot under the ceiling,
+    /// so without this a node is taken out of service by opening sockets and
+    /// sending nothing: no credentials, no traffic, no way to tell it from a
+    /// slow network.
+    pub login_timeout: Duration,
     /// Where the other nodes are, for a cancel this node does not own.
     pub peers: std::collections::BTreeMap<NodeId, String>,
     /// The replica sets this node is watching, one per primary.
@@ -168,10 +199,15 @@ pub async fn session<S>(stream: S, context: &Context, admitted: Admitted) -> Res
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    // One deadline for the whole handshake rather than one per read: a client
+    // sending a byte a second would pass every per-read timeout and still hold
+    // its slot for as long as it liked. It ends where the client is told it is
+    // in, because after that the session is the client's to keep idle.
+    let deadline = tokio::time::Instant::now() + context.login_timeout;
     let mut wire = Wire::new(stream);
     let mut handshake = Handshake::new(context.handshake.clone());
 
-    match negotiate(&mut wire, &mut handshake).await? {
+    match until(deadline, negotiate(&mut wire, &mut handshake)).await? {
         Handoff::Upgrade => {
             let Some(acceptor) = context.tls.clone() else {
                 // The state machine only answers `S` when it has been told TLS
@@ -193,29 +229,63 @@ where
                 return Err(ShellError::Disconnected);
             }
 
-            let upgraded = acceptor
-                .accept(io)
-                .await
-                .map_err(|_| ShellError::Disconnected)?;
+            let upgraded = until(deadline, async {
+                acceptor
+                    .accept(io)
+                    .await
+                    .map_err(|_| ShellError::Disconnected)
+            })
+            .await?;
             let mut wire = Wire::new(upgraded);
 
             // The same handshake, which is what makes "TLS was accepted"
             // survive the change of stream type.
-            match negotiate(&mut wire, &mut handshake).await? {
+            match until(deadline, negotiate(&mut wire, &mut handshake)).await? {
                 Handoff::Cancel(conn) => cancel(conn, context).await,
                 Handoff::Upgrade => Err(wire
                     .refuse(ClientError::ProtocolViolation("TLS was already negotiated"))
                     .await),
                 Handoff::Ask(credential) => {
-                    serve_client(&mut wire, &mut handshake, credential, context, admitted).await
+                    serve_client(
+                        &mut wire,
+                        &mut handshake,
+                        credential,
+                        context,
+                        admitted,
+                        deadline,
+                    )
+                    .await
                 }
             }
         }
         Handoff::Cancel(conn) => cancel(conn, context).await,
         Handoff::Ask(credential) => {
-            serve_client(&mut wire, &mut handshake, credential, context, admitted).await
+            serve_client(
+                &mut wire,
+                &mut handshake,
+                credential,
+                context,
+                admitted,
+                deadline,
+            )
+            .await
         }
     }
+}
+
+/// Runs a step of the handshake, or gives up on the client.
+///
+/// Nothing is sent back on a timeout. A client that has not finished
+/// authenticating has not been told what this server is, and an error frame
+/// would be read by whatever is on the other end as an answer to a question it
+/// did not ask.
+async fn until<F, T>(deadline: tokio::time::Instant, step: F) -> Result<T, ShellError>
+where
+    F: std::future::Future<Output = Result<T, ShellError>>,
+{
+    tokio::time::timeout_at(deadline, step)
+        .await
+        .unwrap_or(Err(ShellError::Disconnected))
 }
 
 /// What a static user is told about the server it reached.
@@ -245,6 +315,7 @@ async fn serve_client<S>(
     credential: Credential,
     context: &Context,
     admitted: Admitted,
+    deadline: tokio::time::Instant,
 ) -> Result<(), ShellError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -270,7 +341,7 @@ where
                 // owns the exchange holds none. See its AGENTS.md.
                 pgprox_auth::scram::generate_nonce(),
             );
-            authenticate_scram(wire, &mut scram).await?;
+            until(deadline, authenticate_scram(wire, &mut scram)).await?;
 
             // The exchange ends at SASLFinal, and a client is still waiting to
             // be told it is in: `accept` is what sends AuthenticationOk, the
@@ -290,11 +361,14 @@ where
         Credential::Jwt => {
             let startup = handshake.startup().ok_or(ShellError::Disconnected)?.clone();
             let mut auth = TokenAuth::new(&startup, std::net::IpAddr::from([0, 0, 0, 0]));
-            authenticate_token(
-                wire,
-                &mut auth,
-                context.resolver.as_ref(),
-                std::time::SystemTime::now(),
+            until(
+                deadline,
+                authenticate_token(
+                    wire,
+                    &mut auth,
+                    context.resolver.as_ref(),
+                    std::time::SystemTime::now(),
+                ),
             )
             .await?
         }
@@ -321,7 +395,7 @@ where
             .refuse(ClientError::Internal("no entropy for a cancel key"))
             .await);
     };
-    accept(wire, conn, &parameters).await?;
+    until(deadline, accept(wire, conn, &parameters)).await?;
 
     // The signal a shed decision fires. Registered with the session rather
     // than held by it, because the decision is the node's and the session is a
@@ -1015,7 +1089,6 @@ pub async fn accept_loop(
     listener: tokio::net::TcpListener,
     context: Arc<Context>,
     gate: Arc<Gate>,
-    ceiling: u32,
 ) -> std::io::Result<()> {
     loop {
         let (socket, _) = listener.accept().await?;
@@ -1041,6 +1114,7 @@ pub async fn accept_loop(
             let Some(admitted) = gate.admit() else {
                 // Warn rather than debug: this is the node at its ceiling,
                 // which is a capacity decision somebody has to take.
+                let ceiling = gate.ceiling();
                 tracing::warn!(ceiling, "refused a client: at the connection ceiling");
                 let _ = refuse_full(socket, ceiling).await;
                 return;
@@ -1094,10 +1168,94 @@ mod tests {
     }
 
     #[test]
+    fn a_gate_follows_a_ceiling_that_moves() {
+        // An operator raising the limit is usually doing so while the node is
+        // refusing connections, which is the worst moment to need a restart.
+        let gate = Arc::new(Gate::new(1));
+        let first = gate.admit().expect("room for one");
+        assert!(gate.admit().is_none());
+
+        gate.set_ceiling(2);
+        let second = gate.admit().expect("the raised ceiling was not read");
+
+        // And lowering it refuses the next client rather than closing one that
+        // already has a connection: taking those away is a drain, which is a
+        // different thing with its own sequence.
+        gate.set_ceiling(1);
+        assert!(gate.admit().is_none());
+        assert_eq!(gate.live(), 2, "an established client was closed");
+
+        drop((first, second));
+    }
+
+    #[test]
     fn a_gate_of_zero_admits_nobody() {
         // Configuration validation refuses this, and the gate must not be the
         // thing that decides otherwise.
         assert!(Arc::new(Gate::new(0)).admit().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_client_that_says_nothing_is_closed_and_gives_its_slot_back() {
+        // The cheapest denial of service there is: open the ceiling's worth of
+        // sockets, send nothing, and the node is out of service with no
+        // credentials and no traffic.
+        let addr = fake_postgres().await;
+        let mut context = context_for(addr);
+        context.login_timeout = Duration::from_millis(150);
+        let context = Arc::new(context);
+
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+        let (ours, _client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            session(ours, held.as_ref(), admitted),
+        )
+        .await
+        .expect("a silent client was served forever");
+
+        assert!(outcome.is_err());
+        assert_eq!(gate.live(), 0, "its place under the ceiling was not freed");
+        assert!(context.sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_client_that_authenticates_is_not_closed_by_the_login_timeout() {
+        // The timeout ends where the client is told it is in. After that the
+        // session is the client's to keep idle for as long as it likes, which
+        // is what a connection pool is for.
+        let addr = fake_postgres().await;
+        let mut context = context_for(addr);
+        context.login_timeout = Duration::from_millis(300);
+        let context = Arc::new(context);
+
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        // Well past the login timeout, doing nothing.
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
+        client.write_all(&query).await.unwrap();
+        assert_eq!(expect(&mut client).await.0, Tag::COMMAND_COMPLETE);
+
+        drop(client);
+        let _ = served.await;
     }
 
     #[tokio::test]
@@ -1396,6 +1554,7 @@ mod tests {
             sessions: Sessions::new(),
             cancels: Arc::new(Registry::new(NodeId::new(1), Box::new(Fixed))),
             acquire_timeout: Duration::from_secs(5),
+            login_timeout: Duration::from_secs(30),
             statics: None,
             observatory: pgprox_core::admin::FakeObservatory::new(NodeId::new(1)),
             tls: None,
@@ -2181,7 +2340,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy = listener.local_addr().unwrap();
         let gate = Arc::new(Gate::new(10));
-        tokio::spawn(accept_loop(listener, Arc::clone(&context), gate, 10));
+        tokio::spawn(accept_loop(listener, Arc::clone(&context), gate));
 
         let mut socket = tokio::net::TcpStream::connect(proxy).await.unwrap();
         let mut request = Vec::new();
@@ -2551,7 +2710,6 @@ mod tests {
             listener,
             Arc::clone(&context),
             Arc::clone(&gate),
-            1,
         ));
 
         let mut first = tokio::net::TcpStream::connect(proxy).await.unwrap();
