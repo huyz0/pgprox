@@ -831,7 +831,7 @@ rule already allows `pgprox-proto`.
   `ParameterStatus` set. Acceptance: the trait's fake and the real
   implementation are exercised by the same test body, so a behaviour the fake
   invents is caught.
-- [ ] `M6.13` The `ParameterStatus` probe cache, keyed per `(host, db)`.
+- [x] `M6.13` The `ParameterStatus` probe cache, keyed per `(host, db)`.
   Acceptance: a second pool for the same host and database opens no second
   probe connection.
 - [ ] `M6.14` The real `ReplicaProbe` over `pg_last_wal_replay_lsn()` and

@@ -21,6 +21,7 @@
 
 pub mod auth;
 pub mod connect;
+pub mod probe;
 pub mod relay;
 pub mod resume;
 pub mod shell;
@@ -31,6 +32,7 @@ pub use auth::{
     StaticCredentials, TokenAuth,
 };
 pub use connect::{Need, UpstreamHandshake, UpstreamScram};
+pub use probe::{ParameterCache, Parameters};
 pub use relay::{ClientAction, ClientOutcome, Relay, ServerOutcome};
 pub use resume::{ConnectionMemory, SessionMemory, Step, before_bind, on_acquire, replayed};
 pub use shell::{
