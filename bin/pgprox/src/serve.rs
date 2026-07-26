@@ -363,6 +363,9 @@ where
     let mut session_state = pgprox_session::resume::SessionMemory::default();
     let mut held: Option<(UpstreamGuard, Upstreamed<crate::dial::Stream>)> = None;
     let mut body = Vec::new();
+    // How many `ParseComplete`s belong to statements this proxy replayed
+    // rather than to anything the client sent.
+    let mut swallow_parse_complete = 0_usize;
     // The watch this grant's replicas are polled into, shared with every other
     // session on the same primary. A grant with no replicas gets none, and
     // every route decision for it lands on the primary by the same rule that
@@ -402,17 +405,14 @@ where
         };
 
         let now = context.clock.now();
-        // A `SET` this session runs is a thing every later connection it
-        // borrows has to be told about. Observed here rather than inside the
-        // relay, because the relay decides where a statement goes and this
-        // decides what the session is.
-        if let pgprox_proto::frontend::FrontendMessage::Query { sql }
-        | pgprox_proto::frontend::FrontendMessage::Parse { sql, .. } = message
-        {
-            session_state
-                .params
-                .observe_statement(sql, pgprox_pool::pin::REPLAYABLE_PARAMETERS);
-        }
+        let rewritten = observe(&message, &body, &mut session_state);
+        let Some(outgoing) = rewritten else {
+            return Err(wire
+                .refuse(ClientError::ProtocolViolation(
+                    "a statement name this session never parsed",
+                ))
+                .await);
+        };
 
         let outcome = match watch.as_ref() {
             Some(watch) => watch.with_replicas(|replicas| relay.on_client(&message, replicas, now)),
@@ -446,6 +446,16 @@ where
             ClientAction::Send { acquire: false, .. } => {}
         }
 
+        // A `Bind` names a statement the target connection may never have
+        // seen: this session prepared it, and the pool has since handed the
+        // session a different connection. The `Parse` goes first, and its
+        // `ParseComplete` is swallowed below, because the client did not ask
+        // for it and a driver counting replies would be one ahead.
+        let injected = matches!(
+            message,
+            pgprox_proto::frontend::FrontendMessage::Bind { .. }
+        );
+
         let Some((_guard, upstream)) = held.as_mut() else {
             return Err(wire
                 .refuse(ClientError::ProtocolViolation(
@@ -454,38 +464,26 @@ where
                 .await);
         };
 
-        // Forwarded as it arrived: the relay never rewrites what it does not
-        // have to.
-        forward(&mut upstream.wire, tag, &body);
+        if injected {
+            swallow_parse_complete += prepare_for_bind(upstream, &message, &session_state);
+        }
+
+        // Forwarded with the statement name mapped and nothing else touched:
+        // the relay never rewrites what it does not have to.
+        forward(&mut upstream.wire, tag, &outgoing);
         upstream.wire.flush().await?;
 
-        if pump(wire, upstream, &mut relay, context, conn).await? {
-            // Before the connection goes back, and only when the transaction
-            // wrote: the position has to come from the primary, and this is
-            // the last moment a connection to it is held. A failure leaves the
-            // watermark where it was, so the session keeps reading from the
-            // primary rather than from a replica that may not have the write.
-            if relay.wrote()
-                && let Some((_, upstream)) = held.as_mut()
-                && let Ok(lsn) = pgprox_session::probe::primary_lsn(&mut upstream.wire).await
-            {
-                relay.record_write(lsn);
-            }
-
-            let (mut guard, upstream) = held.take().ok_or(ShellError::Disconnected)?;
-            context
-                .pool
-                .return_connection(guard.key(), guard.id(), upstream);
-            // Marked clean only here, at the boundary the relay named: a guard
-            // dropped without this discards its connection, which is right for
-            // every other way out of this loop and wrong for this one.
-            guard.release_clean();
-            context.cancels.release(conn);
-            context.sessions.count_transaction();
-            context
-                .sessions
-                .set_state(conn, ClientState::Idle, context.clock.now());
-            relay.released();
+        if pump(
+            wire,
+            upstream,
+            &mut relay,
+            context,
+            conn,
+            &mut swallow_parse_complete,
+        )
+        .await?
+        {
+            release(&mut held, &mut relay, context, conn).await?;
         }
     }
 }
@@ -530,6 +528,138 @@ async fn borrow(
         .set_state(conn, ClientState::Active, context.clock.now());
 
     Ok((guard, taken))
+}
+
+/// Sends the `Parse` a `Bind` needs, when the connection may not hold it.
+///
+/// Returns how many `ParseComplete`s the client must not be shown. The client
+/// did not send this `Parse`, and a driver counting replies would be one
+/// ahead of the server for the rest of the session.
+///
+/// Always, rather than only when the connection is known not to hold it: the
+/// pool does not yet remember what each connection carries, so preparing again
+/// is the answer that cannot be wrong. `Parse` of a statement a connection
+/// already holds is accepted by Postgres.
+fn prepare_for_bind(
+    upstream: &mut Upstreamed<crate::dial::Stream>,
+    message: &pgprox_proto::frontend::FrontendMessage<'_>,
+    session: &pgprox_session::resume::SessionMemory,
+) -> usize {
+    let pgprox_proto::frontend::FrontendMessage::Bind { statement, .. } = message else {
+        return 0;
+    };
+    let Some(prepared) = session.statements.get(statement) else {
+        return 0;
+    };
+
+    let global = prepared.global.as_str().to_owned();
+    let sql = prepared.sql.clone();
+    upstream.wire.queue(|out| {
+        pgprox_proto::encode_frontend::parse(out, &global, &sql);
+    });
+    1
+}
+
+/// Records what this statement does to the session, and maps its name.
+///
+/// Both halves of "what does this session look like to the next connection it
+/// borrows": a `SET` it has to be told about, and a prepared statement it has
+/// to hold. Together rather than apart because they are read from the same
+/// frame and a caller that did one and forgot the other is the bug.
+fn observe(
+    message: &pgprox_proto::frontend::FrontendMessage<'_>,
+    body: &[u8],
+    session: &mut pgprox_session::resume::SessionMemory,
+) -> Option<Vec<u8>> {
+    use pgprox_proto::frontend::FrontendMessage as Message;
+
+    if let Message::Query { sql } | Message::Parse { sql, .. } = message {
+        session
+            .params
+            .observe_statement(sql, pgprox_pool::pin::REPLAYABLE_PARAMETERS);
+    }
+    map_statement_name(message, body, session)
+}
+
+/// Gives the borrowed connection back at a transaction boundary.
+///
+/// Everything that has to happen exactly once per transaction, in the order it
+/// has to happen in: the write position is read while a connection to the
+/// primary is still held, the connection goes back, and only then is the guard
+/// marked clean.
+async fn release(
+    held: &mut Option<(UpstreamGuard, Upstreamed<crate::dial::Stream>)>,
+    relay: &mut Relay,
+    context: &Context,
+    conn: ConnId,
+) -> Result<(), ShellError> {
+    // Before the connection goes back, and only when the transaction wrote:
+    // the position has to come from the primary, and this is the last moment a
+    // connection to it is held. A failure leaves the watermark where it was,
+    // so the session keeps reading from the primary rather than from a replica
+    // that may not have the write.
+    if relay.wrote()
+        && let Some((_, upstream)) = held.as_mut()
+        && let Ok(lsn) = pgprox_session::probe::primary_lsn(&mut upstream.wire).await
+    {
+        relay.record_write(lsn);
+    }
+
+    let (mut guard, upstream) = held.take().ok_or(ShellError::Disconnected)?;
+    context
+        .pool
+        .return_connection(guard.key(), guard.id(), upstream);
+    // Marked clean only here, at the boundary the relay named: a guard dropped
+    // without this discards its connection, which is right for every other way
+    // out of the relay loop and wrong for this one.
+    guard.release_clean();
+    context.cancels.release(conn);
+    context.sessions.count_transaction();
+    context
+        .sessions
+        .set_state(conn, ClientState::Idle, context.clock.now());
+    relay.released();
+    Ok(())
+}
+
+/// Puts this proxy's name for a prepared statement into the frame.
+///
+/// The client's own name is private to its connection here: two sessions may
+/// both call one `s1`, and a session's `s1` is bound on whichever connection
+/// the pool lends it next. What goes on the wire is derived from the SQL, so
+/// two sessions preparing the same statement share one server-side name.
+///
+/// `None` means the frame cannot be forwarded: a `Bind` for something this
+/// session never parsed, or a body whose name field could not be found. Both
+/// are refusals rather than pass-throughs, because forwarding either would
+/// send a private name to a server that has never seen it.
+fn map_statement_name(
+    message: &pgprox_proto::frontend::FrontendMessage<'_>,
+    body: &[u8],
+    session: &mut pgprox_session::resume::SessionMemory,
+) -> Option<Vec<u8>> {
+    use pgprox_proto::frontend::FrontendMessage as Message;
+    use pgprox_proto::rewrite;
+
+    match message {
+        Message::Parse { statement, sql } => {
+            let global = session.statements.parse(statement, sql);
+            rewrite::parse_statement(body, global.as_str())
+        }
+        Message::Bind { statement, .. } => {
+            let prepared = session.statements.get(statement)?;
+            rewrite::bind_statement(body, prepared.global.as_str())
+        }
+        Message::Describe { name, .. } | Message::Close { name, .. }
+            if rewrite::describes_statement(body) =>
+        {
+            let prepared = session.statements.get(name)?;
+            rewrite::described_statement(body, prepared.global.as_str())
+        }
+        // Everything else travels as it arrived. A portal is the client's own
+        // name for a result set and this proxy does not rename it.
+        _ => Some(body.to_vec()),
+    }
 }
 
 /// Brings a freshly borrowed connection up to this session's parameters.
@@ -587,6 +717,7 @@ async fn pump<S>(
     relay: &mut Relay,
     context: &Context,
     conn: ConnId,
+    swallow_parse_complete: &mut usize,
 ) -> Result<bool, ShellError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -599,6 +730,14 @@ where
         let server = relay.on_server(&decoded);
         if let Some(reason) = server.pinned {
             context.sessions.set_pinned(conn, reason.as_str());
+        }
+
+        // The reply to a `Parse` this proxy sent on the client's behalf. The
+        // client never sent that `Parse` and must not see its completion, or
+        // every reply after it is one out of step.
+        if tag == pgprox_proto::frame::Tag::PARSE_COMPLETE && *swallow_parse_complete > 0 {
+            *swallow_parse_complete -= 1;
+            continue;
         }
 
         forward(wire, tag, &body);
@@ -1335,6 +1474,83 @@ mod tests {
 
         drop(client);
         let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_prepared_statement_is_replayed_onto_the_connection_that_binds_it() {
+        // The client's name for a statement is private to its connection to
+        // this proxy: two sessions may both call one `s1`, and a session's
+        // `s1` is bound on whichever connection the pool lends it next. What
+        // goes on the wire is a name derived from the SQL, and the `Parse`
+        // goes with it.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut extended = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut extended, "s1", "SELECT $1");
+        pgprox_proto::encode_frontend::bind(&mut extended, "", "s1");
+        pgprox_proto::encode_frontend::sync(&mut extended);
+        client.write_all(&extended).await.unwrap();
+
+        // The fake answers everything with a completion, so what matters is
+        // what it was sent.
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        let seen = statements_seen(addr);
+        assert!(
+            !seen.iter().any(|sql| sql.contains("s1")),
+            "the client's private statement name reached the server: {seen:?}"
+        );
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_bind_for_a_statement_never_parsed_is_refused() {
+        // Postgres would refuse it too, but not for the same reason: here the
+        // name cannot even be translated, so forwarding it would send a
+        // private name to a server that has never seen it.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut orphan = Vec::new();
+        pgprox_proto::encode_frontend::bind(&mut orphan, "", "never_parsed");
+        client.write_all(&orphan).await.unwrap();
+
+        let (tag, body) = expect(&mut client).await;
+        assert_eq!(tag, Tag::ERROR_RESPONSE);
+        assert!(String::from_utf8_lossy(&body).contains("08P01"));
+        assert!(served.await.unwrap().is_err());
     }
 
     #[tokio::test]

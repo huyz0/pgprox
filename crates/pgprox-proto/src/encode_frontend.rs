@@ -125,6 +125,23 @@ pub fn parse(out: &mut Vec<u8>, statement: &str, sql: &str) {
     });
 }
 
+/// `B`: bind a portal to a prepared statement, with no parameters.
+///
+/// No parameter values, because the only `Bind` this crate writes is one a
+/// test or a replay produces. A client's own `Bind` is rewritten in place by
+/// `rewrite::bind_statement` rather than re-encoded, so its parameters never
+/// pass through here.
+pub fn bind(out: &mut Vec<u8>, portal: &str, statement: &str) {
+    tagged(out, Tag::BIND, |b| {
+        cstr(b, portal);
+        cstr(b, statement);
+        // No format codes, no parameters, and no result format codes.
+        b.extend_from_slice(&0_i16.to_be_bytes());
+        b.extend_from_slice(&0_i16.to_be_bytes());
+        b.extend_from_slice(&0_i16.to_be_bytes());
+    });
+}
+
 /// `C`: close a prepared statement.
 ///
 /// The protocol-level counterpart of SQL `DEALLOCATE`, and the only one that

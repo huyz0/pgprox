@@ -21,6 +21,7 @@ pub mod frame;
 pub mod frontend;
 pub mod read;
 pub mod relay;
+pub mod rewrite;
 pub mod session;
 pub mod startup;
 

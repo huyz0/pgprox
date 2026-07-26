@@ -1036,7 +1036,7 @@ asking of each crate what the binary never touches.
   a change of upstream connection, a prepared statement is replayed before the
   `Bind` that uses it, and `SET LOCAL` is still never replayed. Split: the
   parameter half is done here, the prepared-statement half is `M6.49`.
-- [ ] `M6.49` Prepared statements are not mapped onto the connection that
+- [x] `M6.49` Prepared statements are not mapped onto the connection that
   serves them. `resume::before_bind` and `pgprox-pool`'s statement map are
   M5.10 and M6.7, and the relay calls neither, so a client that `Parse`s on
   one connection and `Bind`s on another gets "prepared statement does not
