@@ -56,6 +56,12 @@ pub struct NodeObservatory {
     /// here is held across an await, and a `tokio` mutex could not be read from
     /// the probe path, which is sync.
     drain: SharedDrain,
+    /// Where the other nodes are, for the one read that fans out.
+    ///
+    /// Set after construction, because a peer table is a deployment fact and
+    /// `App::build` opens no sockets. Empty until it is, which reads as a node
+    /// that is alone: the same answer it gave before the fan-out existed.
+    peers: std::sync::OnceLock<std::collections::BTreeMap<NodeId, String>>,
 }
 
 impl NodeObservatory {
@@ -78,7 +84,16 @@ impl NodeObservatory {
             pool,
             sessions,
             drain,
+            peers: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Tells this observatory where its peers are.
+    ///
+    /// Once: a second call would mean two answers to "who is in the fleet",
+    /// and the run loop is the only caller.
+    pub fn set_peers(&self, peers: std::collections::BTreeMap<NodeId, String>) -> bool {
+        self.peers.set(peers).is_ok()
     }
 
     /// The pools this node holds, as views.
@@ -237,26 +252,41 @@ impl Observatory for NodeObservatory {
     }
 
     async fn clients(&self, scope: Scope) -> Result<Vec<ClientView>, AdminError> {
-        let local = self.sessions.views(self.clock.now());
+        let mut clients = self.sessions.views(self.clock.now());
         if matches!(scope, Scope::Local) {
-            return Ok(local);
+            return Ok(clients);
         }
 
-        // The fan-out is not built yet, so a cluster-scoped answer is this
-        // node's clients and an honest statement that the rest are missing.
-        // Reporting them as the whole fleet would be the one failure ADR 0018
-        // singles out: an incomplete answer presented as complete.
-        let peers = self
-            .cluster
-            .digests()
-            .into_iter()
-            .filter(|digest| digest.node != self.node)
-            .count();
-        if peers == 0 {
-            return Ok(local);
+        // The only read that costs a round trip, and its signature says so.
+        // Aggregates answer from the digest every node already holds; a client
+        // list is one row per connection, and gossiping those every second
+        // would put a hundred thousand rows on the wire.
+        let peers = self.peers.get().cloned().unwrap_or_default();
+        let mut missed = Vec::new();
+        for (node, address) in &peers {
+            if *node == self.node {
+                continue;
+            }
+            match crate::gossip::clients_of(address).await {
+                Ok(theirs) => clients.extend(theirs),
+                Err(reason) => missed.push(format!("{node}: {reason}")),
+            }
         }
+
+        clients.sort_by_key(|view| (view.node, view.conn));
+        if missed.is_empty() {
+            return Ok(clients);
+        }
+
+        // Partial rather than short. An operator seeing a list with a node
+        // silently missing from it concludes that node has no clients, which
+        // is the one failure ADR 0018 singles out.
         Err(AdminError::Partial {
-            reason: format!("{peers} peer(s) were not asked: the client fan-out is not built"),
+            reason: format!(
+                "{} peer(s) did not answer: {}",
+                missed.len(),
+                missed.join("; ")
+            ),
         })
     }
 
@@ -561,6 +591,31 @@ mod tests {
                 .len(),
             1
         );
+        // A node that knows of no peers is alone, and a cluster-scoped read
+        // is its own clients. Being told "partial" by a node with nobody to
+        // ask would send an operator looking for a peer that is not missing.
+        assert_eq!(
+            fixture
+                .observatory
+                .clients(Scope::Cluster)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // With a peer it cannot reach, the answer is partial rather than
+        // short: a list with a node silently absent reads as that node having
+        // no clients.
+        fixture
+            .observatory
+            .set_peers(std::collections::BTreeMap::from([(
+                NodeId::new(2),
+                // Reserved for documentation, so nothing answers and nothing on
+                // the machine running this is disturbed by the attempt.
+                "192.0.2.1:6433".to_owned(),
+            )]));
+
         assert!(matches!(
             fixture.observatory.clients(Scope::Cluster).await,
             Err(AdminError::Partial { .. })

@@ -623,6 +623,10 @@ impl Context {
 
 #[async_trait::async_trait]
 impl crate::gossip::CancelSink for Context {
+    fn clients(&self) -> Vec<pgprox_core::admin::ClientView> {
+        self.sessions.views(self.clock.now())
+    }
+
     async fn cancel(&self, conn: ConnId) {
         // A forwarded cancel is delivered locally or dropped. Forwarding it
         // again would let two nodes with a stale peer table bounce one between

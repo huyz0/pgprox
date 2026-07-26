@@ -240,6 +240,8 @@ pub async fn run_with_peers(
     // fallback it had, which is its guaranteed share.
     app.cluster
         .set_transport(Arc::new(crate::gossip::GossipTransport::new(peers.clone())));
+    // The same table, to the one read that fans out.
+    app.observatory.set_peers(peers.clone());
     let addresses: Vec<String> = peers.values().cloned().collect();
     let ceiling = app.config.max_client_conns;
     let gate = Arc::new(Gate::new(ceiling));

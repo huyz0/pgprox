@@ -52,6 +52,7 @@ use std::time::Duration;
 
 use pgprox_cluster::digest::VersionedDigest;
 use pgprox_cluster::service::GossipCoordinator;
+use pgprox_core::admin::{ClientState, ClientView};
 use pgprox_core::cluster::{ClusterDigest, NodeMode, QuotaError, QuotaLease};
 use pgprox_core::ids::{ConnId, NodeId, ServerId, TenantId};
 use serde::{Deserialize, Serialize};
@@ -105,6 +106,18 @@ pub enum Message {
         /// How long it lasts, from the moment the leader granted it.
         ttl_ms: u64,
     },
+    /// Asking a peer to list the clients it is serving.
+    ///
+    /// The one read that fans out. Aggregates answer from the digest every
+    /// node already holds, because a total is a number; a client list is one
+    /// row per connection and gossiping those every second would put a hundred
+    /// thousand rows on the wire. So it is asked for when somebody asks.
+    ClientsRequest,
+    /// A peer's answer to [`Message::ClientsRequest`].
+    Clients {
+        /// One entry per client that peer is serving.
+        clients: Vec<ClientWire>,
+    },
     /// A cancel for a connection another node owns.
     ///
     /// Forwarded rather than answered: the node that issued a cancel key is
@@ -123,6 +136,62 @@ pub enum Message {
         /// the leader is.
         reason: String,
     },
+}
+
+/// One client, as it travels between nodes.
+///
+/// Its own type for the same reason `DigestWire` is: a field renamed in
+/// `pgprox-core` must not silently change what a running fleet speaks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClientWire {
+    /// The node that issued the connection id, and the rest of it.
+    pub node: u16,
+    /// The connection's own number.
+    pub conn: u64,
+    /// Which tenant.
+    pub tenant: String,
+    /// `idle`, `active` or `waiting`.
+    pub state: String,
+    /// How long it has been in that state, in milliseconds.
+    pub since_ms: u64,
+    /// Why it is pinned, if it is.
+    pub pinned: Option<String>,
+}
+
+impl From<&ClientView> for ClientWire {
+    fn from(view: &ClientView) -> Self {
+        Self {
+            node: view.node.get(),
+            conn: view.conn.secret(),
+            tenant: view.tenant.as_str().to_owned(),
+            state: match view.state {
+                ClientState::Active => "active".to_owned(),
+                ClientState::Waiting => "waiting".to_owned(),
+                _ => "idle".to_owned(),
+            },
+            since_ms: u64::try_from(view.since.as_millis()).unwrap_or(u64::MAX),
+            pinned: view.pinned.clone(),
+        }
+    }
+}
+
+impl ClientWire {
+    /// Reads a peer's client back into what a report renders.
+    #[must_use]
+    pub fn parse(&self) -> ClientView {
+        ClientView {
+            conn: ConnId::new(NodeId::new(self.node), self.conn),
+            tenant: TenantId::new(&self.tenant),
+            node: NodeId::new(self.node),
+            state: match self.state.as_str() {
+                "active" => ClientState::Active,
+                "waiting" => ClientState::Waiting,
+                _ => ClientState::Idle,
+            },
+            since: Duration::from_millis(self.since_ms),
+            pinned: self.pinned.clone(),
+        }
+    }
 }
 
 /// One node's digest, as it travels.
@@ -258,6 +327,9 @@ where
                 holder,
                 want,
             }) => grant(coordinator, &server, holder, want),
+            Ok(Message::ClientsRequest) => Message::Clients {
+                clients: cancels.clients().iter().map(ClientWire::from).collect(),
+            },
             Ok(Message::Cancel { node, secret }) => {
                 // Answered with this node's digest whatever happens. A cancel
                 // gets no acknowledgement by design, so a peer relaying one for
@@ -480,6 +552,14 @@ where
 pub trait CancelSink: Send + Sync + std::fmt::Debug {
     /// Cancels the query this key names, if this node is running one.
     async fn cancel(&self, conn: ConnId);
+
+    /// The clients this node is serving, for a peer's fan-out.
+    ///
+    /// Defaulted to none, because a node with no sessions has none and a test
+    /// that only cares about cancels should not have to say so.
+    fn clients(&self) -> Vec<ClientView> {
+        Vec::new()
+    }
 }
 
 /// A sink that does nothing, for a node with no sessions to cancel.
@@ -508,6 +588,42 @@ pub async fn forward(peer: &str, conn: ConnId) {
         stream.flush().await.ok()
     })
     .await;
+}
+
+/// Asks one peer for the clients it is serving.
+///
+/// # Errors
+///
+/// Fails when the peer cannot be reached or does not answer in time. The
+/// caller reports that as a partial answer rather than as an empty one: an
+/// operator seeing no clients concludes there are none.
+pub async fn clients_of(peer: &str) -> Result<Vec<ClientView>, String> {
+    tokio::time::timeout(PEER_TIMEOUT, async {
+        let stream = tokio::net::TcpStream::connect(peer)
+            .await
+            .map_err(|err| err.to_string())?;
+        let (read, mut write) = tokio::io::split(stream);
+
+        write
+            .write_all(&encode(&Message::ClientsRequest))
+            .await
+            .map_err(|err| err.to_string())?;
+        write.flush().await.map_err(|err| err.to_string())?;
+
+        let mut lines = BufReader::new(read.take(MAX_INCOMING)).lines();
+        let line = lines
+            .next_line()
+            .await
+            .map_err(|err| err.to_string())?
+            .ok_or_else(|| "the peer said nothing".to_owned())?;
+
+        match serde_json::from_str::<Message>(&line) {
+            Ok(Message::Clients { clients }) => Ok(clients.iter().map(ClientWire::parse).collect()),
+            _ => Err("the peer did not answer with a client list".to_owned()),
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err("the peer did not answer in time".to_owned()))
 }
 
 /// The `QuotaTransport` the composition root fills in.
@@ -839,6 +955,63 @@ mod tests {
         )
         .await;
         assert_eq!(refused, Err(QuotaError::NoLeader));
+    }
+
+    #[tokio::test]
+    async fn a_peer_answers_with_the_clients_it_is_serving() {
+        // The one read that fans out. Aggregates come from the digest every
+        // node already holds; a client list is one row per connection, so it
+        // is asked for when somebody asks rather than gossiped every second.
+        #[derive(Debug)]
+        struct Serving(Vec<ClientView>);
+
+        #[async_trait::async_trait]
+        impl CancelSink for Serving {
+            async fn cancel(&self, _conn: ConnId) {}
+
+            fn clients(&self) -> Vec<ClientView> {
+                self.0.clone()
+            }
+        }
+
+        let view = ClientView {
+            conn: ConnId::new(NodeId::new(2), 9),
+            tenant: TenantId::new("acme"),
+            node: NodeId::new(2),
+            state: ClientState::Active,
+            since: Duration::from_millis(1500),
+            pinned: Some("listen".to_owned()),
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let serving = tokio::spawn(serve(
+            listener,
+            coordinator(2),
+            Arc::new(Serving(vec![view.clone()])),
+            async {
+                let _ = stopped.await;
+            },
+        ));
+
+        let answered = clients_of(&addr.to_string()).await.unwrap();
+
+        assert_eq!(answered.len(), 1);
+        assert_eq!(answered[0], view, "a client changed shape on the wire");
+
+        stop.send(()).unwrap();
+        serving.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_is_not_there_is_an_error_rather_than_an_empty_list() {
+        // An operator seeing an empty list concludes there are no clients.
+        let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = dead.local_addr().unwrap();
+        drop(dead);
+
+        assert!(clients_of(&addr.to_string()).await.is_err());
     }
 
     #[tokio::test]

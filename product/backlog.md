@@ -1002,7 +1002,7 @@ never touch", which is the same question M5's and M4's reviews asked.
   which was blocked on M6 existing. Acceptance: a configured static user
   authenticates with SCRAM and reaches the `SHOW` surface, and an unknown one
   is refused with the message a bad token gets.
-- [ ] `M6.43` Answer `clients` across the fleet. `NodeObservatory::clients`
+- [x] `M6.43` Answer `clients` across the fleet. `NodeObservatory::clients`
   returns `Partial` for any cluster-scoped read because the fan-out was not
   built; the gossip transport that would carry it now exists. Acceptance: a
   cluster-scoped client list returns every node's clients, and one that loses a
