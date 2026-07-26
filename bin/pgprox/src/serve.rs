@@ -122,6 +122,16 @@ pub struct Context {
     pub peers: std::collections::BTreeMap<NodeId, std::net::SocketAddr>,
     /// The replica sets this node is watching, one per primary.
     pub replicas: Arc<crate::replicas::ReplicaSets>,
+    /// Fired when the node has begun draining.
+    ///
+    /// A session between transactions closes on it. One inside a transaction
+    /// does not: finishing what it holds is the whole point of a drain, and
+    /// the grace timer behind [`Context::closing`] is what bounds it.
+    pub draining: crate::run::Shutdown,
+    /// Fired when the drain's grace has run out.
+    ///
+    /// Whatever is still connected is closed, mid-transaction or not.
+    pub closing: crate::run::Shutdown,
 }
 
 impl std::fmt::Debug for Context {
@@ -232,7 +242,18 @@ where
     let none = Replicas::new(0, pgprox_route::replica::ReplicaConfig::default());
 
     loop {
-        let tag = wire.read_tagged(&mut body).await?;
+        // A session between transactions leaves as soon as the node says it is
+        // draining. One holding a connection stays until it gives it back, or
+        // until the grace timer says otherwise: finishing in-flight work is
+        // what a drain is for.
+        let idle = held.is_none();
+        let tag = tokio::select! {
+            result = wire.read_tagged(&mut body) => result?,
+            () = context.draining.waited(), if idle => {
+                return Err(wire.refuse(ClientError::Draining).await);
+            }
+            () = context.closing.waited() => return Ok(()),
+        };
         let frame = Frame::new(tag, &body);
         let Ok(message) = pgprox_proto::frontend::decode(&frame) else {
             return Err(wire
@@ -503,9 +524,19 @@ pub async fn accept_loop(
         let gate = Arc::clone(&gate);
 
         tokio::spawn(async move {
-            // Admission first, and the refusal is a message rather than a
-            // dropped socket. A driver told 53300 reports it; a driver whose
-            // socket vanished reports a network error.
+            // A draining node refuses rather than stopping its listener. The
+            // socket is accepted so the client is told 57P01, which every
+            // mainstream driver treats as a clean server-initiated close and
+            // reconnects from; a closed listener would leave it retrying
+            // against a refused connection instead. It is also what makes a
+            // drain reversible: nothing had to be torn down to start it.
+            if context.draining.fired() {
+                let _ = refuse_draining(socket).await;
+                return;
+            }
+            // Then admission, and that refusal is a message too. A driver told
+            // 53300 reports it; a driver whose socket vanished reports a
+            // network error.
             let Some(admitted) = gate.admit() else {
                 let _ = refuse_full(socket, ceiling).await;
                 return;
@@ -513,6 +544,23 @@ pub async fn accept_loop(
             let _ = session(socket, context.as_ref(), admitted).await;
         });
     }
+}
+
+/// Tells a client the node is going away, then closes.
+///
+/// # Errors
+///
+/// Fails when the socket does.
+pub async fn refuse_draining<S>(stream: S) -> Result<(), ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut wire = Wire::new(stream);
+    let mut body = Vec::new();
+    let _ = wire.read_untagged(&mut body).await;
+
+    wire.queue(|out| encode::error_response(out, &ClientError::Draining));
+    wire.flush().await
 }
 
 #[cfg(test)]
@@ -636,6 +684,7 @@ mod tests {
                     let _ = socket.write_all(&out).await;
 
                     // Then one canned answer per query.
+                    let mut in_transaction = false;
                     loop {
                         let mut header = [0_u8; 5];
                         if socket.read_exact(&mut header).await.is_err() {
@@ -671,13 +720,30 @@ mod tests {
                             }
                             continue;
                         }
+                        // The transaction status is what the relay releases on,
+                        // so the fake has to track it: answering Idle to a
+                        // BEGIN would make every session look releasable while
+                        // it was mid-transaction.
+                        if sql.contains("BEGIN") {
+                            in_transaction = true;
+                        } else if sql.contains("COMMIT") || sql.contains("ROLLBACK") {
+                            in_transaction = false;
+                        }
+
                         out.push(Tag::COMMAND_COMPLETE.get());
                         let text = b"SELECT 1\0";
                         out.extend_from_slice(
                             &u32::try_from(text.len() + 4).unwrap().to_be_bytes(),
                         );
                         out.extend_from_slice(text);
-                        encode::ready_for_query(&mut out, TxStatus::Idle);
+                        encode::ready_for_query(
+                            &mut out,
+                            if in_transaction {
+                                TxStatus::InTransaction
+                            } else {
+                                TxStatus::Idle
+                            },
+                        );
                         if socket.write_all(&out).await.is_err() {
                             return;
                         }
@@ -754,6 +820,8 @@ mod tests {
             sessions: Sessions::new(),
             cancels: Arc::new(Registry::new(NodeId::new(1), Box::new(Fixed))),
             acquire_timeout: Duration::from_secs(5),
+            draining: crate::run::Shutdown::new(),
+            closing: crate::run::Shutdown::new(),
             peers: std::collections::BTreeMap::new(),
             replicas: Arc::new(crate::replicas::ReplicaSets::new(
                 TcpUpstream::new(
@@ -1060,6 +1128,80 @@ mod tests {
             "the client was told which internal condition failed: {rendered}"
         );
         assert!(served.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn an_idle_client_is_told_why_when_the_node_drains() {
+        // Between transactions, so it leaves at once. 57P01 is the code every
+        // mainstream driver treats as a clean server-initiated close and
+        // reconnects from, which is what makes a drain invisible to the app.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        context.draining.fire();
+
+        let (tag, body) = expect(&mut client).await;
+        assert_eq!(tag, Tag::ERROR_RESPONSE);
+        assert!(String::from_utf8_lossy(&body).contains("57P01"));
+        assert!(served.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_client_holding_a_connection_is_not_closed_by_the_drain_alone() {
+        // Finishing in-flight work is what a drain is for. The grace timer
+        // behind `closing` is what bounds it, and this asserts the two are
+        // different signals rather than one.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        // BEGIN, which the fake answers as it answers everything. What matters
+        // is that the session now holds an upstream connection.
+        let mut begin = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut begin, "BEGIN");
+        client.write_all(&begin).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        context.draining.fire();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !served.is_finished(),
+            "a session mid-transaction was closed by the drain rather than by the grace timer"
+        );
+
+        context.closing.fire();
+        let ended = tokio::time::timeout(Duration::from_secs(5), served)
+            .await
+            .expect("the grace timer did not close a session that would not leave");
+        assert!(ended.is_ok());
     }
 
     #[tokio::test]

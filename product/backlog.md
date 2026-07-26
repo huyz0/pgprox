@@ -931,7 +931,7 @@ rule already allows `pgprox-proto`.
   before release, on write transactions only. Acceptance: a session that wrote
   does not read from a replica that has not replayed the write, and a session
   that never wrote pays no extra round trip.
-- [ ] `M6.22` The drain sequence, end to end. Acceptance: `/readyz` fails
+- [x] `M6.22` The drain sequence, end to end. Acceptance: `/readyz` fails
   first, gossip announces before any client is closed, in-flight transactions
   finish, and the grace timer force-closes the remainder.
 - [ ] `M6.23` `deploy/` and `scripts/e2e.sh`: three proxy nodes, a primary, two

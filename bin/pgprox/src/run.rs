@@ -32,6 +32,7 @@ use tokio::sync::watch;
 use crate::entropy::SystemEntropy;
 use crate::http::{self, Probes};
 use crate::serve::{Context, Gate, accept_loop};
+
 use crate::wiring::App;
 
 /// How often the periodic work runs.
@@ -70,6 +71,16 @@ impl Shutdown {
     /// normal: a `SIGTERM` and a drain that ran out of grace.
     pub fn fire(&self) {
         self.0.send_replace(true);
+    }
+
+    /// Unfires it.
+    ///
+    /// For the drain signals only, which an undrain has to be able to take
+    /// back: a node whose drain expired or was cancelled goes back to serving.
+    /// The process shutdown is never cleared, because a process that has begun
+    /// stopping does not un-stop.
+    pub fn clear(&self) {
+        self.0.send_replace(false);
     }
 
     /// Whether it has fired.
@@ -152,6 +163,8 @@ impl Listeners {
 #[must_use]
 pub fn context(app: &App, shutdown: &Shutdown) -> Context {
     Context {
+        draining: Shutdown::new(),
+        closing: Shutdown::new(),
         node: app.deps.node,
         clock: Arc::clone(&app.deps.clock),
         handshake: HandshakeConfig {
@@ -221,6 +234,7 @@ pub async fn run_with_peers(
         peers: peers.clone(),
         ..context(&app, &shutdown)
     });
+    let addresses_for_drain = addresses.clone();
     let probes = probes(&app);
 
     let admin = tokio::spawn(http::serve(
@@ -262,7 +276,23 @@ pub async fn run_with_peers(
         }
     });
 
-    let _ticks = ticker(&app, &probes, &addresses, &shutdown).await;
+    let _ticks = ticker(
+        &app,
+        &probes,
+        &addresses,
+        &Drainer {
+            context: &context,
+            addresses: &addresses_for_drain,
+            grace: app.config.drain_grace,
+        },
+        &shutdown,
+    )
+    .await;
+
+    // Whatever the run loop is stopping for, the clients that are still here
+    // are told rather than cut: the signal fires, and their sockets close on a
+    // frame boundary in `session` rather than mid-frame.
+    context.closing.fire();
 
     // Both were told to stop by the same signal, so this is waiting rather than
     // stopping. A task that panicked is reported as an error rather than
@@ -285,7 +315,50 @@ pub async fn run_with_peers(
 /// Returns how many ticks it ran. A count rather than nothing, because the
 /// work it does is reported to peers and to probes rather than returned, and a
 /// loop that silently never ran would look exactly like one that did.
-async fn ticker(app: &App, probes: &Arc<Probes>, peers: &[SocketAddr], shutdown: &Shutdown) -> u64 {
+/// What the tick needs to start or reverse a drain.
+struct Drainer<'a> {
+    context: &'a Arc<Context>,
+    addresses: &'a [SocketAddr],
+    grace: Duration,
+}
+
+/// Starts or reverses the drain sequence when the node's mode changes.
+///
+/// Driven from the tick rather than from each caller, because a drain can
+/// arrive three ways: the admin API, the configuration document, and a drain
+/// TTL expiring underneath both. One place that notices the state changed is
+/// what stops those three paths behaving differently.
+async fn follow_drain(app: &App, probes: &Arc<Probes>, drainer: &Drainer<'_>) {
+    let draining = probes.is_draining();
+    let signalled = drainer.context.draining.fired();
+
+    if draining && !signalled {
+        crate::drain::Drain {
+            cluster: &app.cluster,
+            sessions: &app.sessions,
+            peers: drainer.addresses,
+            draining: &drainer.context.draining,
+            closing: &drainer.context.closing,
+            grace: drainer.grace,
+        }
+        .run()
+        .await;
+    } else if !draining && signalled {
+        crate::drain::undrain(
+            &app.cluster,
+            &drainer.context.draining,
+            &drainer.context.closing,
+        );
+    }
+}
+
+async fn ticker(
+    app: &App,
+    probes: &Arc<Probes>,
+    peers: &[SocketAddr],
+    drainer: &Drainer<'_>,
+    shutdown: &Shutdown,
+) -> u64 {
     let mut ticks = tokio::time::interval(TICK);
     let mut ran = 0;
     loop {
@@ -313,6 +386,10 @@ async fn ticker(app: &App, probes: &Arc<Probes>, peers: &[SocketAddr], shutdown:
         // than a tick would otherwise pile up one task per second against a
         // peer that is already too slow to answer.
         crate::gossip::round(peers, &app.cluster).await;
+
+        // Last, so a node that has just been told to drain has already
+        // reported its final numbers to the fleet.
+        follow_drain(app, probes, drainer).await;
     }
 }
 
@@ -427,7 +504,15 @@ mod tests {
 
         let ticked = tokio::spawn({
             let shutdown = shutdown.clone();
-            async move { ticker(&app, &probes, &[], &shutdown).await }
+            async move {
+                let context = Arc::new(context(&app, &shutdown));
+                let drainer = Drainer {
+                    context: &context,
+                    addresses: &[],
+                    grace: Duration::from_millis(50),
+                };
+                ticker(&app, &probes, &[], &drainer, &shutdown).await
+            }
         });
 
         tokio::time::sleep(Duration::from_millis(1200)).await;
@@ -489,6 +574,84 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), peer).await;
 
         assert!(learned, "a running node never heard from its peer");
+    }
+
+    #[tokio::test]
+    async fn a_drain_through_the_admin_api_takes_the_node_out_of_service() {
+        // End to end and in order: the probe fails, gossip says draining, and
+        // the listener refuses the next client with 57P01 rather than dropping
+        // its socket. Driven through the API because that is one of the three
+        // ways a drain arrives, and the run loop is what makes all three
+        // behave the same.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let app = App::build(deps()).await.unwrap();
+        let cluster = Arc::clone(&app.cluster);
+        let listeners = Listeners::bind(loopback()).await.unwrap();
+        let addrs = listeners.addrs().unwrap();
+        let shutdown = Shutdown::new();
+        let running = tokio::spawn(run(app, listeners, shutdown.clone()));
+
+        assert_eq!(probe(addrs.admin, "GET", "/readyz").await.0, 200);
+        assert_eq!(probe(addrs.admin, "POST", "/v1/drain").await.0, 200);
+
+        // The tick is what notices, so this waits for one.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        let (status, body) = probe(addrs.admin, "GET", "/readyz").await;
+        assert_eq!(status, 503, "{body}");
+        assert_eq!(
+            cluster.outgoing().digest.mode,
+            pgprox_core::cluster::NodeMode::Draining,
+            "the fleet was never told"
+        );
+
+        // A client arriving now is told why rather than having its socket
+        // dropped, which every driver reports as a network fault instead.
+        let mut late = tokio::net::TcpStream::connect(addrs.client).await.unwrap();
+        let mut packet = Vec::new();
+        pgprox_proto::encode_frontend::startup_message(
+            &mut packet,
+            pgprox_proto::encode::PROTOCOL_3_0,
+            &[("user", "acme_app")],
+        );
+        late.write_all(&packet).await.unwrap();
+
+        let mut header = [0_u8; 5];
+        late.read_exact(&mut header).await.unwrap();
+        let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+        let mut body = vec![0; len - 4];
+        late.read_exact(&mut body).await.unwrap();
+
+        assert_eq!(header[0], pgprox_proto::frame::Tag::ERROR_RESPONSE.get());
+        let rendered = String::from_utf8_lossy(&body);
+        assert!(rendered.contains("57P01"), "{rendered}");
+
+        shutdown.fire();
+        let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
+    }
+
+    /// One HTTP request against the admin port.
+    async fn probe(addr: SocketAddr, method: &str, path: &str) -> (u16, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+        socket
+            .write_all(
+                format!("{method} {path} HTTP/1.1\r\nHost: p\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut answer = String::new();
+        socket.read_to_string(&mut answer).await.unwrap();
+
+        let status = answer
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
+        (status, answer)
     }
 
     #[tokio::test]

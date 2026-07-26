@@ -21,6 +21,7 @@
 #![warn(missing_docs)]
 
 pub mod dial;
+pub mod drain;
 pub mod entropy;
 pub mod entry;
 pub mod gossip;
@@ -33,6 +34,7 @@ pub mod sessions;
 pub mod wiring;
 
 pub use dial::{ClientScram, Stream, TcpUpstream};
+pub use drain::{Drain, Step};
 pub use entropy::SystemEntropy;
 pub use entry::{Options, run_with, start, start_with};
 pub use http::{Probes, probe_routes, router};
