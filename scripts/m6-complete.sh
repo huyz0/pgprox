@@ -21,7 +21,7 @@ SESSION=crates/pgprox-session/src
 
 # The session's own modules, each named, so an unrelated file cannot satisfy
 # this the way a count would.
-for m in state auth relay shell connect probe cancel; do
+for m in state auth relay resume shell connect probe cancel; do
   [[ -f "$SESSION/$m.rs" ]] && ok "pgprox-session::$m" \
     || fail "pgprox-session::$m missing"
 done

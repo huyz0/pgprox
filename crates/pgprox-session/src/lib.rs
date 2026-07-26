@@ -21,6 +21,7 @@
 
 pub mod auth;
 pub mod relay;
+pub mod resume;
 pub mod state;
 
 pub use auth::{
@@ -28,4 +29,5 @@ pub use auth::{
     StaticCredentials, TokenAuth,
 };
 pub use relay::{ClientAction, ClientOutcome, Relay, ServerOutcome};
+pub use resume::{ConnectionMemory, SessionMemory, Step, before_bind, on_acquire, replayed};
 pub use state::{Action, Credential, Handshake, HandshakeConfig, Reply, StartupInfo, TlsPosture};

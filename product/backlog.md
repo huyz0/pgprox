@@ -803,7 +803,7 @@ rule already allows `pgprox-proto`.
   decision taken from `ReadyForQuery` rather than from the SQL text.
   Acceptance: a connection is never released mid-transaction, never with an
   extended-query sequence outstanding, and never while pinned.
-- [ ] `M6.7` Session parameter replay and prepared-statement replay on acquire.
+- [x] `M6.7` Session parameter replay and prepared-statement replay on acquire.
   Acceptance: a session that set a replayable parameter observes it on a
   different upstream connection, and a `Parse` the target connection does not
   hold is replayed before the `Bind` that needs it.
