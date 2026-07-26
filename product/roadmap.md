@@ -22,8 +22,8 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M3 | Cluster (track C) | complete |
 | M4 | Operations (track D) | complete |
 | M5 | Pooling and routing (track E) | complete |
-| M6 | Integration | in progress |
-| M7 | Scale and performance | blocked by M6 |
+| M6 | Integration | complete |
+| M7 | Scale and performance | next |
 | M8 | FIPS and release | blocked by M7 |
 | M9 | Query cache (post-MVP) | blocked by M8 |
 
@@ -146,7 +146,7 @@ cargo nextest run -p pgprox-pool -p pgprox-route
 Checks: suites pass, and the classifier property test finds no case where a
 DML-bearing statement is classified read-only.
 
-## M6: integration
+## M6: integration (complete)
 
 `pgprox-session` and `bin/pgprox` composing the real implementations.
 

@@ -1136,7 +1136,32 @@ asking of each crate what the binary never touches.
   tenants, and the reservations it held were capacity peers could have used.
   The tick forgets a tenant it reported last time and does not serve now.
 
-- [ ] `M6.25` Close M6.
+### The eighth review round, which found nothing new
+
+Four things in the workspace still have no caller in the binary, and each was
+looked at and left alone rather than wired reflexively:
+
+- `SessionStatements::close_all` is what a session's own statement map would
+  need if it outlived the session. It does not: the session's map dies with
+  it, and the connection's map is bounded by the LRU that `M6.50` now uses.
+- `Replicas::lag_behind` feeds `pgprox_replica_lag_bytes`, which is one of the
+  four metrics `bin/pgprox/src/metrics.rs` names in `UNSOURCED` with the
+  reason: it needs the primary's position at the same instant as the
+  replica's, which is the watermark's problem rather than the exporter's.
+- `spans::may_record_query` decides whether a query's text may be logged. That
+  it is never called is the correct state: queries carry tenant data, and the
+  feature exists so the decision has one place to live if it is ever switched
+  on.
+- `lease::reap` and `membership::reap` are called by `NodeCoordinator::observe`
+  inside `pgprox-cluster`, which the tick calls. They are internal, not
+  uncalled.
+
+Eight rounds, thirty-four tasks found after the milestone's own gates first
+passed. The ratio is the argument for the rule: the gates say the milestone's
+stated conditions hold, and asking "what does the binary never touch" is what
+says whether the thing behind them is real.
+
+- [x] `M6.25` Close M6.
 
 ## M7 and later
 
