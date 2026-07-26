@@ -1216,7 +1216,7 @@ recorded runs say which they are.
   per-connection RSS, added p50 and p99, and the upstream connection count
   against the configured cap. Acceptance: it fails when the cap is breached,
   and a run at 1000 reports four numbers rather than a pass or fail alone.
-- [ ] `M7.7` Record the runs: `product/perf/` holds one file per run with the
+- [x] `M7.7` Record the runs: `product/perf/` holds one file per run with the
   workload version, the connection count, the machine, and the numbers.
   Acceptance: two runs at different counts are comparable from the files alone,
   and the 1000-connection run is committed.
