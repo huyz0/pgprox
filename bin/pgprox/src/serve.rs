@@ -323,13 +323,23 @@ where
     };
     accept(wire, conn, &parameters).await?;
 
+    // The signal a shed decision fires. Registered with the session rather
+    // than held by it, because the decision is the node's and the session is a
+    // task on a socket.
+    let shed = crate::run::Shutdown::new();
     let _registered = context.sessions.register(
         conn,
         grant.tenant.clone(),
         context.node,
         context.clock.now(),
+        // The tenant's own allowance where the grant states one. A grant that
+        // does not is a tenant with no per-tenant cap, and the shed decision
+        // reads a zero budget as "no headroom anywhere", which refuses rather
+        // than moves. Refusing is the direction that costs nobody a reconnect.
+        grant.pool.max_upstream.unwrap_or(0),
+        shed.clone(),
     );
-    let outcome = relay(wire, context, &grant, conn).await;
+    let outcome = relay(wire, context, &grant, conn, &shed).await;
     drop(admitted);
     outcome
 }
@@ -340,6 +350,7 @@ async fn relay<S>(
     context: &Context,
     grant: &Grant,
     conn: ConnId,
+    shed: &crate::run::Shutdown,
 ) -> Result<(), ShellError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -364,6 +375,17 @@ where
             result = wire.read_tagged(&mut body) => result?,
             () = context.draining.waited(), if idle => {
                 return Err(wire.refuse(ClientError::Draining).await);
+            }
+            // A shed is the same shape as a drain and for the same reason:
+            // 57P01 is what every mainstream driver reconnects from, and only
+            // between transactions, because relocating a client must not cost
+            // it work it had already done.
+            () = shed.waited(), if idle => {
+                return Err(wire
+                    .refuse(ClientError::Shed {
+                        tenant: grant.tenant.clone(),
+                    })
+                    .await);
             }
             () = context.closing.waited() => return Ok(()),
         };
@@ -1431,6 +1453,41 @@ mod tests {
         let (tag, body) = expect(&mut client).await;
         assert_eq!(tag, Tag::ERROR_RESPONSE);
         assert!(String::from_utf8_lossy(&body).contains("57P01"));
+        assert!(served.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_shed_client_is_told_to_reconnect_rather_than_cut_off() {
+        // 57P01 is the code every mainstream driver treats as a clean
+        // server-initiated close and reconnects from, which is the entire
+        // mechanism: the client comes back and lands on its home node.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let conn = context.sessions.views(context.clock.now())[0].conn;
+        assert!(context.sessions.shed(conn));
+
+        let (tag, body) = expect(&mut client).await;
+        assert_eq!(tag, Tag::ERROR_RESPONSE);
+        assert!(
+            String::from_utf8_lossy(&body).contains("57P01"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
         assert!(served.await.unwrap().is_err());
     }
 

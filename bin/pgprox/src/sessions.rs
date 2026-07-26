@@ -29,6 +29,20 @@ struct Entry {
     state: ClientState,
     since: Instant,
     pinned: Option<String>,
+    /// How many upstream connections this tenant's grant allows.
+    ///
+    /// Kept per session because it arrives with the grant and the registry is
+    /// the only thing that outlives one. A shed decision weighs the home
+    /// node's usage against the tenant's share of this, so a made-up number
+    /// here is a client bounced to a node with no room for it.
+    budget: u32,
+    /// Fired to ask this one session to leave.
+    ///
+    /// The registry holds the signal rather than the session, because a shed
+    /// decision is taken by the node and a session is a task on a socket. The
+    /// session watches it at the same place it watches a drain, so a client
+    /// mid-transaction is not cut off by either.
+    close: crate::run::Shutdown,
 }
 
 /// Every client this node is serving.
@@ -78,6 +92,8 @@ impl Sessions {
         tenant: TenantId,
         node: NodeId,
         now: Instant,
+        budget: u32,
+        close: crate::run::Shutdown,
     ) -> Registration {
         self.lock().insert(
             conn,
@@ -87,6 +103,8 @@ impl Sessions {
                 state: ClientState::Idle,
                 since: now,
                 pinned: None,
+                budget,
+                close,
             },
         );
         Registration {
@@ -121,14 +139,37 @@ impl Sessions {
         self.pins.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// What each client's tenant is allowed, for a shed decision.
+    ///
+    /// The largest a session claimed, because two sessions of one tenant carry
+    /// the same grant and the largest is the least likely to be a stale one.
+    #[must_use]
+    pub fn budget_for(&self, tenant: &TenantId) -> u32 {
+        self.lock()
+            .values()
+            .filter(|entry| &entry.tenant == tenant)
+            .map(|entry| entry.budget)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Asks one client to leave, and counts it as shed.
+    ///
+    /// Returns whether there was such a client. The session closes itself at
+    /// its next boundary: this is a request, not a socket being cut, which is
+    /// what makes a shed invisible to an application that reconnects.
+    pub fn shed(&self, conn: ConnId) -> bool {
+        let Some(entry) = self.lock().get(&conn).cloned() else {
+            return false;
+        };
+        entry.close.fire();
+        self.sheds.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
     /// Counts one completed transaction.
     pub fn count_transaction(&self) {
         self.transactions.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Counts one shed client.
-    pub fn count_shed(&self) {
-        self.sheds.fetch_add(1, Ordering::Relaxed);
     }
 
     /// How many clients this node is serving.
@@ -212,7 +253,14 @@ mod tests {
     fn a_registered_client_is_reported() {
         let sessions = Sessions::new();
         let now = Instant::now();
-        let _held = sessions.register(conn(1), TenantId::new("acme"), NodeId::new(1), now);
+        let _held = sessions.register(
+            conn(1),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            now,
+            16,
+            crate::run::Shutdown::new(),
+        );
 
         let views = sessions.views(now);
         assert_eq!(views.len(), 1);
@@ -228,7 +276,14 @@ mod tests {
         let sessions = Sessions::new();
         let now = Instant::now();
 
-        let held = sessions.register(conn(1), TenantId::new("acme"), NodeId::new(1), now);
+        let held = sessions.register(
+            conn(1),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            now,
+            16,
+            crate::run::Shutdown::new(),
+        );
         assert_eq!(sessions.len(), 1);
         drop(held);
 
@@ -242,7 +297,14 @@ mod tests {
         // session. Resetting it on every touch would hide exactly that.
         let sessions = Sessions::new();
         let start = Instant::now();
-        let _held = sessions.register(conn(1), TenantId::new("acme"), NodeId::new(1), start);
+        let _held = sessions.register(
+            conn(1),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            start,
+            16,
+            crate::run::Shutdown::new(),
+        );
 
         let later = start + Duration::from_secs(10);
         sessions.set_state(conn(1), ClientState::Active, later);
@@ -256,7 +318,14 @@ mod tests {
     fn a_pinned_client_says_why() {
         let sessions = Sessions::new();
         let now = Instant::now();
-        let _held = sessions.register(conn(1), TenantId::new("acme"), NodeId::new(1), now);
+        let _held = sessions.register(
+            conn(1),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            now,
+            16,
+            crate::run::Shutdown::new(),
+        );
 
         sessions.set_pinned(conn(1), "listen");
 
@@ -281,9 +350,31 @@ mod tests {
     fn clients_are_counted_per_tenant() {
         let sessions = Sessions::new();
         let now = Instant::now();
-        let _a = sessions.register(conn(1), TenantId::new("acme"), NodeId::new(1), now);
-        let _b = sessions.register(conn(2), TenantId::new("acme"), NodeId::new(1), now);
-        let _c = sessions.register(conn(3), TenantId::new("globex"), NodeId::new(1), now);
+        let signal = crate::run::Shutdown::new;
+        let _a = sessions.register(
+            conn(1),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            now,
+            16,
+            signal(),
+        );
+        let _b = sessions.register(
+            conn(2),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            now,
+            16,
+            signal(),
+        );
+        let _c = sessions.register(
+            conn(3),
+            TenantId::new("globex"),
+            NodeId::new(1),
+            now,
+            16,
+            signal(),
+        );
 
         assert_eq!(
             sessions.per_tenant(),
@@ -296,11 +387,57 @@ mod tests {
         // Which is what makes diffing two of them worth anything.
         let sessions = Sessions::new();
         let now = Instant::now();
-        let _a = sessions.register(conn(3), TenantId::new("acme"), NodeId::new(1), now);
-        let _b = sessions.register(conn(1), TenantId::new("acme"), NodeId::new(1), now);
+        let signal = crate::run::Shutdown::new;
+        let _a = sessions.register(
+            conn(3),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            now,
+            16,
+            signal(),
+        );
+        let _b = sessions.register(
+            conn(1),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            now,
+            16,
+            signal(),
+        );
 
         assert_eq!(sessions.views(now), sessions.views(now));
         assert_eq!(sessions.views(now)[0].conn, conn(1));
+    }
+
+    #[test]
+    fn shedding_a_client_asks_it_to_leave_and_counts_it() {
+        // A request rather than a socket being cut: the session closes itself
+        // at its next boundary, which is what makes a shed invisible to an
+        // application that reconnects.
+        let sessions = Sessions::new();
+        let close = crate::run::Shutdown::new();
+        let _held = sessions.register(
+            conn(1),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            Instant::now(),
+            16,
+            close.clone(),
+        );
+
+        assert!(sessions.shed(conn(1)));
+        assert!(close.fired(), "the session was never asked to leave");
+        assert_eq!(sessions.sheds(), 1);
+    }
+
+    #[test]
+    fn shedding_a_client_that_has_gone_does_nothing() {
+        // A session that ended between the decision and the request is normal,
+        // and counting it would report a shed that never happened.
+        let sessions = Sessions::new();
+
+        assert!(!sessions.shed(conn(9)));
+        assert_eq!(sessions.sheds(), 0);
     }
 
     #[test]
@@ -308,9 +445,8 @@ mod tests {
         let sessions = Sessions::new();
         sessions.count_transaction();
         sessions.count_transaction();
-        sessions.count_shed();
 
         assert_eq!(sessions.transactions(), 2);
-        assert_eq!(sessions.sheds(), 1);
+        assert_eq!(sessions.sheds(), 0, "nothing was shed");
     }
 }

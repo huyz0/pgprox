@@ -246,6 +246,8 @@ mod tests {
             TenantId::new("acme"),
             NodeId::new(1),
             Instant::now(),
+            16,
+            Shutdown::new(),
         );
 
         let steps = drain_over(
@@ -273,6 +275,8 @@ mod tests {
             TenantId::new("acme"),
             NodeId::new(1),
             Instant::now(),
+            16,
+            Shutdown::new(),
         );
 
         tokio::spawn(async move {

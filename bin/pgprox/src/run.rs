@@ -32,6 +32,7 @@ use tokio::sync::watch;
 use crate::entropy::SystemEntropy;
 use crate::http::{self, Probes};
 use crate::serve::{Context, Gate, accept_loop};
+use crate::sessions::Sessions;
 use pgprox_pool::reap::ReapConfig;
 
 use crate::wiring::App;
@@ -347,6 +348,59 @@ pub async fn run_with_peers(
 /// Returns how many ticks it ran. A count rather than nothing, because the
 /// work it does is reported to peers and to probes rather than returned, and a
 /// loop that silently never ran would look exactly like one that did.
+/// Asks each idle client whether it belongs on another node, and closes the
+/// ones that do.
+///
+/// M3.7 built the decision and every guard rail on it, and nothing in the
+/// binary ever took one, so tenant affinity was a property of the cluster
+/// crate's tests. Nothing here decides: `shed::decide` does, and this only
+/// gathers what it needs and acts on the answer.
+fn shed_pass(app: &App, sessions: &Arc<Sessions>) -> usize {
+    use pgprox_cluster::shed::{self, ShedCtx, ShedDecision};
+    use pgprox_core::admin::ClientState;
+
+    let config = shed::ShedConfig::default();
+    let now = app.deps.clock.now();
+    let mut shed_count = 0;
+
+    for view in sessions.views(now) {
+        // The tenant's own allowance, from its grant. A made-up budget here
+        // sends a client to a node with no room for it, and it comes straight
+        // back.
+        let budget = sessions.budget_for(&view.tenant);
+        // Tracked so the home node's reservation exists to weigh against: an
+        // untracked tenant has no reservation and reads as having no headroom
+        // anywhere, which refuses every shed for the wrong reason.
+        app.cluster.track_tenant(view.tenant.clone());
+        let placement = app.cluster.placement(&view.tenant, budget);
+        let decision = shed::decide(
+            &config,
+            &ShedCtx {
+                idle_for: view.since,
+                on_home_node: placement.on_home_node,
+                home_has_headroom: placement.home_has_headroom,
+                home_draining: placement.home_draining,
+                pinned: view.pinned.is_some(),
+                // The registry knows what a client is doing, and `Active`
+                // means it holds a connection. A session between transactions
+                // is the only one worth moving and the only one it is safe to.
+                in_transaction: view.state != ClientState::Idle,
+                since_membership_change: placement.since_membership_change,
+                // Per tenant per minute, which needs a window this pass does
+                // not keep. Zero admits the decision and the rate limit is
+                // enforced by `M6.46`; a wrong answer here is a client that
+                // reconnects, not a client that loses work.
+                recent_sheds: 0,
+            },
+        );
+
+        if matches!(decision, ShedDecision::Shed) && sessions.shed(view.conn) {
+            shed_count += 1;
+        }
+    }
+    shed_count
+}
+
 /// What the tick needs to start or reverse a drain.
 struct Drainer<'a> {
     context: &'a Arc<Context>,
@@ -440,6 +494,15 @@ async fn ticker(
                 peers = peers.len(),
                 "some peers did not answer the gossip round"
             );
+        }
+
+        // Never while draining: a draining node's clients are leaving anyway,
+        // and shedding them toward a home node would move work twice.
+        if !probes.is_draining() {
+            let shed = shed_pass(app, &app.sessions);
+            if shed > 0 {
+                tracing::info!(shed, "shed clients toward their home nodes");
+            }
         }
 
         // Last, so a node that has just been told to drain has already
@@ -827,6 +890,102 @@ mod tests {
 
         shutdown.fire();
         let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
+    }
+
+    #[tokio::test]
+    async fn a_client_whose_tenant_belongs_elsewhere_is_shed() {
+        // M3.7 built the decision and every guard rail on it, and nothing in
+        // the binary ever took one, so tenant affinity was a property of one
+        // crate's tests rather than of a running fleet.
+        let clock = pgprox_core::clock::FakeClock::new();
+        let app = App::build(Deps {
+            clock: Arc::new(clock.clone()),
+            ..deps()
+        })
+        .await
+        .unwrap();
+        let close = Shutdown::new();
+
+        // A peer, gossiping every second as the real loop does. A membership
+        // of one homes every tenant here, and advancing the clock in one jump
+        // would let the peer go silent and take the membership back to one.
+        let peer = |round: u64| pgprox_cluster::digest::VersionedDigest {
+            digest: pgprox_core::cluster::ClusterDigest {
+                node: NodeId::new(2),
+                ..pgprox_core::cluster::ClusterDigest::default()
+            },
+            version: round,
+        };
+        app.cluster.gossip(peer(1));
+
+        let tenant = (1..200)
+            .map(|n| pgprox_core::ids::TenantId::new(format!("tenant-{n}")))
+            .find(|tenant| !app.cluster.placement(tenant, 1).on_home_node)
+            .expect("no tenant of two hundred homed elsewhere, which is not hashing");
+
+        let _held = app.sessions.register(
+            pgprox_core::ids::ConnId::new(NodeId::new(1), 1),
+            tenant,
+            NodeId::new(1),
+            app.deps.clock.now(),
+            16,
+            close.clone(),
+        );
+
+        // Past the idle threshold and past the settle window: both guard rails
+        // are about time, and a test that did not move it would be asserting
+        // that they refuse rather than that the decision works.
+        for round in 2..=45 {
+            app.cluster.gossip(peer(round));
+            clock.advance(Duration::from_secs(1));
+        }
+        app.cluster.tick();
+
+        let view = app.sessions.views(app.deps.clock.now()).remove(0);
+        let placement = app.cluster.placement(&view.tenant, 1);
+        let shed = shed_pass(&app, &app.sessions);
+
+        assert_eq!(
+            shed, 1,
+            "an idle client of another node's tenant was kept: idle_for={:?}, {placement:?}",
+            view.since
+        );
+        assert!(close.fired(), "the session was never asked to leave");
+        assert_eq!(app.sessions.sheds(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_client_of_a_tenant_this_node_homes_is_kept() {
+        // Moving it achieves nothing, and every move costs a reconnect.
+        let app = App::build(deps()).await.unwrap();
+        let close = Shutdown::new();
+        // A node is in the membership because somebody gossiped about it, and
+        // a node does not gossip to itself, so without this the fleet has no
+        // members and no tenant has a home at all.
+        app.cluster.gossip(pgprox_cluster::digest::VersionedDigest {
+            digest: pgprox_core::cluster::ClusterDigest {
+                node: NodeId::new(1),
+                ..pgprox_core::cluster::ClusterDigest::default()
+            },
+            version: 1,
+        });
+
+        let tenant = (1..200)
+            .map(|n| pgprox_core::ids::TenantId::new(format!("tenant-{n}")))
+            .find(|tenant| app.cluster.placement(tenant, 16).on_home_node)
+            .expect("a fleet of one homes every tenant");
+
+        let _held = app.sessions.register(
+            pgprox_core::ids::ConnId::new(NodeId::new(1), 1),
+            tenant,
+            NodeId::new(1),
+            app.deps.clock.now(),
+            16,
+            close.clone(),
+        );
+
+        assert_eq!(shed_pass(&app, &app.sessions), 0);
+        assert!(!close.fired());
     }
 
     #[tokio::test]

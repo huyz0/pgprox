@@ -1007,12 +1007,19 @@ never touch", which is the same question M5's and M4's reviews asked.
   built; the gossip transport that would carry it now exists. Acceptance: a
   cluster-scoped client list returns every node's clients, and one that loses a
   peer is still `Partial` rather than silently short.
-- [ ] `M6.44` Nothing sheds. M3.7 built the shed decision and its guard rails,
+- [x] `M6.44` Nothing sheds. M3.7 built the shed decision and its guard rails,
   M6.19 wired the counter that reports sheds, and no code path ever decides to
   shed a client, so tenant rebalancing does not happen in a running fleet.
   Acceptance: a tenant over its share on a non-home node has an idle session
   shed toward its home, and every guard rail M3.7 named still refuses.
 
+- [ ] `M6.46` The shed rate limit has no window. `shed_pass` passes
+  `recent_sheds: 0`, so the per-tenant-per-minute guard rail M3.7 built can
+  never refuse: the rule exists and is fed a number that always admits. The
+  other six guard rails are fed real values. Acceptance: a tenant shed more
+  than the configured number of times in a minute is refused by
+  `ShedRefusal::RateLimited`, and the window is per tenant rather than per
+  node.
 - [ ] `M6.25` Close M6.
 
 ## M7 and later

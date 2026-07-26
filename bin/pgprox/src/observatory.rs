@@ -535,6 +535,8 @@ mod tests {
             TenantId::new("acme"),
             NodeId::new(1),
             now,
+            16,
+            crate::run::Shutdown::new(),
         );
 
         let view = fixture.observatory.tenant(&TenantId::new("acme")).unwrap();
@@ -558,6 +560,8 @@ mod tests {
             TenantId::new("acme"),
             NodeId::new(1),
             now,
+            16,
+            crate::run::Shutdown::new(),
         );
 
         assert_eq!(fixture.observatory.stats(Scope::Local).client_conns, 1);
@@ -580,6 +584,8 @@ mod tests {
             TenantId::new("acme"),
             NodeId::new(1),
             now,
+            16,
+            crate::run::Shutdown::new(),
         );
 
         assert_eq!(
