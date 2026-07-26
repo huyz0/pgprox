@@ -1479,7 +1479,7 @@ mod tests {
         }
 
         let conn = context.sessions.views(context.clock.now())[0].conn;
-        assert!(context.sessions.shed(conn));
+        assert!(context.sessions.shed(conn, context.clock.now()));
 
         let (tag, body) = expect(&mut client).await;
         assert_eq!(tag, Tag::ERROR_RESPONSE);

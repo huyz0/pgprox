@@ -13,7 +13,7 @@
 //! [`Registration`] deregisters on drop: a session that panicked mid-query
 //! would otherwise be listed forever.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Instant;
@@ -55,7 +55,20 @@ pub struct Sessions {
     transactions: AtomicU64,
     pins: AtomicU64,
     sheds: AtomicU64,
+    /// When each tenant was last shed, most recent last.
+    ///
+    /// The window the per-tenant rate limit is measured over. Kept here
+    /// because this is where a shed happens, and a limit counted anywhere else
+    /// would be counting something other than what it limits.
+    recent: Mutex<HashMap<TenantId, VecDeque<Instant>>>,
 }
+
+/// How far back the shed rate limit looks.
+///
+/// A minute, matching `ShedConfig::max_per_tenant_per_minute`. The two are one
+/// rule in two crates, and a window that disagreed with the limit would
+/// enforce a number nobody configured.
+pub const SHED_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// A client's place in the registry, removed when dropped.
 ///
@@ -158,13 +171,43 @@ impl Sessions {
     /// Returns whether there was such a client. The session closes itself at
     /// its next boundary: this is a request, not a socket being cut, which is
     /// what makes a shed invisible to an application that reconnects.
-    pub fn shed(&self, conn: ConnId) -> bool {
+    pub fn shed(&self, conn: ConnId, now: Instant) -> bool {
         let Some(entry) = self.lock().get(&conn).cloned() else {
             return false;
         };
         entry.close.fire();
         self.sheds.fetch_add(1, Ordering::Relaxed);
+        self.recent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(entry.tenant)
+            .or_default()
+            .push_back(now);
         true
+    }
+
+    /// How many times this tenant has been shed in the last minute.
+    ///
+    /// What feeds the rate limit M3.7 named. Without it the limit is handed a
+    /// zero and can never refuse, which turns "move this client once" into
+    /// "move this client every time the tick runs".
+    #[must_use]
+    pub fn recent_sheds(&self, tenant: &TenantId, now: Instant) -> u32 {
+        let mut recent = self.recent.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(times) = recent.get_mut(tenant) else {
+            return 0;
+        };
+
+        // Trimmed on read rather than on a timer: the map is touched only when
+        // a shed happens or a decision is taken, and a timer would be a second
+        // thing to get wrong.
+        while times
+            .front()
+            .is_some_and(|at| now.saturating_duration_since(*at) > SHED_WINDOW)
+        {
+            times.pop_front();
+        }
+        u32::try_from(times.len()).unwrap_or(u32::MAX)
     }
 
     /// Counts one completed transaction.
@@ -425,7 +468,7 @@ mod tests {
             close.clone(),
         );
 
-        assert!(sessions.shed(conn(1)));
+        assert!(sessions.shed(conn(1), Instant::now()));
         assert!(close.fired(), "the session was never asked to leave");
         assert_eq!(sessions.sheds(), 1);
     }
@@ -436,8 +479,38 @@ mod tests {
         // and counting it would report a shed that never happened.
         let sessions = Sessions::new();
 
-        assert!(!sessions.shed(conn(9)));
+        assert!(!sessions.shed(conn(9), Instant::now()));
         assert_eq!(sessions.sheds(), 0);
+    }
+
+    #[test]
+    fn recent_sheds_are_counted_per_tenant_and_expire() {
+        // The rate limit's only input. A tenant shed once must not be shed
+        // again immediately, and a tenant shed a minute ago is not recent.
+        let sessions = Sessions::new();
+        let start = Instant::now();
+        let acme = TenantId::new("acme");
+        let _held = sessions.register(
+            conn(1),
+            acme.clone(),
+            NodeId::new(1),
+            start,
+            16,
+            crate::run::Shutdown::new(),
+        );
+
+        assert_eq!(sessions.recent_sheds(&acme, start), 0);
+        sessions.shed(conn(1), start);
+        assert_eq!(sessions.recent_sheds(&acme, start), 1);
+
+        // Another tenant's sheds are not this one's.
+        assert_eq!(sessions.recent_sheds(&TenantId::new("globex"), start), 0);
+
+        // And the window moves.
+        assert_eq!(
+            sessions.recent_sheds(&acme, start + SHED_WINDOW + Duration::from_secs(1)),
+            0
+        );
     }
 
     #[test]

@@ -1013,7 +1013,7 @@ never touch", which is the same question M5's and M4's reviews asked.
   Acceptance: a tenant over its share on a non-home node has an idle session
   shed toward its home, and every guard rail M3.7 named still refuses.
 
-- [ ] `M6.46` The shed rate limit has no window. `shed_pass` passes
+- [x] `M6.46` The shed rate limit has no window. `shed_pass` passes
   `recent_sheds: 0`, so the per-tenant-per-minute guard rail M3.7 built can
   never refuse: the rule exists and is fed a number that always admits. The
   other six guard rails are fed real values. Acceptance: a tenant shed more

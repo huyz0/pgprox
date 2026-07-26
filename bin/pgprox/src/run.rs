@@ -386,15 +386,14 @@ fn shed_pass(app: &App, sessions: &Arc<Sessions>) -> usize {
                 // is the only one worth moving and the only one it is safe to.
                 in_transaction: view.state != ClientState::Idle,
                 since_membership_change: placement.since_membership_change,
-                // Per tenant per minute, which needs a window this pass does
-                // not keep. Zero admits the decision and the rate limit is
-                // enforced by `M6.46`; a wrong answer here is a client that
-                // reconnects, not a client that loses work.
-                recent_sheds: 0,
+                // The window the registry keeps, which is what turns "move
+                // this client once" into something other than "move this
+                // client every time the tick runs".
+                recent_sheds: sessions.recent_sheds(&view.tenant, now),
             },
         );
 
-        if matches!(decision, ShedDecision::Shed) && sessions.shed(view.conn) {
+        if matches!(decision, ShedDecision::Shed) && sessions.shed(view.conn, now) {
             shed_count += 1;
         }
     }
@@ -952,6 +951,15 @@ mod tests {
         );
         assert!(close.fired(), "the session was never asked to leave");
         assert_eq!(app.sessions.sheds(), 1);
+
+        // And the next tick sees that it happened, which is what the rate
+        // limit weighs. Before M6.46 this was always zero and the limit could
+        // never refuse.
+        assert_eq!(
+            app.sessions
+                .recent_sheds(&view.tenant, app.deps.clock.now()),
+            1
+        );
     }
 
     #[tokio::test]
