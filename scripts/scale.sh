@@ -247,14 +247,40 @@ run_scale() {
     return 1
   fi
 
+  # And the proxy again, at the baseline's connection count.
+  #
+  # This is the run the added-latency number comes from, and the earlier one is
+  # not. A thousand clients offer several times the work sixty do, so the
+  # database saturates and a queue forms in front of it; subtracting a
+  # sixty-connection baseline from that reported the database's queue as the
+  # proxy's overhead, which is how the first recorded run came to say the proxy
+  # added 1.18 seconds when the hop costs a third of a millisecond.
+  #
+  # The full-count run above still matters. It is where memory, the upstream
+  # cap and the error count are measured, which are the things that only appear
+  # under many connections.
+  local matched_report="$OUT_DIR/proxy-matched.json"
+  echo "  running $direct_connections connections through pgprox-1, to match the baseline"
+  if ! load_run "$matched_report" "$PROXY_ADDR" acme_app "$TOKEN" nowatch "$direct_connections"; then
+    fail "the matched run through the proxy failed"
+    tail -5 "$matched_report.log" | sed 's/^/  /'
+    return 1
+  fi
+
   local peak_rss peak_upstream
   read -r peak_rss peak_upstream < "$proxy_report.watch"
 
   local proxy_p99 direct_p99 proxy_p50 direct_p50 transactions errors
-  proxy_p99="$(from_report "$proxy_report" p99_us)"
+  # The hop is measured at matched load; the full-count run's percentiles are
+  # about a saturated database and are reported separately below.
+  proxy_p99="$(from_report "$matched_report" p99_us)"
   direct_p99="$(from_report "$direct_report" p99_us)"
-  proxy_p50="$(from_report "$proxy_report" p50_us)"
+  proxy_p50="$(from_report "$matched_report" p50_us)"
   direct_p50="$(from_report "$direct_report" p50_us)"
+  local loaded_p50 loaded_p99 matched_errors
+  loaded_p50="$(from_report "$proxy_report" p50_us)"
+  loaded_p99="$(from_report "$proxy_report" p99_us)"
+  matched_errors="$(from_report "$matched_report" errors)"
   transactions="$(from_report "$proxy_report" transactions)"
   errors="$(from_report "$proxy_report" errors)"
   local direct_errors
@@ -272,8 +298,12 @@ run_scale() {
   echo "  rss idle         $(( idle_rss / 1024 )) MB"
   echo "  rss under load   $(( peak_rss / 1024 )) MB"
   echo "  rss per conn     $per_conn_bytes bytes"
-  echo "  p50 proxy        ${proxy_p50}us   direct ${direct_p50}us   added ${added_p50}us"
-  echo "  p99 proxy        ${proxy_p99}us   direct ${direct_p99}us   added ${added_p99}us"
+  echo "  at matched load ($direct_connections connections both sides)"
+  echo "    p50 proxy      ${proxy_p50}us   direct ${direct_p50}us   added ${added_p50}us"
+  echo "    p99 proxy      ${proxy_p99}us   direct ${direct_p99}us   added ${added_p99}us"
+  echo "  at $CONNECTIONS connections (the database is the queue here, not the proxy)"
+  echo "    p50            ${loaded_p50}us"
+  echo "    p99            ${loaded_p99}us"
   echo "  upstream conns   $peak_upstream of $UPSTREAM_CAP"
   echo "  baseline         $direct_connections connections, $direct_errors error(s)"
   echo
@@ -288,6 +318,12 @@ run_scale() {
     fail "the run had $errors error(s): a fast run that failed is not a fast run"
   else
     ok "no failed transactions"
+  fi
+
+  if (( matched_errors > 0 )); then
+    fail "the matched run had $matched_errors error(s)"
+  else
+    ok "the matched run is clean"
   fi
 
   if (( direct_errors > 0 )); then
@@ -328,6 +364,8 @@ run_scale() {
     "p50_direct_us=$direct_p50" \
     "p99_proxy_us=$proxy_p99" \
     "p99_direct_us=$direct_p99" \
+    "p50_loaded_us=$loaded_p50" \
+    "p99_loaded_us=$loaded_p99" \
     "upstream_peak=$peak_upstream" \
     "upstream_cap=$UPSTREAM_CAP" \
     "mode=$MODE" \
