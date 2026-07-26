@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 
 use pgprox_proto::backend::{self, AuthRequest, BackendMessage, TxStatus};
 use pgprox_proto::encode::PROTOCOL_3_0;
+use pgprox_proto::encode_frontend;
 use pgprox_proto::frame::Direction;
 use pgprox_proto::frame::{DEFAULT_MAX_FRAME, Decoded, Frame, Tag, decode};
 use pgprox_proto::relay::FrameRelay;
@@ -165,20 +166,18 @@ impl Drop for Postgres {
     }
 }
 
-/// Writes a startup packet: length prefix, version, then parameter pairs.
+/// Writes a startup packet, through the encoder the proxy itself uses.
+///
+/// This used to hand-roll the packet. Two copies of a length prefix is one
+/// copy too many, and the second one being in the test that proves the first
+/// works is worse than either.
 fn send_startup(sock: &mut TcpStream, user: &str, database: &str) -> std::io::Result<()> {
-    let mut body = PROTOCOL_3_0.to_be_bytes().to_vec();
-    for (name, value) in [("user", user), ("database", database)] {
-        body.extend_from_slice(name.as_bytes());
-        body.push(0);
-        body.extend_from_slice(value.as_bytes());
-        body.push(0);
-    }
-    body.push(0);
-
-    let len = u32::try_from(body.len() + 4).unwrap();
-    let mut packet = len.to_be_bytes().to_vec();
-    packet.extend_from_slice(&body);
+    let mut packet = Vec::new();
+    encode_frontend::startup_message(
+        &mut packet,
+        PROTOCOL_3_0,
+        &[("user", user), ("database", database)],
+    );
     sock.write_all(&packet)
 }
 
@@ -258,9 +257,10 @@ impl Conn {
 
     /// Sends a simple query.
     fn query(&mut self, sql: &str) -> std::io::Result<Vec<Tag>> {
-        let mut body = sql.as_bytes().to_vec();
-        body.push(0);
-        self.send(Tag::QUERY, &body)?;
+        let mut out = Vec::new();
+        encode_frontend::query(&mut out, sql);
+        record_tag("frontend", Tag::QUERY);
+        self.sock.write_all(&out)?;
         self.read_until_ready()
     }
 

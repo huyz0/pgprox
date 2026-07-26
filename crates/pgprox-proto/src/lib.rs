@@ -16,6 +16,7 @@
 
 pub mod backend;
 pub mod encode;
+pub mod encode_frontend;
 pub mod frame;
 pub mod frontend;
 pub mod read;

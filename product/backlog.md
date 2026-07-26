@@ -815,47 +815,59 @@ rule already allows `pgprox-proto`.
 - [x] `M6.9` The I/O shell, generic over `AsyncRead + AsyncWrite + Unpin`.
   Acceptance: the whole session runs over `tokio::io::duplex` with no port
   opened, and cancelling the future mid-frame leaves no connection leaked.
-- [ ] `M6.10` The real `Connector`: open an upstream connection, authenticate to
-  Postgres, harvest its `ParameterStatus` set. Acceptance: the trait's fake and
-  the real implementation are exercised by the same test body, so a behaviour
-  the fake invents is caught.
-- [ ] `M6.11` The `ParameterStatus` probe cache, keyed per `(host, db)`.
+- [x] `M6.10` The frontend messages the proxy has to write. Found starting the
+  upstream handshake: `pgprox-proto` encodes what a server says and nothing of
+  what a client says, so speaking to Postgres meant hand-rolling a startup
+  packet, which the conformance test already does in a third place. Acceptance:
+  each message round-trips through this crate's own frontend decoder, and the
+  conformance client uses these rather than its own copies.
+- [ ] `M6.11` The upstream handshake, as a state machine. Split from the
+  `Connector` below while writing it: the sequence is testable with no socket
+  and the socket part is not, and one commit holding both would leave the
+  interesting half only reachable through the dull one. Acceptance: every
+  authentication method Postgres can ask for is answered or refused by name,
+  and an unsupported one says which it was.
+- [ ] `M6.12` The real `Connector`: dial, drive the handshake, harvest the
+  `ParameterStatus` set. Acceptance: the trait's fake and the real
+  implementation are exercised by the same test body, so a behaviour the fake
+  invents is caught.
+- [ ] `M6.13` The `ParameterStatus` probe cache, keyed per `(host, db)`.
   Acceptance: a second pool for the same host and database opens no second
   probe connection.
-- [ ] `M6.12` The real `ReplicaProbe` over `pg_last_wal_replay_lsn()` and
+- [ ] `M6.14` The real `ReplicaProbe` over `pg_last_wal_replay_lsn()` and
   `pg_is_in_recovery()`. Acceptance: a replica that stops replaying leaves the
   eligible set within one poll interval, and a probe failure is a stale reading
   with an age rather than a silent zero.
-- [ ] `M6.13` Cancellation across nodes: decode the node from the key, forward
+- [ ] `M6.15` Cancellation across nodes: decode the node from the key, forward
   to the owner, issue the real `CancelRequest` upstream. Acceptance: a cancel
   arriving at a node that does not own the connection reaches the one that
   does, and an unknown key is refused rather than ignored.
-- [ ] `M6.14` `M3.12`: forward a quota request to the leader over the gossip
+- [ ] `M6.16` `M3.12`: forward a quota request to the leader over the gossip
   transport. Carried from M3, where it was deferred because it needed a
   transport that did not exist. Acceptance: a node that is not the leader
   obtains a lease, and a request racing a leader change either fails or is
   granted by exactly one leader, never both.
-- [ ] `M6.15` The live `Observatory`, reading the real components. Acceptance:
+- [ ] `M6.17` The live `Observatory`, reading the real components. Acceptance:
   the surfaces-agree suite from `M4.18` passes against the live implementation
   unchanged, since it was written against the contract rather than the fake.
-- [ ] `M6.16` `bin/pgprox`: the composition root, with the wiring in a lib
+- [ ] `M6.18` `bin/pgprox`: the composition root, with the wiring in a lib
   target and `main.rs` doing nothing a test cannot call. Acceptance: the wiring
   is called by a test with fakes, and `main.rs` is the only excluded file.
-- [ ] `M6.17` The accept loop and listener, with TLS and the client connection
+- [ ] `M6.19` The accept loop and listener, with TLS and the client connection
   ceiling. Acceptance: a node at its ceiling refuses with a message naming the
   limit, and refusal never takes down connections already established.
-- [ ] `M6.18` The drain sequence, end to end. Acceptance: `/readyz` fails
+- [ ] `M6.20` The drain sequence, end to end. Acceptance: `/readyz` fails
   first, gossip announces before any client is closed, in-flight transactions
   finish, and the grace timer force-closes the remainder.
-- [ ] `M6.19` `deploy/` and `scripts/e2e.sh`: three proxy nodes, a primary, two
+- [ ] `M6.21` `deploy/` and `scripts/e2e.sh`: three proxy nodes, a primary, two
   replicas, the mock sidecar. Acceptance: the script brings the stack up and
   reports which component failed when it does not, rather than a compose exit
   code.
-- [ ] `M6.20` The e2e assertions the milestone is judged on: pgbench clean,
+- [ ] `M6.22` The e2e assertions the milestone is judged on: pgbench clean,
   drain with zero failed transactions, no replica read behind the session
   watermark. Acceptance: each assertion fails when its property is broken on
   purpose, verified once per assertion.
-- [ ] `M6.21` Close M6.
+- [ ] `M6.23` Close M6.
 
 ## M7 and later
 
