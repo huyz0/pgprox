@@ -35,8 +35,11 @@ ADMIN_PORT=9090
 # Runs psql in the client container against a proxy node.
 in_psql() {
   local node="$1" sql="$2"
+  # PGSSLMODE=require rather than the default `prefer`: the nodes are started
+  # with --require-tls, and a client that quietly fell back to cleartext would
+  # be a client whose token crossed the network in the clear.
   "${COMPOSE[@]}" exec -T \
-    -e PGPASSWORD="$TOKEN" client \
+    -e PGPASSWORD="$TOKEN" -e PGSSLMODE=require client \
     psql --host "$node" --port "$PROXY_PORT" --username acme_app --dbname tenant_acme \
       --no-align --tuples-only --quiet -c "$sql" 2>&1
 }
@@ -121,7 +124,7 @@ assert_every_node_serves() {
 assert_pgbench_is_clean() {
   local out
   echo "  running pgbench through pgprox-1"
-  out="$("${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" client \
+  out="$("${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" -e PGSSLMODE=require client \
     pgbench --host pgprox-1 --port "$PROXY_PORT" --username acme_app \
       --initialize --scale 1 --quiet tenant_acme 2>&1)" || {
     fail "pgbench could not initialise: $out"
@@ -129,7 +132,7 @@ assert_pgbench_is_clean() {
     return 1
   }
 
-  out="$("${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" client \
+  out="$("${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" -e PGSSLMODE=require client \
     pgbench --host pgprox-1 --port "$PROXY_PORT" --username acme_app \
       --client 8 --jobs 2 --time 15 --no-vacuum tenant_acme 2>&1)" || {
     fail "pgbench failed: $out"
@@ -154,7 +157,7 @@ assert_drain_loses_no_transactions() {
   local out drain_status ready
 
   echo "  running pgbench against pgprox-2 while draining it"
-  "${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" client \
+  "${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" -e PGSSLMODE=require client \
     pgbench --host pgprox-2 --port "$PROXY_PORT" --username acme_app \
       --client 4 --jobs 2 --time 20 --no-vacuum tenant_acme >/tmp/pgprox-drain.out 2>&1 &
   local bench=$!
@@ -241,7 +244,7 @@ prove_pgbench_check_catches_failures() {
   sleep 3
 
   local out
-  out="$("${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" client \
+  out="$("${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" -e PGSSLMODE=require client \
     pgbench --host pgprox-3 --port "$PROXY_PORT" --username acme_app \
       --client 4 --jobs 2 --time 5 --no-vacuum tenant_acme 2>&1)" || true
 
@@ -260,7 +263,7 @@ prove_pgbench_check_catches_failures() {
 # holding dies with it.
 prove_drain_check_catches_losses() {
   local out
-  "${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" client \
+  "${COMPOSE[@]}" exec -T -e PGPASSWORD="$TOKEN" -e PGSSLMODE=require client \
     pgbench --host pgprox-3 --port "$PROXY_PORT" --username acme_app \
       --client 4 --jobs 2 --time 15 --no-vacuum tenant_acme >/tmp/pgprox-killed.out 2>&1 &
   local bench=$!

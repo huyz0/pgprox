@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use pgprox_session::cancel::Registry;
 use pgprox_session::probe::ParameterCache;
-use pgprox_session::state::{HandshakeConfig, TlsPosture};
+use pgprox_session::state::HandshakeConfig;
 use tokio::sync::watch;
 
 use crate::entropy::SystemEntropy;
@@ -164,15 +164,18 @@ impl Listeners {
 #[must_use]
 pub fn context(app: &App, shutdown: &Shutdown) -> Context {
     Context {
+        // A node with certificates terminates TLS; one without answers `N` and
+        // the handshake config decides whether that is allowed.
+        tls: app
+            .listener_tls
+            .clone()
+            .map(tokio_rustls::TlsAcceptor::from),
         draining: Shutdown::new(),
         closing: Shutdown::new(),
         node: app.deps.node,
         clock: Arc::clone(&app.deps.clock),
         handshake: HandshakeConfig {
-            // Client-side TLS termination is not built, so the listener says so
-            // rather than requiring something it cannot do. `M6.23` gives the
-            // stack a certificate and this becomes configuration.
-            tls: TlsPosture::Optional,
+            tls: app.tls_posture(),
             static_users: Vec::new(),
         },
         resolver: Arc::clone(&app.deps.resolver),
@@ -446,6 +449,8 @@ mod tests {
 
     fn deps() -> Deps {
         Deps {
+            listener_tls: None,
+            require_tls: false,
             node: NodeId::new(1),
             node_name: "pgprox-1".to_owned(),
             clock: Arc::new(SystemClock),

@@ -32,7 +32,7 @@ FROM debian:bookworm-slim
 # has no /dev/tcp, so without it a health check would have to be a second
 # binary.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl \
+ && apt-get install -y --no-install-recommends ca-certificates curl openssl \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /out/pgprox /usr/local/bin/pgprox

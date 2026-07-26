@@ -54,6 +54,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time"
 
 [dev-dependencies]
 pgprox-core = { path = "../../crates/pgprox-core", features = ["test-fakes"] }
+rcgen = "0.14"
 tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
 

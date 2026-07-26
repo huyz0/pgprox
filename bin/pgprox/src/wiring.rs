@@ -76,6 +76,14 @@ pub struct Deps {
     pub clock: Arc<dyn Clock>,
     /// How upstream TLS is verified.
     pub tls: Arc<tokio_rustls::rustls::ClientConfig>,
+    /// What this node presents to clients, if it has a certificate.
+    pub listener_tls: Option<Arc<tokio_rustls::rustls::ServerConfig>>,
+    /// Whether a client may authenticate without TLS.
+    ///
+    /// Separate from having a certificate, because the two failures are
+    /// different: a node with no certificate cannot offer TLS at all, and a
+    /// node that requires it must refuse rather than serve in the clear.
+    pub require_tls: bool,
     /// Where configuration comes from.
     pub config: Arc<dyn ConfigSource>,
     /// Who resolves a token into a backend.
@@ -134,6 +142,8 @@ pub struct App {
     pub drain: SharedDrain,
     /// What the probes answer.
     pub health: SharedHealth,
+    /// What this node presents to clients, carried from [`Deps`].
+    pub listener_tls: Option<Arc<tokio_rustls::rustls::ServerConfig>>,
     /// Who this node is serving.
     pub sessions: Arc<Sessions>,
     /// What the admin surfaces read.
@@ -160,6 +170,15 @@ impl App {
     pub async fn build(deps: Deps) -> Result<Self, StartupError> {
         let config = Arc::new(deps.config.load().await?);
         config.validate()?;
+
+        // Refused here rather than at the first client. A node told to require
+        // TLS with nothing to offer would refuse every client for a reason
+        // nobody would find in a connection error.
+        if deps.require_tls && deps.listener_tls.is_none() {
+            return Err(StartupError::Arguments {
+                detail: "--require-tls needs --tls-cert and --tls-key".to_owned(),
+            });
+        }
 
         let cluster = GossipCoordinator::new(
             deps.node,
@@ -220,6 +239,7 @@ impl App {
         lock(&health).started();
 
         Ok(Self {
+            listener_tls: deps.listener_tls.clone(),
             connector,
             pool,
             replicas: ReplicaWatch::new(0, ReplicaConfig::default(), Arc::clone(&deps.clock)),
@@ -231,6 +251,23 @@ impl App {
             cluster,
             deps,
         })
+    }
+
+    /// What the handshake tells a client about TLS.
+    ///
+    /// `Required` refuses a client that authenticates without it, `Optional`
+    /// offers it, and `Disabled` is a node with no certificate to offer. A
+    /// node told to require TLS without one cannot start, so that pair is
+    /// rejected before this is reached.
+    #[must_use]
+    pub fn tls_posture(&self) -> pgprox_session::state::TlsPosture {
+        use pgprox_session::state::TlsPosture;
+
+        match (self.listener_tls.is_some(), self.deps.require_tls) {
+            (true, true) => TlsPosture::Required,
+            (true, false) => TlsPosture::Optional,
+            (false, _) => TlsPosture::Disabled,
+        }
     }
 
     /// Whether this node is draining, from either the document or the API.
@@ -267,6 +304,8 @@ mod tests {
 
     fn deps(config: Config) -> Deps {
         Deps {
+            listener_tls: None,
+            require_tls: false,
             node: NodeId::new(1),
             node_name: "pgprox-1".to_owned(),
             clock: Arc::new(FakeClock::new()),

@@ -63,6 +63,16 @@ pub struct Options {
     pub admin: SocketAddr,
     /// Where peers gossip.
     pub gossip: SocketAddr,
+    /// The certificate this node presents to clients, if it has one.
+    ///
+    /// Without it a client asking for TLS is answered `N` and decides for
+    /// itself whether to continue in the clear. With `require_tls` it is
+    /// refused instead, which is the posture a deployment carrying JWTs wants.
+    pub tls_cert: Option<PathBuf>,
+    /// The key for that certificate.
+    pub tls_key: Option<PathBuf>,
+    /// Whether a client may authenticate without TLS.
+    pub require_tls: bool,
     /// The peers this node gossips to, by node number.
     ///
     /// Given rather than discovered: a node that discovered its own fleet
@@ -86,6 +96,13 @@ impl Default for Options {
             listen: SocketAddr::from(([0, 0, 0, 0], 6432)),
             admin: SocketAddr::from(([0, 0, 0, 0], 9090)),
             gossip: SocketAddr::from(([0, 0, 0, 0], 6433)),
+            tls_cert: None,
+            tls_key: None,
+            // Defaults to off, and the e2e stack and any real deployment turn
+            // it on. A default of `true` would mean a node with no certificate
+            // refusing every client, which is a worse first experience than a
+            // node that says what it is doing.
+            require_tls: false,
             peers: std::collections::BTreeMap::new(),
         }
     }
@@ -129,6 +146,9 @@ impl Options {
                 "--listen" => options.listen = address(&value()?, "--listen")?,
                 "--admin" => options.admin = address(&value()?, "--admin")?,
                 "--gossip" => options.gossip = address(&value()?, "--gossip")?,
+                "--tls-cert" => options.tls_cert = Some(PathBuf::from(value()?)),
+                "--tls-key" => options.tls_key = Some(PathBuf::from(value()?)),
+                "--require-tls" => options.require_tls = true,
                 // Repeatable, one flag per peer, and each carries the peer's
                 // node number: `--peer 2=10.0.0.2:6433`. The number is what
                 // lets a quota request reach the leader specifically.
@@ -162,6 +182,37 @@ impl Options {
             admin: self.admin,
             gossip: self.gossip,
         }
+    }
+}
+
+impl Options {
+    /// The listener's TLS configuration, if certificates were given.
+    ///
+    /// # Errors
+    ///
+    /// Fails when only one of the pair is given, or when either cannot be read
+    /// or does not match the other. All three are deployment mistakes that
+    /// must not start a node serving in the clear when it was told not to.
+    pub fn tls(&self) -> Result<Option<Arc<tokio_rustls::rustls::ServerConfig>>, StartupError> {
+        match (&self.tls_cert, &self.tls_key) {
+            (None, None) => Ok(None),
+            (Some(cert), Some(key)) => {
+                let certs = pgprox_tls::load_certs(cert).map_err(|err| tls_error(&err))?;
+                let key = pgprox_tls::load_private_key(key).map_err(|err| tls_error(&err))?;
+                Ok(Some(
+                    pgprox_tls::server_config(certs, key).map_err(|err| tls_error(&err))?,
+                ))
+            }
+            _ => Err(StartupError::Arguments {
+                detail: "--tls-cert and --tls-key go together".to_owned(),
+            }),
+        }
+    }
+}
+
+fn tls_error(err: &pgprox_tls::TlsError) -> StartupError {
+    StartupError::Arguments {
+        detail: format!("TLS: {err}"),
     }
 }
 
@@ -317,7 +368,10 @@ pub async fn start_with(
     config: Arc<dyn pgprox_core::config::ConfigSource>,
     resolver: Arc<dyn pgprox_core::auth::CredentialResolver>,
 ) -> Result<App, StartupError> {
+    let listener_tls = options.tls()?;
     App::build(Deps {
+        listener_tls,
+        require_tls: options.require_tls,
         node: options.node,
         node_name: options.node_name,
         clock: Arc::new(SystemClock),

@@ -132,6 +132,12 @@ pub struct Context {
     ///
     /// Whatever is still connected is closed, mid-transaction or not.
     pub closing: crate::run::Shutdown,
+    /// How a client's connection is upgraded, when the node has certificates.
+    ///
+    /// `None` is a node with none, which answers `N` to an `SSLRequest` and
+    /// serves in the clear. The handshake config is what decides whether that
+    /// is allowed; this is only the means.
+    pub tls: Option<tokio_rustls::TlsAcceptor>,
 }
 
 impl std::fmt::Debug for Context {
@@ -155,30 +161,82 @@ where
     let mut wire = Wire::new(stream);
     let mut handshake = Handshake::new(context.handshake.clone());
 
-    let grant = match negotiate(&mut wire, &mut handshake).await? {
-        // TLS is not terminated here yet, so a client that asked for it was
-        // answered N and will have sent its startup packet in the clear or
-        // gone away. Reaching Upgrade means the listener was configured with
-        // certificates it cannot yet use, which is a refusal rather than a
-        // silent downgrade.
+    match negotiate(&mut wire, &mut handshake).await? {
         Handoff::Upgrade => {
-            return Err(wire
-                .refuse(ClientError::ProtocolViolation("TLS is not available"))
-                .await);
+            let Some(acceptor) = context.tls.clone() else {
+                // The state machine only answers `S` when it has been told TLS
+                // is available, so reaching this means the listener said yes
+                // and the node has no certificate. A refusal rather than a
+                // silent downgrade: the client asked for TLS.
+                return Err(wire
+                    .refuse(ClientError::ProtocolViolation("TLS is not available"))
+                    .await);
+            };
+
+            // The leftover bytes travel with the stream, and there must not be
+            // any: a client that sent its ClientHello before reading our `S`
+            // would have them buffered here, and handing rustls a stream
+            // missing its first bytes fails in a way that reads as a cipher
+            // mismatch. See the hazard note in this crate's AGENTS.md.
+            let (io, pending) = wire.into_parts();
+            if !pending.is_empty() {
+                return Err(ShellError::Disconnected);
+            }
+
+            let upgraded = acceptor
+                .accept(io)
+                .await
+                .map_err(|_| ShellError::Disconnected)?;
+            let mut wire = Wire::new(upgraded);
+
+            // The same handshake, which is what makes "TLS was accepted"
+            // survive the change of stream type.
+            match negotiate(&mut wire, &mut handshake).await? {
+                Handoff::Cancel(conn) => cancel(conn, context).await,
+                Handoff::Upgrade => Err(wire
+                    .refuse(ClientError::ProtocolViolation("TLS was already negotiated"))
+                    .await),
+                Handoff::Ask(credential) => {
+                    serve_client(&mut wire, &mut handshake, credential, context, admitted).await
+                }
+            }
         }
-        Handoff::Cancel(conn) => return cancel(conn, context).await,
-        Handoff::Ask(Credential::Scram) => {
+        Handoff::Cancel(conn) => cancel(conn, context).await,
+        Handoff::Ask(credential) => {
+            serve_client(&mut wire, &mut handshake, credential, context, admitted).await
+        }
+    }
+}
+
+/// Everything after the handshake has settled, whatever the stream turned out
+/// to be.
+///
+/// Split from [`session`] so the plaintext and TLS paths are the same code
+/// rather than the same code twice. Generic, so both instantiations are
+/// compiled and neither can rot.
+async fn serve_client<S>(
+    wire: &mut Wire<S>,
+    handshake: &mut Handshake,
+    credential: Credential,
+    context: &Context,
+    admitted: Admitted,
+) -> Result<(), ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let grant = match credential {
+        Credential::Scram => {
             return Err(wire
                 .refuse(ClientError::AuthRefused(
                     pgprox_core::error::AuthRejection::NotPermitted,
                 ))
                 .await);
         }
-        Handoff::Ask(Credential::Jwt) => {
+        Credential::Jwt => {
             let startup = handshake.startup().ok_or(ShellError::Disconnected)?.clone();
             let mut auth = TokenAuth::new(&startup, std::net::IpAddr::from([0, 0, 0, 0]));
             authenticate_token(
-                &mut wire,
+                wire,
                 &mut auth,
                 context.resolver.as_ref(),
                 std::time::SystemTime::now(),
@@ -208,7 +266,7 @@ where
             .refuse(ClientError::Internal("no entropy for a cancel key"))
             .await);
     };
-    accept(&mut wire, conn, &parameters).await?;
+    accept(wire, conn, &parameters).await?;
 
     let _registered = context.sessions.register(
         conn,
@@ -216,7 +274,7 @@ where
         context.node,
         context.clock.now(),
     );
-    let outcome = relay(&mut wire, context, &grant, conn).await;
+    let outcome = relay(wire, context, &grant, conn).await;
     drop(admitted);
     outcome
 }
@@ -914,6 +972,7 @@ mod tests {
             sessions: Sessions::new(),
             cancels: Arc::new(Registry::new(NodeId::new(1), Box::new(Fixed))),
             acquire_timeout: Duration::from_secs(5),
+            tls: None,
             draining: crate::run::Shutdown::new(),
             closing: crate::run::Shutdown::new(),
             peers: std::collections::BTreeMap::new(),
@@ -1430,6 +1489,106 @@ mod tests {
 
         drop(client);
         let _ = served.await.unwrap();
+    }
+
+    /// A self-signed certificate and the client configuration that trusts it.
+    fn certificate() -> (
+        Arc<tokio_rustls::rustls::ServerConfig>,
+        Arc<tokio_rustls::rustls::ClientConfig>,
+    ) {
+        use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+        let issued = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+        let cert = CertificateDer::from(issued.cert.der().to_vec());
+        let key = PrivateKeyDer::try_from(issued.signing_key.serialize_der()).unwrap();
+
+        let server = pgprox_tls::server_config(vec![cert.clone()], key).unwrap();
+
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        roots.add(cert).unwrap();
+        (server, pgprox_tls::client_config(roots).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_client_that_asks_for_tls_gets_it() {
+        // Until this, every JWT crossed the network in cleartext: the listener
+        // answered `N` and the session refused a client that insisted.
+        use tokio_rustls::rustls::pki_types::ServerName;
+
+        let addr = fake_postgres().await;
+        let (server_tls, client_tls) = certificate();
+        let mut context = context_for(addr);
+        context.tls = Some(tokio_rustls::TlsAcceptor::from(server_tls));
+        context.handshake.tls = TlsPosture::Required;
+        let context = Arc::new(context);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = listener.local_addr().unwrap();
+        let gate = Arc::new(Gate::new(10));
+        tokio::spawn(accept_loop(listener, Arc::clone(&context), gate, 10));
+
+        let mut socket = tokio::net::TcpStream::connect(proxy).await.unwrap();
+        let mut request = Vec::new();
+        pgprox_proto::encode_frontend::ssl_request(&mut request);
+        socket.write_all(&request).await.unwrap();
+
+        let mut answer = [0_u8; 1];
+        socket.read_exact(&mut answer).await.unwrap();
+        assert_eq!(answer[0], b'S', "the listener refused to upgrade");
+
+        let connector = tokio_rustls::TlsConnector::from(client_tls);
+        let mut tls = connector
+            .connect(ServerName::try_from("localhost").unwrap(), socket)
+            .await
+            .expect("the TLS handshake failed");
+
+        // And the session continues on the encrypted stream: same startup,
+        // same token, same answer.
+        tls.write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        assert_eq!(expect(&mut tls).await.0, Tag::AUTHENTICATION);
+        assert_eq!(expect(&mut tls).await.0, Tag::AUTHENTICATION);
+        for _ in 0..3 {
+            expect(&mut tls).await;
+        }
+
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
+        tls.write_all(&query).await.unwrap();
+        assert_eq!(expect(&mut tls).await.0, Tag::COMMAND_COMPLETE);
+    }
+
+    #[tokio::test]
+    async fn a_client_that_skips_tls_is_refused_when_it_is_required() {
+        // The posture that matters for a deployment carrying JWTs: a token
+        // must not be readable on the wire because a client chose not to ask.
+        let addr = fake_postgres().await;
+        let (server_tls, _) = certificate();
+        let mut context = context_for(addr);
+        context.tls = Some(tokio_rustls::TlsAcceptor::from(server_tls));
+        context.handshake.tls = TlsPosture::Required;
+        let context = Arc::new(context);
+
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+
+        let (tag, body) = expect(&mut client).await;
+        assert_eq!(tag, Tag::ERROR_RESPONSE);
+        assert!(
+            String::from_utf8_lossy(&body).contains("28000"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+        assert!(served.await.unwrap().is_err());
     }
 
     #[tokio::test]

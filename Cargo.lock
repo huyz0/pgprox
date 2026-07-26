@@ -880,6 +880,7 @@ dependencies = [
  "pgprox-route",
  "pgprox-session",
  "pgprox-tls",
+ "rcgen",
  "serde",
  "serde_json",
  "tempfile",

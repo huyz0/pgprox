@@ -990,7 +990,7 @@ never touch", which is the same question M5's and M4's reviews asked.
   every dashboard M4 designed reads nothing. Acceptance: `/metrics` serves the
   registry's series, the numbers move when the thing they count happens, and
   the per-tenant allowlist from M4.9 is what decides which get a tenant label.
-- [ ] `M6.41` Terminate client TLS. `run::context` hard-codes
+- [x] `M6.41` Terminate client TLS. `run::context` hard-codes
   `TlsPosture::Optional` and the shell refuses a client that asks to upgrade,
   so every JWT crosses the network in cleartext. The mission is tokens over
   TLS and `pgprox-tls` has had the server config since M1.10. Acceptance: a

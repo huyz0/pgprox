@@ -33,6 +33,14 @@ x-proxy: &proxy
     - /bin/sh
     - -c
     - |
+      # A self-signed certificate per node, made at start. A test stack that
+      # shipped a checked-in key would be a test stack with a private key in
+      # git, and the property under test is that TLS is terminated at all.
+      openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+        -subj "/CN=$${PGPROX_NODE_NAME}" \
+        -addext "subjectAltName=DNS:$${PGPROX_NODE_NAME},DNS:localhost" \
+        -keyout /tmp/tls.key -out /tmp/tls.crt >/dev/null 2>&1
+
       /usr/local/bin/mock_sidecar /tmp/sidecar.sock &
       # The proxy refuses to start without its sidecar, which is right: a node
       # that cannot resolve credentials authenticates nobody. In a pod the
@@ -48,6 +56,9 @@ x-proxy: &proxy
         --listen 0.0.0.0:6432 \
         --admin 0.0.0.0:9090 \
         --gossip 0.0.0.0:6433 \
+        --tls-cert /tmp/tls.crt \
+        --tls-key /tmp/tls.key \
+        --require-tls \
         --node "$${PGPROX_NODE}" \
         --node-name "$${PGPROX_NODE_NAME}" \
         --peer "$${PGPROX_PEER_A}" \
