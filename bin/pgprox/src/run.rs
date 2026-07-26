@@ -410,6 +410,65 @@ fn shed_pass(app: &App, sessions: &Arc<Sessions>) -> usize {
     shed_count
 }
 
+/// Holds every pool to what the cluster layer says this node may have.
+///
+/// The invariant the whole of `pgprox-cluster` exists to protect is that
+/// guaranteed plus leased never exceeds a server's cap. It was enforced in a
+/// ledger nothing consulted: the pool's limit came from the configuration
+/// document and the allowance was read only by the admin surface, so three
+/// nodes could each open fifty connections to a server capped at sixty.
+///
+/// Divided between the pools that exist for that server, because a pool is one
+/// database and user and the cap is per server. A node with no pool for a
+/// server sets nothing: there is nothing to hold.
+async fn apply_quota(app: &App) {
+    let config = app.deps.config.watch().borrow().clone();
+
+    for server in &config.servers {
+        let keys: Vec<pgprox_core::ids::PoolKey> = app
+            .pool
+            .all_stats()
+            .into_iter()
+            .map(|(key, _)| key)
+            .filter(|key| key.server == server.server)
+            .collect();
+        if keys.is_empty() {
+            continue;
+        }
+
+        let mut allowance = app.cluster.allowance(&server.server);
+        // The guaranteed share needs no coordination. More than that is the
+        // leader's to grant, and a refusal leaves the node on its share, which
+        // is the direction that cannot breach the cap.
+        let held: u32 = app
+            .pool
+            .all_stats()
+            .into_iter()
+            .filter(|(key, _)| key.server == server.server)
+            .map(|(_, stats)| stats.active + stats.idle + stats.waiting)
+            .sum();
+        if held >= allowance.guaranteed + allowance.leased {
+            let want = held.saturating_sub(allowance.guaranteed) + 1;
+            if pgprox_core::cluster::ClusterCoordinator::request_quota(
+                app.cluster.as_ref(),
+                &server.server,
+                want,
+            )
+            .await
+            .is_ok()
+            {
+                allowance = app.cluster.allowance(&server.server);
+            }
+        }
+
+        let total = allowance.guaranteed + allowance.leased;
+        let each = (total / u32::try_from(keys.len()).unwrap_or(u32::MAX)).max(1);
+        for key in keys {
+            app.pool.set_limit(&key, each);
+        }
+    }
+}
+
 /// What the tick needs to start or reverse a drain.
 struct Drainer<'a> {
     context: &'a Arc<Context>,
@@ -488,6 +547,10 @@ async fn ticker(
                 .collect(),
         );
         app.cluster.report_tenants(app.sessions.per_tenant());
+
+        // Before the reap, so a limit that just dropped is what the reaper
+        // measures against.
+        apply_quota(app).await;
 
         // Idle connections cost the database a slot for as long as the node
         // runs, so this is not housekeeping: it is the other half of the
@@ -910,6 +973,42 @@ mod tests {
 
         shutdown.fire();
         let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
+    }
+
+    #[tokio::test]
+    async fn the_pools_are_held_to_what_the_cluster_layer_allows() {
+        // The invariant the whole of pgprox-cluster exists to protect, which
+        // was enforced in a ledger nothing consulted: the pool's limit came
+        // from the configuration document and the allowance was read only by
+        // the admin surface.
+        let app = App::build(deps()).await.unwrap();
+        let key = pgprox_core::ids::PoolKey::new(
+            pgprox_core::ids::ServerId::new("db-1", 5432),
+            "acme",
+            "acme_app",
+        );
+
+        // A pool with a limit far above anything the cluster would allow,
+        // which is what the configuration document alone would have given it.
+        app.pool.set_limit(&key, 999);
+        apply_quota(&app).await;
+
+        let allowance = app
+            .cluster
+            .allowance(&pgprox_core::ids::ServerId::new("db-1", 5432));
+        let limit = app
+            .pool
+            .all_stats()
+            .into_iter()
+            .find(|(held, _)| held == &key)
+            .map(|(_, stats)| stats.limit)
+            .expect("the pool vanished");
+
+        assert!(
+            limit <= allowance.guaranteed + allowance.leased,
+            "a pool was allowed {limit} against an allowance of {allowance:?}"
+        );
+        assert!(limit > 0, "a pool was allowed nothing at all");
     }
 
     #[tokio::test]

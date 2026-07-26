@@ -1104,6 +1104,19 @@ asking of each crate what the binary never touches.
   Acceptance: a grant naming a statement timeout has it in force on every
   connection the session borrows, and one that names none changes nothing.
 
+### Raised by the fifth review round
+
+- [x] `M6.56` The quota layer does not bound the pool. `LivePool::set_limit`
+  and `ClusterCoordinator::request_quota` have no caller in the binary, so a
+  node opens up to its configured `PoolConfig::max_size` per pool whatever the
+  cluster says its share is. The invariant the whole of M3 exists to protect,
+  that guaranteed plus leased never exceeds the cap, is enforced in a ledger
+  nothing consults: three nodes each opening fifty connections to a server
+  capped at sixty is exactly the failure ADR 0004 calls the one with no
+  graceful degradation. Acceptance: a node's pools together never hold more
+  than its allowance, a node that needs more asks the leader, and one that is
+  refused waits rather than opening.
+
 - [ ] `M6.25` Close M6.
 
 ## M7 and later
