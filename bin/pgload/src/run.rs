@@ -129,6 +129,12 @@ async fn one_connection(
                     break;
                 }
             }
+
+            // Outside the measured interval on purpose: the pause is what
+            // makes the run describe a real client rather than a benchmark
+            // loop, and counting it as latency would report the workload's
+            // own think time as the proxy's.
+            tokio::time::sleep(Duration::from_millis(transaction.think_ms)).await;
         }
 
         let _ = session.terminate().await;
@@ -322,7 +328,7 @@ mod tests {
         assert_eq!(report.errors, 0, "a working target produced errors");
         assert_eq!(report.connections, 4);
         assert_eq!(report.seed, 5);
-        assert_eq!(report.workload_version, 1);
+        assert_eq!(report.workload_version, 2);
         assert_eq!(report.latency.count, report.transactions);
         assert!(report.throughput() > 0.0);
     }

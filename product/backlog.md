@@ -1262,7 +1262,7 @@ recorded runs say which they are.
   backlog, and the `tcp_rmem` and `tcp_wmem` minimums. Acceptance: the scale run
   at 1000 is not limited by a default, and the values are commented with what
   they cost at 100k.
-- [ ] `M7.20` The workload declares think time, and the load client honours it.
+- [x] `M7.20` The workload declares think time, and the load client honours it.
   Found running the first scale run: with no pause between transactions, N
   connections means N requests in flight, so a run at any interesting count
   measures queueing rather than the proxy. The first run at 200 connections

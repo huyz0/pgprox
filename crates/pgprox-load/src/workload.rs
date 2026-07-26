@@ -24,7 +24,7 @@ use serde::Deserialize;
 /// meaning without changing its number would silently invalidate every
 /// recorded run. Refusing an unknown version is the cheap half of that
 /// problem.
-pub const SUPPORTED_VERSION: u32 = 1;
+pub const SUPPORTED_VERSION: u32 = 2;
 
 /// Shares are floating point, so exact equality is the wrong test. A tenth of
 /// a percent is far tighter than any workload distinction that matters and far
@@ -108,6 +108,21 @@ pub struct TransactionSize {
     pub weight: u32,
 }
 
+/// How long a client waits between transactions.
+///
+/// Without one, a run with N connections keeps N requests in flight and
+/// measures the database queueing rather than the proxy hop. It is also what
+/// makes the workload describe the design point, which is connections that are
+/// idle most of the time.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Think {
+    /// The shortest pause.
+    pub min_ms: u64,
+    /// The longest.
+    pub max_ms: u64,
+}
+
 /// How often a connection is replaced.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -128,6 +143,8 @@ pub struct Workload {
     pub statements: Vec<Statement>,
     /// The transaction size distribution.
     pub transactions: Vec<TransactionSize>,
+    /// How long a client waits between transactions.
+    pub think: Think,
     /// Connection churn.
     pub churn: Churn,
     /// Of the reads, the fraction eligible for a replica.
@@ -171,6 +188,21 @@ impl Workload {
         self.validate_statements()?;
         self.validate_transactions()?;
 
+        if self.think.max_ms == 0 {
+            return Err(WorkloadError::field(
+                "think.max_ms",
+                "no pause at all is the saturated run this field exists to stop",
+            ));
+        }
+        if self.think.min_ms > self.think.max_ms {
+            return Err(WorkloadError::field(
+                "think.min_ms",
+                format!(
+                    "{} is longer than max_ms of {}",
+                    self.think.min_ms, self.think.max_ms
+                ),
+            ));
+        }
         if self.churn.transactions_per_connection == 0 {
             return Err(WorkloadError::field(
                 "churn.transactions_per_connection",
@@ -302,7 +334,7 @@ mod tests {
     /// A valid document, which each test then breaks in exactly one way.
     fn document() -> String {
         [
-            "version: 1",
+            "version: 2",
             "tenants:",
             "  - { name: hot, count: 2, share: 0.75 }",
             "  - { name: tail, count: 50, share: 0.25 }",
@@ -311,6 +343,7 @@ mod tests {
             "  - { name: write, weight: 1, kind: write, sql: 'UPDATE t SET a = 1' }",
             "transactions:",
             "  - { statements: 1, weight: 4 }",
+            "think: { min_ms: 10, max_ms: 20 }",
             "churn: { transactions_per_connection: 500 }",
             "replica_read_fraction: 0.5",
             "cluster_size: 3",
@@ -363,7 +396,7 @@ mod tests {
     fn a_version_this_crate_does_not_know_is_refused() {
         // A file that changed meaning without changing its number would
         // invalidate every recorded run silently.
-        assert_eq!(field_of(&broken("version: 1", "version: 2")), "version");
+        assert_eq!(field_of(&broken("version: 2", "version: 3")), "version");
     }
 
     #[test]
@@ -463,6 +496,17 @@ mod tests {
         assert_eq!(
             field_of(&broken("statements: 1", "statements: 0")),
             "transactions.statements"
+        );
+    }
+
+    #[test]
+    fn a_workload_with_no_think_time_is_refused() {
+        // The saturated run: N connections meaning N requests in flight,
+        // which measures the database rather than the proxy.
+        assert_eq!(field_of(&broken("max_ms: 20", "max_ms: 0")), "think.max_ms");
+        assert_eq!(
+            field_of(&broken("min_ms: 10", "min_ms: 30")),
+            "think.min_ms"
         );
     }
 

@@ -321,6 +321,7 @@ mod tests {
         let mut session = Session::start(client, "u", "d", "").await.unwrap();
         session
             .transaction(&Transaction {
+                think_ms: 0,
                 tenant: "hot-0".into(),
                 statements: vec![statement("SELECT 1", false)],
             })
@@ -425,6 +426,7 @@ mod tests {
         let mut session = Session::start(client, "u", "d", "").await.unwrap();
         session
             .transaction(&Transaction {
+                think_ms: 0,
                 tenant: "hot-0".into(),
                 statements: vec![statement("SELECT 1", false), statement("SELECT 2", true)],
             })
@@ -460,6 +462,7 @@ mod tests {
         let mut session = Session::start(client, "u", "d", "").await.unwrap();
         session
             .transaction(&Transaction {
+                think_ms: 0,
                 tenant: "hot-0".into(),
                 statements: vec![statement("SELECT 1", true)],
             })
@@ -497,6 +500,7 @@ mod tests {
         let mut session = Session::start(client, "u", "d", "").await.unwrap();
         let error = session
             .transaction(&Transaction {
+                think_ms: 0,
                 tenant: "hot-0".into(),
                 statements: vec![statement("SELECT 1", false)],
             })

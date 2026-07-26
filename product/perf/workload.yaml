@@ -9,7 +9,7 @@
 # with the reasoning, and everything measured against the old version is
 # re-baselined. Changing it to make a number look better is not allowed, and
 # the version field is what makes that visible in a diff.
-version: 1
+version: 2
 
 # A handful of busy tenants and a long tail of near-idle ones, which is what a
 # multitenant proxy actually sees. A uniform mix would hide the two things this
@@ -54,6 +54,19 @@ transactions:
     weight: 15
   - statements: 20
     weight: 5
+
+# How long a client waits between transactions. Without this, N connections
+# means N requests in flight and a run measures the database queueing rather
+# than the proxy: the first run at 200 connections reported a p50 of 101ms
+# against a direct baseline of 4ms, which is a saturated Postgres and says
+# nothing about a proxy hop.
+#
+# It is also what makes the workload describe the design point. This proxy
+# exists because 100k connections are idle most of the time; a workload where
+# every connection is always busy is a workload for a different product.
+think:
+  min_ms: 50
+  max_ms: 500
 
 # How often a client goes away and a new one arrives, in transactions per
 # connection. Connection churn is a cost the proxy pays and pgbench does not

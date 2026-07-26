@@ -46,6 +46,11 @@ pub struct Transaction {
     pub tenant: String,
     /// The statements, in order.
     pub statements: Vec<Planned>,
+    /// How long the client waits before sending the next one.
+    ///
+    /// Drawn with the transaction rather than after it, so the pause is part
+    /// of the reproducible stream and two runs on one seed wait identically.
+    pub think_ms: u64,
 }
 
 impl Transaction {
@@ -108,7 +113,13 @@ impl<'w> Sampler<'w> {
         let tenant = self.next_tenant();
         let size = self.next_size();
         let statements = (0..size).map(|_| self.next_statement()).collect();
-        Transaction { tenant, statements }
+        let think = self.workload.think;
+        let think_ms = think.min_ms + self.rng.below(think.max_ms - think.min_ms + 1);
+        Transaction {
+            tenant,
+            statements,
+            think_ms,
+        }
     }
 
     fn next_tenant(&mut self) -> String {
@@ -364,6 +375,7 @@ mod tests {
         assert!(mixed.statements.iter().any(|s| s.kind == Kind::Write));
 
         let read_only = Transaction {
+            think_ms: 0,
             tenant: "hot-0".into(),
             statements: vec![Planned {
                 name: "point".into(),
@@ -373,6 +385,26 @@ mod tests {
             }],
         };
         assert!(!read_only.writes());
+    }
+
+    #[test]
+    fn the_pause_between_transactions_is_inside_what_was_declared() {
+        // Without it a run keeps every connection busy and measures the
+        // database queueing rather than the proxy.
+        let transactions = draw(29, 5_000);
+        assert!(
+            transactions
+                .iter()
+                .all(|t| (50..=500).contains(&t.think_ms)),
+            "a pause fell outside the declared 50 to 500ms"
+        );
+        let distinct: std::collections::BTreeSet<u64> =
+            transactions.iter().map(|t| t.think_ms).collect();
+        assert!(
+            distinct.len() > 100,
+            "the pause barely varied: {} distinct values",
+            distinct.len()
+        );
     }
 
     #[test]
