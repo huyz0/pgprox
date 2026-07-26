@@ -228,6 +228,38 @@ impl<K: Connector + 'static> LivePool<K> {
         entry.connections.get_mut(&id).map(f)
     }
 
+    /// Takes the connection behind a guard out of the pool.
+    ///
+    /// [`Self::with_connection`] runs its closure while the pool's lock is
+    /// held, which is fine for a peek and impossible for a relay: a relay
+    /// awaits on the socket it borrowed, and awaiting under a `std` mutex is
+    /// the deadlock this project's async standard forbids.
+    ///
+    /// So a session takes the connection out, uses it for as long as it holds
+    /// the guard, and gives it back with [`Self::return_connection`]. While it
+    /// is out the pool still counts the slot as checked out, so nothing else
+    /// can be handed the same socket.
+    ///
+    /// Returns [`None`] if the guard has been released or the connection was
+    /// already taken.
+    pub fn take_connection(&self, key: &PoolKey, id: UpstreamId) -> Option<K::Connection> {
+        let mut keyed = self.lock();
+        keyed.get_mut(key)?.connections.remove(&id)
+    }
+
+    /// Gives a taken connection back.
+    ///
+    /// Called before the guard is dropped. A connection that is not returned is
+    /// closed rather than leaked: the guard's release frees the slot either
+    /// way, and a socket nobody holds is one the upstream is still counting
+    /// until it notices.
+    pub fn return_connection(&self, key: &PoolKey, id: UpstreamId, connection: K::Connection) {
+        let mut keyed = self.lock();
+        if let Some(entry) = keyed.get_mut(key) {
+            entry.connections.insert(id, connection);
+        }
+    }
+
     /// Acquires a connection, waiting until `deadline`.
     async fn acquire_inner(
         &self,
@@ -827,5 +859,55 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].0, key(), "the pools came back in an unstable order");
         assert_eq!(all[0].1.active, 1);
+    }
+
+    #[tokio::test]
+    async fn a_session_can_take_its_connection_out_and_give_it_back() {
+        // The relay awaits on the socket it borrowed, so it cannot borrow it
+        // under the pool's lock. Taking it out is what makes that possible.
+        let (pool, clock) = pool(4);
+        let guard = pool.acquire(&key(), never(&clock)).await.unwrap();
+
+        let taken = pool.take_connection(&key(), guard.id()).expect("taken");
+        assert!(
+            pool.take_connection(&key(), guard.id()).is_none(),
+            "the same connection was handed out twice"
+        );
+
+        pool.return_connection(&key(), guard.id(), taken);
+        assert!(pool.take_connection(&key(), guard.id()).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_connection_out_on_loan_is_still_counted_as_checked_out() {
+        // Otherwise the pool would open a second connection to serve the next
+        // caller while the first was still using the one it took, and the cap
+        // would mean nothing.
+        let (pool, clock) = pool(1);
+        let guard = pool.acquire(&key(), never(&clock)).await.unwrap();
+        let _taken = pool.take_connection(&key(), guard.id()).expect("taken");
+
+        assert_eq!(pool.stats(&key()).active, 1);
+        assert!(
+            pool.acquire(&key(), clock.now() + Duration::from_millis(1))
+                .await
+                .is_err(),
+            "a pool of one handed out a second connection"
+        );
+    }
+
+    #[tokio::test]
+    async fn returning_a_connection_to_a_pool_that_has_gone_drops_it() {
+        // Rather than resurrecting the pool. A key with no pool means the
+        // node stopped serving that database, and re-creating it here would
+        // put a connection somewhere nothing will ever reap it from.
+        let (pool, clock) = pool(4);
+        let guard = pool.acquire(&key(), never(&clock)).await.unwrap();
+        let taken = pool.take_connection(&key(), guard.id()).expect("taken");
+
+        let elsewhere = PoolKey::new(ServerId::new("db-9", 5432), "nope", "nobody");
+        pool.return_connection(&elsewhere, guard.id(), taken);
+
+        assert!(pool.take_connection(&elsewhere, guard.id()).is_none());
     }
 }

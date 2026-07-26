@@ -859,21 +859,27 @@ rule already allows `pgprox-proto`.
 - [x] `M6.19` The live `Observatory`, reading the real components. Acceptance:
   the surfaces-agree suite from `M4.18` passes against the live implementation
   unchanged, since it was written against the contract rather than the fake.
-- [ ] `M6.20` The accept loop and listener, with TLS and the client connection
+- [x] `M6.20` Let the pool lend a connection out. Found writing the accept
+  loop: `with_connection` runs a closure while holding the pool's lock, so a
+  relay cannot await on the socket it borrowed, which is the only thing a relay
+  does. Acceptance: a session owns its upstream connection for the duration of
+  a transaction and gives it back on release, and a connection that is out on
+  loan cannot be handed to a second session.
+- [ ] `M6.21` The accept loop and listener, with TLS and the client connection
   ceiling. Acceptance: a node at its ceiling refuses with a message naming the
   limit, and refusal never takes down connections already established.
-- [ ] `M6.21` The drain sequence, end to end. Acceptance: `/readyz` fails
+- [ ] `M6.22` The drain sequence, end to end. Acceptance: `/readyz` fails
   first, gossip announces before any client is closed, in-flight transactions
   finish, and the grace timer force-closes the remainder.
-- [ ] `M6.22` `deploy/` and `scripts/e2e.sh`: three proxy nodes, a primary, two
+- [ ] `M6.23` `deploy/` and `scripts/e2e.sh`: three proxy nodes, a primary, two
   replicas, the mock sidecar. Acceptance: the script brings the stack up and
   reports which component failed when it does not, rather than a compose exit
   code.
-- [ ] `M6.23` The e2e assertions the milestone is judged on: pgbench clean,
+- [ ] `M6.24` The e2e assertions the milestone is judged on: pgbench clean,
   drain with zero failed transactions, no replica read behind the session
   watermark. Acceptance: each assertion fails when its property is broken on
   purpose, verified once per assertion.
-- [ ] `M6.24` Close M6.
+- [ ] `M6.25` Close M6.
 
 ## M7 and later
 

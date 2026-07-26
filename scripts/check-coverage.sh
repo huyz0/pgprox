@@ -31,6 +31,17 @@ IGNORE_RE='(target-coverage|/OUT_DIR/|/out/|\.pb\.rs|bin/pgprox/src/main\.rs)'
 run_gate() {
   local crate="$1"
   local out
+
+  # Stale profile data from a previous crate's run is discarded first.
+  # Coverage attributes a generic function to the file it is written in, so a
+  # crate that instantiates another crate's generics and does not exercise them
+  # lands in that crate's report. bin/pgprox instantiating LivePool did exactly
+  # that, and pgprox-pool read 94% while its own tests covered 99%. Left alone
+  # this understates and, with the runs in the other order, overstates.
+  # --profraw-only keeps the instrumented build, so this costs nothing.
+  CARGO_TARGET_DIR="$COVERAGE_TARGET_DIR" cargo llvm-cov clean \
+    --workspace --profraw-only >/dev/null 2>&1 || true
+
   if ! out="$(CARGO_TARGET_DIR="$COVERAGE_TARGET_DIR" cargo llvm-cov nextest \
         -p "$crate" --lib --bins \
         --ignore-filename-regex "$IGNORE_RE" \
