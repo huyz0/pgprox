@@ -13,8 +13,10 @@
 //! pure functions of a workload and a seed, which is what makes a run
 //! reproducible and this crate testable without a database.
 
+pub mod report;
 pub mod sampler;
 pub mod workload;
 
+pub use report::{Histogram, Latency, Report};
 pub use sampler::{Planned, Sampler, Transaction};
 pub use workload::{Churn, Kind, Statement, TenantGroup, TransactionSize, Workload, WorkloadError};

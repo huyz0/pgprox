@@ -1202,7 +1202,7 @@ recorded runs say which they are.
 - [x] `M7.3` The sampler: a workload plus a seed yields a deterministic stream
   of statements. Acceptance: two samplers on the same seed produce identical
   streams, and the observed mix converges on the declared distribution.
-- [ ] `M7.4` The latency histogram and the run report. Acceptance: p50 and p99
+- [x] `M7.4` The latency histogram and the run report. Acceptance: p50 and p99
   over a known set of samples are the values computed by hand, and the report
   serialises to JSON a script can read without parsing prose.
 - [ ] `M7.5` `bin/pgload`, the load client: opens N connections, replays the
