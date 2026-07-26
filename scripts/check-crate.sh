@@ -37,6 +37,16 @@ else
   fail "clippy ($label)"
 fi
 
+# And again with the features a release build actually has. `--all-features`
+# turns on `test-fakes`, so an import used only by a fake reads as used and a
+# plain `cargo build` warns where this said nothing. That is how an unused
+# import sat in pgprox-core from M4 until the M6 review found it.
+if cargo clippy "${scope[@]}" --all-targets -- -D warnings >/dev/null 2>&1; then
+  ok "clippy, default features ($label)"
+else
+  fail "clippy, default features ($label): run 'cargo clippy${scope[*]:+ ${scope[*]}} --all-targets'"
+fi
+
 # Doctests are not part of the nextest run that the coverage gate uses, so
 # without this they are never executed by anything. That matters here because
 # compile_fail doctests are how type-level guarantees are proven: an ID newtype

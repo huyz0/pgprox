@@ -908,7 +908,7 @@ rule already allows `pgprox-proto`.
   a cancel that lands on the wrong node does nothing. Acceptance: a cancel for
   a connection another node owns reaches that node, and an unknown key is
   refused rather than ignored.
-- [ ] `M6.33` `pgprox-core` warns on an unused import in the default build.
+- [x] `M6.33` `pgprox-core` warns on an unused import in the default build.
   `admin.rs` imports `NodeMode` for the fake, which is behind `test-fakes`, so
   a plain `cargo check -p pgprox-core` warns. Nothing caught it because
   `check-crate.sh` runs clippy with `--all-features`, where the import is used.

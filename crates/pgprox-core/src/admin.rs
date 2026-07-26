@@ -34,7 +34,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::cluster::{ClusterDigest, MembershipView, NodeMode};
+use crate::cluster::{ClusterDigest, MembershipView};
 use crate::config::Config;
 use crate::ids::{ConnId, NodeId, PoolKey, ServerId, TenantId};
 use crate::pool::PoolStats;
@@ -365,10 +365,10 @@ mod fake {
 
     use super::{
         AdminError, Arc, ClientView, ClusterDigest, ClusterView, Config, Duration, MembershipView,
-        NodeId, NodeMode, Observatory, PoolKey, PoolStats, PoolView, Scope, ServerView, Stats,
-        TenantId, TenantView,
+        NodeId, Observatory, PoolKey, PoolStats, PoolView, Scope, ServerView, Stats, TenantId,
+        TenantView,
     };
-    use crate::cluster::Member;
+    use crate::cluster::{Member, NodeMode};
 
     /// State the fake can be told to serve.
     #[derive(Debug, Default)]
@@ -626,6 +626,10 @@ mod fake {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    // Not imported at file scope: the trait and its DTOs have no use for it,
+    // and importing it there left the default build warning while
+    // `--all-features` did not, because the fake below does use it.
+    use crate::cluster::NodeMode;
     use crate::ids::ConnId;
 
     fn node(n: u16) -> NodeId {
