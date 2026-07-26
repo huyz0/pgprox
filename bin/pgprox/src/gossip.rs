@@ -45,7 +45,7 @@ use std::time::Duration;
 use pgprox_cluster::digest::VersionedDigest;
 use pgprox_cluster::service::GossipCoordinator;
 use pgprox_core::cluster::{ClusterDigest, NodeMode, QuotaError, QuotaLease};
-use pgprox_core::ids::{NodeId, ServerId, TenantId};
+use pgprox_core::ids::{ConnId, NodeId, ServerId, TenantId};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
@@ -96,6 +96,17 @@ pub enum Message {
         count: u32,
         /// How long it lasts, from the moment the leader granted it.
         ttl_ms: u64,
+    },
+    /// A cancel for a connection another node owns.
+    ///
+    /// Forwarded rather than answered: the node that issued a cancel key is
+    /// the only one that knows which upstream connection it names, and a
+    /// client's cancel lands on whichever pod its second connection reached.
+    Cancel {
+        /// The node that owns the connection.
+        node: u16,
+        /// The rest of the key it issued.
+        secret: u64,
     },
     /// The leader refusing.
     QuotaRefused {
@@ -195,6 +206,7 @@ impl DigestWire {
 pub async fn serve<F>(
     listener: tokio::net::TcpListener,
     coordinator: Arc<GossipCoordinator>,
+    cancels: Arc<dyn CancelSink>,
     shutdown: F,
 ) -> std::io::Result<()>
 where
@@ -208,14 +220,19 @@ where
         };
 
         let coordinator = Arc::clone(&coordinator);
+        let cancels = Arc::clone(&cancels);
         tokio::spawn(async move {
-            let _ = answer(accepted.0, &coordinator).await;
+            let _ = answer(accepted.0, &coordinator, cancels.as_ref()).await;
         });
     }
 }
 
 /// Merges what a peer sent and answers with this node's own digest.
-async fn answer<S>(stream: S, coordinator: &GossipCoordinator) -> std::io::Result<()>
+async fn answer<S>(
+    stream: S,
+    coordinator: &GossipCoordinator,
+    cancels: &dyn CancelSink,
+) -> std::io::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -233,6 +250,14 @@ where
                 holder,
                 want,
             }) => grant(coordinator, &server, holder, want),
+            Ok(Message::Cancel { node, secret }) => {
+                // Answered with this node's digest whatever happens. A cancel
+                // gets no acknowledgement by design, so a peer relaying one for
+                // a client cannot learn from the answer whether the key was
+                // real.
+                cancels.cancel(ConnId::new(NodeId::new(node), secret)).await;
+                Message::Digest(DigestWire::from(&coordinator.outgoing()))
+            }
             Ok(Message::Digest(wire)) => {
                 if let Some(incoming) = wire.parse() {
                     coordinator.gossip(incoming);
@@ -438,6 +463,45 @@ where
     }
 }
 
+/// Where a forwarded cancel goes once it has arrived.
+///
+/// A trait rather than a direct call, because the registry that knows which
+/// upstream connection a key names lives with the sessions, and this module
+/// knows only how to get a message across.
+#[async_trait::async_trait]
+pub trait CancelSink: Send + Sync + std::fmt::Debug {
+    /// Cancels the query this key names, if this node is running one.
+    async fn cancel(&self, conn: ConnId);
+}
+
+/// A sink that does nothing, for a node with no sessions to cancel.
+#[derive(Debug, Default)]
+pub struct NoCancels;
+
+#[async_trait::async_trait]
+impl CancelSink for NoCancels {
+    async fn cancel(&self, _conn: ConnId) {}
+}
+
+/// Forwards a cancel to the node that owns the connection.
+///
+/// Nothing comes back and nothing is awaited beyond the send: a `CancelRequest`
+/// is unacknowledged in the protocol itself, and making this one answer would
+/// give a prober an oracle the real thing does not have.
+pub async fn forward(peer: SocketAddr, conn: ConnId) {
+    let message = Message::Cancel {
+        node: conn.node().get(),
+        secret: conn.secret(),
+    };
+
+    let _ = tokio::time::timeout(PEER_TIMEOUT, async move {
+        let mut stream = tokio::net::TcpStream::connect(peer).await.ok()?;
+        stream.write_all(&encode(&message)).await.ok()?;
+        stream.flush().await.ok()
+    })
+    .await;
+}
+
 /// The `QuotaTransport` the composition root fills in.
 ///
 /// Holds the peer table and nothing else. Every rule about whether a lease may
@@ -536,7 +600,7 @@ mod tests {
         let (theirs, ours) = tokio::io::duplex(64 * 1024);
         let serving = tokio::spawn({
             let two = Arc::clone(&two);
-            async move { answer(theirs, &two).await }
+            async move { answer(theirs, &two, &NoCancels).await }
         });
         speak(ours, &one).await.unwrap();
 
@@ -593,7 +657,7 @@ mod tests {
         let (theirs, mut ours) = tokio::io::duplex(64 * 1024);
         let serving = tokio::spawn({
             let node = Arc::clone(&node);
-            async move { answer(theirs, &node).await }
+            async move { answer(theirs, &node, &NoCancels).await }
         });
 
         // No newline, ever: the reader must stop at the cap rather than buffer.
@@ -624,9 +688,14 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let serving = tokio::spawn(serve(listener, Arc::clone(&peer), async {
-            let _ = stopped.await;
-        }));
+        let serving = tokio::spawn(serve(
+            listener,
+            Arc::clone(&peer),
+            Arc::new(NoCancels),
+            async {
+                let _ = stopped.await;
+            },
+        ));
 
         // One that answers and one that is not there.
         let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -690,7 +759,7 @@ mod tests {
         let (theirs, ours) = tokio::io::duplex(64 * 1024);
         let serving = tokio::spawn({
             let leader = Arc::clone(&leader);
-            async move { answer(theirs, &leader).await }
+            async move { answer(theirs, &leader, &NoCancels).await }
         });
 
         let lease = request_over(ours, &server, NodeId::new(2), 3)
@@ -717,7 +786,7 @@ mod tests {
         let (theirs, ours) = tokio::io::duplex(64 * 1024);
         let serving = tokio::spawn({
             let follower = Arc::clone(&follower);
-            async move { answer(theirs, &follower).await }
+            async move { answer(theirs, &follower, &NoCancels).await }
         });
 
         let answered = request_over(ours, &ServerId::new("db-1", 5432), NodeId::new(3), 3)
@@ -767,7 +836,7 @@ mod tests {
         let (theirs, ours) = tokio::io::duplex(64 * 1024);
         let serving = tokio::spawn({
             let node = Arc::clone(&node);
-            async move { answer(theirs, &node).await }
+            async move { answer(theirs, &node, &NoCancels).await }
         });
 
         let (read, mut write) = tokio::io::split(ours);

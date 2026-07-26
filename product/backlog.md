@@ -903,7 +903,7 @@ rule already allows `pgprox-proto`.
   root never implemented it, so every node falls back to its guaranteed share
   and the free pool is unusable. Acceptance: a non-leader obtains a lease over
   the socket, and a request racing a leader change is granted by exactly one.
-- [ ] `M6.32` The gossip transport, part three: forwarded cancels. `M6.15`
+- [x] `M6.32` The gossip transport, part three: forwarded cancels. `M6.15`
   built the routing and `serve::cancel` drops `Routing::Peer` on the floor, so
   a cancel that lands on the wrong node does nothing. Acceptance: a cancel for
   a connection another node owns reaches that node, and an unknown key is

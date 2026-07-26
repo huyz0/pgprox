@@ -118,6 +118,8 @@ pub struct Context {
     pub cancels: Arc<Registry>,
     /// How long a client waits for an upstream connection.
     pub acquire_timeout: Duration,
+    /// Where the other nodes are, for a cancel this node does not own.
+    pub peers: std::collections::BTreeMap<NodeId, std::net::SocketAddr>,
 }
 
 impl std::fmt::Debug for Context {
@@ -372,28 +374,54 @@ where
 }
 
 /// Forwards a cancellation, or refuses it.
+///
+/// Whatever happens, nothing is sent back: a `CancelRequest` gets no answer by
+/// design, so a client cannot use one to learn whether a key is real.
 async fn cancel(conn: ConnId, context: &Context) -> Result<(), ShellError> {
-    use pgprox_session::cancel::Routing;
+    context.deliver(conn).await;
+    Ok(())
+}
 
-    // Whatever happens, nothing is sent back: a CancelRequest gets no answer,
-    // by design, so that a client cannot use it to learn whether a key is
-    // real.
-    match context.cancels.route(conn) {
-        Routing::Local(cancellation) => {
-            let Some(backend) = context.connector.backend(&cancellation.key) else {
-                return Ok(());
-            };
-            let Ok(stream) = context.connector.dial(&backend).await else {
-                return Ok(());
-            };
-            let _ = pgprox_session::cancel::send(stream, cancellation.backend_key).await;
-            Ok(())
+impl Context {
+    /// Cancels a query this node is running, or passes the request on.
+    async fn deliver(&self, conn: ConnId) {
+        use pgprox_session::cancel::Routing;
+
+        match self.cancels.route(conn) {
+            Routing::Local(cancellation) => {
+                let Some(backend) = self.connector.backend(&cancellation.key) else {
+                    return;
+                };
+                let Ok(stream) = self.connector.dial(&backend).await else {
+                    return;
+                };
+                let _ = pgprox_session::cancel::send(stream, cancellation.backend_key).await;
+            }
+            // The node in the key is which pod issued it, and a client's
+            // cancel arrives on whichever pod its second connection reached.
+            // A peer this node has no address for is a cancel that cannot be
+            // delivered, which is the same outcome as an unknown key: nothing.
+            Routing::Peer(node) => {
+                if let Some(peer) = self.peers.get(&node).copied() {
+                    crate::gossip::forward(peer, conn).await;
+                }
+            }
+            Routing::Unknown => {}
         }
-        // Forwarding to a peer needs the gossip transport's cancel channel,
-        // which is the same hop quota requests take. Until it carries this
-        // too, a cancel that landed on the wrong node is dropped rather than
-        // answered wrongly.
-        Routing::Peer(_) | Routing::Unknown => Ok(()),
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::gossip::CancelSink for Context {
+    async fn cancel(&self, conn: ConnId) {
+        // A forwarded cancel is delivered locally or dropped. Forwarding it
+        // again would let two nodes with a stale peer table bounce one between
+        // them forever.
+        use pgprox_session::cancel::Routing;
+
+        if matches!(self.cancels.route(conn), Routing::Local(_)) {
+            self.deliver(conn).await;
+        }
     }
 }
 
@@ -652,6 +680,7 @@ mod tests {
             sessions: Sessions::new(),
             cancels: Arc::new(Registry::new(NodeId::new(1), Box::new(Fixed))),
             acquire_timeout: Duration::from_secs(5),
+            peers: std::collections::BTreeMap::new(),
         }
     }
 
@@ -985,6 +1014,116 @@ mod tests {
         client.write_all(&packet).await.unwrap();
 
         served.await.unwrap().unwrap();
+    }
+
+    /// A server that captures the one `CancelRequest` sent to it.
+    ///
+    /// Not the fake Postgres above: a cancel arrives on its own connection
+    /// carrying no startup packet, so what proves it arrived is the bytes
+    /// themselves rather than a session that behaved.
+    async fn cancel_catcher() -> (SocketAddr, tokio::sync::oneshot::Receiver<(i32, i32)>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (caught, catch) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let mut packet = [0_u8; 16];
+            if socket.read_exact(&mut packet).await.is_ok() {
+                let key = (
+                    i32::from_be_bytes(packet[8..12].try_into().unwrap_or([0; 4])),
+                    i32::from_be_bytes(packet[12..16].try_into().unwrap_or([0; 4])),
+                );
+                let _ = caught.send(key);
+            }
+        });
+
+        (addr, catch)
+    }
+
+    #[tokio::test]
+    async fn a_cancel_for_another_node_s_connection_is_forwarded_to_it() {
+        // A client's cancel arrives on whichever pod its second connection
+        // reached, which with three pods is usually the wrong one. Until this
+        // it was dropped, so cancelling a query worked one time in three.
+        let (upstream, caught) = cancel_catcher().await;
+        let owner = Arc::new(context_for(upstream));
+        let backend = grant_for(upstream).primary;
+        owner.connector.learn(&backend);
+
+        let conn = owner.cancels.issue().unwrap();
+        owner.cancels.hold(
+            conn,
+            pgprox_session::cancel::Cancellation {
+                server: backend.server.clone(),
+                key: backend.pool_key(),
+                backend_key: (4242, 99),
+            },
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gossip_at = listener.local_addr().unwrap();
+        let cluster = pgprox_cluster::service::GossipCoordinator::new(
+            NodeId::new(1),
+            pgprox_cluster::coordinator::CoordinatorConfig::default(),
+            Arc::new(FakeClock::new()),
+        );
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let serving = tokio::spawn(crate::gossip::serve(
+            listener,
+            cluster,
+            Arc::clone(&owner) as Arc<dyn crate::gossip::CancelSink>,
+            async {
+                let _ = stopped.await;
+            },
+        ));
+
+        // The node the cancel lands on owns no such connection and knows only
+        // where node 1 is.
+        let mut elsewhere = context_for(upstream);
+        elsewhere.node = NodeId::new(2);
+        elsewhere.cancels = Arc::new(Registry::new(NodeId::new(2), Box::new(Fixed)));
+        elsewhere.peers = std::collections::BTreeMap::from([(NodeId::new(1), gossip_at)]);
+        elsewhere.deliver(conn).await;
+
+        let key = tokio::time::timeout(Duration::from_secs(5), caught)
+            .await
+            .expect("the cancel never reached the node that owned the connection")
+            .unwrap();
+        assert_eq!(
+            key,
+            (4242, 99),
+            "the forwarded cancel carried the wrong server key"
+        );
+
+        stop.send(()).unwrap();
+        let _ = serving.await;
+    }
+
+    #[tokio::test]
+    async fn a_forwarded_cancel_is_not_forwarded_again() {
+        // Two nodes with stale peer tables would otherwise bounce one between
+        // them for as long as both were up.
+        let (upstream, _caught) = cancel_catcher().await;
+        let mut context = context_for(upstream);
+        context.node = NodeId::new(2);
+        context.cancels = Arc::new(Registry::new(NodeId::new(2), Box::new(Fixed)));
+        // A peer address that would answer, so the assertion is about the rule
+        // rather than about the address being missing.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        context.peers =
+            std::collections::BTreeMap::from([(NodeId::new(1), listener.local_addr().unwrap())]);
+
+        crate::gossip::CancelSink::cancel(&context, ConnId::new(NodeId::new(1), 7)).await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                .await
+                .is_err(),
+            "a forwarded cancel was forwarded on"
+        );
     }
 
     #[tokio::test]

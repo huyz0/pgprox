@@ -19,6 +19,7 @@
 //! somebody's transaction must not do. `M6.22` builds the ordered sequence on
 //! top of this; what is here is the mechanism it needs.
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -167,6 +168,7 @@ pub fn context(app: &App) -> Context {
         sessions: Arc::clone(&app.sessions),
         cancels: Arc::new(Registry::new(app.deps.node, Box::new(SystemEntropy))),
         acquire_timeout: ACQUIRE_TIMEOUT,
+        peers: BTreeMap::new(),
     }
 }
 
@@ -188,7 +190,7 @@ pub fn probes(app: &App) -> Arc<Probes> {
 /// Fails when a listening socket does, which means there is nothing left to
 /// serve. A failure serving one client is that client's and never reaches here.
 pub async fn run(app: App, listeners: Listeners, shutdown: Shutdown) -> std::io::Result<()> {
-    run_with_peers(app, listeners, std::collections::BTreeMap::new(), shutdown).await
+    run_with_peers(app, listeners, BTreeMap::new(), shutdown).await
 }
 
 /// Runs the node, gossiping to `peers`, until the signal fires.
@@ -199,7 +201,7 @@ pub async fn run(app: App, listeners: Listeners, shutdown: Shutdown) -> std::io:
 pub async fn run_with_peers(
     app: App,
     listeners: Listeners,
-    peers: std::collections::BTreeMap<pgprox_core::ids::NodeId, SocketAddr>,
+    peers: BTreeMap<pgprox_core::ids::NodeId, SocketAddr>,
     shutdown: Shutdown,
 ) -> std::io::Result<()> {
     // Set here rather than at build time: the peer table is a deployment fact
@@ -210,7 +212,10 @@ pub async fn run_with_peers(
     let addresses: Vec<SocketAddr> = peers.values().copied().collect();
     let ceiling = app.config.max_client_conns;
     let gate = Arc::new(Gate::new(ceiling));
-    let context = Arc::new(context(&app));
+    let context = Arc::new(Context {
+        peers: peers.clone(),
+        ..context(&app)
+    });
     let probes = probes(&app);
 
     let admin = tokio::spawn(http::serve(
@@ -228,7 +233,11 @@ pub async fn run_with_peers(
     let gossiping = tokio::spawn({
         let shutdown = shutdown.clone();
         let cluster = Arc::clone(&app.cluster);
-        crate::gossip::serve(listeners.gossip, cluster, async move {
+        // The session context is the cancel sink: it holds the registry that
+        // knows which upstream connection a key names, and a second registry
+        // would be a second answer to that question.
+        let cancels = Arc::clone(&context) as Arc<dyn crate::gossip::CancelSink>;
+        crate::gossip::serve(listeners.gossip, cluster, cancels, async move {
             shutdown.waited().await;
         })
     });
@@ -451,13 +460,13 @@ mod tests {
         let running = tokio::spawn(run_with_peers(
             first,
             one,
-            std::collections::BTreeMap::from([(NodeId::new(2), two_at.gossip)]),
+            BTreeMap::from([(NodeId::new(2), two_at.gossip)]),
             shutdown.clone(),
         ));
         let peer = tokio::spawn(run_with_peers(
             second,
             two,
-            std::collections::BTreeMap::from([(NodeId::new(1), one_at.gossip)]),
+            BTreeMap::from([(NodeId::new(1), one_at.gossip)]),
             shutdown.clone(),
         ));
 
