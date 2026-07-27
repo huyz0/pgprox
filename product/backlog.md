@@ -1385,7 +1385,7 @@ recorded runs say which they are.
   the baseline's connection count as well, and the hop costs 348us at p50 and
   4.3ms at p99. Found by measuring rather than guessing: the proxy's own CPU
   was under half a core while Postgres had 49 of 50 backends active.
-- [ ] `M7.27` The node does not check its own descriptor limit. A ceiling of
+- [x] `M7.27` The node does not check its own descriptor limit. A ceiling of
   20,000 clients under a soft `RLIMIT_NOFILE` of 1024 is a node that fails at
   `accept` with something that reads as a network fault. Found writing M7.18.
   Acceptance: the limit and the ceiling are compared at startup and the

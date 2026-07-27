@@ -166,6 +166,55 @@ impl Listeners {
     }
 }
 
+/// Descriptors a node needs beyond its client connections.
+///
+/// Three listeners, the sidecar socket, the upstream pool, the peers, and the
+/// usual handful. Deliberately generous: the point is to warn early rather
+/// than to predict exactly.
+const DESCRIPTOR_HEADROOM: u64 = 256;
+
+/// Says so when the client ceiling exceeds what the process may open.
+///
+/// A node configured for twenty thousand clients under a soft limit of 1024
+/// fails at `accept`, and the failure reads as a network fault to whoever is
+/// looking. This turns it into a line in the log at start, before any client
+/// arrives.
+///
+/// A warning rather than a refusal to start: the ceiling is a maximum, not a
+/// promise, and a node that serves nine hundred clients under a limit of 1024
+/// is working. Refusing to start would take a running deployment down on a
+/// configuration change that had not hurt it yet.
+fn warn_about_descriptors(ceiling: u32) {
+    let Some(limit) = descriptor_limit() else {
+        return;
+    };
+    let needed = u64::from(ceiling) + DESCRIPTOR_HEADROOM;
+    if limit < needed {
+        tracing::warn!(
+            soft_limit = limit,
+            max_client_conns = ceiling,
+            needed,
+            "the file descriptor limit is below this node's client ceiling: \
+             connections past it will fail at accept, which reads as a network fault"
+        );
+    }
+}
+
+/// The process's soft descriptor limit, if it can be read.
+///
+/// From `/proc`, because reading `RLIMIT_NOFILE` needs libc and this binary
+/// has none: a proc read is a smaller thing to own than a new dependency on a
+/// connection path. Returns `None` where the file is absent, which is every
+/// platform that is not Linux and is not a reason to fail.
+fn descriptor_limit() -> Option<u64> {
+    let limits = std::fs::read_to_string("/proc/self/limits").ok()?;
+    limits
+        .lines()
+        .find(|line| line.starts_with("Max open files"))
+        .and_then(|line| line.split_whitespace().nth(3))
+        .and_then(|soft| soft.parse().ok())
+}
+
 /// How many connections may sit in the kernel's accept queue.
 ///
 /// The default is 1024, and a scale run at a thousand connections overflowed
@@ -283,6 +332,7 @@ pub async fn run_with_peers(
     // The same table, to the one read that fans out.
     app.observatory.set_peers(peers.clone());
     let addresses: Vec<String> = peers.values().cloned().collect();
+    warn_about_descriptors(app.config.max_client_conns);
     let gate = Arc::new(Gate::new(app.config.max_client_conns));
     let context = Arc::new(Context {
         peers: peers.clone(),
@@ -932,6 +982,20 @@ mod tests {
             .and_then(|code| code.parse().ok())
             .unwrap_or(0);
         (status, answer)
+    }
+
+    #[test]
+    fn the_descriptor_limit_is_read_from_the_process() {
+        // A node configured for more clients than it has descriptors fails at
+        // `accept`, and that failure reads as a network fault. The check has
+        // to see a real number for the warning to mean anything.
+        let limit = descriptor_limit().expect("no /proc/self/limits on this machine");
+        assert!(limit > 0, "the soft limit read as zero");
+
+        // Neither of these asserts a log line; they assert the arithmetic runs
+        // on both sides of the comparison without panicking.
+        warn_about_descriptors(1);
+        warn_about_descriptors(u32::MAX);
     }
 
     #[tokio::test]
