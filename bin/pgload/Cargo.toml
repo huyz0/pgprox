@@ -22,12 +22,21 @@ path = "src/main.rs"
 pgprox-load = { path = "../../crates/pgprox-load" }
 pgprox-proto = { path = "../../crates/pgprox-proto" }
 thiserror.workspace = true
+# TLS for the load client. `ring` is not in the picture: the workspace's
+# provider is aws-lc-rs and a second one in the same process is a way to be
+# surprised. See src/tls.rs for why this client verifies nothing.
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "tls12"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
 pgprox-core = { path = "../../crates/pgprox-core" }
+# A certificate for the TLS tests. Generated per run rather than checked in,
+# for the same reason the e2e stack generates its own.
+rcgen = "0.14"
+pgprox-tls = { path = "../../crates/pgprox-tls" }
+
 tempfile.workspace = true
 
 [lints]

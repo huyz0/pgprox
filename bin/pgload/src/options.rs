@@ -71,6 +71,12 @@ pub struct Options {
     pub out: PathBuf,
     /// How long to give one connection's startup before giving up on it.
     pub connect_timeout_secs: u64,
+    /// Whether to ask for TLS, and to accept whatever certificate arrives.
+    ///
+    /// Off by default, which is what a direct connection to Postgres in the
+    /// test stack wants. See `crate::tls` for what "insecure" means here and
+    /// why it is acceptable for a load generator and nowhere else.
+    pub tls: bool,
 }
 
 impl Default for Options {
@@ -86,6 +92,7 @@ impl Default for Options {
             password: String::new(),
             out: PathBuf::from("report.json"),
             connect_timeout_secs: 30,
+            tls: false,
         }
     }
 }
@@ -126,6 +133,7 @@ impl Options {
                 "--database" => options.database = value()?,
                 "--password" => options.password = value()?,
                 "--out" => options.out = PathBuf::from(value()?),
+                "--tls-insecure" => options.tls = true,
                 "--connect-timeout" => {
                     options.connect_timeout_secs = number(&value()?, "--connect-timeout")?;
                 }
@@ -196,6 +204,7 @@ mod tests {
             "/run.json",
             "--connect-timeout",
             "5",
+            "--tls-insecure",
         ]);
 
         assert_eq!(options.target, "pgprox-1:6432");
@@ -208,6 +217,7 @@ mod tests {
         assert_eq!(options.password, "a-token");
         assert_eq!(options.out, PathBuf::from("/run.json"));
         assert_eq!(options.connect_timeout_secs, 5);
+        assert!(options.tls, "--tls-insecure did not reach the field");
     }
 
     #[test]

@@ -1359,11 +1359,13 @@ recorded runs say which they are.
   sent M7.36 and M7.37 looking for a dropped socket while the proxy was
   answering 53300 correctly. `scripts/scale.sh` now reports a retryable
   refusal as what it is, and still fails on anything else.
-- [ ] `M7.21` `bin/pgload` speaks TLS, so a run can measure the deployed
-  posture. Today `deploy/docker-compose.scale.yml` turns off `--require-tls`
-  on the node under test, which means no scale run has measured what
-  termination costs. Acceptance: a run with TLS and a run without it are both
-  possible from one flag, and the difference between them is recorded.
+- [x] `M7.21` `bin/pgload` speaks TLS behind `--tls-insecure`, and the cost is
+  measured: 60 connections for 20s against pgprox-1 in plaintext gives a p50 of
+  3,938us, against pgprox-2 over TLS 4,077us, and against pgprox-3 over TLS
+  4,237us. Termination costs on the order of 140us at p50 on this stack, which
+  is inside the spread between two TLS nodes, so the honest statement is that
+  it is small rather than that it is exactly 139us. p99 is 112ms, 108ms and
+  127ms respectively: node to node variance, not TLS.
 - [x] `M7.22` A one-node stack of local processes, and `scripts/scale.sh
   --local`. Found when Docker Desktop stopped on the development machine
   mid-milestone: every measurement in M7 depended on it, and Postgres was

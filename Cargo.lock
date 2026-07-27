@@ -976,9 +976,12 @@ dependencies = [
  "pgprox-core",
  "pgprox-load",
  "pgprox-proto",
+ "pgprox-tls",
+ "rcgen",
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
 ]
