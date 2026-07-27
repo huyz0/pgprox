@@ -1314,13 +1314,24 @@ recorded runs say which they are.
   failure is invisible from outside. Acceptance: the request's outcome is
   logged either way, the reason it does not lease is named, and a scale run at
   1000 against the compose stack is clean.
-- [ ] `M7.34` No read reached a replica during the compose scale run: both
-  replica pools stayed at zero while the workload marked half its reads
-  eligible with `/* pgprox:replica */`. Either the watermark rule is sending
-  them to the primary, which is correct behaviour for a session that has
-  written and would explain a lot of it but not all, or the hint is not
-  reaching the router. Acceptance: the split between the two is measured
-  rather than argued, and a run reports how many reads landed on a replica.
+- [x] `M7.34` Replica routing works and the workload almost never qualifies
+  for it. Measured rather than argued: a hinted read from `psql` lands on
+  replica-1 and shows up in that pool, so the hint reaches the router, the
+  poller runs, and the probe answers. Under load, `/v1/pools` sampled through a
+  200-connection run shows the primary at 40 active and both replicas at zero
+  or one. The cause is the watermark: it is the primary's write position taken
+  at commit, so a session that has written may only read from a replica whose
+  last polled position is at or past the whole fleet's write head. With 200
+  clients writing continuously and a 250ms poll, that is almost never true,
+  even though the replicas were 27ms behind. Correct and conservative rather
+  than wrong, and the design question it raises is M7.39.
+- [ ] `M7.39` The write watermark is the primary's head rather than the
+  session's own commit position, so under fleet-wide write traffic a session
+  that has ever written reads from the primary indefinitely. The rule it
+  protects is right and must not move: no read behind the session's own write.
+  Acceptance: either the floor becomes the session's own commit position, or
+  the poll interval and the freshness window are shown to make the current
+  floor usable, with a run reporting the share of reads a replica served.
 - [ ] `M7.35` `scripts/scale.sh --keep` did not keep the stack: the flag set a
   variable and the trap still compared against the old literal, so every run
   tore the stack down and the failure above could not be investigated without
