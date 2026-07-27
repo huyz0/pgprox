@@ -156,7 +156,13 @@ impl GossipCoordinator {
     /// node is never noticed.
     pub fn tick(&self) {
         let now = self.clock.now();
-        self.with(|c| c.observe(now));
+        self.with(|c| {
+            // This node's own liveness, before anything reads the view. A node
+            // that stops ticking ages out of its own membership, which is what
+            // makes a wedged node stop leading rather than lead forever.
+            c.heartbeat(now);
+            c.observe(now);
+        });
     }
 
     /// Sets whether this node is taking work, which is how a drain is announced.
@@ -355,6 +361,66 @@ mod tests {
                 tenant_usage: Vec::new(),
             },
             version,
+        }
+    }
+
+    #[test]
+    fn a_ticking_node_leads_and_can_grant_itself_a_lease() {
+        // The seam that was broken, tested at the seam. The coordinator could
+        // always heartbeat; nothing in the loop called it, so no node was in
+        // its own membership view, `leader()` never named the local node on
+        // any node in the fleet, no node took office, and every request for a
+        // lease came back "no leader available to grant quota" for the life of
+        // the deployment. Every node sat on its guaranteed share, which for
+        // three nodes at a fraction of 0.5 is a sixth of the cap, while
+        // clients queued behind it.
+        let clock = FakeClock::new();
+        let coordinator = GossipCoordinator::new(
+            node(1),
+            CoordinatorConfig {
+                fleet_size: 1,
+                ..CoordinatorConfig::default()
+            },
+            Arc::new(clock.clone()) as Arc<dyn pgprox_core::clock::Clock>,
+        );
+        coordinator.set_cap(server(), 60);
+
+        coordinator.tick();
+        assert!(
+            coordinator.membership().is_leader(),
+            "a node that ticked does not consider itself the leader"
+        );
+
+        // Past the takeover wait, which is what a leader observes before it
+        // may grant. Nothing else moves in this test.
+        clock.advance(
+            CoordinatorConfig::default().effective_lease().takeover_wait + Duration::from_secs(1),
+        );
+        coordinator.tick();
+
+        let lease = futures_lite_block_on(ClusterCoordinator::request_quota(
+            &coordinator,
+            &server(),
+            5,
+        ));
+        assert!(
+            lease.is_ok(),
+            "the leader could not grant itself a lease: {lease:?}"
+        );
+        assert!(coordinator.allowance(&server()).leased >= 5);
+    }
+
+    /// The one await in these tests, without pulling in a runtime for it.
+    fn futures_lite_block_on<F: std::future::Future>(future: F) -> F::Output {
+        // A single future with no I/O and no timers in it: polling it to
+        // completion on this thread is the whole of what a runtime would do.
+        let mut future = Box::pin(future);
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        loop {
+            if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+                return value;
+            }
         }
     }
 

@@ -452,15 +452,39 @@ async fn apply_quota(app: &App) {
             .sum();
         if held >= allowance.guaranteed + allowance.leased {
             let want = held.saturating_sub(allowance.guaranteed) + 1;
-            if pgprox_core::cluster::ClusterCoordinator::request_quota(
+            // Logged either way. The result used to be discarded with
+            // `.is_ok()`, so a node pinned at its guaranteed share while
+            // clients queued behind it looked exactly like a node that had
+            // never asked, and the difference is the whole diagnosis.
+            match pgprox_core::cluster::ClusterCoordinator::request_quota(
                 app.cluster.as_ref(),
                 &server.server,
                 want,
             )
             .await
-            .is_ok()
             {
-                allowance = app.cluster.allowance(&server.server);
+                Ok(lease) => {
+                    allowance = app.cluster.allowance(&server.server);
+                    tracing::info!(
+                        server = %server.server,
+                        want,
+                        granted = lease.count(app.deps.clock.now()),
+                        guaranteed = allowance.guaranteed,
+                        leased = allowance.leased,
+                        "quota lease granted"
+                    );
+                }
+                Err(reason) => {
+                    tracing::warn!(
+                        server = %server.server,
+                        want,
+                        held,
+                        guaranteed = allowance.guaranteed,
+                        leased = allowance.leased,
+                        %reason,
+                        "quota lease refused: this node stays on its share"
+                    );
+                }
             }
         }
 
@@ -1120,11 +1144,30 @@ mod tests {
             version: round,
         };
         app.cluster.gossip(peer(1));
+        // Ticked before anything is chosen, so the membership the selection
+        // sees is the membership the assertion sees. Without it the fleet is
+        // one node during selection and two after the first tick, and the
+        // entitlement each node gets is divided by a different number in the
+        // two places.
+        app.cluster.tick();
 
+        // Homed elsewhere *and* with room at that home, which are two
+        // conditions and not one: a client is not shed toward a node that
+        // cannot take it. Selecting on the first alone passed only while
+        // `active_count` undercounted the fleet by one, which is the bug the
+        // self-heartbeat fixed.
         let tenant = (1..200)
             .map(|n| pgprox_core::ids::TenantId::new(format!("tenant-{n}")))
-            .find(|tenant| !app.cluster.placement(tenant, 1).on_home_node)
-            .expect("no tenant of two hundred homed elsewhere, which is not hashing");
+            .find(|tenant| {
+                // Tracked first, exactly as `shed_pass` does: an untracked
+                // tenant has no reservation at its home and reads as having no
+                // room there, which would make this loop reject every
+                // candidate for a reason that has nothing to do with placement.
+                app.cluster.track_tenant(tenant.clone());
+                let placement = app.cluster.placement(tenant, 16);
+                !placement.on_home_node && placement.home_has_headroom
+            })
+            .expect("no tenant of two hundred homed elsewhere with room, which is not hashing");
 
         let _held = app.sessions.register(
             pgprox_core::ids::ConnId::new(NodeId::new(1), 1),

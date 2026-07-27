@@ -159,6 +159,9 @@ pub struct NodeCoordinator {
     /// When the view last changed, for the shed settle window.
     membership_changed_at: Instant,
     view_hash: u64,
+    /// The version this node stamps on its own digest, so its own entry in its
+    /// own store orders like a peer's.
+    self_version: u64,
 }
 
 impl NodeCoordinator {
@@ -177,6 +180,7 @@ impl NodeCoordinator {
             client_conns: 0,
             upstream_conns: Vec::new(),
             tenant_usage: Vec::new(),
+            self_version: 0,
             reservations: Reservations::new(config.reservation),
             tracked_tenants: HashSet::new(),
             // A node that has just started has by definition just seen its
@@ -219,6 +223,33 @@ impl NodeCoordinator {
         self.liveness
             .heard(incoming.digest.node, incoming.digest.mode, now);
         self.digests.merge(incoming)
+    }
+
+    /// Records that this node is still running.
+    ///
+    /// `Membership::new` says why the local node is not seeded alive: a node
+    /// that has stopped running its loop must age itself out rather than look
+    /// healthy to itself forever. That makes this call the loop's job, and
+    /// nothing called it. Every node's view held its peers and not itself, so
+    /// `leader()`, which is the lowest active node id, never returned the
+    /// local node on any node in the fleet. No node took office, no lease was
+    /// ever granted, and every node stayed on its guaranteed share while
+    /// clients queued behind it.
+    ///
+    /// It also fixed nothing else quietly: `home_node` excludes the local node
+    /// from rendezvous hashing the same way, so no tenant was ever homed here.
+    pub fn heartbeat(&mut self, now: Instant) {
+        self.liveness.heard(self.local, self.mode, now);
+
+        // And into its own digest store, for the same reason. Every
+        // cluster-wide total is a sum over that store, so a node that was not
+        // in it reported a fleet's usage with its own contribution missing:
+        // `SHOW POOLS` from a pod under-counted by exactly that pod.
+        self.self_version += 1;
+        self.digests.merge(VersionedDigest {
+            digest: self.digest(),
+            version: self.self_version,
+        });
     }
 
     /// Drops a peer at once, as an explicit leave announcement does.
@@ -528,13 +559,23 @@ mod tests {
         nodes
     }
 
-    /// Every node hears from every node, then acts on it.
+    /// Every node hears from every *other* node, heartbeats itself, then acts.
+    ///
+    /// The self-heartbeat rather than a digest addressed to itself, because
+    /// that is what the running loop does. This helper used to hand every node
+    /// its own digest, which put the local node in its own view for free and
+    /// hid the fact that nothing in `bin/pgprox` did. Every node in production
+    /// saw only its peers, so no node was ever the lowest active id in its own
+    /// view, no node took office, and no lease was granted in the fleet's
+    /// lifetime.
     fn gossip_round(nodes: &mut [NodeCoordinator], version: u64, now: Instant) {
         let peers: Vec<u16> = nodes.iter().map(|c| c.node().get()).collect();
         for c in nodes.iter_mut() {
-            for peer in &peers {
+            let local = c.node().get();
+            for peer in peers.iter().filter(|peer| **peer != local) {
                 c.gossip(digest_for(*peer, version, NodeMode::Active), now);
             }
+            c.heartbeat(now);
             c.observe(now);
         }
     }
@@ -1095,6 +1136,76 @@ mod tests {
         assert_eq!(
             config.effective_lease().takeover_wait,
             Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn a_node_that_ticks_is_in_its_own_view_and_can_lead() {
+        // The bug this exists to catch cost the fleet every lease it ever
+        // wanted. `Membership::new` says the local node becomes alive on the
+        // first `heard` for itself, "which the gossip loop issues every
+        // round", and no loop issued it. Every node's view held its peers
+        // only, so `leader()`, the lowest active id, was never the local node
+        // on any node, nobody took office, and no lease was granted anywhere.
+        let now = Instant::now();
+        let mut alone = NodeCoordinator::new(node(1), config_for(3), now);
+        alone.set_cap(server(), CAP);
+
+        assert!(
+            !alone
+                .membership(now)
+                .members()
+                .iter()
+                .any(|m| m.id == node(1)),
+            "a node that has not ticked should not yet count itself alive"
+        );
+
+        alone.heartbeat(now);
+        alone.observe(now);
+
+        let view = alone.membership(now);
+        assert!(
+            view.members().iter().any(|m| m.id == node(1)),
+            "a node that ticked is missing from its own view: {:?}",
+            view.members()
+        );
+        assert_eq!(
+            view.leader(),
+            Some(node(1)),
+            "no node considered itself the leader"
+        );
+        assert!(view.is_leader());
+    }
+
+    #[test]
+    fn a_node_counts_its_own_usage_in_the_cluster_total() {
+        // Every cluster-wide number is a sum over the digest store. A node
+        // missing from its own store reported the fleet's usage with its own
+        // contribution left out, which is what `SHOW POOLS` reads.
+        let now = Instant::now();
+        let mut alone = NodeCoordinator::new(node(1), config_for(3), now);
+        alone.set_cap(server(), CAP);
+        alone.report(42, vec![(server(), 7)]);
+        alone.heartbeat(now);
+
+        assert_eq!(alone.digests().cluster_usage(&server()), 7);
+        assert_eq!(alone.digests().cluster_clients(), 42);
+    }
+
+    #[test]
+    fn a_node_that_stops_ticking_ages_out_of_its_own_view() {
+        // Why the heartbeat is the loop's job rather than a seed in the
+        // constructor: a node whose loop has stopped must stop leading.
+        let start = Instant::now();
+        let mut alone = NodeCoordinator::new(node(1), config_for(3), start);
+        alone.set_cap(server(), CAP);
+        alone.heartbeat(start);
+        assert!(alone.membership(start).is_leader());
+
+        let much_later = start + config_for(3).membership.dead_after + Duration::from_secs(1);
+        assert!(
+            !alone.membership(much_later).is_leader(),
+            "a node that stopped ticking still led"
         );
     }
 

@@ -1303,7 +1303,7 @@ recorded runs say which they are.
   that are idle most of the time. Acceptance: the workload states a think time
   and its distribution, the recorded runs are re-taken, and the added p50 at
   1000 connections is a number a proxy hop could plausibly account for.
-- [ ] `M7.33` A node never leases past its guaranteed share, so two thirds of
+- [x] `M7.33` A node never leases past its guaranteed share, so two thirds of
   the upstream cap goes unused. Found by the first scale run against the
   compose stack, which the local one-node stack could not show: with three
   nodes and `guaranteed_fraction: 0.5`, node 1 sits at exactly 10 of 60 while
