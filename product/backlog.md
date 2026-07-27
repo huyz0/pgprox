@@ -1264,13 +1264,18 @@ recorded runs say which they are.
   Acceptance: a baseline before, a number after, and no correctness test
   weakened. The classifier's rule that an unsure answer goes to the primary
   does not move.
-- [ ] `M7.25` The report's hot-and-under-tested list measures what one replay
+- [x] `M7.25` The report's hot-and-under-tested list measures what one replay
   covered, not what the tests cover, and `standards/testing.md` means the
   second. Every crate holds 95% from tier 1, so a function at 18% in the
   report may be fully tested and merely not exercised by this workload.
   Acceptance: the list is cross-referenced against tier-1 coverage, so an
   entry means "hot, and the tests do not reach this either", which is the
   thing worth acting on.
+- [ ] `M7.40` The cross-referenced list's own findings: `Wire::queue` at 79%
+  in both the replay and tier 1, `serve::told` at 36% in both, and
+  `entry::tls` and `entry::static_admin` at 22% and 14%. The first two are on
+  every statement's path. Acceptance: each is either tested or has a recorded
+  reason its remaining regions are unreachable.
 - [ ] `M7.26` The prepared-statement path runs on every statement and the
   replay reaches little of it: `map_statement_name` 8%, `ready_statement` 18%,
   `statement_of` 29%. It is also the path that deadlocked twice in M6.

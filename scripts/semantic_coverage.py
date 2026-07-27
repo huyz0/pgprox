@@ -109,6 +109,24 @@ def shorten(name):
     return "::".join(parts[-3:]) if parts else name
 
 
+def coverage_by_function(report):
+    """Percent of regions covered per function, from a tier-1 coverage run."""
+    out = {}
+    for export in report.get("data", []):
+        for function in export.get("functions", []):
+            regions = function.get("regions", [])
+            if not regions:
+                continue
+            covered = sum(1 for region in regions if region[4] > 0)
+            name = shorten(demangle([function.get("name", "?")])[0])
+            percent = 100.0 * covered / len(regions)
+            # The best coverage any instantiation of the name achieves: a
+            # generic function compiled twice should not look untested because
+            # one instantiation was not exercised.
+            out[name] = max(out.get(name, 0.0), percent)
+    return out
+
+
 def trim(path):
     for marker in ("/crates/", "/bin/"):
         if marker in path:
@@ -128,12 +146,26 @@ def main():
     coverage = load(sys.argv[1])
     load_report = load(sys.argv[2])
     connections, seconds = sys.argv[3], sys.argv[4]
+    # Optional: what tier 1 covers, so "under-tested" can mean what
+    # `standards/testing.md` says rather than "this replay did not reach it".
+    tested = coverage_by_function(load(sys.argv[5])) if len(sys.argv) > 5 else {}
 
     every = functions(coverage)
+    for entry in every:
+        entry["tested"] = tested.get(entry["name"])
     ran = [f for f in every if f["count"] > 0 and f["regions"] >= MIN_REGIONS]
     ran.sort(key=lambda f: f["count"], reverse=True)
 
-    under_tested = [f for f in ran if f["percent"] < UNDER_TESTED_PERCENT][:TOP]
+    # Hot, this replay did not cover it, *and* the test suite does not either.
+    # A function at 18% here may be fully tested and merely not exercised by
+    # this workload, and every crate holds 95% from tier 1, so without the
+    # second condition this list is mostly a list of workload gaps.
+    def under(entry):
+        if entry["percent"] >= UNDER_TESTED_PERCENT:
+            return False
+        return entry["tested"] is None or entry["tested"] < UNDER_TESTED_PERCENT
+
+    under_tested = [f for f in ran if under(f)][:TOP]
     # Count times size: a function that runs a million times and is one branch
     # contributes less than one that runs a hundred thousand times and is fifty.
     expensive = sorted(ran, key=lambda f: f["count"] * f["regions"], reverse=True)[:TOP]
@@ -159,15 +191,20 @@ worth a line here.
 
 ## Hot and under-tested
 
-High execution count, under {UNDER_TESTED_PERCENT:.0f}% of their regions
-covered by this replay. The highest-risk code in the repository: it runs
-constantly and the run did not exercise all of it. Tests go here first.
+High execution count, and under {UNDER_TESTED_PERCENT:.0f}% of their regions
+covered *both* by this replay and by the tier-1 test suite. The second column
+is the workload's reach and the third is the suite's; a function the suite
+covers is not under-tested, however little of it this particular replay
+touched. What is left runs constantly and nothing exercises it, which is the
+highest-risk code in the repository. A dash means the suite never compiled
+that instantiation at all.
 
 {table(under_tested, [
     ("Function", lambda f: f"`{f['name']}`"),
     ("File", lambda f: f["file"]),
     ("Count", lambda f: f"{f['count']:,}"),
-    ("Covered", lambda f: f"{f['percent']:.0f}%"),
+    ("Replay", lambda f: f"{f['percent']:.0f}%"),
+    ("Tier 1", lambda f: "-" if f["tested"] is None else f"{f['tested']:.0f}%"),
 ])}
 
 ## Hot and expensive

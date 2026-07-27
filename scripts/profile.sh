@@ -47,6 +47,24 @@ cargo llvm-cov clean --workspace >/dev/null 2>&1
 CARGO_TARGET_DIR="$REPO_ROOT/target" cargo build --release -p pgload >/dev/null 2>&1 \
   || { fail "pgload did not build"; finish; }
 
+# What the tests cover, in its own target directory so the replay's counters
+# are not mixed with the suite's. Without this the report's under-tested list
+# means "this workload did not reach it", and every crate holds 95% from tier
+# 1, so that list would be mostly workload gaps.
+#
+# Before `show-env` below, not after: that call exports the profile settings
+# for the instrumented proxy, and a nested coverage run inheriting them writes
+# its counters into the wrong place and fails.
+echo "  collecting what the tests cover"
+if CARGO_TARGET_DIR="$WORK/target-tests" CARGO_LLVM_COV_TARGET_DIR="$WORK/target-tests" \
+   cargo llvm-cov nextest --workspace --json --output-path "$WORK/tests.json" \
+   >/dev/null 2>&1; then
+  TIER_ONE="$WORK/tests.json"
+else
+  warn "the tier-1 coverage run failed; the under-tested list will be about this replay alone"
+  TIER_ONE=""
+fi
+
 # The documented way to instrument something cargo does not run for you: take
 # the environment llvm-cov would have set, build with it, and run the binary
 # directly. Running it through `cargo run` would make cargo the process this
@@ -88,7 +106,7 @@ cargo llvm-cov report --release --json --output-path "$WORK/coverage.json" >/dev
   || { fail "llvm-cov produced no report"; finish; }
 
 python3 scripts/semantic_coverage.py "$WORK/coverage.json" "$WORK/load.json" \
-  "$CONNECTIONS" "$SECONDS_TO_RUN" > "$REPORT" \
+  "$CONNECTIONS" "$SECONDS_TO_RUN" $TIER_ONE > "$REPORT" \
   || { fail "the report could not be built"; finish; }
 
 ok "$REPORT written"

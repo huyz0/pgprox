@@ -28,10 +28,14 @@ LOCAL_DIR="${LOCAL_DIR:-$REPO_ROOT/target/localstack}"
 # which is what WSL's reserved ranges do; the failure reads as "another
 # postmaster is already running" and there is none. The defaults are
 # overridable, which is how a second stack runs beside a first.
-LOCAL_PG_PORT="${LOCAL_PG_PORT:-15432}"
-LOCAL_PROXY_PORT="${LOCAL_PROXY_PORT:-16432}"
-LOCAL_ADMIN_PORT="${LOCAL_ADMIN_PORT:-19090}"
-LOCAL_GOSSIP_PORT="${LOCAL_GOSSIP_PORT:-16433}"
+# Deliberately not 15432 or 16432: `deploy/docker-compose.scale.yml` publishes
+# those, so a local stack on them cannot run while the compose stack is up, and
+# the failure reads as "another postmaster is already running" with no hint of
+# which one.
+LOCAL_PG_PORT="${LOCAL_PG_PORT:-15532}"
+LOCAL_PROXY_PORT="${LOCAL_PROXY_PORT:-16532}"
+LOCAL_ADMIN_PORT="${LOCAL_ADMIN_PORT:-19190}"
+LOCAL_GOSSIP_PORT="${LOCAL_GOSSIP_PORT:-16533}"
 
 LOCAL_PROXY="127.0.0.1:$LOCAL_PROXY_PORT"
 LOCAL_DIRECT="127.0.0.1:$LOCAL_PG_PORT"
