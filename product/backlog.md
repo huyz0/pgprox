@@ -1346,10 +1346,14 @@ recorded runs say which they are.
   now being exercised. Found in the review round; a report that describes a
   workload the repository no longer has is worse than no report.
 - [x] `M7.39` The watermark is usable as it stands, and the run says so with a
-  number: 4,881 of 14,959 statements went to a replica, which is 32%, against
-  a workload whose eligible reads are 30% of statements. Nothing is being
-  blocked. No design change, and `pgprox_route_total` is the counter that
-  answers the question from now on.
+  number: 2,605 of 19,306 statements in the thousand-connection phase went to
+  a replica, which is 13%. The workload's own ceiling is 10%: a wrapped
+  transaction opens with `BEGIN`, which fixes its target at the primary for
+  every statement in it, so only the single-statement reads that are marked
+  eligible can go elsewhere. The watermark blocks nothing and no design change
+  is warranted. `pgprox_route_total` answers the question from now on, and
+  `scripts/scale.sh` reports the share as a delta across the phase rather than
+  a running total.
 - [ ] `M7.35` `scripts/scale.sh --keep` did not keep the stack: the flag set a
   variable and the trap still compared against the old literal, so every run
   tore the stack down and the failure above could not be investigated without

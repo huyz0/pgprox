@@ -475,6 +475,9 @@ where
     // session on the same primary. A grant with no replicas gets none, and
     // every route decision for it lands on the primary by the same rule that
     // sends a read to the primary when no replica is eligible.
+    // Where the connection this session currently holds is pointed, so a
+    // statement sent on it is counted against the right target.
+    let mut serving = pgprox_core::route::RouteTarget::Primary;
     let watch = context.replicas.watch_for(grant);
     let none = Replicas::new(0, pgprox_route::replica::ReplicaConfig::default());
 
@@ -519,10 +522,7 @@ where
                 .await);
         };
 
-        let outcome = match watch.as_ref() {
-            Some(watch) => watch.with_replicas(|replicas| relay.on_client(&message, replicas, now)),
-            None => relay.on_client(&message, &none, now),
-        };
+        let outcome = decide(&mut relay, watch.as_ref(), &none, &message, now);
         if let Some(reason) = outcome.pinned {
             context.sessions.set_pinned(conn, reason.as_str());
         }
@@ -540,10 +540,14 @@ where
                 acquire: true,
                 target,
             } => {
-                // Counted where the decision lands rather than where it is
-                // made: what an operator wants to know is what share of
-                // statements a replica actually served.
-                context.routes.record(target);
+                // Every statement is counted, not every acquire. A
+                // transaction that holds its connection sends several
+                // statements to the target chosen once at its first, and
+                // counting acquires would call that one statement: the first
+                // version of this counter did, and reported a share of
+                // acquisitions under a name that said statements.
+                serving = target;
+                record_statement(context, &message, target);
                 let mut borrowed = told(wire, borrow(context, grant, target, conn).await).await?;
                 // Before the client's own frame reaches the server, and only
                 // where the connection does not already match: a warm pool
@@ -552,7 +556,11 @@ where
                 held = Some(borrowed);
                 relay.acquired();
             }
-            ClientAction::Send { acquire: false, .. } => {}
+            // On the connection this session already holds, so it goes where
+            // that connection goes.
+            ClientAction::Send { acquire: false, .. } => {
+                record_statement(context, &message, serving);
+            }
         }
 
         let Some((_guard, upstream)) = held.as_mut() else {
@@ -614,6 +622,46 @@ where
         if releasable && grant.pool.mode != pgprox_core::auth::PoolMode::Session {
             release(&mut held, &mut relay, context, conn).await?;
         }
+    }
+}
+
+/// Runs the relay's decision against whatever replica state this session has.
+///
+/// A grant with no replicas has no watch, and every decision for it lands on
+/// the primary by the same rule that sends a read there when no replica is
+/// eligible.
+fn decide(
+    relay: &mut Relay,
+    watch: Option<&Arc<pgprox_route::poller::ReplicaWatch>>,
+    none: &Replicas,
+    message: &pgprox_proto::frontend::FrontendMessage<'_>,
+    now: std::time::Instant,
+) -> pgprox_session::relay::ClientOutcome {
+    match watch {
+        Some(watch) => watch.with_replicas(|replicas| relay.on_client(message, replicas, now)),
+        None => relay.on_client(message, none, now),
+    }
+}
+
+/// Counts a statement, and only a statement.
+///
+/// A `Query` in the simple protocol and an `Execute` in the extended one are
+/// the two frames that run one. Counting every frame counted `Parse`, `Bind`
+/// and `Sync` as statements of their own and reported four times the truth;
+/// counting acquires counted a whole transaction as one. Both were tried, and
+/// both were wrong under a name that said statements.
+fn record_statement(
+    context: &Context,
+    message: &pgprox_proto::frontend::FrontendMessage<'_>,
+    target: pgprox_core::route::RouteTarget,
+) {
+    use pgprox_proto::frontend::FrontendMessage;
+
+    if matches!(
+        message,
+        FrontendMessage::Query { .. } | FrontendMessage::Execute { .. }
+    ) {
+        context.routes.record(target);
     }
 }
 

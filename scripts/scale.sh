@@ -290,6 +290,9 @@ run_scale() {
   # Last, because it is the phase that leaves the machine busiest, and because
   # what it measures does not compare against anything: memory, the upstream
   # cap and the error count are all about this node under many connections.
+  local routed_primary_before routed_replica_before
+  read -r routed_primary_before routed_replica_before < <(route_counts)
+
   echo "  running $CONNECTIONS connections through pgprox-1 for ${DURATION}s"
   if ! load_run "$proxy_report" "$PROXY_ADDR" acme_app "$TOKEN" watch "$CONNECTIONS"; then
     fail "the load run through the proxy failed"
@@ -297,8 +300,13 @@ run_scale() {
     return 1
   fi
 
+  # The delta across the full-count phase, not the counter's total: the
+  # matched-load phase runs through the same node and its statements are in
+  # the same counter, so a total would be a ratio over two different workloads.
   local routed_primary routed_replica
   read -r routed_primary routed_replica < <(route_counts)
+  routed_primary=$(( routed_primary - routed_primary_before ))
+  routed_replica=$(( routed_replica - routed_replica_before ))
 
   local peak_rss peak_upstream
   read -r peak_rss peak_upstream < "$proxy_report.watch"
