@@ -1326,6 +1326,28 @@ recorded runs say which they are.
   tore the stack down and the failure above could not be investigated without
   running it again. Fixed while investigating M7.33; the task is here so the
   fix has a number.
+- [x] `M7.36` Three paths ended a client's session without telling it why, and
+  the accept loop discarded the reason. `ShellError::Refused` says of itself
+  that the client was told before the socket closed; the parameter fetch, the
+  pool acquire and the parameter replay each built one without writing
+  anything. The login deadline also covered work the client was not doing: a
+  client that authenticated and then waited on the proxy for a grant, for
+  server parameters or for a pooled connection had its socket dropped in
+  silence. Found in a compose scale run, where a handful of clients per
+  thousand saw a closed socket and the node's log said nothing at all.
+- [x] `M7.37` The listen backlog was the kernel default and a thousand
+  simultaneous connections overflowed it: `ListenOverflows` on the node counted
+  the drops and the clients saw a socket that closed with nothing on it. A
+  reconnect storm after a node restart is the same shape. Found by reading
+  `/proc/net/netstat` inside the container after the proxy's own logs came back
+  empty.
+- [x] `M7.38` A refusal and a failure are different answers, and neither the
+  load client nor the scale script could tell them apart. A fatal error is an
+  `ErrorResponse` and then a closed socket, so `bin/pgload` reported every one
+  of them as "disconnected" and lost the only part that said why; that is what
+  sent M7.36 and M7.37 looking for a dropped socket while the proxy was
+  answering 53300 correctly. `scripts/scale.sh` now reports a retryable
+  refusal as what it is, and still fails on anything else.
 - [ ] `M7.21` `bin/pgload` speaks TLS, so a run can measure the deployed
   posture. Today `deploy/docker-compose.scale.yml` turns off `--require-tls`
   on the node under test, which means no scale run has measured what

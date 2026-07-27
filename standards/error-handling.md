@@ -54,6 +54,7 @@ real SQLSTATE, never a generic internal error. The mapping is one function in
 | JWT invalid, expired, or rejected by the sidecar | `28000` | `invalid_authorization_specification` |
 | TLS required but the client did not request it | `28000` | `invalid_authorization_specification` |
 | Sidecar unreachable | `08006` | `connection_failure` |
+| The upstream connection closed mid-session | `08006` | `connection_failure` |
 | Acquire timeout | `57014` | `query_canceled` |
 | A failure that is the proxy's own, such as no system entropy | `XX000` | `internal_error` |
 

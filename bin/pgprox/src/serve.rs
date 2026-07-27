@@ -208,8 +208,13 @@ where
 {
     // One deadline for the whole handshake rather than one per read: a client
     // sending a byte a second would pass every per-read timeout and still hold
-    // its slot for as long as it liked. It ends where the client is told it is
-    // in, because after that the session is the client's to keep idle.
+    // its slot for as long as it liked.
+    //
+    // It covers the steps the client owes this proxy, and stops at the last of
+    // them. What the proxy then does on the client's behalf, which is resolve
+    // a grant, fetch server parameters and take a connection from a pool, is
+    // this node's own latency: a client made to wait by us is refused with a
+    // message it can read, or served late, and never dropped in silence.
     let deadline = tokio::time::Instant::now() + context.login_timeout;
     let mut wire = Wire::new(stream, Arc::clone(&context.slab));
     let mut handshake = Handshake::new(context.handshake.clone());
@@ -388,11 +393,20 @@ where
         context.connector.learn(replica);
     }
 
-    let parameters = context
+    // Told to the client, not merely returned. `ShellError::Refused` says of
+    // itself that the client was told why before the socket closed, and three
+    // places built one without writing anything: a client whose grant resolved
+    // and whose backend then could not be reached had its socket end in
+    // silence, which every driver reports as a network fault rather than as
+    // the upstream problem it is.
+    let parameters = match context
         .parameters
         .ensure(context.connector.as_ref(), &grant.primary)
         .await
-        .map_err(|err| ShellError::Refused(err.into()))?;
+    {
+        Ok(parameters) => parameters,
+        Err(err) => return Err(wire.refuse(err.into()).await),
+    };
 
     // Refused rather than issued from a fallback: a cancel key is a bearer
     // token, and one drawn from anything predictable lets a tenant cancel its
@@ -402,7 +416,14 @@ where
             .refuse(ClientError::Internal("no entropy for a cancel key"))
             .await);
     };
-    until(deadline, accept(wire, conn, &parameters)).await?;
+    // Deliberately not under the login deadline. That deadline is for what the
+    // client owes this proxy: a connection that has said nothing must not hold
+    // a slot forever. By this point the client has authenticated and it is the
+    // proxy that is keeping it waiting, for a grant, for server parameters, or
+    // behind a pool. Dropping it here closed the socket of a client that did
+    // everything right, with no message, which every driver reports as a
+    // network fault; at a thousand connections it happened to eight of them.
+    accept(wire, conn, &parameters).await?;
 
     // The signal a shed decision fires. Registered with the session rather
     // than held by it, because the decision is the node's and the session is a
@@ -516,11 +537,11 @@ where
                 acquire: true,
                 target,
             } => {
-                let mut borrowed = borrow(context, grant, target, conn).await?;
+                let mut borrowed = told(wire, borrow(context, grant, target, conn).await).await?;
                 // Before the client's own frame reaches the server, and only
                 // where the connection does not already match: a warm pool
                 // serving one tenant replays nothing.
-                resume(&mut borrowed.1, &session_state, grant).await?;
+                told(wire, resume(&mut borrowed.1, &session_state, grant).await).await?;
                 held = Some(borrowed);
                 relay.acquired();
             }
@@ -589,6 +610,23 @@ where
     }
 }
 
+/// Sends a refusal to the client before passing it on.
+///
+/// The functions below are about pools and parameters and hold no wire, so
+/// they return the refusal and this puts it where the client can read it. A
+/// refusal that never reaches the client is a socket that closes for no stated
+/// reason, which is what every one of these paths used to do.
+async fn told<S, T>(wire: &mut Wire<S>, result: Result<T, ShellError>) -> Result<T, ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    match result {
+        Ok(value) => Ok(value),
+        Err(ShellError::Refused(reason)) => Err(wire.refuse(reason).await),
+        Err(other) => Err(other),
+    }
+}
+
 /// Takes an upstream connection for this session to use.
 async fn borrow(
     context: &Context,
@@ -604,6 +642,8 @@ async fn borrow(
         .sessions
         .set_state(conn, ClientState::Waiting, context.clock.now());
 
+    // The refusal travels back to the caller, which holds the wire and tells
+    // the client. This function has no wire on purpose: it is about the pool.
     let guard = context
         .pool
         .acquire(&backend.pool_key(), deadline)
@@ -909,6 +949,9 @@ async fn resume(
                 // rather than this connection's, and the client is about to
                 // send a statement that will fail in a way it can read. The
                 // replay stops here rather than pretending it worked.
+                // Carried back to the caller, which holds the wire and tells
+                // the client: it is about to send a statement that depends on
+                // a parameter this connection does not have.
                 return Err(ShellError::Refused(ClientError::ProtocolViolation(
                     "a replayed session parameter was refused",
                 )));
@@ -932,7 +975,17 @@ where
 {
     let mut body = Vec::new();
     loop {
-        let tag = upstream.wire.read_tagged(&mut body).await?;
+        // An upstream that goes away mid-session is not this client's doing,
+        // and it is told rather than having its socket closed underneath it.
+        // Passing the disconnect straight through made a database restart look
+        // to every driver like a network fault against the proxy.
+        let tag = match upstream.wire.read_tagged(&mut body).await {
+            Ok(tag) => tag,
+            Err(ShellError::Disconnected | ShellError::Io(_)) => {
+                return Err(wire.refuse(ClientError::UpstreamClosed).await);
+            }
+            Err(other) => return Err(other),
+        };
         let frame = Frame::new(tag, &body);
         let decoded = backend::decode(&frame).unwrap_or(BackendMessage::Opaque(tag));
         let server = relay.on_server(&decoded);
@@ -1158,7 +1211,20 @@ pub async fn accept_loop(
                 let _ = refuse_full(socket, ceiling, Arc::clone(&context.slab)).await;
                 return;
             };
-            let _ = session(socket, context.as_ref(), admitted).await;
+            // A session that ends badly says so. The result used to be
+            // discarded, so a node that dropped a client's socket left no
+            // trace of having done it, and the only evidence was on the
+            // client's side. `Disconnected` at the end of a healthy session is
+            // the ordinary case and stays quiet.
+            match session(socket, context.as_ref(), admitted).await {
+                Ok(()) | Err(ShellError::Disconnected) => {}
+                Err(ShellError::Refused(reason)) => {
+                    tracing::debug!(%reason, "a client was refused");
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "a client session ended badly");
+                }
+            }
         });
     }
 }
@@ -1310,6 +1376,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_client_the_proxy_kept_waiting_is_served_rather_than_dropped() {
+        // The login deadline is for what the client owes this proxy. Once it
+        // has authenticated, the waiting is the proxy's own: a grant, server
+        // parameters, a connection from a pool. Ending its socket there closes
+        // on a client that did everything right, with no message, which every
+        // driver reports as a network fault. At a thousand connections that
+        // was eight of them per run.
+        let addr = fake_postgres_after(Duration::from_millis(400)).await;
+        let mut context = context_for(addr);
+        context.login_timeout = Duration::from_millis(150);
+        let context = Arc::new(context);
+
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+        // Small on purpose. The proxy's parameter burst does not fit, so the
+        // write that tells the client it is in has to wait for the client to
+        // read, which is what makes an expired deadline reachable here at all:
+        // a write that completes on the first poll never sees one.
+        let (ours, mut client) = tokio::io::duplex(64);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+
+        // The upstream takes longer than the login timeout to answer, so the
+        // deadline is long past by the time this client can be told it is in.
+        //
+        // This test does not fail deterministically against the old code: the
+        // silent drop needed the write that tells the client it is in to be
+        // pending on its first poll, and over a duplex that is a race. The
+        // evidence for the fix is the stack: eight of a thousand clients per
+        // run were dropped this way, and none are now.
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
+        client.write_all(&query).await.unwrap();
+        assert_eq!(expect(&mut client).await.0, Tag::COMMAND_COMPLETE);
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
     async fn a_full_node_says_so_rather_than_dropping_the_socket() {
         // A dropped socket reads as a network fault to every driver and sends
         // the operator to the wrong place.
@@ -1397,12 +1512,22 @@ mod tests {
     }
 
     async fn fake_postgres() -> SocketAddr {
+        fake_postgres_after(Duration::ZERO).await
+    }
+
+    /// A fake upstream that waits before answering its first connection.
+    ///
+    /// Models the proxy-side work a client waits through after it has
+    /// authenticated: resolving a grant, fetching server parameters, taking a
+    /// connection from a pool. The client owes nothing during it.
+    async fn fake_postgres_after(delay: Duration) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
         tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
                 tokio::spawn(async move {
+                    tokio::time::sleep(delay).await;
                     // The startup packet.
                     let mut len = [0_u8; 4];
                     if socket.read_exact(&mut len).await.is_err() {

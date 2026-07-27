@@ -132,6 +132,16 @@ pub enum ClientError {
     #[error("protocol violation: {0}")]
     ProtocolViolation(&'static str),
 
+    /// The upstream connection this session was using went away.
+    ///
+    /// A database restart, an administrator's `pg_terminate_backend`, or a
+    /// network fault between this node and the server. The client is told,
+    /// because the alternative is that the proxy closes its socket in silence
+    /// and every driver reports a network fault against the proxy rather than
+    /// the condition that actually occurred.
+    #[error("the database connection closed while serving this session")]
+    UpstreamClosed,
+
     /// The proxy could not do its job, for a reason that is its own.
     ///
     /// The detail is for the operator and never reaches the client. The one
@@ -154,7 +164,7 @@ impl ClientError {
             Self::UpstreamAtCap { .. } => SqlState::TOO_MANY_CONNECTIONS,
             Self::AcquireTimeout { .. } => SqlState::QUERY_CANCELED,
             Self::AuthRefused(_) | Self::TlsRequired => SqlState::INVALID_AUTHORIZATION,
-            Self::SidecarUnavailable => SqlState::CONNECTION_FAILURE,
+            Self::SidecarUnavailable | Self::UpstreamClosed => SqlState::CONNECTION_FAILURE,
             Self::ProtocolViolation(_) => SqlState::PROTOCOL_VIOLATION,
             Self::Internal(_) => SqlState::INTERNAL_ERROR,
         }
@@ -178,6 +188,10 @@ impl ClientError {
             Self::AuthRefused(_) => "authentication failed",
             Self::TlsRequired => "SSL connection is required",
             Self::SidecarUnavailable => "authentication service unavailable",
+            // Named as the database's connection rather than as an internal
+            // failure: a client that reconnects gets a fresh one and carries
+            // on, and that is what this message should make it do.
+            Self::UpstreamClosed => "the database connection was closed, please retry",
             Self::ProtocolViolation(_) => "protocol violation",
             // Vague on purpose, like the rest: which internal condition failed
             // is an operator's business and a prober's gift.
@@ -195,6 +209,9 @@ impl ClientError {
                 | Self::UpstreamAtCap { .. }
                 | Self::AcquireTimeout { .. }
                 | Self::SidecarUnavailable
+                // A fresh connection gets a fresh upstream, so retrying is
+                // exactly right.
+                | Self::UpstreamClosed
         )
     }
 }
@@ -210,6 +227,7 @@ mod tests {
         let server = ServerId::new(HOSTNAME, 5432);
         vec![
             ClientError::Draining,
+            ClientError::UpstreamClosed,
             ClientError::Shed {
                 tenant: TenantId::new(TENANT),
             },
