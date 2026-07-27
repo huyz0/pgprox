@@ -222,7 +222,7 @@ where
     let mut wire = Wire::new(stream, Arc::clone(&context.slab));
     let mut handshake = Handshake::new(context.handshake.clone());
 
-    match until(deadline, negotiate(&mut wire, &mut handshake)).await? {
+    match until(deadline, Box::pin(negotiate(&mut wire, &mut handshake))).await? {
         Handoff::Upgrade => {
             let Some(acceptor) = context.tls.clone() else {
                 // The state machine only answers `S` when it has been told TLS
@@ -244,31 +244,40 @@ where
                 return Err(ShellError::Disconnected);
             }
 
-            let upgraded = until(deadline, async {
-                acceptor
-                    .accept(io)
-                    .await
-                    .map_err(|_| ShellError::Disconnected)
-            })
+            // Boxed: rustls' handshake state is over a kilobyte and it is
+            // finished with by the time the first query arrives.
+            let upgraded = until(
+                deadline,
+                Box::pin(async {
+                    acceptor
+                        .accept(io)
+                        .await
+                        .map_err(|_| ShellError::Disconnected)
+                }),
+            )
             .await?;
             let mut wire = Wire::new(upgraded, Arc::clone(&context.slab));
 
             // The same handshake, which is what makes "TLS was accepted"
             // survive the change of stream type.
-            match until(deadline, negotiate(&mut wire, &mut handshake)).await? {
+            match until(deadline, Box::pin(negotiate(&mut wire, &mut handshake))).await? {
                 Handoff::Cancel(conn) => cancel(conn, context).await,
                 Handoff::Upgrade => Err(wire
                     .refuse(ClientError::ProtocolViolation("TLS was already negotiated"))
                     .await),
                 Handoff::Ask(credential) => {
-                    serve_client(
+                    // Boxed so this arm contributes a pointer to the enclosing
+                    // future rather than a whole session's worth of state. A
+                    // future is the union of its branches, so without it every
+                    // plaintext connection pays for the TLS one's frame.
+                    Box::pin(serve_client(
                         &mut wire,
                         &mut handshake,
                         credential,
                         context,
                         admitted,
                         deadline,
-                    )
+                    ))
                     .await
                 }
             }
@@ -356,7 +365,13 @@ where
                 // owns the exchange holds none. See its AGENTS.md.
                 pgprox_auth::scram::generate_nonce(),
             );
-            until(deadline, authenticate_scram(wire, &mut scram)).await?;
+            // Boxed, and this is the reason: a future's size is the union of
+            // everything alive across its awaits, and this frame lives inside
+            // the session's for as long as the connection does. The SCRAM
+            // exchange happens once, in the first milliseconds, and without
+            // the box its locals sit in memory for hours afterwards, once per
+            // connection.
+            until(deadline, Box::pin(authenticate_scram(wire, &mut scram))).await?;
 
             // The exchange ends at SASLFinal, and a client is still waiting to
             // be told it is in: `accept` is what sends AuthenticationOk, the
@@ -376,14 +391,15 @@ where
         Credential::Jwt => {
             let startup = handshake.startup().ok_or(ShellError::Disconnected)?.clone();
             let mut auth = TokenAuth::new(&startup, std::net::IpAddr::from([0, 0, 0, 0]));
+            // Boxed for the same reason as the SCRAM path above.
             until(
                 deadline,
-                authenticate_token(
+                Box::pin(authenticate_token(
                     wire,
                     &mut auth,
                     context.resolver.as_ref(),
                     std::time::SystemTime::now(),
-                ),
+                )),
             )
             .await?
         }
@@ -402,10 +418,14 @@ where
     // and whose backend then could not be reached had its socket end in
     // silence, which every driver reports as a network fault rather than as
     // the upstream problem it is.
-    let parameters = match context
-        .parameters
-        .ensure(context.connector.as_ref(), &grant.primary)
-        .await
+    // Boxed: this opens an upstream connection and reads its parameters once,
+    // and its frame would otherwise live in the session's for the duration.
+    let parameters = match Box::pin(
+        context
+            .parameters
+            .ensure(context.connector.as_ref(), &grant.primary),
+    )
+    .await
     {
         Ok(parameters) => parameters,
         Err(err) => return Err(wire.refuse(err.into()).await),
@@ -548,12 +568,9 @@ where
                 // acquisitions under a name that said statements.
                 serving = target;
                 record_statement(context, &message, target);
-                let mut borrowed = told(wire, borrow(context, grant, target, conn).await).await?;
-                // Before the client's own frame reaches the server, and only
-                // where the connection does not already match: a warm pool
-                // serving one tenant replays nothing.
-                told(wire, resume(&mut borrowed.1, &session_state, grant).await).await?;
-                held = Some(borrowed);
+                held = Some(
+                    take_connection(wire, context, grant, target, conn, &session_state).await?,
+                );
                 relay.acquired();
             }
             // On the connection this session already holds, so it goes where
@@ -609,20 +626,48 @@ where
         // that is a reason to give the connection back. A tenant that asked
         // for it and silently got transaction pooling loses temporary tables
         // and advisory locks between statements.
-        let releasable = pump(
+        let releasable = Box::pin(pump(
             wire,
             upstream,
             &mut relay,
             context,
             conn,
             &mut swallow_parse_complete,
-        )
+        ))
         .await?;
 
         if releasable && grant.pool.mode != pgprox_core::auth::PoolMode::Session {
-            release(&mut held, &mut relay, context, conn).await?;
+            Box::pin(release(&mut held, &mut relay, context, conn)).await?;
         }
     }
+}
+
+/// Takes a connection for this statement and brings it up to date.
+///
+/// Split out of the relay loop, which clippy holds to a hundred lines, and
+/// they are two steps rather than one: the pool decides which connection, and
+/// the session's own parameters decide what has to be replayed onto it.
+async fn take_connection<S>(
+    wire: &mut Wire<S>,
+    context: &Context,
+    grant: &Grant,
+    target: pgprox_core::route::RouteTarget,
+    conn: ConnId,
+    session_state: &pgprox_session::resume::SessionMemory,
+) -> Result<(UpstreamGuard, Upstreamed<crate::dial::Stream>), ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut borrowed = told(wire, borrow(context, grant, target, conn).await).await?;
+    // Before the client's own frame reaches the server, and only where the
+    // connection does not already match: a warm pool serving one tenant
+    // replays nothing.
+    told(
+        wire,
+        Box::pin(resume(&mut borrowed.1, session_state, grant)).await,
+    )
+    .await?;
+    Ok(borrowed)
 }
 
 /// Runs the relay's decision against whatever replica state this session has.
@@ -1074,7 +1119,7 @@ where
             BackendMessage::CopyInResponse | BackendMessage::CopyBothResponse
         ) {
             wire.flush().await?;
-            copying(wire, upstream, &mut body).await?;
+            Box::pin(copying(wire, upstream, &mut body)).await?;
             continue;
         }
 
@@ -1520,10 +1565,12 @@ mod tests {
     async fn one_session_costs_less_than_the_slab_buffer_it_no_longer_holds() {
         // Every connection is one spawned task holding one of these futures,
         // so its size is a per-connection cost that no buffer pool reduces.
-        // Worth asserting because the buffer was the obvious suspect and is
-        // not the answer: at ten thousand connections the slab peaks at a few
-        // hundred buffers outstanding and falls to zero, while the process
-        // holds about 15 KB per connection.
+        // It was 11,640 bytes and is 4,704: a future is the union of
+        // everything alive across its awaits, and what was alive included a
+        // 4 KiB stack array in `Wire::fill`, the startup negotiation, and the
+        // authentication exchange, none of which a connection needs once it is
+        // serving. The ceiling is 6 KiB so a change that adds a kilobyte fails
+        // this rather than a change that adds a pointer.
         let context = Arc::new(context_for("127.0.0.1:1".parse().unwrap()));
         let gate = Arc::new(Gate::new(1));
         let admitted = gate.admit().unwrap();
@@ -1532,7 +1579,7 @@ mod tests {
         let future = session(ours, context.as_ref(), admitted);
         let bytes = std::mem::size_of_val(&future);
         assert!(
-            bytes < 16 * 1024,
+            bytes < 6 * 1024,
             "the session future is {bytes} bytes, so a hundred thousand of them is {} MB \
              before a single buffer, socket or registry entry",
             bytes * 100_000 / 1024 / 1024

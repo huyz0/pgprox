@@ -82,6 +82,17 @@ pub enum Handoff {
     Cancel(ConnId),
 }
 
+/// The first read of a quiet connection, on the stack.
+///
+/// Sized for a statement rather than for a result set: this array lives in the
+/// session future, which every open connection holds, so a kilobyte here is a
+/// hundred megabytes at a hundred thousand connections. Anything longer than
+/// this continues into the borrowed buffer, which costs one more syscall.
+const FIRST_READ: usize = 512;
+
+/// Every read after that, into the buffer already held.
+const HELD_READ: usize = 16 * 1024;
+
 /// How long a wire waits for a buffer before it gives up on the connection.
 ///
 /// Long enough that a burst is absorbed as latency, which is what the bound is
@@ -181,34 +192,64 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
 
     /// Reads until at least one more byte arrives.
     async fn fill(&mut self) -> Result<(), ShellError> {
-        // The read happens into a stack chunk first, and the slab buffer is
-        // borrowed only once bytes have actually arrived.
+        // Mid-frame: a buffer is already held, so read straight into it. No
+        // stack chunk, and one syscall per 16 KiB rather than per 4.
+        if self.read.is_some() {
+            return self.fill_held().await;
+        }
+
+        // Cold: this connection is waiting for its client to say something,
+        // and it holds nothing while it waits. The first read lands in a small
+        // stack chunk, and a slab buffer is borrowed only once bytes exist.
         //
-        // The order matters more than it looks. Borrowing before the await
-        // means every connection waiting for its client to say something holds
-        // a buffer for the whole of its think time, which is the opposite of
-        // what the slab is for: at two thousand connections against a slab of
-        // two thousand it exhausted, every borrow fell into the retry loop,
-        // and the node burned 3.8 cores serving 700 statements a second. The
-        // design in `plan.md` says a connection borrows "when the socket
-        // becomes readable", and this is what that means for a stream this
-        // crate cannot ask about readability.
-        let mut chunk = [0_u8; 4096];
+        // Small on purpose. This array is alive across the await, so it is
+        // part of the session future, which is part of the per-connection cost
+        // of an idle connection: at 4 KiB it was 4,096 of the 11,640 bytes a
+        // session cost, or 400 MB at a hundred thousand connections. A
+        // statement in the reference workload is under a hundred bytes, and
+        // anything longer simply continues into the borrowed buffer above.
+        let mut chunk = [0_u8; FIRST_READ];
         let read = self.io.read(&mut chunk).await?;
         if read == 0 {
-            // Returned before the error, so a disconnect during a burst frees
-            // its buffer for the connections still going.
-            self.read = None;
             return Err(ShellError::Disconnected);
         }
 
-        if self.read.is_none() {
-            self.read = Some(Self::borrow(&self.slab).await?);
-        }
-        if let Some(buf) = self.read.as_mut() {
-            buf.extend_from_slice(&chunk[..read]);
-        }
+        let mut buf = Self::borrow(&self.slab).await?;
+        buf.extend_from_slice(&chunk[..read]);
+        self.read = Some(buf);
         Ok(())
+    }
+
+    /// Reads into the buffer this wire already holds.
+    async fn fill_held(&mut self) -> Result<(), ShellError> {
+        let Some(buf) = self.read.as_mut() else {
+            return Err(ShellError::Disconnected);
+        };
+
+        // Grown before the read and trimmed after, because reading into
+        // uninitialised capacity needs `unsafe` and this workspace forbids it.
+        // The zeroing costs a memset of the read size; the alternative costs a
+        // stack array in every connection's future.
+        let vec = buf.as_mut_vec();
+        let start = vec.len();
+        vec.resize(start + HELD_READ, 0);
+        let read = self.io.read(&mut vec[start..]).await;
+
+        match read {
+            Ok(0) => {
+                vec.truncate(start);
+                self.read = None;
+                Err(ShellError::Disconnected)
+            }
+            Ok(count) => {
+                vec.truncate(start + count);
+                Ok(())
+            }
+            Err(error) => {
+                vec.truncate(start);
+                Err(error.into())
+            }
+        }
     }
 
     /// Reads one untagged message body into `body`.

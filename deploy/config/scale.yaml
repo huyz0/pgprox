@@ -4,7 +4,7 @@
 # The upstream cap stays at sixty. A scale run's whole point is that a thousand
 # clients are multiplexed onto it, and raising it here would measure a proxy
 # that was not doing the thing it exists to do.
-max_client_conns: 20000
+max_client_conns: 150000
 drain_grace: 10s
 grant_ttl_cap: 300s
 
