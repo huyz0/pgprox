@@ -127,6 +127,7 @@ async fn metrics(State(state): State<MetricsState>) -> impl IntoResponse {
             state.node,
             state.tenants.as_ref(),
             state.slab.as_ref(),
+            state.routes.as_ref(),
         )
         .await,
     )
@@ -141,6 +142,8 @@ struct MetricsState {
     tenants: Arc<pgprox_observe::tenants::TenantAllowlist>,
     /// The node's buffer slab, whose occupancy is a metric of its own.
     slab: Arc<pgprox_core::buf::BufferSlab>,
+    /// Where statements went.
+    routes: Arc<crate::routes::RouteCounts>,
 }
 
 /// The probe routes.
@@ -161,6 +164,7 @@ pub fn router(
     node: pgprox_core::ids::NodeId,
     tenants: Arc<pgprox_observe::tenants::TenantAllowlist>,
     slab: Arc<pgprox_core::buf::BufferSlab>,
+    routes: Arc<crate::routes::RouteCounts>,
 ) -> Router {
     let exporter = Router::new()
         .route("/metrics", axum::routing::get(metrics))
@@ -169,6 +173,7 @@ pub fn router(
             node,
             tenants,
             slab,
+            routes,
         });
 
     probe_routes(probes)
@@ -347,6 +352,7 @@ mod tests {
             pgprox_core::ids::NodeId::new(1),
             Arc::new(pgprox_observe::tenants::TenantAllowlist::new()),
             test_slab(),
+            Arc::new(crate::routes::RouteCounts::new()),
         );
         assert_eq!(get(&router, "/healthz").await.0, 200);
         assert_eq!(get(&router, "/v1/cluster").await.0, 200);
@@ -402,6 +408,7 @@ mod tests {
             pgprox_core::ids::NodeId::new(1),
             Arc::new(pgprox_observe::tenants::TenantAllowlist::new()),
             test_slab(),
+            Arc::new(crate::routes::RouteCounts::new()),
         );
 
         let (status, body) = get(&router, "/metrics").await;
@@ -424,6 +431,7 @@ mod tests {
             pgprox_core::ids::NodeId::new(1),
             Arc::new(pgprox_observe::tenants::TenantAllowlist::new()),
             test_slab(),
+            Arc::new(crate::routes::RouteCounts::new()),
         );
 
         assert_eq!(get(&router, "/readyz").await, (200, "ok".to_owned()));

@@ -31,6 +31,7 @@ pub mod logging;
 pub mod metrics;
 pub mod observatory;
 pub mod replicas;
+pub mod routes;
 pub mod run;
 pub mod serve;
 pub mod sessions;

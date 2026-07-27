@@ -133,6 +133,9 @@ pub struct Context {
     pub resolver: Arc<dyn CredentialResolver>,
     /// Where upstream connections come from.
     pub connector: Arc<PgConnector<TcpUpstream>>,
+    /// Where statements went, for the metric that answers what share of them
+    /// a replica served.
+    pub routes: Arc<crate::routes::RouteCounts>,
     /// Where every connection's read and write buffers come from.
     ///
     /// Shared with the connector, so client and upstream connections draw on
@@ -537,6 +540,10 @@ where
                 acquire: true,
                 target,
             } => {
+                // Counted where the decision lands rather than where it is
+                // made: what an operator wants to know is what share of
+                // statements a replica actually served.
+                context.routes.record(target);
                 let mut borrowed = told(wire, borrow(context, grant, target, conn).await).await?;
                 // Before the client's own frame reaches the server, and only
                 // where the connection does not already match: a warm pool
@@ -1713,6 +1720,7 @@ mod tests {
 
         Context {
             slab: test_slab(),
+            routes: Arc::new(crate::routes::RouteCounts::new()),
             node: NodeId::new(1),
             clock: Arc::clone(&clock),
             handshake: HandshakeConfig {

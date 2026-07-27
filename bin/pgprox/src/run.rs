@@ -251,6 +251,7 @@ fn bind_client(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
 pub fn context(app: &App, shutdown: &Shutdown) -> Context {
     Context {
         slab: Arc::clone(&app.slab),
+        routes: Arc::clone(&app.routes),
         statics: app.statics.clone(),
         observatory: Arc::clone(&app.observatory) as Arc<dyn pgprox_core::admin::Observatory>,
         // A node with certificates terminates TLS; one without answers `N` and
@@ -349,6 +350,7 @@ pub async fn run_with_peers(
             app.deps.node,
             Arc::clone(&app.tenants),
             Arc::clone(&app.slab),
+            Arc::clone(&app.routes),
         ),
         {
             let shutdown = shutdown.clone();

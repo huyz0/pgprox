@@ -174,6 +174,9 @@ pub struct App {
     pub connector: NodeConnector,
     /// The upstream connections this node holds.
     pub pool: Arc<NodePool>,
+    /// Where statements went, which is how the share a replica served is
+    /// reported.
+    pub routes: Arc<crate::routes::RouteCounts>,
     /// Where every connection's buffers come from.
     ///
     /// One slab for the whole node, shared by client and upstream
@@ -288,6 +291,7 @@ impl App {
             connector,
             pool,
             slab,
+            routes: Arc::new(crate::routes::RouteCounts::new()),
             replicas: ReplicaWatch::new(0, ReplicaConfig::default(), Arc::clone(&deps.clock)),
             drain,
             health,

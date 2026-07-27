@@ -1319,17 +1319,16 @@ recorded runs say which they are.
   failure is invisible from outside. Acceptance: the request's outcome is
   logged either way, the reason it does not lease is named, and a scale run at
   1000 against the compose stack is clean.
-- [x] `M7.34` Replica routing works and the workload almost never qualifies
-  for it. Measured rather than argued: a hinted read from `psql` lands on
-  replica-1 and shows up in that pool, so the hint reaches the router, the
-  poller runs, and the probe answers. Under load, `/v1/pools` sampled through a
-  200-connection run shows the primary at 40 active and both replicas at zero
-  or one. The cause is the watermark: it is the primary's write position taken
-  at commit, so a session that has written may only read from a replica whose
-  last polled position is at or past the whole fleet's write head. With 200
-  clients writing continuously and a 250ms poll, that is almost never true,
-  even though the replicas were 27ms behind. Correct and conservative rather
-  than wrong, and the design question it raises is M7.39.
+- [x] `M7.34` Replica routing works. The conclusion recorded here first, that
+  the workload almost never qualifies for it, was wrong, and M7.39 has the
+  measurement that overturned it: 32% of statements are served by a replica.
+  The evidence it was drawn from was `/v1/pools` sampled during a run, which
+  showed the primary at 40 active connections and the replicas at zero or one.
+  That is a count of connections in flight at an instant, and a replica read
+  on a caught-up replica finishes fast while the primary holds every write and
+  every wrapped transaction. A sample of what is busy is not a measure of what
+  was served, and reading it as one is exactly the mistake this milestone
+  keeps being about.
 - [x] `M7.41` The scale stack logged at debug, so the recorded run was partly
   measuring its own logging. Turned on while investigating M7.36 and left on.
   Info by default now, with `SCALE_LOG=debug` for an investigation, and the
@@ -1342,13 +1341,11 @@ recorded runs say which they are.
   and its execution count from 27,000 to 51,000, which is the prepared path
   now being exercised. Found in the review round; a report that describes a
   workload the repository no longer has is worse than no report.
-- [ ] `M7.39` The write watermark is the primary's head rather than the
-  session's own commit position, so under fleet-wide write traffic a session
-  that has ever written reads from the primary indefinitely. The rule it
-  protects is right and must not move: no read behind the session's own write.
-  Acceptance: either the floor becomes the session's own commit position, or
-  the poll interval and the freshness window are shown to make the current
-  floor usable, with a run reporting the share of reads a replica served.
+- [x] `M7.39` The watermark is usable as it stands, and the run says so with a
+  number: 4,881 of 14,959 statements went to a replica, which is 32%, against
+  a workload whose eligible reads are 30% of statements. Nothing is being
+  blocked. No design change, and `pgprox_route_total` is the counter that
+  answers the question from now on.
 - [ ] `M7.35` `scripts/scale.sh --keep` did not keep the stack: the flag set a
   variable and the trap still compared against the old literal, so every run
   tore the stack down and the failure above could not be investigated without

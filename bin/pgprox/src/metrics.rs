@@ -64,25 +64,26 @@ pub async fn render(
     node: NodeId,
     tenants: &TenantAllowlist,
     slab: &pgprox_core::buf::BufferSlab,
+    routes: &crate::routes::RouteCounts,
 ) -> String {
     let node = node.get().to_string();
     // The one read that fans out is asked for locally, because a scrape is of
     // this node: Prometheus scrapes every pod, and a cluster-scoped answer
     // would count every client once per pod.
     let clients = observatory.clients(Scope::Local).await.unwrap_or_default();
+    let sources = Sources {
+        observatory,
+        clients: &clients,
+        node: &node,
+        tenants,
+        slab,
+        routes,
+    };
     let mut out = String::with_capacity(4096);
 
     for metric in metrics::ALL {
         out.push_str(&metric.describe());
-        samples(
-            &mut out,
-            metric,
-            observatory,
-            &clients,
-            &node,
-            tenants,
-            slab,
-        );
+        samples(&mut out, metric, &sources);
     }
     out
 }
@@ -136,6 +137,22 @@ fn client_samples(
     }
 }
 
+/// Statements routed, by where they went.
+fn route_samples(
+    out: &mut String,
+    metric: &Metric,
+    node: &str,
+    routes: &crate::routes::RouteCounts,
+) {
+    for (route, count) in [("primary", routes.primary()), ("replica", routes.replica())] {
+        let _ = writeln!(
+            out,
+            "{}{{node=\"{node}\",route=\"{route}\"}} {count}",
+            metric.name
+        );
+    }
+}
+
 /// The node's buffer slab, in the three numbers that describe it.
 ///
 /// The bound is a sample rather than a comment, because "47 outstanding" means
@@ -161,17 +178,32 @@ fn slab_samples(
 }
 
 /// The samples for one metric, or none where nothing can answer it.
-fn samples(
-    out: &mut String,
-    metric: &Metric,
-    observatory: &dyn Observatory,
-    clients: &[pgprox_core::admin::ClientView],
-    node: &str,
-    tenants: &TenantAllowlist,
-    slab: &pgprox_core::buf::BufferSlab,
-) {
+/// What every metric needs to answer for itself.
+///
+/// A struct rather than eight parameters: the list grew one at a time and each
+/// addition was reasonable, which is how a signature ends up unreadable.
+struct Sources<'a> {
+    observatory: &'a dyn Observatory,
+    clients: &'a [pgprox_core::admin::ClientView],
+    node: &'a str,
+    tenants: &'a TenantAllowlist,
+    slab: &'a pgprox_core::buf::BufferSlab,
+    routes: &'a crate::routes::RouteCounts,
+}
+
+fn samples(out: &mut String, metric: &Metric, from: &Sources<'_>) {
+    let Sources {
+        observatory,
+        clients,
+        node,
+        tenants,
+        slab,
+        routes,
+    } = *from;
+
     match metric.name {
         "pgprox_buffer_slab" => slab_samples(out, metric, node, slab),
+        "pgprox_route_total" => route_samples(out, metric, node, routes),
         "pgprox_client_conns" => client_samples(out, metric, clients, node, tenants),
         "pgprox_upstream_conns" => {
             for pool in observatory.pools(Scope::Local) {
@@ -313,6 +345,7 @@ mod tests {
             NodeId::new(1),
             &TenantAllowlist::new(),
             &test_slab(),
+            &crate::routes::RouteCounts::new(),
         )
         .await
     }
@@ -320,7 +353,14 @@ mod tests {
     async fn rendered_allowing(tenant: &str) -> String {
         let mut allowlist = TenantAllowlist::new();
         allowlist.add(TenantId::new(tenant)).unwrap();
-        render(seeded().as_ref(), NodeId::new(1), &allowlist, &test_slab()).await
+        render(
+            seeded().as_ref(),
+            NodeId::new(1),
+            &allowlist,
+            &test_slab(),
+            &crate::routes::RouteCounts::new(),
+        )
+        .await
     }
 
     #[tokio::test]

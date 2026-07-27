@@ -244,6 +244,21 @@ pub const CLUSTER_VIEW_HASH: Metric = Metric {
     labels: &[],
 };
 
+/// Statements routed, by where they went.
+///
+/// The share a replica served, which nothing could answer before: a pool shows
+/// connections rather than statements, and a replica pool at zero could mean
+/// the router never chose one or that it chose one and the connection was
+/// already warm. A read that a session's own write watermark sends to the
+/// primary is correct and shows up here as a primary statement, which is what
+/// makes the ratio worth watching rather than alarming.
+pub const ROUTE_TOTAL: Metric = Metric {
+    name: "pgprox_route_total",
+    kind: Kind::Counter,
+    help: "Statements routed, by where they went: primary or replica",
+    labels: &[ROUTE],
+};
+
 /// Buffers borrowed from the node's slab, by state.
 ///
 /// The number that says whether buffer reclaim is working. `outstanding` at or
@@ -295,6 +310,7 @@ pub const ALL: &[Metric] = &[
     CLUSTER_VIEW_HASH,
     CONFIG_RELOAD_TOTAL,
     BUFFER_SLAB,
+    ROUTE_TOTAL,
 ];
 
 impl Metric {

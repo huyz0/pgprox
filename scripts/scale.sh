@@ -167,6 +167,27 @@ proxy_rss_kb() {
     awk '/^VmRSS:/ { print $2 }' /proc/1/status 2>/dev/null | tr -d '\r'
 }
 
+# Statements routed, as `primary replica`, from the node under test.
+#
+# The share a replica served is the point of the replica machinery, and until
+# this counter existed nothing could say it: a replica pool at zero means
+# either that the router never chose one or that it did and the connection was
+# already warm.
+route_counts() {
+  local metrics
+  if [[ "$MODE" == "local" ]]; then
+    metrics="$(curl --silent "http://127.0.0.1:$LOCAL_ADMIN_PORT/metrics" 2>/dev/null)"
+  else
+    metrics="$("${COMPOSE[@]}" exec -T pgprox-1 \
+      curl --silent http://127.0.0.1:9090/metrics 2>/dev/null)"
+  fi
+  awk '
+    /^pgprox_route_total\{.*route="primary"/ { primary = $NF }
+    /^pgprox_route_total\{.*route="replica"/ { replica = $NF }
+    END { printf "%d %d\n", primary, replica }
+  ' <<< "$metrics"
+}
+
 # How many connections the fleet is holding on the primary right now.
 upstream_connections() {
   if [[ "$MODE" == "local" ]]; then
@@ -276,6 +297,9 @@ run_scale() {
     return 1
   fi
 
+  local routed_primary routed_replica
+  read -r routed_primary routed_replica < <(route_counts)
+
   local peak_rss peak_upstream
   read -r peak_rss peak_upstream < "$proxy_report.watch"
 
@@ -314,6 +338,10 @@ run_scale() {
   echo "    p50            ${loaded_p50}us"
   echo "    p99            ${loaded_p99}us"
   echo "  upstream conns   $peak_upstream of $UPSTREAM_CAP"
+  local routed_total=$(( routed_primary + routed_replica ))
+  if (( routed_total > 0 )); then
+    echo "  statements       $routed_total: $routed_replica on a replica ($(( routed_replica * 100 / routed_total ))%)"
+  fi
   echo "  baseline         $direct_connections connections, $direct_errors error(s)"
   echo
 
@@ -394,6 +422,8 @@ run_scale() {
     "mode=$MODE" \
     "direct_connections=$direct_connections" \
     "direct_errors=$direct_errors" \
+    "routed_primary=$routed_primary" \
+    "routed_replica=$routed_replica" \
     > "$OUT_DIR/summary.env"
   echo "  numbers written to $OUT_DIR/summary.env"
 }
