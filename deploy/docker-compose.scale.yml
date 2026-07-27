@@ -39,12 +39,15 @@ services:
       # A space rather than an empty string: the entrypoint expands this
       # unquoted, and `:-` would substitute the default for an empty value.
       PGPROX_REQUIRE_TLS: " "
-      # Debug for the proxy's own crates, so a refused client leaves a line.
-      # It goes here rather than on the anchor: a service's own `environment`
-      # block replaces the anchor's rather than merging with it, which is why
-      # setting it there produced no debug output and a wrong conclusion about
-      # where some dropped clients were going.
-      RUST_LOG: "info,pgprox_app=debug,pgprox_session=debug"
+      # Info by default: a measurement run must not be measuring its own
+      # logging. Raise it when investigating, which is what found M7.36:
+      #
+      #   SCALE_LOG=debug scripts/scale.sh 1000
+      #
+      # It goes here rather than on the compose anchor because a service's own
+      # `environment` block replaces the anchor's rather than merging with it,
+      # so a setting there never reached this node at all.
+      RUST_LOG: "${SCALE_LOG:-info}"
     ulimits:
       nofile:
         soft: 262144

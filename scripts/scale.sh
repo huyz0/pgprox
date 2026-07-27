@@ -46,6 +46,11 @@ SEED="${SCALE_SEED:-1}"
 
 COMPOSE=(docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.scale.yml)
 
+# What the node under test logs. Info by default, because a run that measures
+# its own logging is measuring the wrong thing; `SCALE_LOG=debug` when a run
+# needs to say why it refused something.
+export SCALE_LOG="${SCALE_LOG:-info}"
+
 if [[ "$MODE" == "local" ]]; then
   source "$(dirname "${BASH_SOURCE[0]}")/localstack.sh"
 fi

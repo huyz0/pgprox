@@ -1330,6 +1330,12 @@ recorded runs say which they are.
   clients writing continuously and a 250ms poll, that is almost never true,
   even though the replicas were 27ms behind. Correct and conservative rather
   than wrong, and the design question it raises is M7.39.
+- [x] `M7.41` The scale stack logged at debug, so the recorded run was partly
+  measuring its own logging. Turned on while investigating M7.36 and left on.
+  Info by default now, with `SCALE_LOG=debug` for an investigation, and the
+  run re-taken: the hop moved from 338us to 351us at p50, which is inside the
+  variance either way, and the point is that a measurement run should not be
+  writing a line per refusal.
 - [ ] `M7.39` The write watermark is the primary's head rather than the
   session's own commit position, so under fleet-wide write traffic a session
   that has ever written reads from the primary indefinitely. The rule it
