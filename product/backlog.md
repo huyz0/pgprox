@@ -1271,11 +1271,15 @@ recorded runs say which they are.
   Acceptance: the list is cross-referenced against tier-1 coverage, so an
   entry means "hot, and the tests do not reach this either", which is the
   thing worth acting on.
-- [ ] `M7.40` The cross-referenced list's own findings: `Wire::queue` at 79%
-  in both the replay and tier 1, `serve::told` at 36% in both, and
-  `entry::tls` and `entry::static_admin` at 22% and 14%. The first two are on
-  every statement's path. Acceptance: each is either tested or has a recorded
-  reason its remaining regions are unreachable.
+- [x] `M7.40` `Wire::queue` and `serve::told` are tested at the branches that
+  were bare: the ordering rule that holds everything after an overflow in the
+  overflow, and both of `told`'s error arms. `entry::tls` and
+  `entry::static_admin` are left as they are with a reason: they are the
+  composition root reading certificates and passwords off disk at start, their
+  remaining regions are file-system failures, and a node that cannot read its
+  own key fails visibly at boot rather than under load. They are the two
+  functions in the repository where an integration test would be testing
+  `std::fs`.
 - [x] `M7.26` The prepared-statement path runs on every statement and the
   replay reaches little of it: `map_statement_name` 8%, `ready_statement` 18%,
   `statement_of` 29%. It is also the path that deadlocked twice in M6.

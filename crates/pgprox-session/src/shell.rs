@@ -651,6 +651,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn messages_queued_while_the_slab_is_empty_keep_their_order() {
+        // Once anything has overflowed, everything after it must too. A second
+        // message that found a buffer while the first was in the overflow
+        // would reach the client first, and a client reading an error before
+        // the answer it belongs to is worse than either message alone.
+        let slab = BufferSlab::new(64, 1);
+        let held = slab.try_borrow().unwrap();
+
+        let (server, client) = duplex(4096);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+
+        wire.queue(encode::authentication_ok);
+        // Freed between the two, so the second would find a buffer if the
+        // overflow did not hold everything after it.
+        drop(held);
+        wire.queue(|out| encode::ready_for_query(out, TxStatus::Idle));
+        wire.flush().await.unwrap();
+
+        assert_eq!(peer.expect_auth().await, AuthRequest::Ok);
+        assert_eq!(peer.expect().await.0, Tag::READY_FOR_QUERY);
+    }
+
+    #[tokio::test]
     async fn an_exhausted_slab_still_sends_the_message_a_caller_queued() {
         // A refusal that never reaches the client leaves a driver with a
         // closed socket and no reason, which is worse than the memory.

@@ -1432,6 +1432,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refusal_reaches_the_client_and_anything_else_passes_through() {
+        // `told` is the one place a refusal from the pool or the parameter
+        // fetch becomes a message on the wire. Both of its branches matter:
+        // one has to write, and the other has to not invent a message for a
+        // client that has already gone.
+        use tokio::io::AsyncReadExt;
+
+        let (ours, mut client) = tokio::io::duplex(4096);
+        let mut wire = Wire::new(ours, test_slab());
+
+        let refused: Result<(), ShellError> = Err(ShellError::Refused(ClientError::Draining));
+        let error = told(&mut wire, refused).await.unwrap_err();
+        assert!(matches!(error, ShellError::Refused(ClientError::Draining)));
+
+        let mut header = [0_u8; 5];
+        client.read_exact(&mut header).await.unwrap();
+        assert_eq!(Tag(header[0]), Tag::ERROR_RESPONSE);
+        let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+        let mut body = vec![0; len - 4];
+        client.read_exact(&mut body).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("57P01"),
+            "the client was not told why"
+        );
+
+        // A disconnect is not a refusal: there is nobody to tell.
+        let gone: Result<(), ShellError> = Err(ShellError::Disconnected);
+        assert!(matches!(
+            told(&mut wire, gone).await.unwrap_err(),
+            ShellError::Disconnected
+        ));
+
+        // And a success passes through untouched.
+        assert_eq!(told(&mut wire, Ok(7)).await.unwrap(), 7);
+    }
+
+    #[tokio::test]
     async fn a_full_node_says_so_rather_than_dropping_the_socket() {
         // A dropped socket reads as a network fault to every driver and sends
         // the operator to the wrong place.
