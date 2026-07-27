@@ -154,7 +154,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         // usually "current transaction is aborted".
         let mut failure = None;
         loop {
-            let (tag, body) = self.frame().await?;
+            let (tag, body) = match self.frame().await {
+                Ok(frame) => frame,
+                // A fatal error is an `ErrorResponse` and then a closed socket,
+                // with no `ReadyForQuery` after it, which is what Postgres and
+                // this proxy both do. Reporting the disconnect instead of the
+                // message loses the only part that says why: a run full of
+                // "disconnected" sent this milestone looking for a proxy bug
+                // when the proxy was answering 53300 correctly.
+                Err(SessionError::Disconnected | SessionError::Io(_)) if failure.is_some() => {
+                    return Err(SessionError::Server(
+                        failure.unwrap_or_else(|| "the server closed".to_owned()),
+                    ));
+                }
+                Err(other) => return Err(other),
+            };
             let frame = Frame::new(tag, &body);
             match backend::decode(&frame) {
                 Ok(BackendMessage::ReadyForQuery(_)) => {
@@ -507,6 +521,46 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, SessionError::Server(_)), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_fatal_error_is_reported_by_its_message_rather_than_the_close() {
+        // A fatal error is an `ErrorResponse` and then a closed socket, with
+        // no `ReadyForQuery`. Reporting the disconnect loses the only part
+        // that says why, and a run full of "disconnected" reads as a proxy
+        // dropping sockets when the proxy answered correctly.
+        let (client, mut server) = pair();
+        tokio::spawn(async move {
+            server.take_startup().await;
+            let mut out = Vec::new();
+            encode::authentication_ok(&mut out);
+            server.send(&out).await;
+            server.ready().await;
+
+            server.take().await;
+            let mut out = Vec::new();
+            encode::error_response(&mut out, &ClientError::Draining);
+            server.send(&out).await;
+            // And gone, with no ReadyForQuery, as a fatal error is.
+            server
+        });
+
+        let mut session = Session::start(client, "u", "d", "").await.unwrap();
+        let error = session
+            .transaction(&Transaction {
+                think_ms: 0,
+                tenant: "hot-0".into(),
+                statements: vec![statement("SELECT 1", false)],
+            })
+            .await
+            .unwrap_err();
+
+        match error {
+            SessionError::Server(message) => {
+                assert!(message.contains("administrator"), "{message}");
+            }
+            other => panic!("reported as {other} rather than by its message"),
+        }
     }
 
     #[tokio::test]

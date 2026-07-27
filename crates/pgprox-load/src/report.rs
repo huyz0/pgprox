@@ -237,6 +237,13 @@ pub struct Report {
     /// because most of its work errored out immediately is the failure mode a
     /// load client has to make impossible to miss.
     pub errors: u64,
+    /// What the first failure said, when there was one.
+    ///
+    /// A count on its own is not diagnosable: three errors in a run of sixteen
+    /// thousand is either a proxy refusing connections or a client giving up
+    /// on its own timeout, and those want opposite responses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_error: Option<String>,
     /// Per-transaction latency.
     pub latency: Latency,
 }
@@ -397,6 +404,7 @@ mod tests {
             duration_ms: 10_000,
             transactions: 50_000,
             errors: 0,
+            first_error: None,
             latency: Latency::from(&histogram_of(&[100, 200, 300, 400, 500])),
         }
     }

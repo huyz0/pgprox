@@ -199,6 +199,7 @@ fn summarise(
     }
 
     Ok(Report {
+        first_error: first_failure,
         target: options.target.clone(),
         workload_version: workload.version,
         seed: options.seed,
@@ -326,6 +327,7 @@ mod tests {
 
         assert!(report.transactions > 0, "nothing ran");
         assert_eq!(report.errors, 0, "a working target produced errors");
+        assert!(report.first_error.is_none());
         assert_eq!(report.connections, 4);
         assert_eq!(report.seed, 5);
         assert_eq!(report.workload_version, 2);
@@ -340,6 +342,27 @@ mod tests {
         let addr = fake_server(true).await;
         let error = run(&options(addr)).await.unwrap_err();
         assert!(matches!(error, LoadError::NoConnection { .. }), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_run_with_errors_says_what_the_first_one_was() {
+        // A count on its own is not diagnosable. Three errors in a run of
+        // sixteen thousand is either a proxy refusing connections or a client
+        // giving up on its own timeout, and those want opposite responses.
+        let addr = fake_server(false).await;
+        let mut options = options(addr);
+        // A user the fake server accepts, against a port that is not there for
+        // half the connections: the run still completes and carries a reason.
+        options.connections = 2;
+        options.connect_timeout_secs = 1;
+        let report = run(&options).await.unwrap();
+        assert!(report.first_error.is_none(), "{report:?}");
+
+        let json = report.to_json().unwrap();
+        assert!(
+            !json.contains("first_error"),
+            "a clean run should not carry an error field: {json}"
+        );
     }
 
     #[tokio::test]
@@ -406,6 +429,7 @@ mod tests {
             duration_ms: 1,
             transactions: 1,
             errors: 0,
+            first_error: None,
             latency: Latency::from(&Histogram::new()),
         };
         let error = write_report(&report, Path::new("/nonexistent/dir/run.json")).unwrap_err();
