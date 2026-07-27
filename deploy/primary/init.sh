@@ -47,4 +47,14 @@ cat >> "$PGDATA/postgresql.conf" <<-CONF
 	# fails with "requested WAL segment has already been removed", which reads
 	# like a network fault and is not one.
 	wal_keep_size = 256MB
+	# Room for the fleet's configured cap of sixty, the direct baseline a
+	# scale run measures against, replication, and an operator. Postgres's own
+	# limit is not the thing under test: the property being measured is the
+	# proxy honouring the cap in its configuration document, and a database
+	# that ran out first would make the run about Postgres.
+	#
+	# A replica inherits this: pg_basebackup copies the primary's
+	# postgresql.conf, and hot standby refuses to start with a lower value
+	# than the primary's anyway.
+	max_connections = 300
 CONF

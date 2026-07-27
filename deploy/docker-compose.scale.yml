@@ -39,6 +39,12 @@ services:
       # A space rather than an empty string: the entrypoint expands this
       # unquoted, and `:-` would substitute the default for an empty value.
       PGPROX_REQUIRE_TLS: " "
+      # Debug for the proxy's own crates, so a refused client leaves a line.
+      # It goes here rather than on the anchor: a service's own `environment`
+      # block replaces the anchor's rather than merging with it, which is why
+      # setting it there produced no debug output and a wrong conclusion about
+      # where some dropped clients were going.
+      RUST_LOG: "info,pgprox_app=debug,pgprox_session=debug"
     ulimits:
       nofile:
         soft: 262144

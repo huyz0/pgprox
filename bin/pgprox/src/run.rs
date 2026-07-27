@@ -145,7 +145,7 @@ impl Listeners {
     /// Fails when either port cannot be bound.
     pub async fn bind(addrs: Addrs) -> std::io::Result<Self> {
         Ok(Self {
-            client: tokio::net::TcpListener::bind(addrs.client).await?,
+            client: bind_client(addrs.client)?,
             admin: tokio::net::TcpListener::bind(addrs.admin).await?,
             gossip: tokio::net::TcpListener::bind(addrs.gossip).await?,
         })
@@ -164,6 +164,34 @@ impl Listeners {
             gossip: self.gossip.local_addr()?,
         })
     }
+}
+
+/// How many connections may sit in the kernel's accept queue.
+///
+/// The default is 1024, and a scale run at a thousand connections overflowed
+/// it: `ListenOverflows` on the node counted the drops, and the clients saw a
+/// socket that closed with nothing on it, which looks exactly like a proxy
+/// bug and is not one. A reconnect storm after a node restarts is the same
+/// shape and is the case that matters in production.
+///
+/// The kernel caps this at `net.core.somaxconn`, so a deployment aiming at the
+/// roadmap's 100k raises that too; asking for more than the cap is not an
+/// error, it is silently trimmed.
+const LISTEN_BACKLOG: u32 = 8192;
+
+/// Binds the client port with a backlog deep enough for a connection storm.
+///
+/// `TcpListener::bind` does not take one, so the socket is built explicitly.
+fn bind_client(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+    let socket = match addr {
+        SocketAddr::V4(_) => tokio::net::TcpSocket::new_v4()?,
+        SocketAddr::V6(_) => tokio::net::TcpSocket::new_v6()?,
+    };
+    // Same as `TcpListener::bind` does, and for the same reason: a node that
+    // restarts must not wait out `TIME_WAIT` before it can serve again.
+    socket.set_reuseaddr(true)?;
+    socket.bind(addr)?;
+    socket.listen(LISTEN_BACKLOG)
 }
 
 /// What one session needs, built from a node.
