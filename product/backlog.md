@@ -1455,6 +1455,23 @@ measurement found three things.
   The entrypoint waits for the sidecar's socket to exist, and a restart leaves
   the previous one behind, so the wait passed instantly and the proxy exited
   unable to connect. The stale socket is removed before the sidecar starts.
+- [x] `M7.47` Ten thousand connections, which needed three changes and one
+  thing this machine cannot give. The load client ships in the deploy image
+  and runs as a `loadgen` service inside the compose network, because the WSL
+  host has 4,096 ephemeral ports (44620-48715) and a container has 28,231, so
+  ten thousand connections to one address is possible from inside and not from
+  outside; it also drops the published-port forwarder out of the path. The
+  node under test gets `net.core.somaxconn` of 16384 through a compose sysctl,
+  so the 8192 backlog it asks for is not trimmed to 4096. And `bin/pgload`
+  takes `--ramp`, because ten thousand connections arriving in the same
+  instant each run a transaction before any of them thinks, which measures a
+  stampede rather than a steady state.
+- [x] `M7.48` `product/perf/workload-idle.yaml`: the reference workload's
+  shapes with a think time of 30s to 5min. The reference workload asks what a
+  busy tenant costs; this one asks what an open connection costs, which is the
+  other half of the design point and the question a connection-count target is
+  actually about. Identical in every other field, so a difference between two
+  runs has one cause.
 - [ ] `M7.46` The proxy spends about 3.2 cores serving 700 statements a second
   at 2000 connections, which is 4.5ms of CPU per statement against an
   instruction count of roughly 10us for the decision path. A `perf` profile of

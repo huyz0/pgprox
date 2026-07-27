@@ -123,6 +123,13 @@ pub async fn run(options: &Options) -> Result<Report, LoadError> {
         let workload = Arc::clone(&workload);
         let tallies = Arc::clone(&tallies);
         tasks.push(tokio::spawn(async move {
+            // Spread over the ramp, so the run measures connections rather
+            // than the stampede of all of them arriving together.
+            if options.ramp_secs > 0 {
+                let spread = Duration::from_secs(options.ramp_secs);
+                let share = spread.mul_f64(f64::from(index) / f64::from(options.connections));
+                tokio::time::sleep(share).await;
+            }
             let tally = one_connection(&options, &workload, index, deadline).await;
             tallies.lock().await.push(tally);
         }));

@@ -23,8 +23,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release -p pgprox \
  && cargo build --release -p pgprox-auth --features integration --bin mock_sidecar \
+ && cargo build --release -p pgload \
  && mkdir -p /out \
- && cp target/release/pgprox target/release/mock_sidecar /out/
+ && cp target/release/pgprox target/release/mock_sidecar target/release/pgload /out/
 
 FROM debian:bookworm-slim
 # curl is here for the container healthcheck and for an operator inside the
@@ -37,6 +38,12 @@ RUN apt-get update \
 
 COPY --from=build /out/pgprox /usr/local/bin/pgprox
 COPY --from=build /out/mock_sidecar /usr/local/bin/mock_sidecar
+# The load client ships in the same image so a scale run can generate its load
+# from inside the network. On the machine this was built on, the host has 4,096
+# ephemeral ports and a container has 28,231, so ten thousand connections to
+# one address is possible from in here and not from out there. It also skips
+# the published-port forwarder, which is a hop that is not the proxy.
+COPY --from=build /out/pgload /usr/local/bin/pgload
 
 # Nothing in the image decides anything: the configuration is mounted and the
 # node's identity is an argument.

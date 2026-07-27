@@ -71,6 +71,15 @@ pub struct Options {
     pub out: PathBuf,
     /// How long to give one connection's startup before giving up on it.
     pub connect_timeout_secs: u64,
+    /// Over how many seconds the connections arrive.
+    ///
+    /// Zero means all at once, which is a reconnect storm rather than a steady
+    /// state: every connection runs its first transaction before any of them
+    /// has begun to think, so ten thousand connections offer ten thousand
+    /// transactions in the same instant and a run measures the queue that
+    /// forms. Real clients arrive spread out, and so does a run that means to
+    /// measure what connections cost rather than what a stampede costs.
+    pub ramp_secs: u64,
     /// Whether to ask for TLS, and to accept whatever certificate arrives.
     ///
     /// Off by default, which is what a direct connection to Postgres in the
@@ -92,6 +101,7 @@ impl Default for Options {
             password: String::new(),
             out: PathBuf::from("report.json"),
             connect_timeout_secs: 30,
+            ramp_secs: 0,
             tls: false,
         }
     }
@@ -133,6 +143,7 @@ impl Options {
                 "--database" => options.database = value()?,
                 "--password" => options.password = value()?,
                 "--out" => options.out = PathBuf::from(value()?),
+                "--ramp" => options.ramp_secs = number(&value()?, "--ramp")?,
                 "--tls-insecure" => options.tls = true,
                 "--connect-timeout" => {
                     options.connect_timeout_secs = number(&value()?, "--connect-timeout")?;
@@ -204,6 +215,8 @@ mod tests {
             "/run.json",
             "--connect-timeout",
             "5",
+            "--ramp",
+            "30",
             "--tls-insecure",
         ]);
 
@@ -218,6 +231,7 @@ mod tests {
         assert_eq!(options.out, PathBuf::from("/run.json"));
         assert_eq!(options.connect_timeout_secs, 5);
         assert!(options.tls, "--tls-insecure did not reach the field");
+        assert_eq!(options.ramp_secs, 30);
     }
 
     #[test]

@@ -19,6 +19,25 @@
 # onto sixty upstream connections is the property being measured.
 
 services:
+  # Where the load comes from at high connection counts: inside the network,
+  # with the container's own ephemeral port range and file descriptor limit,
+  # and without the published-port forwarder in the path.
+  loadgen:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      pgprox-1:
+        condition: service_healthy
+    entrypoint: ["sleep", "infinity"]
+    volumes:
+      - ../product/perf:/workload:ro
+      - ../target/scale:/out
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
   primary:
     ports:
       - "15432:5432"
@@ -52,3 +71,10 @@ services:
       nofile:
         soft: 262144
         hard: 262144
+    sysctls:
+      # The proxy asks to listen with a backlog of 8192 and the kernel trims it
+      # to this. The stock 4096 is not enough for a ten-thousand-connection
+      # ramp: the queue overflows and the client sees a socket that closed with
+      # nothing on it, which is indistinguishable from a proxy bug and was
+      # mistaken for one in M7.37.
+      net.core.somaxconn: "16384"
