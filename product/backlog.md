@@ -1439,7 +1439,31 @@ recorded runs say which they are.
   and the roadmap says what meeting it needs rather than pretending the
   milestone is finished.
 
-## M8 and later
+## Found after M7 closed
+
+Answering "how many connections would 16 GB and 8 cores hold" needed CPU and
+memory per connection, which the milestone had never measured directly. The
+measurement found three things.
+
+- [x] `M7.44` `Wire::fill` borrowed a slab buffer before awaiting the client's
+  next statement, so every connection held one through its whole think time.
+  That is the opposite of what the slab is for: `plan.md` says a connection
+  borrows when its socket becomes readable, and an idle connection is supposed
+  to cost a socket and a state struct. The read goes into a stack chunk first
+  now and the buffer is borrowed only once bytes have arrived.
+- [x] `M7.45` `docker compose restart pgprox-1` killed the node every time.
+  The entrypoint waits for the sidecar's socket to exist, and a restart leaves
+  the previous one behind, so the wait passed instantly and the proxy exited
+  unable to connect. The stale socket is removed before the sidecar starts.
+- [ ] `M7.46` The proxy spends about 3.2 cores serving 700 statements a second
+  at 2000 connections, which is 4.5ms of CPU per statement against an
+  instruction count of roughly 10us for the decision path. A `perf` profile of
+  the native binary puts 19% in `__memmove_avx_unaligned_erms` and another
+  12% in the allocator. The likely cause is `Wire::consume`, which drains
+  consumed bytes off the front of the read buffer and therefore moves the
+  remainder on every frame, where `FrameRelay` in `pgprox-proto` uses a cursor
+  for exactly this reason. Acceptance: the copy per frame is gone or explained,
+  and the CPU per connection is re-measured against the number above.
 
 Not yet decomposed. See [roadmap.md](roadmap.md). The `next-task` skill
 decomposes the next milestone when the current one closes.

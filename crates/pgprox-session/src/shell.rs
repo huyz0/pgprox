@@ -181,12 +181,18 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
 
     /// Reads until at least one more byte arrives.
     async fn fill(&mut self) -> Result<(), ShellError> {
-        // Borrowed here rather than at construction: a connection that is
-        // waiting for its client to say something holds nothing.
-        if self.read.is_none() {
-            self.read = Some(Self::borrow(&self.slab).await?);
-        }
-
+        // The read happens into a stack chunk first, and the slab buffer is
+        // borrowed only once bytes have actually arrived.
+        //
+        // The order matters more than it looks. Borrowing before the await
+        // means every connection waiting for its client to say something holds
+        // a buffer for the whole of its think time, which is the opposite of
+        // what the slab is for: at two thousand connections against a slab of
+        // two thousand it exhausted, every borrow fell into the retry loop,
+        // and the node burned 3.8 cores serving 700 statements a second. The
+        // design in `plan.md` says a connection borrows "when the socket
+        // becomes readable", and this is what that means for a stream this
+        // crate cannot ask about readability.
         let mut chunk = [0_u8; 4096];
         let read = self.io.read(&mut chunk).await?;
         if read == 0 {
@@ -194,6 +200,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
             // its buffer for the connections still going.
             self.read = None;
             return Err(ShellError::Disconnected);
+        }
+
+        if self.read.is_none() {
+            self.read = Some(Self::borrow(&self.slab).await?);
         }
         if let Some(buf) = self.read.as_mut() {
             buf.extend_from_slice(&chunk[..read]);

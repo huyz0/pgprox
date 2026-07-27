@@ -55,6 +55,11 @@ x-proxy: &proxy
         -addext "subjectAltName=DNS:$${PGPROX_NODE_NAME},DNS:localhost" \
         -keyout /tmp/tls.key -out /tmp/tls.crt >/dev/null 2>&1
 
+      # The socket from a previous life, if this container is being restarted
+      # rather than created. The wait below tests for the file, so a stale one
+      # satisfies it instantly and the proxy then fails to connect and exits:
+      # `docker compose restart pgprox-1` killed the node every time.
+      rm -f /tmp/sidecar.sock
       /usr/local/bin/mock_sidecar /tmp/sidecar.sock &
       # The proxy refuses to start without its sidecar, which is right: a node
       # that cannot resolve credentials authenticates nobody. In a pod the
