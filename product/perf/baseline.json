@@ -3,8 +3,8 @@
   "pgprox-proto::scan_frame": 20,
   "pgprox-proto::decode_backend_message": 162,
   "pgprox-proto::relay_frame": 188,
-  "pgprox-route::route_point_select": 7778,
-  "pgprox-route::route_update": 8483,
-  "pgprox-route::route_begin": 1572,
+  "pgprox-route::route_point_select": 6982,
+  "pgprox-route::route_update": 7423,
+  "pgprox-route::route_begin": 1536,
   "pgprox-pool::acquire_and_release": 443
 }

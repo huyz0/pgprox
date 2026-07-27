@@ -1256,7 +1256,7 @@ recorded runs say which they are.
   the local stack speaks plaintext, so the TLS monomorphisations never ran and
   the list is naming the stack rather than the code. That is a property of
   where the profile was taken, and it is what M7.21 changes.
-- [ ] `M7.24` The SQL lexer is the top of the optimization queue.
+- [x] `M7.24` The SQL lexer is the top of the optimization queue.
   `pgprox_core::sql::is_word_char` ran 3.6 million times in a 200-connection
   25-second replay, `next` and `skip_trivia` another 1.3 million between them,
   which is roughly ninety token calls per statement, and the route decision
