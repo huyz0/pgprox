@@ -153,6 +153,17 @@ pub fn close_statement(out: &mut Vec<u8>, statement: &str) {
     });
 }
 
+/// `E`: run a bound portal to completion.
+///
+/// A row limit of zero, which means "all of them" and is what every driver
+/// sends unless it is using a cursor.
+pub fn execute(out: &mut Vec<u8>, portal: &str) {
+    tagged(out, Tag::EXECUTE, |b| {
+        cstr(b, portal);
+        b.extend_from_slice(&0_i32.to_be_bytes());
+    });
+}
+
 /// `S`: end an extended query sequence.
 pub fn sync(out: &mut Vec<u8>) {
     tagged(out, Tag::SYNC, |_| {});
@@ -262,6 +273,22 @@ mod tests {
             Startup::CancelRequest { conn },
             "a cancel key did not survive the round trip, so a cancel would reach nobody"
         );
+    }
+
+    #[test]
+    fn an_execute_names_its_portal_and_asks_for_every_row() {
+        // Round-tripped through this crate's own decoder, which is the check a
+        // hand-written length prefix needs.
+        let mut out = Vec::new();
+        execute(&mut out, "my_portal");
+
+        let decoded = crate::frame::decode(&out, crate::frame::DEFAULT_MAX_FRAME).unwrap();
+        let crate::frame::Decoded::Frame(frame, consumed) = decoded else {
+            panic!("an execute did not decode as a frame");
+        };
+        assert_eq!(consumed, out.len());
+        assert_eq!(frame.tag(), Tag::EXECUTE);
+        assert_eq!(frame.body(), b"my_portal\0\0\0\0\0");
     }
 
     #[test]

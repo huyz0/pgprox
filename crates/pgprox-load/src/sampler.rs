@@ -30,6 +30,12 @@ pub struct Planned {
     pub sql: String,
     /// Whether it writes.
     pub kind: Kind,
+    /// Whether the client sends this one through the extended protocol, with
+    /// a named prepared statement, rather than the simple query protocol.
+    ///
+    /// Every mainstream driver uses the extended protocol, and it is the path
+    /// whose statement mapping the proxy has to get right.
+    pub prepared: bool,
     /// Whether the client may ask for this one to be served by a replica.
     ///
     /// Only reads are ever eligible, and only the declared fraction of them.
@@ -59,6 +65,7 @@ pub struct Sampler<'w> {
     workload: &'w Workload,
     rng: Rng,
     replica_units: u64,
+    prepared_units: u64,
     tenant_shares: Vec<u64>,
     statement_weights: Vec<u64>,
     size_weights: Vec<u64>,
@@ -77,6 +84,7 @@ impl<'w> Sampler<'w> {
             workload,
             rng: Rng::new(seed),
             replica_units: units(workload.replica_read_fraction),
+            prepared_units: units(workload.prepared_fraction),
             tenant_shares: workload.tenants.iter().map(|g| units(g.share)).collect(),
             statement_weights: workload
                 .statements
@@ -133,12 +141,16 @@ impl<'w> Sampler<'w> {
         // compared field by field.
         let roll = self.rng.below(SCALE);
         let eligible = statement.kind == Kind::Read && roll < self.replica_units;
+        // Its own draw, so changing one fraction does not shift the other's
+        // stream and two runs stay comparable field by field.
+        let prepared = self.rng.below(SCALE) < self.prepared_units;
 
         Planned {
             name: statement.name.clone(),
             sql: statement.sql.clone(),
             kind: statement.kind,
             replica_eligible: eligible,
+            prepared,
         }
     }
 }
@@ -320,6 +332,24 @@ mod tests {
         assert!(
             transactions.iter().all(|t| !t.statements.is_empty()),
             "an empty transaction would send nothing and still be counted"
+        );
+    }
+
+    #[test]
+    fn the_prepared_share_is_the_declared_one() {
+        // Half, per the committed workload. The extended protocol is what
+        // every mainstream driver uses and what deadlocked twice in M6, so a
+        // workload that never sent it measured a proxy nobody deploys.
+        let transactions = draw(31, 20_000);
+        let statements: Vec<&Planned> = transactions
+            .iter()
+            .flat_map(|t| t.statements.iter())
+            .collect();
+        let prepared =
+            statements.iter().filter(|s| s.prepared).count() as f64 / statements.len() as f64;
+        assert!(
+            (prepared - 0.50).abs() < 0.02,
+            "{prepared:.3} of statements were prepared, workload declares 0.50"
         );
     }
 

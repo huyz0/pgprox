@@ -3,15 +3,22 @@
 //! Generic over the stream so the whole conversation can be tested against a
 //! fake server in memory. The socket only appears in [`crate::run`].
 //!
-//! # Why the simple query protocol
+//! # Both protocols
 //!
-//! The reference workload is four statements and the thing being measured is
-//! the proxy between this client and the server. The extended protocol would
-//! add prepared-statement mapping to what is being measured, which is a
-//! separate question and one the e2e run already exercises with pgbench's
-//! `--protocol prepared`.
+//! The workload declares what share of statements go through the extended
+//! protocol, and this sends them that way: `Parse` under a name the connection
+//! reuses, then `Bind`, `Execute` and `Sync`. Every mainstream driver works
+//! like that, and it is the path whose statement mapping deadlocked twice
+//! during M6, so a load client that only sent simple queries would measure a
+//! proxy nobody deploys.
+//!
+//! A name is parsed once per connection and reused after that, which is what a
+//! driver's statement cache does and what makes the proxy's mapping work for
+//! its living rather than on the first statement only.
 
 use pgprox_load::sampler::Transaction;
+use std::collections::HashSet;
+
 use pgprox_proto::backend::{AuthRequest, BackendMessage};
 use pgprox_proto::frame::{Decoded, Frame, Tag, decode};
 use pgprox_proto::{backend, encode_frontend};
@@ -54,6 +61,12 @@ pub struct Session<S> {
     io: S,
     read: Vec<u8>,
     write: Vec<u8>,
+    /// Statement names this connection has already parsed.
+    ///
+    /// A driver's statement cache, in the one form that matters here: the
+    /// second use of a name sends `Bind` alone, which is where a proxy that
+    /// mapped the name wrongly stops working.
+    prepared: HashSet<String>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
@@ -76,6 +89,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
             io,
             read: Vec::new(),
             write: Vec::new(),
+            prepared: HashSet::new(),
         };
 
         let mut packet = Vec::new();
@@ -117,7 +131,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
             } else {
                 statement.sql.clone()
             };
-            self.simple_query(&sql).await?;
+            if statement.prepared {
+                self.extended_query(&statement.name, &sql).await?;
+            } else {
+                self.simple_query(&sql).await?;
+            }
         }
         if wrapped {
             self.simple_query("COMMIT").await?;
@@ -148,7 +166,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         encode_frontend::query(&mut self.write, sql);
         self.io.write_all(&self.write).await?;
         self.io.flush().await?;
+        self.until_ready().await
+    }
 
+    /// Reads until the server says it is ready again.
+    async fn until_ready(&mut self) -> Result<(), SessionError> {
         // Read to `ReadyForQuery`, keeping the first error rather than the
         // last: the first says what went wrong, and the ones after it are
         // usually "current transaction is aborted".
@@ -183,6 +205,37 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
                 _ => {}
             }
         }
+    }
+
+    /// Runs one statement through the extended protocol.
+    ///
+    /// `Parse` only the first time this connection sees the name, which is
+    /// what a driver's statement cache does. After that it is `Bind`,
+    /// `Execute` and `Sync`, and the proxy has to know which upstream
+    /// connection holds that name.
+    async fn extended_query(&mut self, name: &str, sql: &str) -> Result<(), SessionError> {
+        // Named per statement shape and per connection. Two connections using
+        // the same name for the same SQL is exactly the case the proxy's
+        // mapping exists for.
+        let statement = format!("pgload_{name}");
+        self.write.clear();
+        if !self.prepared.contains(&statement) {
+            encode_frontend::parse(&mut self.write, &statement, sql);
+        }
+        encode_frontend::bind(&mut self.write, "", &statement);
+        encode_frontend::execute(&mut self.write, "");
+        encode_frontend::sync(&mut self.write);
+        self.io.write_all(&self.write).await?;
+        self.io.flush().await?;
+
+        let outcome = self.until_ready().await;
+        if outcome.is_ok() {
+            // Only on success: a `Parse` that failed left nothing behind, and
+            // remembering it would send a `Bind` for a statement that does not
+            // exist for the rest of this connection's life.
+            self.prepared.insert(statement);
+        }
+        outcome
     }
 
     async fn authenticate(&mut self, password: &str) -> Result<(), SessionError> {
@@ -314,6 +367,14 @@ mod tests {
             sql: sql.into(),
             kind: Kind::Read,
             replica_eligible: eligible,
+            prepared: false,
+        }
+    }
+
+    fn prepared_statement(sql: &str) -> Planned {
+        Planned {
+            prepared: true,
+            ..statement(sql, false)
         }
     }
 
@@ -416,6 +477,59 @@ mod tests {
 
         let error = Session::start(client, "u", "d", "").await.unwrap_err();
         assert!(matches!(error, SessionError::Server(_)), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_prepared_statement_is_parsed_once_and_bound_after_that() {
+        // What a driver's statement cache does, and the case the proxy's
+        // mapping exists for: the second use sends `Bind` naming a statement
+        // the client never re-parsed.
+        let (client, mut server) = pair();
+        let serving = tokio::spawn(async move {
+            server.take_startup().await;
+            let mut out = Vec::new();
+            encode::authentication_ok(&mut out);
+            server.send(&out).await;
+            server.ready().await;
+
+            let mut tags = Vec::new();
+            // Two rounds: Parse, Bind, Execute, Sync, then Bind, Execute, Sync.
+            for _ in 0..7 {
+                let tag = server.take().await;
+                tags.push(tag);
+                if tag == Tag::SYNC {
+                    server.complete().await;
+                }
+            }
+            tags
+        });
+
+        let mut session = Session::start(client, "u", "d", "").await.unwrap();
+        for _ in 0..2 {
+            session
+                .transaction(&Transaction {
+                    think_ms: 0,
+                    tenant: "hot-0".into(),
+                    statements: vec![prepared_statement("SELECT 1")],
+                })
+                .await
+                .unwrap();
+        }
+
+        let tags = serving.await.unwrap();
+        assert_eq!(
+            tags,
+            vec![
+                Tag::PARSE,
+                Tag::BIND,
+                Tag::EXECUTE,
+                Tag::SYNC,
+                Tag::BIND,
+                Tag::EXECUTE,
+                Tag::SYNC,
+            ],
+            "the statement was parsed again rather than reused"
+        );
     }
 
     #[tokio::test]

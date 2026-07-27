@@ -402,8 +402,16 @@ mod tests {
                         if socket.read_exact(&mut body).await.is_err() {
                             return;
                         }
-                        if Tag(header[0]) == Tag::TERMINATE {
+                        let tag = Tag(header[0]);
+                        if tag == Tag::TERMINATE {
                             return;
+                        }
+                        // An extended sequence is answered once, at its
+                        // `Sync`. Answering every frame would put the client
+                        // one reply out of step, which is the deadlock the
+                        // proxy itself had twice in M6.
+                        if !matches!(tag, Tag::QUERY | Tag::SYNC) {
+                            continue;
                         }
 
                         let mut out = Vec::new();
@@ -445,7 +453,7 @@ mod tests {
         assert!(report.first_error.is_none());
         assert_eq!(report.connections, 4);
         assert_eq!(report.seed, 5);
-        assert_eq!(report.workload_version, 2);
+        assert_eq!(report.workload_version, 3);
         assert_eq!(report.latency.count, report.transactions);
         assert!(report.throughput() > 0.0);
     }

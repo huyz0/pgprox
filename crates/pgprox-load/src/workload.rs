@@ -24,7 +24,7 @@ use serde::Deserialize;
 /// meaning without changing its number would silently invalidate every
 /// recorded run. Refusing an unknown version is the cheap half of that
 /// problem.
-pub const SUPPORTED_VERSION: u32 = 2;
+pub const SUPPORTED_VERSION: u32 = 3;
 
 /// Shares are floating point, so exact equality is the wrong test. A tenth of
 /// a percent is far tighter than any workload distinction that matters and far
@@ -143,6 +143,9 @@ pub struct Workload {
     pub statements: Vec<Statement>,
     /// The transaction size distribution.
     pub transactions: Vec<TransactionSize>,
+    /// How many statements use the extended protocol with a named prepared
+    /// statement, rather than the simple query protocol.
+    pub prepared_fraction: f64,
     /// How long a client waits between transactions.
     pub think: Think,
     /// Connection churn.
@@ -201,6 +204,12 @@ impl Workload {
             return Err(WorkloadError::field(
                 "churn.transactions_per_connection",
                 "zero would replace every connection before it ran anything",
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.prepared_fraction) {
+            return Err(WorkloadError::field(
+                "prepared_fraction",
+                format!("{} is not a fraction", self.prepared_fraction),
             ));
         }
         if !(0.0..=1.0).contains(&self.replica_read_fraction) {
@@ -328,7 +337,7 @@ mod tests {
     /// A valid document, which each test then breaks in exactly one way.
     fn document() -> String {
         [
-            "version: 2",
+            "version: 3",
             "tenants:",
             "  - { name: hot, count: 2, share: 0.75 }",
             "  - { name: tail, count: 50, share: 0.25 }",
@@ -337,6 +346,7 @@ mod tests {
             "  - { name: write, weight: 1, kind: write, sql: 'UPDATE t SET a = 1' }",
             "transactions:",
             "  - { statements: 1, weight: 4 }",
+            "prepared_fraction: 0.5",
             "think: { min_ms: 10, max_ms: 20 }",
             "churn: { transactions_per_connection: 500 }",
             "replica_read_fraction: 0.5",
@@ -390,7 +400,7 @@ mod tests {
     fn a_version_this_crate_does_not_know_is_refused() {
         // A file that changed meaning without changing its number would
         // invalidate every recorded run silently.
-        assert_eq!(field_of(&broken("version: 2", "version: 3")), "version");
+        assert_eq!(field_of(&broken("version: 3", "version: 4")), "version");
     }
 
     #[test]
@@ -512,6 +522,14 @@ mod tests {
                 "transactions_per_connection: 0"
             )),
             "churn.transactions_per_connection"
+        );
+    }
+
+    #[test]
+    fn a_prepared_fraction_that_is_not_a_fraction_is_refused() {
+        assert_eq!(
+            field_of(&broken("prepared_fraction: 0.5", "prepared_fraction: 2.0")),
+            "prepared_fraction"
         );
     }
 

@@ -9,7 +9,7 @@
 # with the reasoning, and everything measured against the old version is
 # re-baselined. Changing it to make a number look better is not allowed, and
 # the version field is what makes that visible in a diff.
-version: 2
+version: 3
 
 # A handful of busy tenants and a long tail of near-idle ones, which is what a
 # multitenant proxy actually sees. A uniform mix would hide the two things this
@@ -54,6 +54,13 @@ transactions:
     weight: 15
   - statements: 20
     weight: 5
+
+# How many statements go through the extended protocol, with a named prepared
+# statement, rather than the simple one. Every mainstream driver uses it, and
+# it is the path that deadlocked twice during M6 and whose statement mapping
+# the semantic coverage report showed almost untouched. A workload that only
+# sent simple queries measured a proxy nobody deploys.
+prepared_fraction: 0.5
 
 # How long a client waits between transactions. Without this, N connections
 # means N requests in flight and a run measures the database queueing rather

@@ -1276,7 +1276,7 @@ recorded runs say which they are.
   `entry::tls` and `entry::static_admin` at 22% and 14%. The first two are on
   every statement's path. Acceptance: each is either tested or has a recorded
   reason its remaining regions are unreachable.
-- [ ] `M7.26` The prepared-statement path runs on every statement and the
+- [x] `M7.26` The prepared-statement path runs on every statement and the
   replay reaches little of it: `map_statement_name` 8%, `ready_statement` 18%,
   `statement_of` 29%. It is also the path that deadlocked twice in M6.
   Acceptance: either the workload exercises the extended protocol, which is
