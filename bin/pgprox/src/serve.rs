@@ -1517,6 +1517,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn one_session_costs_less_than_the_slab_buffer_it_no_longer_holds() {
+        // Every connection is one spawned task holding one of these futures,
+        // so its size is a per-connection cost that no buffer pool reduces.
+        // Worth asserting because the buffer was the obvious suspect and is
+        // not the answer: at ten thousand connections the slab peaks at a few
+        // hundred buffers outstanding and falls to zero, while the process
+        // holds about 15 KB per connection.
+        let context = Arc::new(context_for("127.0.0.1:1".parse().unwrap()));
+        let gate = Arc::new(Gate::new(1));
+        let admitted = gate.admit().unwrap();
+        let (ours, _theirs) = tokio::io::duplex(64);
+
+        let future = session(ours, context.as_ref(), admitted);
+        let bytes = std::mem::size_of_val(&future);
+        assert!(
+            bytes < 16 * 1024,
+            "the session future is {bytes} bytes, so a hundred thousand of them is {} MB \
+             before a single buffer, socket or registry entry",
+            bytes * 100_000 / 1024 / 1024
+        );
+    }
+
+    #[tokio::test]
     async fn a_full_node_says_so_rather_than_dropping_the_socket() {
         // A dropped socket reads as a network fault to every driver and sends
         // the operator to the wrong place.

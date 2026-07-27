@@ -1472,6 +1472,17 @@ measurement found three things.
   other half of the design point and the question a connection-count target is
   actually about. Identical in every other field, so a difference between two
   runs has one cause.
+- [ ] `M7.49` The per-connection cost is the session future, not the buffer.
+  Measured: `size_of_val` of the future `session()` returns is 11,640 bytes,
+  which is 1.1 GB at 100k before a socket, a registry entry or a task, and it
+  accounts for nearly all of the 15.5 KB per connection measured at ten
+  thousand. The buffer was the obvious suspect and is not the answer: the slab
+  peaks at a few hundred buffers outstanding during a 10k run and falls to
+  zero, so buffers are under 7% of the process. Rust reserves space in a
+  future for everything alive across an await, so the lever is boxing or
+  dropping the startup-only state rather than resizing anything. Acceptance:
+  the future is under 4 KB, asserted by the test that measures it, with the
+  before and after stated.
 - [ ] `M7.46` The proxy spends about 3.2 cores serving 700 statements a second
   at 2000 connections, which is 4.5ms of CPU per statement against an
   instruction count of roughly 10us for the decision path. A `perf` profile of
