@@ -23,8 +23,8 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M4 | Operations (track D) | complete |
 | M5 | Pooling and routing (track E) | complete |
 | M6 | Integration | complete |
-| M7 | Scale and performance | apparatus built, measured at 1000 connections, 100k outstanding |
-| M8 | FIPS and release | blocked by M7 |
+| M7 | Scale and performance | complete at 1000 connections; the 100k condition needs hardware this repository does not have |
+| M8 | FIPS and release | next, with M7's 100k run outstanding |
 | M9 | Query cache (post-MVP) | blocked by M8 |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
@@ -178,17 +178,39 @@ added p99 latency under 1ms against a direct connection, and upstream
 connection count at or under the configured cap. Allocation budget tests pass
 for every declared hot path.
 
-**Where it stands.** The apparatus is built and every declared hot path has an
-allocation budget and an instruction count. The runs so far are at 1000
-connections, recorded in `product/perf/`: clean, the upstream cap respected,
-348us added at p50 and 4.3ms at p99 at matched load, and 21 KB of userspace
-per connection.
+**Where it stands.** The apparatus is built. Every declared hot path has an
+allocation budget and an instruction count, the reference workload is
+committed and versioned, the semantic coverage report crosses execution counts
+against what the tests reach, and `bin/pgload` generates load pgbench cannot:
+a tenant mix, connection churn, think time, and both wire protocols.
 
-The 100k condition above is unchanged and unmet. Meeting it needs a machine
-that can hold 100k sockets, which is not the development one, and the numbers
-at a thousand are a slope rather than a prediction of it. The p99 target is
-the one to watch: it is four times over at a thousand connections on a
-loopback.
+The runs are at 1000 connections against the compose stack, recorded in
+`product/perf/run-2026-07-27-1000-compose.md`. The fleet respects its upstream
+cap, uses 40 of the 60 connections it is allowed, serves 12% of statements
+from a replica, and refuses a handful of clients with `53300` when a thousand
+of them offer more work than the database can take. The hop costs well under a
+millisecond at p50; this stack cannot resolve it at p99.
+
+Nine defects came out of those runs rather than out of review, including one
+that meant no node in a fleet had ever granted a quota lease.
+
+**What the 100k condition still needs**, and it is unchanged and unmet:
+
+- A machine that can hold 100k sockets and a load generator that is not
+  competing with the proxy for the same cores. Three instances in one
+  availability zone is the shape; a laptop is not.
+- `scripts/scale.sh` taught to point at remote hosts, which today it is not.
+- The sysctls in `product/plan.md`: `nofile` at 262144, and `tcp_rmem` and
+  `tcp_wmem` minimums, which are host settings rather than container ones.
+- A real network between the client, the proxy and the database. Every latency
+  number recorded so far is loopback, where the network costs nothing, so the
+  added-latency figure is a floor rather than an estimate.
+
+The memory figure is the one to watch: 24 KB per connection at a thousand
+extrapolates to 2.3 GB at 100k against a target of 500 MB. It is a slope
+rather than a prediction, and the fixed cost of the process is spread across a
+thousand connections in it, but nothing at this scale says the target is
+reachable without work.
 
 ## M8: FIPS and release
 

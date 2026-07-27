@@ -1191,7 +1191,7 @@ as an argument for exactly that reason, and every run is recorded so the slope
 is comparable. Extrapolating a number is not the same as meeting it, and the
 recorded runs say which they are.
 
-- [ ] `M7.1` Define M7: this decomposition and `scripts/m7-complete.sh`.
+- [x] `M7.1` Define M7: this decomposition and `scripts/m7-complete.sh`.
   Acceptance: the gate runs against the current tree and reports what is
   missing rather than passing vacuously.
 - [x] `M7.2` The reference workload document and its parser, in a new
@@ -1354,7 +1354,7 @@ recorded runs say which they are.
   is warranted. `pgprox_route_total` answers the question from now on, and
   `scripts/scale.sh` reports the share as a delta across the phase rather than
   a running total.
-- [ ] `M7.35` `scripts/scale.sh --keep` did not keep the stack: the flag set a
+- [x] `M7.35` `scripts/scale.sh --keep` did not keep the stack: the flag set a
   variable and the trap still compared against the old literal, so every run
   tore the stack down and the failure above could not be investigated without
   running it again. Fixed while investigating M7.33; the task is here so the
@@ -1435,6 +1435,9 @@ recorded runs say which they are.
   again afterwards. Found in the review round. M6's and M7's now run on every
   push, where a failure means a regression rather than unfinished work.
 - [x] `M7.19` Close the 1000-connection round of M7.
+- [x] `M7.43` Close M7. The 100k condition stays as written and stays unmet,
+  and the roadmap says what meeting it needs rather than pretending the
+  milestone is finished.
 
 ## M8 and later
 
