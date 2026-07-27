@@ -1336,6 +1336,12 @@ recorded runs say which they are.
   run re-taken: the hop moved from 338us to 351us at p50, which is inside the
   variance either way, and the point is that a measurement run should not be
   writing a line per refusal.
+- [x] `M7.42` The semantic coverage report was still the version 2 workload's,
+  taken before half the statements went through the extended protocol.
+  Regenerated: `map_statement_name` went from 8% to 58% covered by the replay
+  and its execution count from 27,000 to 51,000, which is the prepared path
+  now being exercised. Found in the review round; a report that describes a
+  workload the repository no longer has is worse than no report.
 - [ ] `M7.39` The write watermark is the primary's head rather than the
   session's own commit position, so under fleet-wide write traffic a session
   that has ever written reads from the primary indefinitely. The rule it
