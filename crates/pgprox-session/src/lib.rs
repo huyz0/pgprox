@@ -22,6 +22,7 @@
 pub mod auth;
 pub mod cancel;
 pub mod connect;
+pub mod flush;
 pub mod probe;
 pub mod relay;
 pub mod resume;

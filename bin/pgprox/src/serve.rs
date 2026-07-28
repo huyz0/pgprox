@@ -256,6 +256,33 @@ where
                 }),
             )
             .await?;
+
+            // What this client actually negotiated. The server is the only
+            // side that knows it for every client: some drivers will tell you
+            // their cipher and some will not, and "which suite did that driver
+            // use" is a question a FIPS deployment has to be able to answer
+            // about all of them. Debug rather than info because it is one line
+            // per connection, and a node holding a hundred thousand of them
+            // must not be logging a hundred thousand lines to say so.
+            //
+            // Both fields are unwrapped rather than logged as options: a
+            // handshake that got this far has agreed on both, and
+            // `cipher="Some(TLS13_AES_256_GCM_SHA384)"` is a value every
+            // reader of this line then has to strip.
+            {
+                let (_, session) = upgraded.get_ref();
+                if let (Some(protocol), Some(suite)) = (
+                    session.protocol_version(),
+                    session.negotiated_cipher_suite(),
+                ) {
+                    tracing::debug!(
+                        protocol = ?protocol,
+                        cipher = ?suite.suite(),
+                        "tls handshake"
+                    );
+                }
+            }
+
             let mut wire = Wire::new(upgraded, Arc::clone(&context.slab));
 
             // The same handshake, which is what makes "TLS was accepted"
@@ -533,7 +560,7 @@ where
     let mut body = Vec::new();
     // How many `ParseComplete`s belong to statements this proxy replayed
     // rather than to anything the client sent.
-    let mut swallow_parse_complete = 0_usize;
+    let mut pumping = Pumping::default();
     // The watch this grant's replicas are polled into, shared with every other
     // session on the same primary. A grant with no replicas gets none, and
     // every route decision for it lands on the primary by the same rule that
@@ -611,9 +638,8 @@ where
                 // acquisitions under a name that said statements.
                 serving = target;
                 record_statement(context, &message, target);
-                held = Some(
-                    take_connection(wire, context, grant, target, conn, &session_state).await?,
-                );
+                let taken = take_connection(wire, context, grant, target, conn, &session_state);
+                held = Some(taken.await?);
                 relay.acquired();
             }
             // On the connection this session already holds, so it goes where
@@ -624,62 +650,39 @@ where
         }
 
         let Some((_guard, upstream)) = held.as_mut() else {
-            return Err(wire
-                .refuse(ClientError::ProtocolViolation(
-                    "a message arrived with no connection to send it on",
-                ))
-                .await);
+            return Err(wire.refuse(NO_CONNECTION).await);
         };
 
-        // A `Parse` or a `Bind` names a statement the connection this session
-        // was just lent may never have seen, or may already hold. Both are the
-        // connection's own record to answer, and both are settled before the
-        // client's frame goes anywhere.
-        match ready_statement(upstream, &message, &session_state) {
-            Statement::Nothing => {}
-            Statement::Prepared(swallow) => swallow_parse_complete += swallow,
-            // Forwarding the client's `Parse` would collide with the name the
-            // connection already holds, and Postgres refuses that. The client
-            // is owed a `ParseComplete`, so it gets one from here: it is true,
-            // and it arrives before anything the server sends for the rest of
-            // this sequence.
-            Statement::AlreadyPrepared => {
-                wire.queue(|out| out.extend_from_slice(&[b'1', 0, 0, 0, 4]));
-                continue;
-            }
+        let onward = Frame::new(tag, &outgoing);
+        if !send_upstream(
+            wire,
+            upstream,
+            &mut pumping,
+            &message,
+            &session_state,
+            onward,
+        )
+        .await?
+        {
+            continue;
         }
 
-        // Forwarded with the statement name mapped and nothing else touched:
-        // the relay never rewrites what it does not have to.
-        forward(&mut upstream.wire, tag, &outgoing);
-        upstream.wire.flush().await?;
-
-        // An extended-query frame is one of several the client will send
-        // before it expects anything back: `Parse`, `Bind`, `Describe`,
-        // `Execute` and `Close` are answered together, after the `Sync` that
-        // ends the sequence. Waiting for a `ReadyForQuery` after each one
-        // deadlocks exactly like the copy-in did, with the proxy waiting for
-        // the server and the server waiting for the rest of the sequence.
+        // Nothing to read back yet: the client is mid-sequence and will say
+        // when it wants an answer. See `awaits_more`.
         if awaits_more(&message) {
             continue;
         }
 
-        // Session pooling is the tenant asking to keep its connection: the
-        // relay still says when a transaction ended, and this decides whether
-        // that is a reason to give the connection back. A tenant that asked
-        // for it and silently got transaction pooling loses temporary tables
-        // and advisory locks between statements.
-        let releasable = Box::pin(pump(
+        let pumped = pump(
             wire,
             upstream,
             &mut relay,
             context,
             conn,
-            &mut swallow_parse_complete,
-        ))
-        .await?;
-
-        if releasable && grant.pool.mode != pgprox_core::auth::PoolMode::Session {
+            &mut pumping,
+            &message,
+        );
+        if Box::pin(pumped).await? && grant.pool.mode != pgprox_core::auth::PoolMode::Session {
             Box::pin(release(&mut held, &mut relay, context, conn)).await?;
         }
     }
@@ -814,11 +817,64 @@ async fn borrow(
     Ok((guard, taken))
 }
 
+/// What a client is told when the relay reached a frame with nothing to send
+/// it on.
+///
+/// Unreachable as the code stands: every path that gets that far has either
+/// taken a connection or returned. It is a refusal rather than an unwrap
+/// because the alternative to being told is a socket that closes with nothing
+/// on it, which is the hardest kind of bug to report.
+const NO_CONNECTION: ClientError =
+    ClientError::ProtocolViolation("a message arrived with no connection to send it on");
+
+/// Sends one client frame to the server, or answers the client directly.
+///
+/// Split out of the relay loop because it is a step of its own: the
+/// connection's record of what it holds has to agree with what the frame is
+/// about to assume, before anything crosses.
+///
+/// Returns false when the frame was answered here and nothing went upstream,
+/// which happens for a `Parse` naming a statement the connection already
+/// holds: Postgres refuses a second `Parse` under a name it has, and the
+/// client is owed a `ParseComplete` that is true either way.
+async fn send_upstream<S>(
+    wire: &mut Wire<S>,
+    upstream: &mut Upstreamed<crate::dial::Stream>,
+    pumping: &mut Pumping,
+    message: &pgprox_proto::frontend::FrontendMessage<'_>,
+    session: &pgprox_session::resume::SessionMemory,
+    onward: Frame<'_>,
+) -> Result<bool, ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    // A `Parse` or a `Bind` names a statement the connection this session was
+    // just lent may never have seen, or may already hold.
+    match ready_statement(upstream, message, session) {
+        Statement::Nothing => {}
+        Statement::Prepared(swallow) => pumping.swallow += swallow,
+        Statement::AlreadyPrepared => {
+            wire.queue(|out| out.extend_from_slice(&[b'1', 0, 0, 0, 4]));
+            return Ok(false);
+        }
+    }
+
+    // Statement name mapped, nothing else touched.
+    forward(&mut upstream.wire, onward.tag(), onward.body());
+    pumping.owed.sent(message);
+    upstream.wire.flush().await?;
+    Ok(true)
+}
+
 /// Whether the client will send more before it expects an answer.
 ///
 /// True for the frames in the middle of an extended-query sequence, false for
 /// the ones that end one: `Sync` and `Flush` both make the server answer, and
 /// a simple `Query` is a sequence of one.
+///
+/// Reading back after every frame instead would deadlock exactly like the
+/// copy-in did, with the proxy waiting for the server and the server waiting
+/// for the rest of the sequence.
 ///
 /// `Flush` is included as an ending because a client that sends one is waiting
 /// on the answer to what it has sent so far, which is the whole reason the
@@ -1104,18 +1160,58 @@ async fn resume(
     Ok(())
 }
 
+/// What one session carries from one server answer to the next.
+///
+/// Two counters that only the response pump reads, kept together so the pump
+/// takes one argument for them rather than one each.
+#[derive(Default)]
+struct Pumping {
+    /// Completions for frames the proxy sent on the client's behalf.
+    ///
+    /// The client sent neither the `Parse` nor the `Close`, and must not see
+    /// their completions, or every reply after them is one out of step.
+    swallow: usize,
+    /// What the server still owes the client.
+    ///
+    /// Only a `Flush` reads it. A `Sync` and a simple `Query` end with a
+    /// `ReadyForQuery`, which is a terminator anything can wait for; a `Flush`
+    /// has none, so the only way to know it has been answered is to have
+    /// counted what was asked.
+    owed: pgprox_session::flush::Outstanding,
+}
+
 /// Copies the server's answer back, returning whether the connection is free.
+///
+/// "Free" is the relay's judgement, and the caller still overrules it for a
+/// tenant in session pooling: that tenant asked to keep its connection, and
+/// one silently given transaction pooling loses its temporary tables and
+/// advisory locks between statements.
+///
+/// `asked` is the client's last frame, and it decides what ends the answer: a
+/// `Flush` is answered when nothing is outstanding, everything else by a
+/// `ReadyForQuery`.
 async fn pump<S>(
     wire: &mut Wire<S>,
     upstream: &mut Upstreamed<crate::dial::Stream>,
     relay: &mut Relay,
     context: &Context,
     conn: ConnId,
-    swallow_parse_complete: &mut usize,
+    pumping: &mut Pumping,
+    asked: &pgprox_proto::frontend::FrontendMessage<'_>,
 ) -> Result<bool, ShellError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let flushing = matches!(asked, pgprox_proto::frontend::FrontendMessage::Flush);
+    // A `Flush` with nothing outstanding. Postgres answers a lone `Flush` with
+    // silence, correctly, so reading even one frame here would block on a
+    // message that is never sent. Checked before the loop rather than inside
+    // it, because the check inside only runs after a read.
+    if flushing && pumping.owed.settled() {
+        wire.flush().await?;
+        return Ok(false);
+    }
+
     let mut body = Vec::new();
     loop {
         // An upstream that goes away mid-session is not this client's doing,
@@ -1142,9 +1238,9 @@ where
         if matches!(
             tag,
             pgprox_proto::frame::Tag::PARSE_COMPLETE | pgprox_proto::frame::Tag::CLOSE_COMPLETE
-        ) && *swallow_parse_complete > 0
+        ) && pumping.swallow > 0
         {
-            *swallow_parse_complete -= 1;
+            pumping.swallow -= 1;
             continue;
         }
 
@@ -1167,8 +1263,24 @@ where
         }
 
         if matches!(decoded, BackendMessage::ReadyForQuery(_)) {
+            pumping.owed.received(tag);
             wire.flush().await?;
             return Ok(server.release);
+        }
+
+        // The other way a client can be waiting. A `Flush` makes the server
+        // answer everything outstanding and then say nothing at all, so there
+        // is no terminator to read until: the proxy has to know when it has
+        // forwarded the last answer and go back to the client itself. Reading
+        // on would block on a message that is not coming, with the client
+        // blocked on the answer already sitting in this proxy.
+        //
+        // The connection is not released: the sequence is still open, which is
+        // the whole reason the client used a `Flush` rather than a `Sync`.
+        pumping.owed.received(tag);
+        if flushing && pumping.owed.settled() {
+            wire.flush().await?;
+            return Ok(false);
         }
     }
 }
@@ -2228,6 +2340,195 @@ mod tests {
             "the statement was prepared again on a connection that already held it: {:?}",
             statements_seen(addr)
         );
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    /// A fake upstream that speaks the extended protocol the way Postgres does.
+    ///
+    /// The one property that matters: it sends no `ReadyForQuery` until it
+    /// sees a `Sync`. A `Flush` gets nothing of its own, because there is no
+    /// message meaning "that was all". `fake_postgres` answers every frame as
+    /// though it were a simple query, which is enough for the rest of the
+    /// suite and cannot show this.
+    async fn fake_postgres_extended() -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut len = [0_u8; 4];
+                    if socket.read_exact(&mut len).await.is_err() {
+                        return;
+                    }
+                    let mut body = vec![0; u32::from_be_bytes(len) as usize - 4];
+                    let _ = socket.read_exact(&mut body).await;
+
+                    let mut out = Vec::new();
+                    encode::authentication_ok(&mut out);
+                    encode::parameter_status(&mut out, "server_version", "17.2");
+                    encode::backend_key_data(&mut out, ConnId::new(NodeId::new(9), 0x00AB_CDEF));
+                    encode::ready_for_query(&mut out, TxStatus::Idle);
+                    let _ = socket.write_all(&out).await;
+
+                    loop {
+                        let mut header = [0_u8; 5];
+                        if socket.read_exact(&mut header).await.is_err() {
+                            return;
+                        }
+                        let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+                        let mut body = vec![0; len - 4];
+                        if socket.read_exact(&mut body).await.is_err() {
+                            return;
+                        }
+
+                        let mut out: Vec<u8> = Vec::new();
+                        match header[0] {
+                            // Parse, answered with ParseComplete.
+                            b'P' => out.extend_from_slice(&[b'1', 0, 0, 0, 4]),
+                            // Describe of a statement: the parameters it takes,
+                            // then the row it returns. Two messages, one of
+                            // which ends the exchange.
+                            b'D' => {
+                                out.extend_from_slice(&[b't', 0, 0, 0, 6, 0, 0]);
+                                out.extend_from_slice(&[b'n', 0, 0, 0, 4]);
+                            }
+                            b'B' => out.extend_from_slice(&[b'2', 0, 0, 0, 4]),
+                            b'E' => {
+                                out.push(Tag::COMMAND_COMPLETE.get());
+                                let text = b"SELECT 1\0";
+                                out.extend_from_slice(
+                                    &u32::try_from(text.len() + 4).unwrap().to_be_bytes(),
+                                );
+                                out.extend_from_slice(text);
+                            }
+                            // Sync, and only Sync, produces a ReadyForQuery.
+                            b'S' => encode::ready_for_query(&mut out, TxStatus::Idle),
+                            // Flush. Postgres pushes out what it has and says
+                            // nothing else, which is exactly what this does by
+                            // writing an empty buffer.
+                            b'H' => {}
+                            _ => {
+                                out.push(Tag::COMMAND_COMPLETE.get());
+                                let text = b"SELECT 1\0";
+                                out.extend_from_slice(
+                                    &u32::try_from(text.len() + 4).unwrap().to_be_bytes(),
+                                );
+                                out.extend_from_slice(text);
+                                encode::ready_for_query(&mut out, TxStatus::Idle);
+                            }
+                        }
+                        if !out.is_empty() && socket.write_all(&out).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+
+        addr
+    }
+
+    #[tokio::test]
+    async fn a_flush_is_answered_without_waiting_for_a_ready_for_query() {
+        // The asyncpg deadlock. It prepares with Parse, Describe, Flush rather
+        // than with a Sync, and the relay read until ReadyForQuery, which a
+        // Flush never produces: the server had answered, the answer was inside
+        // the proxy, and both ends waited.
+        //
+        // The timeout is the assertion. Without it a regression here does not
+        // fail the test, it hangs the suite.
+        let addr = fake_postgres_extended().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut prepare = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut prepare, "s1", "SELECT $1");
+        // Describe of a statement, hand-encoded: 'D', the target byte, the
+        // name. `encode_frontend` has no helper for it because nothing in the
+        // proxy has ever needed to send one.
+        prepare.push(b'D');
+        let described = b"S\x73\x31\x00";
+        prepare.extend_from_slice(&u32::try_from(described.len() + 4).unwrap().to_be_bytes());
+        prepare.extend_from_slice(described);
+        prepare.extend_from_slice(&[b'H', 0, 0, 0, 4]);
+        client.write_all(&prepare).await.unwrap();
+
+        let answered = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut tags = Vec::new();
+            for _ in 0..3 {
+                tags.push(expect(&mut client).await.0);
+            }
+            tags
+        })
+        .await
+        .expect("the proxy never answered the Flush");
+
+        assert_eq!(
+            answered,
+            vec![Tag(b'1'), Tag(b't'), Tag(b'n')],
+            "the client did not get its ParseComplete and description"
+        );
+
+        // And the sequence is still open: a Sync after it gets the
+        // ReadyForQuery, which is what tells the client the exchange is over.
+        client.write_all(&[b'S', 0, 0, 0, 4]).await.unwrap();
+        let (tag, _) = tokio::time::timeout(Duration::from_secs(5), expect(&mut client))
+            .await
+            .expect("the Sync after the Flush was never answered");
+        assert_eq!(tag, Tag::READY_FOR_QUERY);
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_flush_with_nothing_outstanding_returns_rather_than_blocking() {
+        // Postgres answers a lone Flush with silence, correctly. A proxy that
+        // read one frame anyway would block on a message that is not coming,
+        // and the client's next statement would never be looked at.
+        let addr = fake_postgres_extended().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        client.write_all(&[b'H', 0, 0, 0, 4]).await.unwrap();
+
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
+        client.write_all(&query).await.unwrap();
+
+        let (tag, _) = tokio::time::timeout(Duration::from_secs(5), expect(&mut client))
+            .await
+            .expect("a lone Flush wedged the session");
+        assert_eq!(tag, Tag::COMMAND_COMPLETE);
 
         drop(client);
         let _ = served.await;

@@ -1633,6 +1633,33 @@ together. The rehearsal is what proves the wiring, so it comes last.
   drifts is always the one nobody runs.
   Taken out of order, while the M8.4 stack was building. Nothing depends on
   either.
+- [x] `M8.11` `Flush` deadlocked the relay, so asyncpg could not run a single
+  extended query through the proxy. Found by M8.4 pointing a driver at the
+  proxy that the conformance suite has only ever pointed at the harness, which
+  is `M1F.24`'s whole argument.
+  `awaits_more` already treats `Flush` as the end of a client sequence, and the
+  response pump then reads until `ReadyForQuery`, which a `Flush` never
+  produces: the server has answered and both sides wait. asyncpg prepares with
+  `Parse`, `Describe`, `Flush` rather than with a `Sync`, so every
+  `fetch`/`fetchval`/`execute` with parameters hangs until the client's own
+  timeout. The simple protocol is unaffected, which is why nothing caught it:
+  the e2e run drives psql and pgbench.
+  `pgprox_session::flush::Outstanding` counts what the server owes: every
+  extended-query frame the proxy forwards makes it owe exactly one completion,
+  and the tags that discharge each kind are fixed. When nothing is outstanding,
+  a `Flush` has been answered and the relay goes back to the client. Counting
+  rather than a timeout, because a timeout is either too short for a slow
+  statement or long enough to be its own hang.
+  Verified against the real driver, not only in tests: asyncpg now does
+  parameters, prepared-statement reuse, 2,000 rows, a transaction, a
+  no-rows result, an `UndefinedColumnError` and a statement after it. The two
+  regression tests in `serve.rs` were confirmed to fail without the fix, which
+  for a deadlock means a timeout that is the assertion rather than a hung
+  suite.
+  The relay loop went over clippy's hundred-line limit on the way, so sending
+  one frame upstream is now `send_upstream` and the pump's two counters are one
+  `Pumping`. Both were arguments the loop was carrying rather than logic it was
+  doing.
 - [ ] `M8.9` The tier 3 workflow. `plan.md` puts the FIPS build and the cipher
   matrix in nightly and pre-release rather than in the per-commit gate, and no
   workflow runs on a schedule. Acceptance: a scheduled job runs
