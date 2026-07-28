@@ -16,6 +16,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod normalize;
 pub mod store;
 
+pub use normalize::normalize;
 pub use store::{CacheStats, Store};

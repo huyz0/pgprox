@@ -2005,13 +2005,36 @@ the relay lands before the cacheability rule is finished.
   results did not fit a 3,000-byte budget, because `weigh` adds about 115 bytes
   of struct and key to each. It asserts its own setup now, so a future change
   to the accounting fails at the assumption rather than at the conclusion.
-- [ ] `M9.4` Normalisation, which is the correctness-critical half of the key.
+- [x] `M9.4` Normalisation, which is the correctness-critical half of the key.
   Two statements differing only in whitespace, comment or letter case key the
   same; two differing in anything the server would treat differently do not.
   Acceptance: a property test over the shape `pgprox-core::sql` already lexes,
   with the property stated as "normalising never merges two statements a
   server would answer differently". Literals are *not* normalised into
   parameters in this task; that is a separate decision and a separate risk.
+  The rule is Postgres's own: outside quotes SQL is case-insensitive and
+  whitespace separates, inside them neither is true. So a word is lowercased,
+  quoted text is copied byte for byte, and a run of whitespace or comments
+  becomes one space.
+  One space only where the source had trivia, not between every token. Always
+  spacing would give `1.5` and `1 . 5` the same key, and although one of those
+  is a syntax error, an error is an answer the server gives differently.
+  The property is stated against a model rather than an example: the token
+  sequence, folded the way the server folds it, is unchanged by normalising.
+  Anything normalisation did that a server would notice fails that test.
+  The scanner is `pgprox_core::sql`, not a new one. That module exists because
+  `pgprox-pool` and `pgprox-route` grew separate scanners that disagreed about
+  where an `E'...'` string ends and a session went unpinned. Using it took some
+  care, because `Token::Quoted` deliberately does not carry its contents:
+  handing them out invites a caller to search them, which is how a tenant's own
+  data starts changing how their queries are treated. This module needs the
+  bytes only to copy them, so it measures how far the lexer moved rather than
+  asking the token what it held, and no contract changed.
+  One imprecision is named rather than left to be discovered: `E'x'` and
+  `e'x'` key separately, because the introducer is part of the quoted span.
+  Separating it would mean parsing inside a region the lexer already decided
+  was quoted, which is the second-scanner mistake again. The cost is an extra
+  entry for a spelling almost nobody uses, and the direction is the safe one.
 - [ ] `M9.5` Cacheability: which statements may be cached at all. Read-only by
   the existing classifier, not inside a transaction that has written, not on a
   pinned session, and nothing whose result depends on anything but the
