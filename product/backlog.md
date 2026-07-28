@@ -1496,6 +1496,21 @@ measurement found three things.
   connection cost 7,920, because a box relocates long-lived bytes to the heap
   and adds an allocator header rather than removing anything. Boxing pays only
   for state that is freed early.
+- [ ] `M7.51` The sidecar client is the first ceiling at 100k connections. The
+  node logs `locally-reset streams reached limit (1024)` and clients are told
+  `authentication service unavailable`: one h2 connection to the sidecar runs
+  out of concurrent streams under a cold-start herd of about 1,100 arrivals a
+  second, and again whenever the grant TTL expires and the herd returns.
+  Singleflight collapses repeats but not the first wave. Acceptance: 100k
+  connections authenticate without the stream limit being reached, and the
+  bound is a number in configuration rather than h2's default.
+- [ ] `M7.52` A shed decision assumes the client can land on another node, and
+  nothing checks that. In the 100k run the load client reconnected to the same
+  node each time, so shedding produced a reconnect loop rather than relief.
+  A real deployment behind a load balancer would land elsewhere, which is why
+  this is a question rather than a bug, but the loop is worth refusing:
+  a node that sheds a client which immediately returns has learned something
+  and should stop.
 - [ ] `M7.46` The proxy spends about 3.2 cores serving 700 statements a second
   at 2000 connections, which is 4.5ms of CPU per statement against an
   instruction count of roughly 10us for the decision path. A `perf` profile of
