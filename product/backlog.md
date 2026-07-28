@@ -2085,10 +2085,33 @@ the relay lands before the cacheability rule is finished.
   Four tests, and the two that matter were confirmed to fail with the hook
   disabled. The read is what keeps the others honest: if every statement
   invalidated, the write test would pass for a cache that was never used.
-- [ ] `M9.7` The relay hook. On a hit, the client is answered from the cache
+- [x] `M9.7` The relay hook. On a hit, the client is answered from the cache
   and no upstream connection is acquired. Acceptance: a test that a hit serves
   the right bytes and the pool records no acquisition, which is the property
   the whole milestone is for.
+  It serves the same bytes the client saw the first time, and the fake server
+  never hears the second request. A differently spelled statement hits the same
+  entry, which is what normalisation bought, and `SELECT random()` is never
+  stored, which is what the cacheability rule bought.
+  Simple protocol only, and that is a decision rather than an omission. The
+  extended protocol's parameter values live in a `Bind`, and `pgprox-proto`
+  exposes that message's names and not its parameters. Until it does,
+  `CacheKey::params` would be empty for two calls differing only in what was
+  bound, so `SELECT $1` with 1 and with 2 would share an entry. A bound
+  statement is a miss, which is the difference between a smaller cache and a
+  broken one. `M9.12` is the follow-up.
+  The session future is what this cost, and it is worth recording because the
+  ceiling is now the binding constraint on the feature. Inline, the cache path
+  was 152 bytes and put the future over 5 KiB. Folded into one boxed
+  `Recording` and with the result dropped before the flush that follows it, the
+  future is 5,088 bytes against a ceiling of 5,120. Thirty-two bytes of room
+  left, so `M9.9` and anything after it has to find its own.
+  Two things were tried and did not work, both worth writing down. Boxing the
+  pre-send path to keep it out of the frame needs its borrows taken lazily,
+  which Rust will not do: the future is built either way, so the box bought an
+  allocation and no bytes. And the relay went over clippy's hundred-line limit
+  three times on the way, which is what pushed the pump's tail into
+  `read_the_answer` and the pre-send half into `cache_before_sending`.
 - [ ] `M9.8` Configuration: off by default, opt-in per tenant, with a TTL and a
   size bound in the config document. Acceptance: a document with no cache
   section produces a proxy that caches nothing, and the hot-reload path changes

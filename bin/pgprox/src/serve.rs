@@ -610,8 +610,7 @@ where
         };
 
         let now = context.clock.now();
-        let rewritten = observe(&message, &body, &mut session_state);
-        let Some(outgoing) = rewritten else {
+        let Some(outgoing) = observe(&message, &body, &mut session_state) else {
             return Err(wire
                 .refuse(ClientError::ProtocolViolation(
                     "a statement name this session never parsed",
@@ -619,10 +618,14 @@ where
                 .await);
         };
 
-        // Before the statement is sent, not after its answer comes back. A
-        // reader arriving in between would otherwise be served an entry the
-        // write was about to make wrong.
-        invalidate_on_write(context, &message, &grant.tenant).await;
+        // Invalidate on a write, then answer from the cache if it can. Boxed
+        // and behind the guard because a session future is the union of
+        // everything alive across its awaits, and a node that caches nothing
+        // must not carry this in every frame.
+        pumping.recording = cache_key(context, grant, &message, &session_state, &relay);
+        if cache_before_sending(wire, context, grant, &message, &mut pumping).await? {
+            continue;
+        }
 
         let outcome = decide(&mut relay, watch.as_ref(), &none, &message, now);
         if let Some(reason) = outcome.pinned {
@@ -638,26 +641,23 @@ where
                 wire.flush().await?;
                 continue;
             }
-            ClientAction::Send {
-                acquire: true,
-                target,
-            } => {
-                // Every statement is counted, not every acquire. A
-                // transaction that holds its connection sends several
-                // statements to the target chosen once at its first, and
-                // counting acquires would call that one statement: the first
-                // version of this counter did, and reported a share of
-                // acquisitions under a name that said statements.
-                serving = target;
-                record_statement(context, &message, target);
-                let taken = take_connection(wire, context, grant, target, conn, &session_state);
-                held = Some(taken.await?);
-                relay.acquired();
-            }
-            // On the connection this session already holds, so it goes where
-            // that connection goes.
-            ClientAction::Send { acquire: false, .. } => {
+            ClientAction::Send { acquire, target } => {
+                // Every statement is counted, not every acquire. A transaction
+                // that holds its connection sends several statements to the
+                // target chosen once at its first, and counting acquires would
+                // call that one statement: the first version of this counter
+                // did, and reported a share of acquisitions under a name that
+                // said statements.
+                if acquire {
+                    serving = target;
+                }
                 record_statement(context, &message, serving);
+                if acquire {
+                    let taken =
+                        take_connection(wire, context, grant, serving, conn, &session_state);
+                    held = Some(taken.await?);
+                    relay.acquired();
+                }
             }
         }
 
@@ -666,16 +666,15 @@ where
         };
 
         let onward = Frame::new(tag, &outgoing);
-        if !send_upstream(
+        let sent = send_upstream(
             wire,
             upstream,
             &mut pumping,
             &message,
             &session_state,
             onward,
-        )
-        .await?
-        {
+        );
+        if !sent.await? {
             continue;
         }
 
@@ -685,7 +684,7 @@ where
             continue;
         }
 
-        let pumped = pump(
+        let answered = read_the_answer(
             wire,
             upstream,
             &mut relay,
@@ -693,8 +692,9 @@ where
             conn,
             &mut pumping,
             &message,
+            grant,
         );
-        if Box::pin(pumped).await? && grant.pool.mode != pgprox_core::auth::PoolMode::Session {
+        if Box::pin(answered).await? && grant.pool.mode != pgprox_core::auth::PoolMode::Session {
             Box::pin(release(&mut held, &mut relay, context, conn)).await?;
         }
     }
@@ -744,6 +744,177 @@ fn decide(
         Some(watch) => watch.with_replicas(|replicas| relay.on_client(message, replicas, now)),
         None => relay.on_client(message, none, now),
     }
+}
+
+/// Reads the server's answer back to the client and stores it if it may be.
+///
+/// Returns whether the upstream connection is free, which the caller still
+/// overrules for a tenant in session pooling.
+///
+/// The store is here rather than beside the pump's own return because it has
+/// to happen whether or not the connection is released, and because the
+/// recording has to be taken out of `pumping` either way: a statement that
+/// must not be stored cannot leave bytes behind for the next one to pick up.
+#[allow(clippy::too_many_arguments)]
+async fn read_the_answer<S>(
+    wire: &mut Wire<S>,
+    upstream: &mut Upstreamed<crate::dial::Stream>,
+    relay: &mut Relay,
+    context: &Context,
+    conn: ConnId,
+    pumping: &mut Pumping,
+    asked: &pgprox_proto::frontend::FrontendMessage<'_>,
+    grant: &Grant,
+) -> Result<bool, ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let releasable = pump(wire, upstream, relay, context, conn, pumping, asked).await?;
+
+    // Only when there is something to store, so a node that caches nothing
+    // pays one comparison here.
+    if pumping.recording.is_some() {
+        store_answer(context, pumping, grant).await;
+    }
+
+    Ok(releasable)
+}
+
+/// Invalidates on a write, then answers from the cache if it can.
+///
+/// Returns whether the client has been answered, in which case the statement
+/// never reaches `decide` and nothing is taken from the pool. That is the
+/// point of the whole milestone: `M7.56` found 45% of this proxy's CPU in the
+/// pool's lock, with the cost landing per connection because contention tracks
+/// how many are queued, and a statement answered here never queues.
+///
+/// One function for both halves because they share a guard and the relay loop
+/// is held to a hundred lines. They are still two rules: the invalidation must
+/// happen whether or not anything is served, and it must happen before the
+/// statement is sent, or a reader arriving in between would be served an entry
+/// the write was about to make wrong.
+async fn cache_before_sending<S>(
+    wire: &mut Wire<S>,
+    context: &Context,
+    grant: &Grant,
+    message: &pgprox_proto::frontend::FrontendMessage<'_>,
+    pumping: &mut Pumping,
+) -> Result<bool, ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    // The guard is here rather than at the call site, so a node with no cache
+    // pays one comparison and returns. Boxing this to keep it out of the
+    // session's frame was tried and cost more than it saved: the borrow it
+    // needs cannot be taken lazily, so the future had to be built either way.
+    if context.cache.is_none() {
+        return Ok(false);
+    }
+
+    invalidate_on_write(context, message, &grant.tenant).await;
+
+    let (Some(cache), Some(recording)) = (context.cache.as_ref(), pumping.recording.as_ref())
+    else {
+        return Ok(false);
+    };
+
+    // Queued and then dropped, before the flush. Held across that await the
+    // result is another thirty-two bytes in every session's frame, and the
+    // ceiling has none to spare.
+    let served = match cache.get(&recording.key).await {
+        Some(hit) => {
+            wire.queue(|out| out.extend_from_slice(&hit.frames));
+            true
+        }
+        None => false,
+    };
+
+    if served {
+        wire.flush().await?;
+        // Or the next statement inherits this one's key.
+        pumping.recording = None;
+    }
+    Ok(served)
+}
+
+/// The cache key for a simple query, when this statement may be cached.
+///
+/// `None` covers three different things and does not distinguish them: no
+/// cache on this node, not a simple query, or a statement the cacheability
+/// rule refused. `M9.9` is what will count them apart.
+///
+/// # Only the simple protocol, for now
+///
+/// The extended protocol's parameter values live in a `Bind`, and
+/// `pgprox-proto` exposes that message's portal and statement names and not
+/// its parameters: the codec has never had a reason to read them, and reading
+/// them is a piece of work with its own risk.
+///
+/// Until it does, a bound statement is a miss rather than a wrong key.
+/// `CacheKey::params` would be empty for two calls differing only in what was
+/// bound, so `SELECT $1` with 1 and with 2 would share an entry. That is the
+/// difference between a smaller cache and a broken one. See `M9.12`.
+fn cache_key(
+    context: &Context,
+    grant: &Grant,
+    message: &pgprox_proto::frontend::FrontendMessage<'_>,
+    session: &pgprox_session::resume::SessionMemory,
+    relay: &Relay,
+) -> Option<Box<Recording>> {
+    use pgprox_proto::frontend::FrontendMessage;
+
+    context.cache.as_ref()?;
+    let FrontendMessage::Query { sql } = message else {
+        return None;
+    };
+
+    let facts = pgprox_cache::SessionFacts::new(relay.wrote(), relay.pin_reason().is_some());
+    pgprox_cache::cacheable(sql, pgprox_route::classify(sql), facts).ok()?;
+
+    // `search_path` decides what the SQL names, so it is part of the key. A
+    // session that never set one is on the server's default, which every
+    // session on this tenant shares; the empty string stands for it and cannot
+    // collide with a real path, since a real one is never empty.
+    let search_path = session.params.get("search_path").unwrap_or_default();
+
+    Some(Box::new(Recording {
+        key: pgprox_core::cache::CacheKey {
+            tenant: grant.tenant.clone(),
+            normalized_sql: std::sync::Arc::from(pgprox_cache::normalize(sql)),
+            params: Vec::new(),
+            search_path: std::sync::Arc::from(search_path),
+        },
+        frames: Vec::new(),
+        failed: false,
+    }))
+}
+
+/// Stores what the server just said, when it may be stored.
+///
+/// The TTL is the grant's. A tenant's own bound on how long a resolved grant
+/// may be trusted is the same bound its results may be served under, and one
+/// number an operator can reason about beats two.
+async fn store_answer(context: &Context, pumping: &mut Pumping, grant: &Grant) {
+    // Taken whatever happens, so a statement that must not be stored cannot
+    // leave bytes behind for the next one to pick up.
+    let recorded = pumping.recording.take();
+
+    let (Some(cache), Some(recording)) = (context.cache.as_ref(), recorded) else {
+        return;
+    };
+    if recording.failed || recording.frames.is_empty() {
+        return;
+    }
+
+    cache
+        .put(
+            recording.key,
+            pgprox_core::cache::CachedResult {
+                frames: std::sync::Arc::from(recording.frames.as_slice()),
+                ttl: grant.ttl,
+            },
+        )
+        .await;
 }
 
 /// Drops a tenant's cached results when it writes.
@@ -1231,6 +1402,37 @@ struct Pumping {
     /// has none, so the only way to know it has been answered is to have
     /// counted what was asked.
     owed: pgprox_session::flush::Outstanding,
+    /// The statement in flight, when its answer may be cached.
+    ///
+    /// `None` on every statement the cache would refuse and on every node
+    /// without one, which keeps this off the path of anyone not using it.
+    ///
+    /// Boxed, and one object rather than three fields, because all of it lives
+    /// across the await that reads the server's answer, and a session future
+    /// is the union of everything alive across its awaits. Inline it cost 152
+    /// bytes and put the future over its ceiling; as a pointer it costs eight,
+    /// and the allocation happens only on the path that was already
+    /// normalising SQL into a fresh `String`.
+    recording: Option<Box<Recording>>,
+}
+
+/// What the cache path needs while a statement is in flight.
+struct Recording {
+    /// Where the answer will be stored.
+    key: pgprox_core::cache::CacheKey,
+    /// A copy of what went back to the client.
+    ///
+    /// The bytes forwarded, not the ones received: a `Parse` the proxy issued
+    /// on the client's behalf has its completion swallowed before it gets
+    /// here, and a recording including it would replay a frame the client
+    /// never asked for.
+    frames: Vec<u8>,
+    /// Whether the server said no at any point in this answer.
+    ///
+    /// An error makes the whole thing unfit to store. Part of it may already
+    /// be recorded, and replaying that part later would be a result nobody
+    /// ever received.
+    failed: bool,
 }
 
 /// Copies the server's answer back, returning whether the connection is free.
@@ -1298,6 +1500,20 @@ where
         }
 
         forward(wire, tag, &body);
+
+        // The same bytes, kept for the cache. After `forward` rather than
+        // instead of it, so what is stored is exactly what the client saw: any
+        // divergence is a cached answer that differs from the one it was taken
+        // from.
+        if let Some(recording) = pumping.recording.as_mut() {
+            recording.frames.push(tag.get());
+            let len = u32::try_from(body.len() + 4).unwrap_or(u32::MAX);
+            recording.frames.extend_from_slice(&len.to_be_bytes());
+            recording.frames.extend_from_slice(&body);
+            if tag == pgprox_proto::frame::Tag::ERROR_RESPONSE {
+                recording.failed = true;
+            }
+        }
 
         // A copy reverses the direction the conversation is going in, and this
         // loop is one-way. Everything else the proxy relays is a request the
@@ -2207,6 +2423,103 @@ mod tests {
 
         drop(client);
         let _ = served.await;
+    }
+
+    /// Runs `sql` through a session and returns what the client was sent back.
+    async fn query_and_collect(
+        context: Arc<Context>,
+        sql: &str,
+        frames: usize,
+    ) -> Vec<(Tag, Vec<u8>)> {
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let served = tokio::spawn(async move { session(ours, context.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut out = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut out, sql);
+        client.write_all(&out).await.unwrap();
+
+        let mut got = Vec::new();
+        for _ in 0..frames {
+            got.push(expect(&mut client).await);
+        }
+
+        drop(client);
+        let _ = served.await;
+        got
+    }
+
+    #[tokio::test]
+    async fn a_hit_is_served_without_taking_anything_from_the_pool() {
+        // The property the whole milestone is for. M7.56 found 45% of this
+        // proxy's CPU in the pool's lock, with the cost landing per connection
+        // because contention tracks how many are queued. A statement answered
+        // here never queues.
+        let addr = fake_postgres().await;
+        let (context, cache) = context_with_cache(addr);
+        let context = Arc::new(context);
+
+        // First time through, from the server. The fake answers a query with
+        // CommandComplete and ReadyForQuery.
+        let first = query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        assert_eq!(first[0].0, Tag::COMMAND_COMPLETE);
+        assert_eq!(cache.len(), 1, "the answer was not stored");
+
+        let before = statements_seen(addr).len();
+
+        // Second time, from the cache: the same bytes, and the fake server
+        // never hears about it.
+        let second = query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        assert_eq!(
+            second, first,
+            "the cached answer differed from the stored one"
+        );
+        assert_eq!(
+            statements_seen(addr).len(),
+            before,
+            "a hit still sent the statement upstream"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hit_survives_a_difference_in_layout_and_case() {
+        // What normalisation buys. Two clients asking the same question in
+        // different words share an entry.
+        let addr = fake_postgres().await;
+        let (context, _cache) = context_with_cache(addr);
+        let context = Arc::new(context);
+
+        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        let before = statements_seen(addr).len();
+        query_and_collect(Arc::clone(&context), "select   1", 2).await;
+
+        assert_eq!(
+            statements_seen(addr).len(),
+            before,
+            "a differently spelled statement missed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_statement_the_rule_refuses_is_never_stored() {
+        // Read-only, replica-safe, and never the same answer twice. The
+        // cacheability rule is what keeps it out, and without that check this
+        // would be stored and served.
+        let addr = fake_postgres().await;
+        let (context, cache) = context_with_cache(addr);
+
+        query_and_collect(Arc::new(context), "SELECT random()", 2).await;
+
+        assert_eq!(cache.len(), 0, "a volatile statement was cached");
     }
 
     #[tokio::test]

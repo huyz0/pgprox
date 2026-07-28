@@ -98,6 +98,20 @@ impl SessionFacts {
             pinned: false,
         }
     }
+
+    /// What the caller observed about the session.
+    ///
+    /// A constructor rather than a struct literal because the type is
+    /// `#[non_exhaustive]`: a field added here has to be a compile error at
+    /// every call site, since a caller that quietly kept the old default would
+    /// be asserting something about a session it never looked at.
+    #[must_use]
+    pub const fn new(wrote_in_transaction: bool, pinned: bool) -> Self {
+        Self {
+            wrote_in_transaction,
+            pinned,
+        }
+    }
 }
 
 /// Calls whose result is not a function of the cache key.
