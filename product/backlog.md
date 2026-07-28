@@ -2035,13 +2035,33 @@ the relay lands before the cacheability rule is finished.
   Separating it would mean parsing inside a region the lexer already decided
   was quoted, which is the second-scanner mistake again. The cost is an extra
   entry for a spelling almost nobody uses, and the direction is the safe one.
-- [ ] `M9.5` Cacheability: which statements may be cached at all. Read-only by
+- [x] `M9.5` Cacheability: which statements may be cached at all. Read-only by
   the existing classifier, not inside a transaction that has written, not on a
   pinned session, and nothing whose result depends on anything but the
   arguments. Acceptance: a tested function taking the class, the session state
   and the SQL, refusing by default; `pgprox-cache` cannot depend on
   `pgprox-route`, so the class arrives as an argument the way the pin
   allowlist does.
+  The task turned out to be a different question from the one the classifier
+  answers, and the classifier says so itself: its list covers functions that
+  *write*, and its own comment points out that `random()` is volatile and
+  perfectly safe to route. Replica-safety asks whether a statement writes.
+  Cacheability asks whether the answer is a function of the key. `SELECT
+  random()` is read-only, replica-eligible, and turns into a constant for the
+  length of the TTL if cached.
+  So there are two lists and they are deliberately disjoint. `nextval` writes
+  and the class already refuses it, so it is absent here; a test asserts that,
+  because two lists with overlapping entries drift and the one that drifts is
+  the one nobody remembers to update.
+  Refuses by default, and the checks are ordered cheapest first: a session that
+  wrote is refused on the fact rather than on a scan of its SQL. Multiple
+  statements in one simple query are refused rather than handled, since the
+  response is several result sets whose boundaries this crate does not track.
+  The honest limit is the same one ADR 0009 records: a denylist of built-in
+  names cannot catch a tenant's own `VOLATILE` function. What makes that
+  acceptable is not the list being complete, because it is not, but that the
+  cache is off until a tenant turns it on and turning it on is a statement
+  about their own workload.
 - [ ] `M9.6` Invalidation on write. A write by a tenant drops that tenant's
   entries on this node. Acceptance: a write through the relay invalidates, the
   test covers a write in a transaction that later rolls back, and the ADR's

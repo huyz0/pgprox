@@ -7,17 +7,19 @@
 //!
 //! # What this crate does and does not decide
 //!
-//! It stores and expires. It does not decide what may be stored: that is
-//! the cacheability rule's job in a later task, and until then a caller handing
-//! this the result of a write would get exactly what it asked for. The split is
-//! deliberate, because the two are wrong in different ways. A store that
-//! expires badly serves stale data, which the TTL bounds. A store handed
+//! [`mod@store`] stores and expires. [`mod@cacheable`] decides what may be
+//! stored at all, and [`mod@normalize`] decides what counts as the same
+//! question. The split is deliberate, because they are wrong in different
+//! ways: a store that
+//! expires badly serves stale data, which the TTL bounds, while a store handed
 //! something uncacheable serves wrong data, which nothing bounds.
 
 #![forbid(unsafe_code)]
 
+pub mod cacheable;
 pub mod normalize;
 pub mod store;
 
+pub use cacheable::{NotCacheable, SessionFacts, cacheable};
 pub use normalize::normalize;
 pub use store::{CacheStats, Store};
