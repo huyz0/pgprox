@@ -250,6 +250,9 @@ fn bind_client(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
 #[must_use]
 pub fn context(app: &App, shutdown: &Shutdown) -> Context {
     Context {
+        // Off. ADR 0021 makes that the default, and `M9.8` is what a config
+        // document will use to say otherwise.
+        cache: None,
         slab: Arc::clone(&app.slab),
         routes: Arc::clone(&app.routes),
         statics: app.statics.clone(),

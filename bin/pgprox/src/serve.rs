@@ -189,6 +189,13 @@ pub struct Context {
     /// serves in the clear. The handshake config is what decides whether that
     /// is allowed; this is only the means.
     pub tls: Option<tokio_rustls::TlsAcceptor>,
+    /// The query cache, when a document turned one on.
+    ///
+    /// `None` is a node that caches nothing, which is what ADR 0021 makes the
+    /// default: the cache promises bounded staleness and a tenant has to ask
+    /// for it. Every path that touches it is behind this, so a node without
+    /// one does not pay for the decision.
+    pub cache: Option<Arc<dyn pgprox_core::cache::QueryCache>>,
 }
 
 impl std::fmt::Debug for Context {
@@ -612,6 +619,11 @@ where
                 .await);
         };
 
+        // Before the statement is sent, not after its answer comes back. A
+        // reader arriving in between would otherwise be served an entry the
+        // write was about to make wrong.
+        invalidate_on_write(context, &message, &grant.tenant).await;
+
         let outcome = decide(&mut relay, watch.as_ref(), &none, &message, now);
         if let Some(reason) = outcome.pinned {
             context.sessions.set_pinned(conn, reason.as_str());
@@ -731,6 +743,47 @@ fn decide(
     match watch {
         Some(watch) => watch.with_replicas(|replicas| relay.on_client(message, replicas, now)),
         None => relay.on_client(message, none, now),
+    }
+}
+
+/// Drops a tenant's cached results when it writes.
+///
+/// Best-effort, and ADR 0021 says so in as many words: this node sees writes
+/// that pass through it, needs gossip for writes through another node, and
+/// never sees a migration or an operator with psql. The TTL is the guarantee
+/// and this is an improvement on it. It is not read-your-writes.
+///
+/// Conservative in two directions on purpose. Anything the classifier does not
+/// call read-only invalidates, including `Unknown`, because that class exists
+/// so a construct nobody has taught it yet is treated as a write. And a `Parse`
+/// invalidates without waiting to see whether the statement is executed, so a
+/// client that prepares a write and abandons it clears the tenant's entries.
+///
+/// Both cost a miss. The other direction costs a wrong answer, and the
+/// asymmetry is the whole argument: over-invalidating wastes a round trip the
+/// client was going to make anyway, while under-invalidating serves data the
+/// proxy knew was stale.
+async fn invalidate_on_write(
+    context: &Context,
+    message: &pgprox_proto::frontend::FrontendMessage<'_>,
+    tenant: &pgprox_core::ids::TenantId,
+) {
+    use pgprox_proto::frontend::FrontendMessage;
+
+    // Nothing to do on a node with no cache, which is every node until a
+    // document says otherwise. The classifier is not run either: this is the
+    // guard that keeps the feature free for anyone not using it.
+    let Some(cache) = context.cache.as_ref() else {
+        return;
+    };
+
+    let sql = match message {
+        FrontendMessage::Query { sql } | FrontendMessage::Parse { sql, .. } => *sql,
+        _ => return,
+    };
+
+    if pgprox_route::classify(sql) != pgprox_core::route::StmtClass::ReadOnly {
+        cache.invalidate_tenant(tenant).await;
     }
 }
 
@@ -2031,6 +2084,7 @@ mod tests {
         let connector = Arc::new(PgConnector::new(TcpUpstream::new(tls), test_slab()));
 
         Context {
+            cache: None,
             slab: test_slab(),
             routes: Arc::new(crate::routes::RouteCounts::new()),
             node: NodeId::new(1),
@@ -2089,6 +2143,137 @@ mod tests {
         );
         pgprox_proto::encode_frontend::password_message(&mut out, token);
         out
+    }
+
+    /// A context with a cache in it, and the cache, so a test can look inside.
+    use pgprox_core::cache::{FakeQueryCache, QueryCache};
+
+    fn context_with_cache(addr: SocketAddr) -> (Context, Arc<FakeQueryCache>) {
+        let cache = FakeQueryCache::new();
+        let mut context = context_for(addr);
+        context.cache = Some(cache.clone());
+        (context, cache)
+    }
+
+    /// An entry for `acme`, so a test can watch it disappear.
+    fn seed(cache: &Arc<FakeQueryCache>) -> pgprox_core::cache::CacheKey {
+        let key = pgprox_core::cache::CacheKey {
+            tenant: pgprox_core::ids::TenantId::new("acme"),
+            normalized_sql: Arc::from("select 1"),
+            params: Vec::new(),
+            search_path: Arc::from("public"),
+        };
+        let value = pgprox_core::cache::CachedResult {
+            frames: Arc::from([0_u8; 4].as_slice()),
+            ttl: Duration::from_secs(60),
+        };
+        futures_lite_block_on(cache.put(key.clone(), value));
+        key
+    }
+
+    /// Runs a future to completion on the current thread.
+    ///
+    /// The fake cache's methods are async because the trait is, and these two
+    /// helpers are called from synchronous setup. Nothing here yields.
+    fn futures_lite_block_on<F: std::future::Future>(future: F) -> F::Output {
+        use std::task::{Context as TaskContext, Poll, Waker};
+        let mut future = Box::pin(future);
+        let mut cx = TaskContext::from_waker(Waker::noop());
+        match future.as_mut().poll(&mut cx) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("the fake cache yielded, which it must not"),
+        }
+    }
+
+    /// Drives a session far enough to have authenticated, then runs `sql`.
+    async fn query_through_a_session(context: Arc<Context>, sql: &str) {
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let served = tokio::spawn(async move { session(ours, context.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut out = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut out, sql);
+        client.write_all(&out).await.unwrap();
+        expect(&mut client).await;
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_write_through_the_relay_drops_the_tenants_entries() {
+        // ADR 0021's improvement on the TTL bound, and the half that has to
+        // land before anything is ever served: a cache that could serve but
+        // never invalidate would hand out data this node watched go stale.
+        let addr = fake_postgres().await;
+        let (context, cache) = context_with_cache(addr);
+        let key = seed(&cache);
+        assert_eq!(cache.len(), 1);
+
+        query_through_a_session(Arc::new(context), "UPDATE t SET x = 1").await;
+
+        assert!(
+            futures_lite_block_on(cache.get(&key)).is_none(),
+            "a write left the tenant's entries in place"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_through_the_relay_leaves_the_cache_alone() {
+        // The other half of the same claim. If every statement invalidated,
+        // the test above would pass for a cache that was simply never used.
+        let addr = fake_postgres().await;
+        let (context, cache) = context_with_cache(addr);
+        let key = seed(&cache);
+
+        query_through_a_session(Arc::new(context), "SELECT 1").await;
+
+        assert!(
+            futures_lite_block_on(cache.get(&key)).is_some(),
+            "a read invalidated the cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_that_rolls_back_still_invalidates() {
+        // Deliberately conservative, and worth a test so it is deliberate.
+        // Waiting for the commit would buy a better hit rate and would mean
+        // detecting a commit correctly on every path; getting that wrong means
+        // not invalidating when we should, which is the unsafe direction.
+        // Throwing entries away for a transaction that changed nothing costs a
+        // miss.
+        let addr = fake_postgres().await;
+        let (context, cache) = context_with_cache(addr);
+        let key = seed(&cache);
+
+        let context = Arc::new(context);
+        query_through_a_session(Arc::clone(&context), "BEGIN; DELETE FROM t; ROLLBACK").await;
+
+        assert!(
+            futures_lite_block_on(cache.get(&key)).is_none(),
+            "a rolled-back write left the entries in place"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_with_no_cache_serves_a_write_without_noticing() {
+        // The default, and the guard that keeps the feature free for a node
+        // that never asked for it: with no cache there is no classification
+        // either.
+        let addr = fake_postgres().await;
+        let context = context_for(addr);
+        assert!(context.cache.is_none(), "the default is not off");
+
+        query_through_a_session(Arc::new(context), "UPDATE t SET x = 1").await;
     }
 
     #[tokio::test]

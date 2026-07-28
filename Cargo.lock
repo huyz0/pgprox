@@ -997,6 +997,7 @@ dependencies = [
  "dhat",
  "pgprox-admin",
  "pgprox-auth",
+ "pgprox-cache",
  "pgprox-cluster",
  "pgprox-config",
  "pgprox-core",

@@ -30,6 +30,7 @@ fips = ["pgprox-tls/fips", "pgprox-auth/fips", "aws-lc-rs/fips"]
 pgprox-core = { path = "../../crates/pgprox-core" }
 pgprox-admin = { path = "../../crates/pgprox-admin" }
 pgprox-auth = { path = "../../crates/pgprox-auth" }
+pgprox-cache = { path = "../../crates/pgprox-cache" }
 pgprox-cluster = { path = "../../crates/pgprox-cluster" }
 pgprox-config = { path = "../../crates/pgprox-config" }
 pgprox-observe = { path = "../../crates/pgprox-observe" }
