@@ -1962,11 +1962,26 @@ the relay lands before the cacheability rule is finished.
   unrelated prose, so it is worth saying out loud: a gate whose check is a word
   rather than a name is green for years while the thing it names does not
   exist.
-- [ ] `M9.2` ADR: what the query cache may promise. The default (off), the
+- [x] `M9.2` ADR: what the query cache may promise. The default (off), the
   scope (one node, not the fleet), the bound (TTL), and what invalidation is
   and is not. Acceptance: an ADR in `product/decisions/` that states the
   staleness contract in the same terms ADR 0009 states its own, and says
   plainly which writes the cache cannot see.
+  ADR 0021. The load-bearing sentence is why a cache cannot do what ADR 0009
+  does: a replica's staleness is measurable, and `pg_last_wal_replay_lsn()`
+  answers it on demand from the replica itself, while a cache entry is a copy
+  of bytes carrying no version of the rows behind them. There is no
+  `pg_last_wal_replay_lsn()` for a `SELECT` result.
+  Four rules come out of it. Off by default. One node rather than the fleet,
+  because a partitioned node would keep serving entries whose invalidation it
+  never received and the TTL bounds staleness under partition anyway.
+  Invalidation on write is an improvement on the bound and may not be called
+  read-your-writes anywhere a human reads. And where the cache and read routing
+  disagree, routing wins: a session that has written is not served from the
+  cache until its transaction ends.
+  The crate's `AGENTS.md` and the trait's own documentation say the same thing
+  now, because the place this goes wrong is a later reader finding the trait
+  before the ADR.
 - [ ] `M9.3` The crate and the store. `pgprox-cache` implementing `QueryCache`
   with a TTL per entry, a bound on total entries, and per-tenant invalidation.
   Acceptance: it satisfies the same test suite `FakeQueryCache` does, plus its

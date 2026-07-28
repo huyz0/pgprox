@@ -1,8 +1,20 @@
-//! Query cache contract. Stub until M9.
+//! Query cache contract.
 //!
 //! The trait exists from M0 so a cache can be added later without touching the
-//! session or pool layers. There is no implementation, and there should not be
-//! one before M8 closes.
+//! session or pool layers, and `pgprox-cache` implements it from M9.
+//!
+//! # What a cache built on this may promise
+//!
+//! Bounded staleness, and nothing stronger. ADR 0021 is the contract: off by
+//! default, opt-in per tenant, one node rather than the fleet, and the TTL on
+//! [`CachedResult`] is the guarantee.
+//!
+//! The reason is that a cache entry cannot be checked the way a replica can. A
+//! replica's staleness is measurable, and ADR 0009 gates read routing on
+//! exactly that measurement. An entry here is a copy of bytes the server
+//! produced at some past moment, carrying no version of the rows behind them.
+//! A proxy also cannot see a write that never passed through it, and a
+//! migration or an operator with psql never will.
 //!
 //! # The key includes `search_path`
 //!
@@ -47,9 +59,10 @@ pub struct CachedResult {
 
 /// A query result cache.
 ///
-/// Not implemented until M9. Anything returned here must satisfy the same
-/// staleness rules as replica routing: a cache that can return a stale read has
-/// the same failure mode as a replica behind the watermark.
+/// An implementation may return an entry up to its TTL old and no older. It may
+/// not return one to a session that has written, or for a statement the caller
+/// has not established is cacheable: those are the caller's obligations, and
+/// they are the ones a TTL cannot repair. See ADR 0021.
 #[async_trait::async_trait]
 pub trait QueryCache: Send + Sync + fmt::Debug {
     /// Looks up a result.
