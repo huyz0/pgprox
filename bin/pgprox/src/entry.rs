@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use pgprox_auth::cache::{CacheConfig, CachingResolver};
 use pgprox_auth::client::{SidecarConfig, SidecarResolver};
 use pgprox_config::provider::{FileConfig, FileSource};
 use pgprox_core::clock::SystemClock;
@@ -440,6 +441,37 @@ pub async fn start_with(
 ) -> Result<App, StartupError> {
     let listener_tls = options.tls()?;
     let upstream_tls = options.upstream_tls()?;
+
+    // Every resolver this node uses is a caching one, and until now none was.
+    //
+    // `pgprox-auth` has held a caching, singleflighting resolver since M2,
+    // with its own tests and an allocation budget measuring its hit path, and
+    // the composition root never wrapped anything in it. So every connection
+    // called the sidecar: at a hundred thousand of them that is a hundred
+    // thousand concurrent gRPC calls on one h2 connection, which reaches its
+    // stream limit and answers every client "authentication service
+    // unavailable". At any scale it is a round trip on the connection path
+    // with a cached answer sitting beside it.
+    //
+    // It goes here rather than beside the sidecar connection so a test can
+    // reach it: a wrap that only exists on the path requiring a second process
+    // is a wrap nothing checks, which is how it came to be missing.
+    //
+    // The TTL cap comes from the document rather than the default, because an
+    // operator who shortens it is saying how long a revoked token may keep
+    // working.
+    let ttl_cap = pgprox_core::config::ConfigSource::watch(config.as_ref())
+        .borrow()
+        .grant_ttl_cap;
+    let resolver = CachingResolver::new(
+        resolver,
+        Arc::new(SystemClock),
+        CacheConfig {
+            max_ttl: ttl_cap,
+            ..CacheConfig::default()
+        },
+    );
+
     App::build(Deps {
         listener_tls,
         statics: options.static_admin()?,
@@ -640,6 +672,89 @@ mod tests {
 
         assert_eq!(app.config.servers.len(), 1);
         assert!(!app.is_draining());
+    }
+
+    /// Base64url without padding, which is what a JWT part is.
+    fn encode_part(bytes: &[u8]) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    }
+
+    /// A grant the fake resolver can hand back.
+    fn a_grant() -> pgprox_core::auth::Grant {
+        use pgprox_core::auth::{Backend, ClaimSet, Grant, PoolHints, TlsMode};
+
+        Grant {
+            tenant: pgprox_core::ids::TenantId::new("acme"),
+            primary: Backend {
+                server: pgprox_core::ids::ServerId::new("db-1", 5432),
+                database: "tenant_acme".into(),
+                user: "acme_app".into(),
+                password: pgprox_core::secret::SecretString::new("hunter2"),
+                tls: TlsMode::Disabled,
+            },
+            replicas: Vec::new(),
+            pool: PoolHints::default(),
+            ttl: Duration::from_secs(60),
+            claims: ClaimSet::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_node_resolves_a_repeated_token_once() {
+        // The sidecar is on the connection path, so a node that asked it about
+        // every connection would put a round trip in front of every login and,
+        // at a hundred thousand of them, more concurrent gRPC calls on one h2
+        // connection than it will carry: that is what the first 100k run hit,
+        // and the answer every client got was "authentication service
+        // unavailable".
+        //
+        // `pgprox-auth` had the caching resolver the whole time and nothing
+        // wrapped anything in it. This test is here so that cannot recur
+        // quietly: it counts what reaches the inner resolver.
+        use pgprox_core::auth::{AuthRequest, CredentialResolver};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, document()).unwrap();
+
+        // A well-formed token naming an approved algorithm: the cache checks
+        // the header before it stores anything, so a placeholder would be
+        // refused before it ever reached the resolver.
+        let token = &format!(
+            "{}.{}.not-a-signature",
+            encode_part(br#"{"alg":"RS256","typ":"JWT"}"#),
+            encode_part(br#"{"sub":"acme"}"#),
+        );
+        let inner = Arc::new(
+            pgprox_core::auth::FakeCredentialResolver::new().with_grant(token.clone(), a_grant()),
+        );
+        let app = start_with(
+            Options {
+                config: path.clone(),
+                ..Options::default()
+            },
+            FileSource::new(FileConfig::at(&path)).unwrap(),
+            Arc::clone(&inner) as Arc<dyn CredentialResolver>,
+        )
+        .await
+        .unwrap();
+
+        let request = || AuthRequest {
+            token: pgprox_core::secret::SecretString::new(token.clone()),
+            startup_database: "tenant_acme".to_owned(),
+            startup_user: "acme_app".to_owned(),
+            client_addr: "10.0.0.1".parse().unwrap(),
+        };
+        for _ in 0..8 {
+            app.deps.resolver.resolve(request()).await.unwrap();
+        }
+
+        assert_eq!(
+            inner.call_count(),
+            1,
+            "the node asked the sidecar once per connection rather than once per token"
+        );
     }
 
     #[tokio::test]

@@ -1496,21 +1496,20 @@ measurement found three things.
   connection cost 7,920, because a box relocates long-lived bytes to the heap
   and adds an allocator header rather than removing anything. Boxing pays only
   for state that is freed early.
-- [ ] `M7.51` The sidecar client is the first ceiling at 100k connections. The
-  node logs `locally-reset streams reached limit (1024)` and clients are told
-  `authentication service unavailable`: one h2 connection to the sidecar runs
-  out of concurrent streams under a cold-start herd of about 1,100 arrivals a
-  second, and again whenever the grant TTL expires and the herd returns.
-  Singleflight collapses repeats but not the first wave. Acceptance: 100k
-  connections authenticate without the stream limit being reached, and the
-  bound is a number in configuration rather than h2's default.
-- [ ] `M7.52` A shed decision assumes the client can land on another node, and
-  nothing checks that. In the 100k run the load client reconnected to the same
-  node each time, so shedding produced a reconnect loop rather than relief.
-  A real deployment behind a load balancer would land elsewhere, which is why
-  this is a question rather than a bug, but the loop is worth refusing:
-  a node that sheds a client which immediately returns has learned something
-  and should stop.
+- [x] `M7.51` The grant cache had no caller. `pgprox-auth` has held a caching,
+  singleflighting resolver since M2, with its own tests and the allocation
+  budget M7.11 measured against its hit path, and the composition root passed
+  the sidecar resolver straight through. Every connection made its own gRPC
+  call: at a hundred thousand of them, more concurrent streams than one h2
+  connection carries, which is the `locally-reset streams reached limit (1024)`
+  in the log and the `authentication service unavailable` every client saw.
+  The wrap is in `start_with` rather than beside the sidecar connection, so a
+  test can reach it, and one now counts what reaches the inner resolver.
+- [x] `M7.52` Not a bug: the shed rate limiter already bounds it. A shed
+  decision does assume the client can land on another node and nothing checks
+  that, but `ShedConfig::max_per_tenant_per_minute` caps the damage at sixty a
+  minute per tenant, and the 100k run shed three times in five minutes. The
+  churn in that run was the credential path, which is M7.51.
 - [ ] `M7.46` The proxy spends about 3.2 cores serving 700 statements a second
   at 2000 connections, which is 4.5ms of CPU per statement against an
   instruction count of roughly 10us for the decision path. A `perf` profile of
