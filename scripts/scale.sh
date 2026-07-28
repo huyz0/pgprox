@@ -22,6 +22,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 cd "$REPO_ROOT"
 
+# Which workload to replay. The reference one unless told otherwise, because
+# every number this script produces is only comparable to another taken from
+# the same document. M7.55 uses workload-slow.yaml to hold the statement rate
+# still while the connection count moves.
+WORKLOAD="${WORKLOAD:-product/perf/workload.yaml}"
 CONNECTIONS=1000
 KEEP=""
 MODE="compose"
@@ -238,7 +243,7 @@ load_run() {
 
   ./target/release/pgload \
     --target "$target" \
-    --workload product/perf/workload.yaml \
+    --workload "$WORKLOAD" \
     --connections "$connections" \
     --duration "$DURATION" \
     --seed "$SEED" \

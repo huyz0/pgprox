@@ -1594,7 +1594,7 @@ measurement found three things.
   from an ad-hoc `perf` session that left nothing behind, which is why it took
   a milestone and a half to find out it had not changed. Recorded in
   `product/perf/run-2026-07-28-2000-cpu.md`.
-- [ ] `M7.55` Where the 4.2ms per statement actually goes. 157 seconds of CPU
+- [x] `M7.55` Where the 4.2ms per statement actually goes. 157 seconds of CPU
   across a 30 second phase is 5.2 cores, and at 1,234 statements a second that
   is three orders of magnitude above the instruction count for the decision
   path. That is not a hot loop being slightly slow.
@@ -1608,6 +1608,34 @@ measurement found three things.
   Acceptance: a run whose connection count and statement rate move
   independently says which, and the answer is a number rather than a
   hypothesis. A profile taken before that run is a profile of the wrong thing.
+  It is the connections. Two runs at the same statement rate, four times apart
+  in connection count: 500 connections did 31,856 statements for 30,330ms of
+  CPU, and 2,000 connections against a workload thinking four times as long did
+  36,317 statements for 134,020ms. Per statement that is 952us and 3,690us,
+  which is not a number. Per connection per second it is 2.02ms and 2.23ms,
+  which is the same number twice.
+  So the proxy spends about 2ms of CPU per connection per second, near enough
+  regardless of what that connection asks for, and one core holds about five
+  hundred of them. That is the answer `M7.46` was looking for in the wrong
+  place: the memmove was never going to matter because the cost does not scale
+  with the thing the memmove was in.
+  `product/perf/workload-slow.yaml` is what holds the work still while the
+  connections move, and `scripts/scale.sh` takes a `WORKLOAD` now. Recorded in
+  `product/perf/run-2026-07-29-connection-cost.md`, with the candidates this
+  points at and the caveat that both runs saturate the database.
+- [ ] `M7.56` The 2ms per connection per second, named. `M7.55` says where the
+  CPU goes and not what it is, and the shape of it, a cost per connection that
+  barely depends on what that connection does, points at something running per
+  connection on a schedule or at contention on something shared. The session
+  registry, which every connection touches on every state change and which the
+  admin API and the metrics exporter also walk; the timers each connection
+  holds; and the scheduler itself at two thousand tasks per worker are the
+  candidates, none measured.
+  Acceptance: a profile taken *now*, which is the first time one would be
+  looking at the right thing, and a number for whichever of those it turns out
+  to be. The 100k hold run is the contrast worth keeping in view: idle
+  connections cost almost nothing, so whatever this is appears only once a
+  fleet is active.
 
 ## M8: FIPS and release
 
