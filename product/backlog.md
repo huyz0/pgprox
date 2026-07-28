@@ -1623,7 +1623,7 @@ measurement found three things.
   connections move, and `scripts/scale.sh` takes a `WORKLOAD` now. Recorded in
   `product/perf/run-2026-07-29-connection-cost.md`, with the candidates this
   points at and the caveat that both runs saturate the database.
-- [ ] `M7.56` The 2ms per connection per second, named. `M7.55` says where the
+- [x] `M7.56` The 2ms per connection per second, named. `M7.55` says where the
   CPU goes and not what it is, and the shape of it, a cost per connection that
   barely depends on what that connection does, points at something running per
   connection on a schedule or at contention on something shared. The session
@@ -1636,6 +1636,32 @@ measurement found three things.
   to be. The 100k hold run is the contrast worth keeping in view: idle
   connections cost almost nothing, so whatever this is appears only once a
   fleet is active.
+  It is the upstream pool's lock, and none of the three candidates above.
+  20.6% of the proxy's CPU is `Mutex::lock_contended`, of which 12.5 points
+  come from `LivePool::acquire` and 5.1 from dropping a `WaitGuard`, which is
+  the release path. With `acquire` itself, the `HashMap` lookup it does while
+  holding the lock, and the `Notify` on both sides, roughly 45% of the process
+  is one lock and the wakeups around it.
+  That is exactly the shape `M7.55` measured from outside: five hundred
+  connections share a sixty-connection pool, so contention is a function of how
+  many are queued rather than of what any one asked for. The frame path does
+  not appear at all, which is the other half of `M7.46`'s correction.
+  Recorded in `product/perf/run-2026-07-29-pool-lock.md`. What to do about it
+  is `M7.57`, deliberately not decided here.
+- [ ] `M7.57` What to do about the pool lock. `M7.56` names the cost and stops,
+  because the three obvious answers have different consequences and one of them
+  is that there is nothing to fix.
+  Sharding `LivePool` by `PoolKey` removes contention between tenants and
+  leaves it within one, which for a fleet where a few tenants are hot is most
+  of the win for none of the risk. A lock-free or per-worker free list removes
+  it altogether and is a rewrite of the code the quota invariant depends on,
+  which `scripts/m3-complete.sh` exists to protect. And at 500 connections
+  against 60 upstreams the queue is the design working as intended, so the
+  contention may simply be what saturation looks like.
+  Acceptance: the third is eliminated first, with a run against a database that
+  has headroom, because it decides whether the other two are worth attempting.
+  That needs a machine this repository does not have, which is the same
+  constraint `M7`'s 100k condition ran into.
 
 ## M8: FIPS and release
 
