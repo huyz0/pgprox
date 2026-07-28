@@ -110,6 +110,19 @@ pub struct Wire<S> {
     slab: Arc<BufferSlab>,
     /// Bytes read and not yet consumed. Absent when there are none.
     read: Option<PooledBuf>,
+    /// How far into `read` the frames already handed out reached.
+    ///
+    /// A cursor rather than a `drain`, for the reason `FrameRelay` in
+    /// `pgprox-proto` has one: draining the front of the buffer memmoves
+    /// everything behind it, once per frame, and a read that pulled in a
+    /// pipelined `Parse`/`Bind`/`Execute`/`Sync` pays that four times over the
+    /// same tail. A profile of the running proxy put 19% of its time in
+    /// `__memmove_avx_unaligned_erms`.
+    ///
+    /// The buffer is compacted only when the cursor reaches the end, which is
+    /// the common case and costs nothing: the whole thing is dropped and the
+    /// slab gets it back.
+    read_at: usize,
     /// Bytes queued and not yet written. Absent when there are none.
     write: Option<PooledBuf>,
     /// What was queued while the slab had nothing to lend.
@@ -118,7 +131,21 @@ pub struct Wire<S> {
     /// and its callers have already decided to send something: dropping an
     /// `ErrorResponse` because memory was tight would leave a client with a
     /// closed socket and no reason for it.
-    spare: Vec<u8>,
+    ///
+    /// Boxed, and absent rather than empty, because a `Vec` is three words
+    /// inline and this one holds nothing on any path a connection normally
+    /// takes. Three words in each of the wires a session holds is a hundred
+    /// bytes it pays forever for a case it reaches when the slab is exhausted.
+    /// The allocation this costs happens only on that path, where the process
+    /// is already out of buffers and one more is not the problem.
+    ///
+    /// `clippy::box_collection` says a `Vec` is already on the heap, which is
+    /// true of its contents and not of its header: three words sit in this
+    /// struct whether or not anything was ever queued, and this struct is
+    /// instantiated per wire per connection. The extra indirection is the
+    /// point rather than an oversight.
+    #[allow(clippy::box_collection)]
+    spare: Option<Box<Vec<u8>>>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
@@ -128,8 +155,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
             io,
             slab,
             read: None,
+            read_at: 0,
             write: None,
-            spare: Vec::new(),
+            spare: None,
         }
     }
 
@@ -143,9 +171,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     /// with the bytes, because the upgraded stream gets a new wire and would
     /// otherwise hold two.
     pub fn into_parts(self) -> (S, Vec<u8>) {
+        let at = self.read_at;
         let leftover = self
             .read
-            .map(|buf| buf.as_slice().to_vec())
+            .map(|buf| buf.as_slice()[at..].to_vec())
             .unwrap_or_default();
         (self.io, leftover)
     }
@@ -153,12 +182,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     /// Whether anything has been read and not yet consumed.
     #[must_use]
     pub fn is_buffered(&self) -> bool {
-        self.read.as_ref().is_some_and(|buf| !buf.is_empty())
+        self.read
+            .as_ref()
+            .is_some_and(|buf| buf.as_slice().len() > self.read_at)
     }
 
     /// The bytes read and not yet consumed.
     fn buffered(&self) -> &[u8] {
-        self.read.as_ref().map_or(&[][..], |buf| buf.as_slice())
+        self.read
+            .as_ref()
+            .map_or(&[][..], |buf| &buf.as_slice()[self.read_at..])
     }
 
     /// Gives a buffer back once it holds nothing.
@@ -166,8 +199,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     /// Called at both ends of the relay loop, which is what makes an idle
     /// connection cost a socket rather than 32 KiB.
     fn reclaim(&mut self) {
-        if self.read.as_ref().is_some_and(|buf| buf.is_empty()) {
+        if self
+            .read
+            .as_ref()
+            .is_some_and(|buf| buf.as_slice().len() <= self.read_at)
+        {
             self.read = None;
+            self.read_at = 0;
         }
         if self.write.as_ref().is_some_and(|buf| buf.is_empty()) {
             self.write = None;
@@ -222,6 +260,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
 
     /// Reads into the buffer this wire already holds.
     async fn fill_held(&mut self) -> Result<(), ShellError> {
+        // The one place the consumed prefix is thrown away, and the reason the
+        // cursor is affordable. Reaching here means a frame arrived split, so
+        // there is a read to pay for anyway; doing it once per read rather
+        // than once per frame is the whole difference. Without it the buffer
+        // would keep growing past what the slab lent.
+        self.compact();
+
         let Some(buf) = self.read.as_mut() else {
             return Err(ShellError::Disconnected);
         };
@@ -275,10 +320,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     /// Drops the bytes a frame used, and the buffer with them if it is now
     /// empty.
     fn consume(&mut self, consumed: usize) {
-        if let Some(buf) = self.read.as_mut() {
-            buf.as_mut_vec().drain(..consumed);
-        }
+        self.read_at += consumed;
         self.reclaim();
+    }
+
+    /// Moves the unconsumed tail to the front and forgets the cursor.
+    ///
+    /// The memmove this type exists to avoid, done deliberately and rarely.
+    fn compact(&mut self) {
+        if self.read_at == 0 {
+            return;
+        }
+        if let Some(buf) = self.read.as_mut() {
+            buf.as_mut_vec().drain(..self.read_at);
+        }
+        self.read_at = 0;
     }
 
     /// Reads one tagged message body into `body`, returning its tag.
@@ -310,8 +366,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     pub fn queue(&mut self, build: impl FnOnce(&mut Vec<u8>)) {
         // Once anything has overflowed, everything after it does too, or the
         // messages would go out in the wrong order.
-        if !self.spare.is_empty() {
-            build(&mut self.spare);
+        if let Some(spare) = self.spare.as_mut() {
+            build(spare);
             return;
         }
 
@@ -320,7 +376,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
                 build(buf.as_mut_vec());
                 self.write = Some(buf);
             }
-            None => build(&mut self.spare),
+            None => build(self.spare.get_or_insert_with(Box::default)),
         }
     }
 
@@ -331,7 +387,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     /// Fails when the socket does.
     pub async fn flush(&mut self) -> Result<(), ShellError> {
         let queued = self.write.as_ref().is_some_and(|buf| !buf.is_empty());
-        if !queued && self.spare.is_empty() {
+        if !queued && self.spare.is_none() {
             self.write = None;
             return Ok(());
         }
@@ -341,8 +397,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
         if let Some(buf) = self.write.as_ref() {
             self.io.write_all(buf.as_slice()).await?;
         }
-        if !self.spare.is_empty() {
-            let spare = std::mem::take(&mut self.spare);
+        if let Some(spare) = self.spare.take() {
             self.io.write_all(&spare).await?;
         }
         self.io.flush().await?;
@@ -1114,6 +1169,77 @@ mod tests {
 
         let (handoff, _wire) = task.await.unwrap();
         assert_eq!(handoff, Handoff::Ask(Credential::Jwt));
+    }
+
+    #[tokio::test]
+    async fn many_frames_from_one_read_come_back_in_order() {
+        // The cursor's correctness case. Consuming a frame no longer moves the
+        // bytes behind it, so a read that pulled in four of them hands them
+        // out from four different offsets into the same buffer. An off-by-one
+        // here reads a frame from the middle of its neighbour, which is the
+        // failure mode a `drain` cannot have.
+        let (mut wire, mut client) = pair();
+
+        let mut pipelined = Vec::new();
+        for sql in ["SELECT 1", "SELECT 22", "SELECT 333", "SELECT 4444"] {
+            pgprox_proto::encode_frontend::query(&mut pipelined, sql);
+        }
+        client.send(&pipelined).await;
+
+        let mut body = Vec::new();
+        for sql in ["SELECT 1", "SELECT 22", "SELECT 333", "SELECT 4444"] {
+            let tag = wire.read_tagged(&mut body).await.unwrap();
+            assert_eq!(tag, Tag::QUERY);
+            assert_eq!(
+                String::from_utf8_lossy(&body).trim_end_matches('\0'),
+                sql,
+                "a frame came back from the wrong offset"
+            );
+        }
+
+        assert!(
+            !wire.is_buffered(),
+            "the buffer still holds bytes after four frames were consumed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_frame_split_behind_consumed_ones_is_still_reassembled() {
+        // The cursor's other half. Three frames arrive, two are consumed, and
+        // the third is cut in the middle: the next read has to land behind the
+        // partial frame rather than behind the consumed ones. Without the
+        // compaction in `fill_held` it would, and the frame would decode as
+        // whatever the arithmetic said.
+        let (mut wire, mut client) = pair();
+
+        let mut first = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut first, "SELECT 1");
+        pgprox_proto::encode_frontend::query(&mut first, "SELECT 22");
+        let mut third = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut third, "SELECT 333");
+        let (head, tail) = third.split_at(7);
+        first.extend_from_slice(head);
+        client.send(&first).await;
+
+        let mut body = Vec::new();
+        for sql in ["SELECT 1", "SELECT 22"] {
+            wire.read_tagged(&mut body).await.unwrap();
+            assert_eq!(String::from_utf8_lossy(&body).trim_end_matches('\0'), sql);
+        }
+
+        let task = tokio::spawn(async move {
+            let mut body = Vec::new();
+            wire.read_tagged(&mut body).await.unwrap();
+            body
+        });
+        client.send(tail).await;
+
+        let body = task.await.unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&body).trim_end_matches('\0'),
+            "SELECT 333",
+            "the split frame was reassembled from the wrong offset"
+        );
     }
 
     #[tokio::test]

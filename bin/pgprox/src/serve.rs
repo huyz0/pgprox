@@ -1725,8 +1725,9 @@ mod tests {
         // 4 KiB stack array in `Wire::fill`, the startup negotiation, the
         // authentication exchange, and the frames of the two functions that
         // ran them, none of which a connection needs once it is serving.
-        // The ceiling is 3 KiB, so a change that adds a kilobyte fails this
-        // rather than a change that adds a pointer.
+        // The ceiling is 5 KiB, which the comment said was 3 for two
+        // milestones after M7.50 lowered it from 6. A change that adds a
+        // kilobyte fails this; one that adds a pointer does not.
         let context = Arc::new(context_for("127.0.0.1:1".parse().unwrap()));
         let gate = Arc::new(Gate::new(1));
         let admitted = gate.admit().unwrap();

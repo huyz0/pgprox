@@ -1528,7 +1528,7 @@ measurement found three things.
   range and `tcp_tw_reuse`. And every connection ran a transaction the instant
   it connected, so a hundred thousand arrivals meant a hundred thousand
   transactions at once: a connection now thinks before its first one.
-- [ ] `M7.46` The proxy spends about 3.2 cores serving 700 statements a second
+- [x] `M7.46` The proxy spends about 3.2 cores serving 700 statements a second
   at 2000 connections, which is 4.5ms of CPU per statement against an
   instruction count of roughly 10us for the decision path. A `perf` profile of
   the native binary puts 19% in `__memmove_avx_unaligned_erms` and another
@@ -1537,6 +1537,34 @@ measurement found three things.
   remainder on every frame, where `FrameRelay` in `pgprox-proto` uses a cursor
   for exactly this reason. Acceptance: the copy per frame is gone or explained,
   and the CPU per connection is re-measured against the number above.
+  The copy is gone and the number did not move: 4,242us per statement at 2,000
+  connections against the 4.5ms this task recorded. So the memmove was not the
+  cost. A profile saying 19% of time is in `__memmove_avx_unaligned_erms` says
+  where time goes, not why there is so much of it, and removing one caller
+  moved the total by less than the run-to-run spread.
+  The cursor stays, because it is correct and cheaper by construction, and it
+  paid for its 48 bytes in the session future by boxing the write overflow
+  buffer alongside: 5,064 bytes against 5,096 before, under a 5 KiB ceiling
+  that was not raised to accommodate it. What it is not is an answer to this
+  question, and `M7.55` is.
+  `scripts/scale.sh` reports CPU per statement now. The 4.5ms in this task came
+  from an ad-hoc `perf` session that left nothing behind, which is why it took
+  a milestone and a half to find out it had not changed. Recorded in
+  `product/perf/run-2026-07-28-2000-cpu.md`.
+- [ ] `M7.55` Where the 4.2ms per statement actually goes. 157 seconds of CPU
+  across a 30 second phase is 5.2 cores, and at 1,234 statements a second that
+  is three orders of magnitude above the instruction count for the decision
+  path. That is not a hot loop being slightly slow.
+  Two candidates survive `M7.46`'s run and neither is measured. It may be the
+  connections rather than the statements: 2,000 tasks each with a socket, a
+  timer and a registry entry cost something per wakeup whether or not they have
+  work, and a per-statement figure divides all of it by the statements. Or it
+  may be the queue: p99 at that connection count is 25 seconds because the
+  database is saturated, so the proxy is spending its time on clients that are
+  waiting.
+  Acceptance: a run whose connection count and statement rate move
+  independently says which, and the answer is a number rather than a
+  hypothesis. A profile taken before that run is a profile of the wrong thing.
 
 ## M8: FIPS and release
 

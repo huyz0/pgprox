@@ -167,6 +167,30 @@ proxy_rss_kb() {
     awk '/^VmRSS:/ { print $2 }' /proc/1/status 2>/dev/null | tr -d '\r'
 }
 
+# The proxy's own CPU time so far, in milliseconds.
+#
+# From /proc/1/stat rather than from `docker stats`, which samples a rate and
+# cannot be differenced across a phase. utime plus stime, in clock ticks,
+# converted with the kernel's 100 Hz.
+#
+# This exists because M7.46 recorded 4.5ms of CPU per statement from an ad-hoc
+# measurement, which is a number nobody could reproduce and therefore nobody
+# could tell had changed.
+proxy_cpu_ms() {
+  local ticks
+  if [[ "$MODE" == "local" ]]; then
+    local pid
+    pid="$(cat "$LOCAL_DIR/proxy.pid" 2>/dev/null)"
+    [[ -n "$pid" ]] || return 0
+    ticks="$(awk '{ print $14 + $15 }' "/proc/$pid/stat" 2>/dev/null)"
+  else
+    ticks="$("${COMPOSE[@]}" exec -T pgprox-1 \
+      awk '{ print $14 + $15 }' /proc/1/stat 2>/dev/null | tr -d '\r')"
+  fi
+  [[ -n "$ticks" ]] || return 0
+  echo $(( ticks * 10 ))
+}
+
 # Statements routed, as `primary replica`, from the node under test.
 #
 # The share a replica served is the point of the replica machinery, and until
@@ -290,8 +314,9 @@ run_scale() {
   # Last, because it is the phase that leaves the machine busiest, and because
   # what it measures does not compare against anything: memory, the upstream
   # cap and the error count are all about this node under many connections.
-  local routed_primary_before routed_replica_before
+  local routed_primary_before routed_replica_before cpu_before
   read -r routed_primary_before routed_replica_before < <(route_counts)
+  cpu_before="$(proxy_cpu_ms)"
 
   echo "  running $CONNECTIONS connections through pgprox-1 for ${DURATION}s"
   if ! load_run "$proxy_report" "$PROXY_ADDR" acme_app "$TOKEN" watch "$CONNECTIONS"; then
@@ -299,6 +324,10 @@ run_scale() {
     tail -5 "$proxy_report.log" | sed 's/^/  /'
     return 1
   fi
+
+  local cpu_after cpu_ms
+  cpu_after="$(proxy_cpu_ms)"
+  cpu_ms=$(( ${cpu_after:-0} - ${cpu_before:-0} ))
 
   # The delta across the full-count phase, not the counter's total: the
   # matched-load phase runs through the same node and its statements are in
@@ -349,6 +378,12 @@ run_scale() {
   local routed_total=$(( routed_primary + routed_replica ))
   if (( routed_total > 0 )); then
     echo "  statements       $routed_total: $routed_replica on a replica ($(( routed_replica * 100 / routed_total ))%)"
+    # CPU per statement, which M7.46 is about. A number nobody can reproduce
+    # is a number nobody can tell has changed, and 4.5ms came from an ad-hoc
+    # `perf` session that left nothing behind.
+    if (( cpu_ms > 0 )); then
+      echo "  proxy cpu        ${cpu_ms}ms over the phase, $(( cpu_ms * 1000 / routed_total ))us per statement"
+    fi
   fi
   echo "  baseline         $direct_connections connections, $direct_errors error(s)"
   echo
