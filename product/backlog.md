@@ -1982,12 +1982,29 @@ the relay lands before the cacheability rule is finished.
   The crate's `AGENTS.md` and the trait's own documentation say the same thing
   now, because the place this goes wrong is a later reader finding the trait
   before the ADR.
-- [ ] `M9.3` The crate and the store. `pgprox-cache` implementing `QueryCache`
+- [x] `M9.3` The crate and the store. `pgprox-cache` implementing `QueryCache`
   with a TTL per entry, a bound on total entries, and per-tenant invalidation.
   Acceptance: it satisfies the same test suite `FakeQueryCache` does, plus its
   own for expiry and eviction; an entry past its TTL is never returned even if
   it is still resident; and the bound is on bytes rather than entries, because
   a cache bounded by count holds an unbounded amount of memory.
+  Eighteen tests, 99.65% covered. LRU eviction through a `BTreeMap` keyed by a
+  monotonic sequence rather than a scan for the minimum, so the cost of a `put`
+  does not depend on how full the cache is. A result larger than the whole
+  budget is refused rather than stored, because storing it would evict
+  everything and then be evicted by the next insert. A TTL that would overflow
+  the clock is refused for the reason the TTL exists: ADR 0021 does not allow
+  an entry that never expires.
+  The one lock is deliberate and commented as such. `M7.56` found 45% of the
+  proxy's CPU in a mutex, so a new one owes an explanation: the pool's is
+  contended because callers park on a `Notify` while holding it, and nothing
+  here waits. That is a different regime rather than an exemption, and sharding
+  by the hash of the key is why no caller knows whether there is one lock or
+  sixteen.
+  The LRU test failed first time for a reason worth keeping: three 900-byte
+  results did not fit a 3,000-byte budget, because `weigh` adds about 115 bytes
+  of struct and key to each. It asserts its own setup now, so a future change
+  to the accounting fails at the assumption rather than at the conclusion.
 - [ ] `M9.4` Normalisation, which is the correctness-critical half of the key.
   Two statements differing only in whitespace, comment or letter case key the
   same; two differing in anything the server would treat differently do not.
