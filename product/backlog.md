@@ -1534,5 +1534,69 @@ measurement found three things.
   for exactly this reason. Acceptance: the copy per frame is gone or explained,
   and the CPU per connection is re-measured against the number above.
 
-Not yet decomposed. See [roadmap.md](roadmap.md). The `next-task` skill
-decomposes the next milestone when the current one closes.
+## M8: FIPS and release
+
+The FIPS build stage, the driver cipher-suite matrix, the Helm chart, probe and
+`preStop` wiring, and the rolling upgrade rehearsal.
+
+### What is already true, and what that hides
+
+`--features fips` is declared on `pgprox`, `pgprox-tls` and `pgprox-auth`, and
+`pgprox_tls::server_config` and `client_config` already call `assert_fips`, so
+every configuration the process builds is checked rather than only the two the
+roadmap names. What has never happened is a compile: `aws-lc-fips-sys` builds
+AWS-LC from source and needs cmake, Go and clang, and nothing in CI or in a
+Dockerfile has ever asked for that feature. A feature flag that has never been
+built is a claim, and this milestone is where it stops being one.
+
+The same applies to deployment. The drain sequence in `plan.md` names a
+`preStop` hook and two probes, `bin/pgprox` serves `/readyz` and `/healthz` and
+`POST /v1/drain`, and there is no manifest anywhere that wires the three
+together. The rehearsal is what proves the wiring, so it comes last.
+
+- [x] `M8.1` Define M8: this decomposition and `scripts/release-check.sh`.
+  The gate reports seven failures against the tree it was written on, one per
+  task below it. Its first draft passed a check it should not have: looking for
+  `feature = "fips"` anywhere in `pgprox-tls` matched the `cfg!` that defines
+  `FIPS_BUILD`, so a crate with no FIPS test at all satisfied it. It looks for
+  the attribute form now.
+- [ ] `M8.2` The FIPS build compiles. Acceptance: `cargo build -p pgprox
+  --features fips` succeeds on this toolchain, and a test that runs only under
+  the feature asserts a real `ServerConfig` and a real `ClientConfig` both
+  report `fips()`. The existing unit test covers the refusal branch with the
+  flag passed in; this is the other half, and it needs the module.
+- [ ] `M8.3` The FIPS image stage in `deploy/Dockerfile`, and a startup line
+  that says which provider is loaded. Acceptance: `docker build --target fips`
+  produces an image, the default stage builds unchanged, and the process logs
+  the provider once at startup so an operator can tell the two images apart
+  without reading the build arguments.
+- [ ] `M8.4` The cipher-suite matrix, generated rather than typed. Acceptance:
+  `product/release/cipher-matrix.md` records, for each driver the conformance
+  suite already drives, the suite it negotiated against the default build and
+  against the FIPS build, and a driver that cannot connect at all under FIPS is
+  recorded as a failure rather than omitted.
+- [ ] `M8.5` The Helm chart: `Chart.yaml`, `values.yaml`, a Deployment, a
+  Service, and the ConfigMap the file provider watches. Acceptance: `helm lint`
+  is clean and `helm template` renders manifests that `kubectl apply
+  --dry-run=client` accepts.
+- [ ] `M8.6` Probe and `preStop` wiring in the chart. Acceptance: the rendered
+  Deployment carries a readiness probe on `/readyz`, a liveness probe on
+  `/healthz`, and a `preStop` hook that triggers the drain and waits past
+  `drain_grace`, with the wait derived from the configured value rather than a
+  literal that drifts away from it.
+- [ ] `M8.7` The rolling upgrade rehearsal: `scripts/rolling-upgrade.sh` takes
+  the compose stack through a node-by-node restart under load. Acceptance: zero
+  failed transactions, recorded in `product/release/` the way a scale run is,
+  and a run where a node is killed rather than drained is shown to fail, so the
+  zero means the drain worked rather than that nothing was happening.
+- [ ] `M8.8` MSRV verified rather than declared. `rust-version` is 1.94 and
+  nothing checks it. Acceptance: a CI job builds the workspace on that exact
+  toolchain and fails when a crate needs a newer one.
+- [ ] `M8.9` Close M8. Acceptance: `scripts/release-check.sh` exits zero.
+
+### The five tasks carried into this milestone
+
+M7.46 and the four M1F deferrals are open and have been since their milestones
+closed. They are worked after M8.9 rather than before it, because M8's condition
+does not depend on any of them, in this order: `M7.46`, `M1F.21`, `M1F.22`,
+`M1F.24`, `M1F.25`.
