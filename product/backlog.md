@@ -336,6 +336,20 @@ pgdog carries a whole logical-decoding subtree. We only track the mode.
   `NONE`, or `from_names`, and ADR 0001 now says why it is one.
 - [ ] `M1F.22` `GSSENCRequest` beyond refusal: confirm the refusal path against
   a GSSAPI-capable client rather than assuming it.
+  Attempted in M8 and it needs a KDC, which is the decision this was deferred
+  on rather than the work. libpq on this machine has GSSAPI compiled in and
+  understands `gssencmode`, but it will not send a `GSSENCRequest` without a
+  credential cache: `gssencmode=require` fails client-side with "GSSAPI
+  encryption required but no credential cache" before a byte reaches the
+  listener, and `gssencmode=prefer` skips GSSAPI silently for the same reason.
+  So there is no way to make a real client send the packet without Kerberos
+  behind it.
+  What that costs: an MIT Kerberos container in the e2e stack, a realm, a
+  service principal for the proxy, a keytab, and a `kinit` before the probe.
+  Whether the test stack should carry a KDC is a decision rather than a task,
+  which is why this one is still open. Hand-crafting the packet is what the
+  existing unit test already does, and this task exists because that is not the
+  same thing.
 
 ### Group F: conformance depth
 
