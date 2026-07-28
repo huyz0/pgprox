@@ -1577,11 +1577,19 @@ together. The rehearsal is what proves the wiring, so it comes last.
   delocating. A release build fails for the same reason. clang 21 builds both,
   which is why AWS-LC documents clang for FIPS, and why the script pins the
   compiler rather than taking whatever `cc` is.
-- [ ] `M8.3` The FIPS image stage in `deploy/Dockerfile`, and a startup line
-  that says which provider is loaded. Acceptance: `docker build --target fips`
-  produces an image, the default stage builds unchanged, and the process logs
-  the provider once at startup so an operator can tell the two images apart
-  without reading the build arguments.
+- [x] `M8.3` The FIPS image, and a startup line that tells the two apart.
+  `docker build --target fips` produces a 148 MB image whose binary carries the
+  delocated module, and running it logs
+  `"message":"serving","crypto":"aws-lc-rs-fips"`. The default stage builds
+  unchanged and logs `aws-lc-rs`.
+  Three things the build taught. The FIPS stage sits *before* the default
+  runtime stage, because Docker builds the last stage when no `--target` is
+  given and putting it after would quietly turn every compose build into a FIPS
+  build. The stage needs `make` on top of cmake, Go and clang: without it cmake
+  configures and then fails with `CMAKE_MAKE_PROGRAM is not set`, which reads
+  like a cmake problem and is a missing package. And the image ships the proxy
+  alone, with no mock sidecar, because a mock credential resolver inside a
+  validated image is something an auditor has to be told to ignore.
 - [ ] `M8.4` The cipher-suite matrix, generated rather than typed. Acceptance:
   `product/release/cipher-matrix.md` records, for each driver the conformance
   suite already drives, the suite it negotiated against the default build and

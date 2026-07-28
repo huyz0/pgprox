@@ -365,6 +365,11 @@ pub async fn serve(options: Options) -> Result<(), StartupError> {
         admin = %addrs.admin,
         gossip = %addrs.gossip,
         peers = peers.len(),
+        // Which of the two images this is. They ship the same binary name at
+        // the same path with the same entrypoint, so without this line the
+        // only way to tell a FIPS pod from a default one is to go and look at
+        // how it was built.
+        crypto = pgprox_tls::provider(),
         "serving"
     );
 

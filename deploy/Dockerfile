@@ -27,6 +27,52 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && mkdir -p /out \
  && cp target/release/pgprox target/release/mock_sidecar target/release/pgload /out/
 
+# The FIPS variant.
+#
+# A separate stage rather than a build argument, because the toolchain is
+# different: `aws-lc-fips-sys` compiles AWS-LC from source, and the FIPS module
+# is delocated, meaning its assembly is rewritten into one contiguous text
+# section whose hash is verified at startup. That needs cmake, Go and a
+# compiler the rewriter accepts.
+#
+# It sits before the default runtime stage on purpose. Docker builds the last
+# stage when no --target is given, so putting this after would quietly make
+# every compose build a FIPS build. Nothing here is built unless it is asked
+# for by name.
+FROM rust:1-slim-bookworm AS build-fips
+
+# golang and make are the additions over the default stage. The delocate step
+# is a Go program that ships with AWS-LC, and cmake generates Unix Makefiles
+# here, so without make it configures and then fails with `CMAKE_MAKE_PROGRAM
+# is not set`, which reads like a cmake problem and is a missing package.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends pkg-config libssl-dev protobuf-compiler cmake clang golang make \
+ && rm -rf /var/lib/apt/lists/*
+
+# gcc emits `.data.rel.ro.local` for the FIPS module's relocatable read-only
+# tables once optimisation is on, and the delocate step refuses any .data
+# section in the module. A release build is optimised by definition, so the
+# default compiler cannot build this image at all. See scripts/fips-check.sh.
+ENV CC=clang CXX=clang++
+
+WORKDIR /src
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release -p pgprox --features fips \
+ && mkdir -p /out \
+ && cp target/release/pgprox /out/
+
+FROM debian:bookworm-slim AS fips
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+# No openssl and no mock sidecar. This image is what a FIPS deployment runs, so
+# it carries the proxy and nothing that exists for testing: a mock sidecar in a
+# validated image is a credential resolver an auditor has to be told to ignore.
+COPY --from=build-fips /out/pgprox /usr/local/bin/pgprox
+ENTRYPOINT ["/usr/local/bin/pgprox"]
+
 FROM debian:bookworm-slim
 # curl is here for the container healthcheck and for an operator inside the
 # container asking the admin API a question. The runtime shell is dash, which

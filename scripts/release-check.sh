@@ -58,6 +58,15 @@ fi
 
 if grep -qsE '^FROM .* AS fips' deploy/Dockerfile; then
   ok "the Dockerfile has a FIPS stage"
+  # And it is not the one a bare `docker build` produces. Docker builds the
+  # last stage when no --target is given, so a FIPS stage moved to the end
+  # would silently turn every compose build into a FIPS build, on a toolchain
+  # the default stage does not have.
+  if [[ "$(grep -E '^FROM ' deploy/Dockerfile | tail -1)" == *' AS fips' ]]; then
+    fail "the FIPS stage is last: a bare 'docker build' would produce it"
+  else
+    ok "the default stage is still what a bare 'docker build' produces"
+  fi
 else
   fail "no FIPS stage in deploy/Dockerfile: there is no image to ship"
 fi

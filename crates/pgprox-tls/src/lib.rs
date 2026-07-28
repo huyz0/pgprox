@@ -163,6 +163,34 @@ pub fn root_store_from_pem(path: &Path) -> Result<RootCertStore, TlsError> {
     Ok(roots)
 }
 
+/// The name of this build's crypto provider, for the startup log.
+///
+/// The FIPS image and the default image carry a binary with the same name in
+/// the same place, started by the same entrypoint. An operator holding a
+/// running pod has no other way to tell which one they have, and "which image
+/// is this" is the first question in any FIPS audit.
+///
+/// This reports the build rather than a configuration, so it can be logged
+/// before any TLS is set up and on a node serving plaintext. What a
+/// configuration actually reports is [`assert_fips`]'s business, and that one
+/// refuses to start rather than logging.
+#[must_use]
+pub const fn provider() -> &'static str {
+    provider_for(FIPS_BUILD)
+}
+
+/// The provider name, with the build flag passed in rather than read.
+///
+/// Same reason as [`check_fips`]: both answers have to be reachable in one
+/// build, or one of them is never tested.
+const fn provider_for(fips_build: bool) -> &'static str {
+    if fips_build {
+        "aws-lc-rs-fips"
+    } else {
+        "aws-lc-rs"
+    }
+}
+
 /// Checks a configuration reports FIPS mode when this is a FIPS build.
 ///
 /// A no-op in a default build, so the same code path serves both.
@@ -250,6 +278,17 @@ mod tests {
         let client =
             client_config(RootCertStore::empty()).expect("a FIPS build must produce a FIPS client");
         assert!(client.fips(), "client configuration is not in FIPS mode");
+    }
+
+    #[test]
+    fn the_provider_name_distinguishes_the_two_builds() {
+        // Both answers, in whichever build this is. An operator reading a
+        // startup line has to be able to tell one image from the other, so the
+        // two names must not be the same string.
+        assert_eq!(provider_for(true), "aws-lc-rs-fips");
+        assert_eq!(provider_for(false), "aws-lc-rs");
+        assert_ne!(provider_for(true), provider_for(false));
+        assert_eq!(provider(), provider_for(FIPS_BUILD));
     }
 
     #[test]
