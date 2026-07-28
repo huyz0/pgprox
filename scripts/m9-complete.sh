@@ -53,7 +53,14 @@ fi
 # The half that is a correctness bug rather than a miss. A cache that serves a
 # statement it should not have cached is wrong in the way a replica behind the
 # watermark is wrong.
-if grep -rqs --include='*.rs' 'cacheable\|Cacheable' crates/pgprox-cache/src; then
+#
+# A definition, not the word. The word appears in this crate's own prose
+# explaining that the rule does not exist yet, which passed this check on the
+# run that wrote it. That is three times in three milestones, so it is worth
+# stating as a rule of its own: a gate greps for something only a definition
+# can produce, never for a noun a comment can contain.
+if grep -rqsE --include='*.rs' '(fn|enum|struct|trait) +[Cc]acheable' \
+   crates/pgprox-cache/src; then
   ok "a rule decides what may be cached"
 else
   fail "no cacheability rule: the cache would store whatever it was handed"

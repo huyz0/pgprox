@@ -1060,6 +1060,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pgprox-cache"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "pgprox-core",
+ "tokio",
+]
+
+[[package]]
 name = "pgprox-cluster"
 version = "0.1.0"
 dependencies = [

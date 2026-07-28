@@ -1,0 +1,20 @@
+[package]
+name = "pgprox-cache"
+description = "Query result cache with bounded staleness. See ADR 0021."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+pgprox-core = { path = "../pgprox-core" }
+async-trait.workspace = true
+
+[dev-dependencies]
+pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true
