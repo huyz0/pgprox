@@ -1,0 +1,86 @@
+# The database the rehearsal runs against.
+#
+# One primary and no replicas. The property under test is that a rolling
+# restart of the proxy fleet loses no transaction, and read routing plays no
+# part in that: a replica would add a second reason a statement could fail and
+# make a failure ambiguous.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+data:
+  init.sh: |
+    #!/bin/sh
+    set -eu
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" <<-SQL
+      CREATE ROLE acme_app WITH LOGIN PASSWORD 'acme-password';
+      CREATE DATABASE tenant_acme OWNER acme_app;
+    SQL
+    cat >> "$PGDATA/pg_hba.conf" <<-HBA
+      host all all all md5
+    HBA
+    cat >> "$PGDATA/postgresql.conf" <<-CONF
+      # Room for the proxy fleet's configured cap plus an operator. The
+      # database running out first would make the rehearsal about Postgres.
+      max_connections = 200
+    CONF
+    # The tables product/perf/workload.yaml replays against. The scale runs
+    # create them through the proxy with pgbench --initialize; here they are
+    # made at init, because the rehearsal's first act is to put load on and a
+    # missing relation would look like the restart having broken something.
+    #
+    # Owned by acme_app, so the tenant role the proxy connects as can write to
+    # them without a grant afterwards.
+    pgbench --initialize --scale 1 --quiet --username acme_app tenant_acme
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_PASSWORD
+              value: postgres
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_DB
+              value: postgres
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            periodSeconds: 2
+            failureThreshold: 30
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+            defaultMode: 0o755

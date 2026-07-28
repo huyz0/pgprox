@@ -231,12 +231,27 @@ pub struct Report {
     pub duration_ms: u64,
     /// Transactions that completed.
     pub transactions: u64,
-    /// Transactions that failed, for any reason.
+    /// Transactions that failed and lost work.
     ///
     /// Counted rather than swallowed: a run that reports a wonderful p99
     /// because most of its work errored out immediately is the failure mode a
     /// load client has to make impossible to miss.
+    ///
+    /// A relocation is not one of these. See [`Report::relocations`].
     pub errors: u64,
+    /// Transactions abandoned because the node asked this client to leave.
+    ///
+    /// A drain, a shed and a rolling restart all end with `57P01` on a
+    /// connection that is between transactions, and every mainstream driver
+    /// answers that by reconnecting. Counting it as a failure would mean a
+    /// working drain could never report zero, which makes "zero failed
+    /// transactions" a target nothing can hit and a number nobody reads.
+    ///
+    /// The distinction is where the `57P01` lands. Between transactions it is
+    /// the node relocating a client, which costs a reconnect and no work. Once
+    /// a statement in the transaction has succeeded it is the force-close
+    /// after `drain_grace`, which lost something, and that is an error.
+    pub relocations: u64,
     /// What the first failure said, when there was one.
     ///
     /// A count on its own is not diagnosable: three errors in a run of sixteen
@@ -404,6 +419,7 @@ mod tests {
             duration_ms: 10_000,
             transactions: 50_000,
             errors: 0,
+            relocations: 0,
             first_error: None,
             latency: Latency::from(&histogram_of(&[100, 200, 300, 400, 500])),
         }
@@ -420,6 +436,7 @@ mod tests {
             "\"seed\"",
             "\"connections\"",
             "\"errors\"",
+            "\"relocations\"",
             "\"p99_us\"",
             "\"p50_us\"",
         ] {

@@ -52,19 +52,52 @@ spec:
         runAsUser: 65532
         runAsGroup: 65532
         fsGroup: 65532
+        {{- with .Values.sysctls }}
+        # Empty by default, and it has to be. `net.core.somaxconn` is the one
+        # worth setting here, and the kubelet refuses it unless it was started
+        # with `--allowed-unsafe-sysctls=net.core.somaxconn`: a pod asking for
+        # it on a default cluster does not fail to tune, it fails to start,
+        # with `SysctlForbidden` and no other explanation. A chart that set it
+        # unconditionally would be a chart that installs and never runs.
         sysctls:
-          # The proxy asks to listen with a backlog of 8192 and the kernel
-          # trims it to this. The stock 4096 is not enough for a large
-          # reconnect burst: the queue overflows and a client sees a socket
-          # that closed with nothing on it, which is indistinguishable from a
-          # proxy bug and was mistaken for one during M7.
-          #
-          # This one is on the kubelet's safe list. The file descriptor limit
-          # is not: 100k connections need a nofile of 262144, and that is a
-          # container runtime setting rather than anything a pod spec can ask
-          # for. NOTES.txt says so rather than this chart pretending otherwise.
-          - name: net.core.somaxconn
-            value: "16384"
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      {{- if .Values.sidecar.image }}
+      # A native sidecar: an init container with `restartPolicy: Always`, which
+      # Kubernetes starts before the app containers and keeps running beside
+      # them. That ordering is the point. The proxy refuses to start without a
+      # sidecar to resolve credentials, which is correct, and as an ordinary
+      # container the two race: the proxy loses, exits, and the pod
+      # crash-loops its way to readiness. Needs Kubernetes 1.29 or newer, which
+      # Chart.yaml requires.
+      initContainers:
+        - name: sidecar
+          image: {{ .Values.sidecar.image | quote }}
+          restartPolicy: Always
+          imagePullPolicy: {{ .Values.sidecar.pullPolicy | default .Values.image.pullPolicy }}
+          {{- with .Values.sidecar.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args:
+            {{- toYaml .Values.sidecar.args | nindent 12 }}
+          {{- with .Values.sidecar.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.sidecar.resources | nindent 12 }}
+          # The socket neither container exposes. Never over the network: the
+          # token and the real backend password both cross this boundary.
+          volumeMounts:
+            - name: sidecar-socket
+              mountPath: /run/pgprox
+      {{- end }}
       containers:
         - name: pgprox
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -185,25 +218,6 @@ spec:
               mountPath: /etc/pgprox/tls
               readOnly: true
             {{- end }}
-        {{- if .Values.sidecar.image }}
-        # The credential sidecar, in the same pod and over a socket neither
-        # container exposes. Never over the network: the token and the real
-        # backend password both cross this boundary.
-        - name: sidecar
-          image: {{ .Values.sidecar.image | quote }}
-          args:
-            {{- toYaml .Values.sidecar.args | nindent 12 }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
-          resources:
-            {{- toYaml .Values.sidecar.resources | nindent 12 }}
-          volumeMounts:
-            - name: sidecar-socket
-              mountPath: /run/pgprox
-        {{- end }}
       volumes:
         - name: config
           configMap:

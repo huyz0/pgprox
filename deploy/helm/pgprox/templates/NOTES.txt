@@ -30,12 +30,22 @@ frontend is a token on the wire. Set tls.secretName to a secret holding
 --require-tls.
 
 {{ end -}}
-File descriptors are the one limit this chart cannot set for you. A node
-holding 100k client connections needs a nofile of 262144, and that is a
-container runtime setting rather than something a pod spec can request. Check
-it on the nodes these pods land on:
+Two limits this chart cannot set for you, both of which decide how many
+clients a node can actually hold.
+
+File descriptors: a node holding 100k client connections needs a nofile of
+262144, and that is a container runtime setting rather than something a pod
+spec can request. Check it on the nodes these pods land on:
 
   kubectl exec {{ include "pgprox.fullname" . }}-0 -- sh -c 'ulimit -n'
+
+Listen backlog: the proxy asks for 8192 and the kernel trims it to
+net.core.somaxconn. The stock 4096 is not enough for a large reconnect burst,
+and the overflow reaches a client as a socket that closed with nothing on it.
+That sysctl is not on the kubelet's safe list, so setting it in `values.sysctls`
+only works on a cluster whose kubelet was started with
+--allowed-unsafe-sysctls=net.core.somaxconn. On any other cluster the pod will
+not start at all, with SysctlForbidden, which is why the default here is empty.
 
 Draining a node by hand, which is what the preStop hook does automatically:
 

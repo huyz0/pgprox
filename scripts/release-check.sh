@@ -52,6 +52,14 @@ fi
 # the FIPS feature in.
 if [[ -x scripts/fips-check.sh ]]; then
   ok "scripts/fips-check.sh runs the FIPS suite"
+  # And something runs *that*, on a schedule. A script only a person can
+  # remember to run is a script that is remembered on release day.
+  if grep -qs 'fips-check.sh' .github/workflows/ci.yml \
+     && grep -qs 'schedule:' .github/workflows/ci.yml; then
+    ok "a scheduled job runs it"
+  else
+    fail "nothing runs scripts/fips-check.sh on a schedule"
+  fi
 else
   fail "scripts/fips-check.sh missing: the FIPS-gated test has no caller"
 fi

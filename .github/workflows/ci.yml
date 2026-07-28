@@ -8,6 +8,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Tier 3, which plan.md puts on a schedule rather than on every commit. One
+  # job hangs off this: the FIPS variant, which builds AWS-LC from source and
+  # is minutes rather than seconds.
+  schedule:
+    - cron: "17 3 * * *"
+  # And by hand, because a nightly job nobody can trigger is a job that is
+  # first looked at on the day of a release.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -38,6 +46,27 @@ jobs:
       - run: scripts/check-layering.sh
       - run: scripts/check-crate.sh
       - run: scripts/check-coverage.sh
+
+  fips:
+    name: tier 3 - the FIPS variant
+    # Nightly and on request, not on every commit. aws-lc-fips-sys compiles
+    # AWS-LC from source and runs its FIPS module through `delocate`, which is
+    # minutes of build for a feature that changes rarely. Tier 1 already
+    # compiles the feature through `clippy --all-features`; what this adds is
+    # running the test that asks a real configuration whether it reports FIPS.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      # clang because gcc emits `.data.rel.ro.local` for the FIPS module's
+      # relocatable tables once optimisation is on, and the delocate step
+      # refuses any .data section in the module. See scripts/fips-check.sh.
+      - name: Install the FIPS toolchain
+        run: sudo apt-get update && sudo apt-get install -y cmake clang golang make
+      - run: scripts/fips-check.sh
 
   msrv:
     name: minimum supported rust version

@@ -3,6 +3,10 @@ name: pgprox
 description: A multitenant Postgres proxy that multiplexes many client connections onto a capped upstream pool.
 type: application
 
+# Native sidecar containers, which is how the credential sidecar is started
+# before the proxy that cannot run without it.
+kubeVersion: ">=1.29.0-0"
+
 # The chart version and the proxy version move together. There is one artifact
 # here, not a chart with a life of its own, and a chart version that drifted
 # from the binary it deploys is a support question nobody can answer.

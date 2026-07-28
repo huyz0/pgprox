@@ -39,7 +39,16 @@ drain:
 # cannot resolve credentials.
 sidecar:
   image: ""
+  # Empty means the same policy as the proxy image, which is right when both
+  # come from the same registry and wrong nowhere that matters.
+  pullPolicy: ""
+  # Only needed when the sidecar image's entrypoint is not the sidecar, which
+  # is the case for any image that carries more than one binary.
+  command: []
   args: ["/run/pgprox/sidecar.sock"]
+  # Whatever the sidecar needs to reach the control plane. Left to the operator
+  # because the shape is the sidecar's, not this chart's.
+  env: []
   resources: {}
 
 # Frontend TLS. Required whenever JWT auth is in use, because the token travels
@@ -71,9 +80,28 @@ resources:
   limits:
     memory: 1Gi
 
+# Kernel settings, and why this is empty rather than helpful.
+#
+# The one worth setting is net.core.somaxconn. The proxy asks to listen with a
+# backlog of 8192 and the kernel trims it to this; the stock 4096 is not enough
+# for a large reconnect burst, and the overflow looks to a client like a socket
+# that closed with nothing on it. M7 mistook it for a proxy bug.
+#
+# It is not on the kubelet's safe list. A pod asking for it on a cluster whose
+# kubelet was not started with --allowed-unsafe-sysctls=net.core.somaxconn does
+# not fail to tune, it fails to start, with SysctlForbidden and nothing else.
+# So it goes here, off, for an operator who knows their kubelet:
+#
+#   sysctls:
+#     - name: net.core.somaxconn
+#       value: "16384"
+sysctls: []
+
 # 100k connections is a file descriptor each, plus upstream connections, peers
 # and listeners. The container's own limit is what has to be raised; a node
 # that hits it refuses clients for a reason that looks nothing like the truth.
+# Like the sysctl above, this is not something a pod spec can ask for: it is a
+# container runtime setting. NOTES.txt says how to check it.
 nofile: 262144
 
 podDisruptionBudget:

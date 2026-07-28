@@ -84,11 +84,53 @@ impl tokio::io::AsyncWrite for Stream {
     }
 }
 
+/// Why a connection could not be opened.
+///
+/// Split because one case is not a failure. A node that is draining refuses a
+/// new client with `57P01` and expects it to try somewhere else, and while
+/// Kubernetes is still pulling that node out of the Service a reconnecting
+/// client will land on it and be told exactly that. Counting those as errors
+/// is how a rehearsal reports thirty-five failures for a drain that lost
+/// nothing.
+#[derive(Debug)]
+enum Refused {
+    /// The socket, TLS, or the client's own timeout.
+    Local(String),
+    /// The server said no, and said why.
+    Server(crate::client::SessionError),
+}
+
+impl Refused {
+    /// Whether this is a node sending the client elsewhere.
+    fn is_relocation(&self) -> bool {
+        matches!(
+            self,
+            Self::Server(crate::client::SessionError::Server { code, .. })
+                if code == crate::client::ADMIN_SHUTDOWN
+        )
+    }
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local(detail) => f.write_str(detail),
+            Self::Server(error) => write!(f, "{error}"),
+        }
+    }
+}
+
 /// What one connection did.
 #[derive(Debug, Default)]
 struct Tally {
     transactions: u64,
     errors: u64,
+    /// Transactions given up because the node asked this client to leave.
+    ///
+    /// Not an error. A drain, a shed and a rolling restart all end with
+    /// `57P01` on a connection that is between transactions, and reconnecting
+    /// is the answer the code exists to ask for.
+    relocations: u64,
     /// The first failure, kept for the message when nothing connected at all.
     first_failure: Option<String>,
     latencies: Vec<u64>,
@@ -163,9 +205,15 @@ async fn one_connection(
     while Instant::now() < deadline {
         let mut session = match connect(options).await {
             Ok(session) => session,
-            Err(detail) => {
-                tally.errors += 1;
-                tally.first_failure.get_or_insert(detail);
+            Err(refused) => {
+                if refused.is_relocation() {
+                    tally.relocations += 1;
+                } else {
+                    tally.errors += 1;
+                    tally
+                        .first_failure
+                        .get_or_insert_with(|| refused.to_string());
+                }
                 // Backing off rather than spinning: a target that is refusing
                 // connections should be measured, not flooded.
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -203,9 +251,15 @@ async fn one_connection(
                         .latencies
                         .push(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
                 }
-                Err(error) => {
-                    tally.errors += 1;
-                    tally.first_failure.get_or_insert_with(|| error.to_string());
+                Err(failed) => {
+                    if failed.is_relocation() {
+                        tally.relocations += 1;
+                    } else {
+                        tally.errors += 1;
+                        tally
+                            .first_failure
+                            .get_or_insert_with(|| failed.error.to_string());
+                    }
                     // The session may be inside a transaction the client did
                     // not open, so it is replaced rather than reused.
                     break;
@@ -225,24 +279,26 @@ async fn one_connection(
     tally
 }
 
-async fn connect(options: &Options) -> Result<Session<Stream>, String> {
+async fn connect(options: &Options) -> Result<Session<Stream>, Refused> {
     let connecting = async {
         let socket = tokio::net::TcpStream::connect(&options.target)
             .await
-            .map_err(|error| format!("connect {}: {error}", options.target))?;
+            .map_err(|error| Refused::Local(format!("connect {}: {error}", options.target)))?;
         // Nagle would batch a small query with the next one and add a
         // millisecond to a measurement whose target is under one.
         let _ = socket.set_nodelay(true);
 
         let stream = if options.tls {
-            Stream::Tls(Box::new(upgrade(socket, options).await?))
+            Stream::Tls(Box::new(
+                upgrade(socket, options).await.map_err(Refused::Local)?,
+            ))
         } else {
             Stream::Plain(socket)
         };
 
         Session::start(stream, &options.user, &options.database, &options.password)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(Refused::Server)
     };
 
     match tokio::time::timeout(
@@ -252,10 +308,10 @@ async fn connect(options: &Options) -> Result<Session<Stream>, String> {
     .await
     {
         Ok(result) => result,
-        Err(_) => Err(format!(
+        Err(_) => Err(Refused::Local(format!(
             "startup did not finish within {}s",
             options.connect_timeout_secs
-        )),
+        ))),
     }
 }
 
@@ -318,11 +374,13 @@ fn summarise(
     let mut histogram = Histogram::new();
     let mut transactions = 0;
     let mut errors = 0;
+    let mut relocations = 0;
     let mut first_failure = None;
 
     for tally in tallies {
         transactions += tally.transactions;
         errors += tally.errors;
+        relocations += tally.relocations;
         for micros in &tally.latencies {
             histogram.record(*micros);
         }
@@ -346,6 +404,7 @@ fn summarise(
         duration_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         transactions,
         errors,
+        relocations,
         latency: Latency::from(&histogram),
     })
 }
@@ -714,6 +773,7 @@ mod tests {
     #[test]
     fn a_report_that_cannot_be_written_says_where() {
         let report = Report {
+            relocations: 0,
             target: "t".into(),
             workload_version: 1,
             seed: 1,

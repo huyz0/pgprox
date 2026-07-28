@@ -1630,11 +1630,58 @@ together. The rehearsal is what proves the wiring, so it comes last.
   kubelet's safe sysctl list and is set; `nofile` is a container runtime
   setting that no pod spec can request, so `NOTES.txt` says how to check it
   instead of the chart quietly leaving it at 1024.
-- [ ] `M8.7` The rolling upgrade rehearsal: `scripts/rolling-upgrade.sh` takes
-  the compose stack through a node-by-node restart under load. Acceptance: zero
-  failed transactions, recorded in `product/release/` the way a scale run is,
-  and a run where a node is killed rather than drained is shown to fail, so the
-  zero means the drain worked rather than that nothing was happening.
+- [x] `M8.7` The rolling upgrade rehearsal: `scripts/rolling-upgrade.sh` takes
+  a fleet through a node-by-node restart under load. Acceptance: zero
+  transactions lost, recorded in `product/release/` the way a scale run is, and
+  a run where a node is killed rather than drained is shown to lose some, so
+  the zero means the drain worked rather than that nothing was happening.
+  In a kind cluster rather than in compose, which the criterion originally
+  said. The drain is four things acting together and three of them exist only
+  in a pod spec: the readiness probe that pulls the node out of the Service,
+  the `preStop` hook that starts the drain and waits, and the termination grace
+  that gives the hook time. A compose restart exercises the fourth alone and
+  would report a green run for a chart that wires none of them.
+  The result: 21,042 transactions through a rolling restart of all three
+  nodes, none lost, 102 clients relocated. The control, one node's container
+  SIGKILLed from the node, lost 22 of 21,088 under the same load. Recorded in
+  `product/release/rehearsal-2026-07-28.md`.
+  Four things had to be fixed before the numbers meant anything, and every one
+  of them was a run finding rather than a review finding. `net.core.somaxconn`
+  is not on the kubelet's safe list, so every pod was `SysctlForbidden` and the
+  chart's comment claiming otherwise was wrong. The credential sidecar as an
+  ordinary container races the proxy that cannot start without it, so it is a
+  native sidecar now, an init container with `restartPolicy: Always`. The
+  workload replays pgbench's schema, so the database has to be seeded before
+  the load starts. And the measurement itself, which is `M8.12`.
+- [x] `M8.12` "Zero failed transactions" was a target a working drain could
+  never hit. The first rehearsal reported 94 failures for a rolling restart
+  against 11 for a hard kill, which is backwards, and the reason was the
+  measurement: `first_error` said `terminating connection due to administrator
+  command`. That is `57P01`, the drain's own signal, sent to clients that are
+  between transactions, and it is the code every mainstream driver reconnects
+  from. `bin/pgload` counted each one as a failed transaction.
+  `pgload` now separates the two. A `57P01` arriving before any statement in
+  the transaction has succeeded is a relocation: it costs a reconnect and no
+  work. The same code after a statement has succeeded is the force-close at the
+  end of `drain_grace`, and that lost something. The report carries both, and
+  the rehearsal asserts on the loss while requiring the relocation count to be
+  non-zero, because a drain that moved nobody did not run.
+  Connect-time refusals are classified the same way: a client reconnecting
+  while Kubernetes is still pulling a draining node out of the Service lands on
+  it and is told `57P01` again, and counting those as errors is where
+  thirty-five of the first run's failures came from.
+  Building the control took three wrong answers, all recorded in the script.
+  `kubectl exec -- kill -9 1` does nothing: the kernel discards a signal sent
+  to PID 1 from inside its own namespace unless the process has a handler, and
+  SIGKILL cannot have one, so the restart count stayed at zero while the run
+  reported a disruption that never happened. `--grace-period=0 --force` leaves
+  the kubelet to terminate the container its own way and some clients still
+  left politely. `--grace-period=1` cuts the `preStop` hook short but still
+  sends SIGTERM, and the proxy's own shutdown path closes its clients with
+  `57P01` before exiting: fourteen relocated, nothing lost. That last one says
+  something good about the proxy and nothing about the drain. The control that
+  works is `crictl stop --timeout 0` from the node, outside the pod's PID
+  namespace.
 - [x] `M8.8` MSRV verified rather than declared. A CI job installs whatever
   `scripts/msrv.sh` prints and runs `cargo check --workspace --all-targets` on
   it. Run here first: the whole workspace builds on 1.94.1, so the pin was
@@ -1672,11 +1719,15 @@ together. The rehearsal is what proves the wiring, so it comes last.
   one frame upstream is now `send_upstream` and the pump's two counters are one
   `Pumping`. Both were arguments the loop was carrying rather than logic it was
   doing.
-- [ ] `M8.9` The tier 3 workflow. `plan.md` puts the FIPS build and the cipher
-  matrix in nightly and pre-release rather than in the per-commit gate, and no
-  workflow runs on a schedule. Acceptance: a scheduled job runs
-  `scripts/fips-check.sh`, and a failure in it is visible without anyone
-  remembering to run it.
+- [x] `M8.9` The tier 3 workflow. A nightly job, and a `workflow_dispatch` so
+  it can be run on demand, running `scripts/fips-check.sh` on a runner with
+  cmake, clang, Go and make. `release-check.sh` checks the schedule exists, not
+  just the script: a script only a person can remember to run is a script that
+  gets remembered on release day.
+  The cipher matrix is not in it. It needs a compose stack and five language
+  toolchains, and a nightly job that flakes on a `dotnet restore` teaches
+  people to ignore the nightly. It stays a pre-release step that a human runs,
+  which is what `plan.md` calls it.
 - [ ] `M8.10` Close M8. Acceptance: `scripts/release-check.sh` exits zero.
 
 ### The five tasks carried into this milestone

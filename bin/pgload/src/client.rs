@@ -48,11 +48,53 @@ pub enum SessionError {
     #[error("frame: {0}")]
     Frame(#[from] pgprox_proto::frame::DecodeError),
     /// The server refused, or a statement failed.
-    #[error("server: {0}")]
-    Server(String),
+    ///
+    /// The SQLSTATE travels with the message because one code changes what the
+    /// caller does with it: `57P01` is the node asking this client to go
+    /// somewhere else, which is a reconnect rather than a failure. Everything
+    /// else here is a failure.
+    #[error("server: {message}")]
+    Server {
+        /// The five-character SQLSTATE, empty when the server sent none.
+        code: String,
+        /// What it said.
+        message: String,
+    },
     /// The server asked for a credential this client cannot produce.
     #[error("authentication: {0}")]
     Auth(String),
+}
+
+/// The SQLSTATE a node sends a client it wants somewhere else.
+///
+/// `admin_shutdown`. The drain sends it to idle clients, the shed sends it to
+/// clients it is moving toward their home node, and both expect the client to
+/// reconnect: it is the code every mainstream driver already reconnects from,
+/// which is why it was chosen.
+pub const ADMIN_SHUTDOWN: &str = "57P01";
+
+/// A transaction that did not finish.
+#[derive(Debug)]
+pub struct Failed {
+    /// Why.
+    pub error: SessionError,
+    /// Whether any statement in the transaction had already succeeded.
+    ///
+    /// This is what separates a relocation from a loss. A node draining
+    /// gracefully closes a connection between transactions, so nothing had
+    /// started and the client reconnects having lost nothing. The same code
+    /// arriving after a statement has succeeded is the force-close at the end
+    /// of `drain_grace`, and that lost work.
+    pub work_lost: bool,
+}
+
+impl Failed {
+    /// Whether this is a node relocating a client rather than a failure.
+    #[must_use]
+    pub fn is_relocation(&self) -> bool {
+        !self.work_lost
+            && matches!(&self.error, SessionError::Server { code, .. } if code == ADMIN_SHUTDOWN)
+    }
 }
 
 /// A connection that has finished starting up.
@@ -120,10 +162,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
     /// Fails on a socket error and on any `ErrorResponse`. The caller counts
     /// it and opens a new connection: a session that has seen an error may be
     /// in a transaction the client did not open.
-    pub async fn transaction(&mut self, transaction: &Transaction) -> Result<(), SessionError> {
+    pub async fn transaction(&mut self, transaction: &Transaction) -> Result<(), Failed> {
+        // Whether anything in this transaction has succeeded yet, which is the
+        // only thing that separates a node relocating this client from a node
+        // taking work away from it.
+        let mut started = false;
+        let step = |result: Result<(), SessionError>, started: bool| {
+            result.map_err(|error| Failed {
+                error,
+                work_lost: started,
+            })
+        };
+
         let wrapped = transaction.statements.len() > 1;
         if wrapped {
-            self.simple_query("BEGIN").await?;
+            step(self.simple_query("BEGIN").await, started)?;
+            started = true;
         }
         for statement in &transaction.statements {
             let sql = if statement.replica_eligible {
@@ -131,14 +185,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
             } else {
                 statement.sql.clone()
             };
-            if statement.prepared {
-                self.extended_query(&statement.name, &sql).await?;
+            let sent = if statement.prepared {
+                self.extended_query(&statement.name, &sql).await
             } else {
-                self.simple_query(&sql).await?;
-            }
+                self.simple_query(&sql).await
+            };
+            step(sent, started)?;
+            started = true;
         }
         if wrapped {
-            self.simple_query("COMMIT").await?;
+            step(self.simple_query("COMMIT").await, started)?;
         }
         Ok(())
     }
@@ -185,9 +241,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
                 // "disconnected" sent this milestone looking for a proxy bug
                 // when the proxy was answering 53300 correctly.
                 Err(SessionError::Disconnected | SessionError::Io(_)) if failure.is_some() => {
-                    return Err(SessionError::Server(
-                        failure.unwrap_or_else(|| "the server closed".to_owned()),
-                    ));
+                    let (code, message) =
+                        failure.unwrap_or_else(|| (String::new(), "the server closed".to_owned()));
+                    return Err(SessionError::Server { code, message });
                 }
                 Err(other) => return Err(other),
             };
@@ -195,12 +251,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
             match backend::decode(&frame) {
                 Ok(BackendMessage::ReadyForQuery(_)) => {
                     return match failure {
-                        Some(message) => Err(SessionError::Server(message)),
+                        Some((code, message)) => Err(SessionError::Server { code, message }),
                         None => Ok(()),
                     };
                 }
                 Ok(BackendMessage::ErrorResponse(fields)) => {
-                    failure.get_or_insert_with(|| fields.message.to_owned());
+                    failure
+                        .get_or_insert_with(|| (fields.code.to_owned(), fields.message.to_owned()));
                 }
                 _ => {}
             }
@@ -245,7 +302,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
             match backend::decode(&frame) {
                 Ok(BackendMessage::ReadyForQuery(_)) => return Ok(()),
                 Ok(BackendMessage::ErrorResponse(fields)) => {
-                    return Err(SessionError::Server(fields.message.to_owned()));
+                    return Err(SessionError::Server {
+                        code: fields.code.to_owned(),
+                        message: fields.message.to_owned(),
+                    });
                 }
                 Ok(BackendMessage::Authentication(request)) => match request {
                     AuthRequest::Ok => {}
@@ -476,7 +536,7 @@ mod tests {
         });
 
         let error = Session::start(client, "u", "d", "").await.unwrap_err();
-        assert!(matches!(error, SessionError::Server(_)), "{error}");
+        assert!(matches!(error, SessionError::Server { .. }), "{error}");
     }
 
     #[tokio::test]
@@ -634,7 +694,11 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(matches!(error, SessionError::Server(_)), "{error}");
+        assert!(
+            matches!(error.error, SessionError::Server { .. }),
+            "{}",
+            error.error
+        );
     }
 
     #[tokio::test]
@@ -669,12 +733,61 @@ mod tests {
             .await
             .unwrap_err();
 
-        match error {
-            SessionError::Server(message) => {
+        match &error.error {
+            SessionError::Server { code, message } => {
                 assert!(message.contains("administrator"), "{message}");
+                assert_eq!(code, ADMIN_SHUTDOWN, "the SQLSTATE was lost");
             }
             other => panic!("reported as {other} rather than by its message"),
         }
+
+        // And it is a relocation rather than a failure, because nothing in the
+        // transaction had succeeded when the node asked this client to leave.
+        // A drain that counted as a lost transaction would make "zero failed
+        // transactions" a target a working drain cannot hit.
+        assert!(!error.work_lost, "nothing had run yet");
+        assert!(error.is_relocation(), "a drain read as a failure");
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_after_a_statement_has_run_is_a_loss_rather_than_a_relocation() {
+        // The other side of the same code. Between transactions, 57P01 is a
+        // node relocating a client. Once a statement has succeeded it is the
+        // force-close at the end of drain_grace, and that took work away.
+        let (client, mut server) = pair();
+        tokio::spawn(async move {
+            server.take_startup().await;
+            let mut out = Vec::new();
+            encode::authentication_ok(&mut out);
+            server.send(&out).await;
+            server.ready().await;
+
+            // BEGIN, then the first statement, both answered.
+            for _ in 0..2 {
+                server.take().await;
+                server.ready().await;
+            }
+
+            // And then the node gives up on it mid-transaction.
+            server.take().await;
+            let mut out = Vec::new();
+            encode::error_response(&mut out, &ClientError::Draining);
+            server.send(&out).await;
+            server
+        });
+
+        let mut session = Session::start(client, "u", "d", "").await.unwrap();
+        let error = session
+            .transaction(&Transaction {
+                think_ms: 0,
+                tenant: "hot-0".into(),
+                statements: vec![statement("SELECT 1", false), statement("SELECT 2", false)],
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.work_lost, "a statement had already succeeded");
+        assert!(!error.is_relocation(), "a lost transaction read as a move");
     }
 
     #[tokio::test]

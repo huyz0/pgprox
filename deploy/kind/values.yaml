@@ -1,0 +1,65 @@
+# Chart values for the rolling upgrade rehearsal.
+#
+# One image for both containers, because the e2e image already carries the
+# proxy, the mock sidecar and the load client. A real deployment gets its
+# sidecar from the control plane; here the sidecar's job is only to answer
+# with a backend so that a transaction can succeed or fail on its merits.
+
+image:
+  repository: pgprox-e2e-pgprox-1
+  tag: latest
+  # Never, because the image is loaded into the kind node by hand. IfNotPresent
+  # would work and Always would send kubelet looking for it in a registry that
+  # does not have it, which fails as ImagePullBackOff and reads like a chart
+  # problem.
+  pullPolicy: Never
+
+replicaCount: 3
+
+drain:
+  # Shorter than the 60s default. The rehearsal restarts three nodes in
+  # sequence and waits out the drain each time, and at the default that is
+  # three minutes of waiting to learn one thing. Ten seconds is long enough
+  # for a transaction that is in flight when the hook fires.
+  graceSeconds: 10
+  terminationHeadroomSeconds: 10
+
+sidecar:
+  image: pgprox-e2e-pgprox-1:latest
+  # The image's entrypoint is the proxy, so the sidecar container has to say
+  # which binary it wants.
+  command: ["/usr/local/bin/mock_sidecar"]
+  args: ["/run/pgprox/sidecar.sock"]
+  env:
+    - name: PGPROX_MOCK_PRIMARY
+      value: postgres:5432
+    - name: PGPROX_MOCK_DATABASE
+      value: tenant_acme
+    - name: PGPROX_MOCK_USER
+      value: acme_app
+    - name: PGPROX_MOCK_PASSWORD
+      value: acme-password
+    - name: PGPROX_MOCK_TLS
+      value: disabled
+
+config:
+  maxClientConns: 500
+  servers:
+    - server: postgres:5432
+      max_connections: 60
+      guaranteed_fraction: 0.5
+
+# No frontend TLS. The rehearsal measures whether a rolling restart loses a
+# transaction, and a handshake on every reconnect would add a second thing that
+# could fail. The cipher matrix is where TLS is measured.
+tls:
+  secretName: ""
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 128Mi
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2

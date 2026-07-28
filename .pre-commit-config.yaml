@@ -23,6 +23,10 @@ repos:
         exclude: '\.md$'   # trailing double-space is meaningful in Markdown
       - id: end-of-file-fixer
       - id: check-yaml
+        # `---` separators are how a Kubernetes manifest carries a Service and
+        # the Deployment behind it in one file, which is the shape every
+        # `kubectl apply -f` expects.
+        args: [--allow-multiple-documents]
         # Helm templates are Go templates that produce YAML, not YAML. A
         # conditional block starts with `{{- if ...}}` and a parser sees a flow
         # mapping that never closes. `helm lint` and `helm template` are what
