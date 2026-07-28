@@ -25,7 +25,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M6 | Integration | complete |
 | M7 | Scale and performance | complete; 100k connections held at 546 MB against a 500 MB target, and latency demonstrated at 1000 |
 | M8 | FIPS and release | complete |
-| M9 | Query cache (post-MVP) | next |
+| M9 | Query cache (post-MVP) | in progress |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -266,8 +266,33 @@ failed to start.
 
 ## M9: query cache (post-MVP)
 
-`pgprox-cache` behind the trait stubbed in M0.
+`pgprox-cache` behind the trait `pgprox-core` has carried since M0.
 
 ```bash
-cargo nextest run -p pgprox-cache
+scripts/m9-complete.sh
 ```
+
+That replaces `cargo nextest run -p pgprox-cache`, which says the crate's own
+tests pass and nothing about whether the cache is correct to use. The three
+things that decide that are elsewhere: the ADR stating what it promises, the
+rule deciding what may be cached at all, and a recorded run showing whether it
+helped.
+
+Checks: an ADR states the staleness contract, `pgprox-cache` implements
+`QueryCache` and is bounded by bytes rather than by entry count, a cacheability
+rule exists, the config document can turn it off, and a run is recorded.
+
+**Why this is worth doing, which is not why it was filed.** The plan filed it
+as post-MVP throughput work. `M7.56` then measured where the proxy's CPU goes
+and found 45% of it in the upstream pool's lock, with the cost landing per
+connection because contention tracks how many are queued. A cache hit is a
+statement that never acquires a connection, so it neither queues nor contends.
+That makes this the cheapest thing to try against the constraint `M7.57` is
+about.
+
+**What it may promise.** Bounded staleness, and nothing stronger. A replica's
+lag is measurable and ADR 0009 gates on it; a cache entry carries no version of
+the data it copied. This proxy sees its own traffic, can invalidate on writes
+that pass through it, needs gossip for writes through another node, and cannot
+see a migration or an operator with psql at all. So the TTL is the guarantee
+and everything else is an improvement on it.

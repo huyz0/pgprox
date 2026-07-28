@@ -1903,3 +1903,109 @@ The order is now `M1F.24`, `M7.46`, `M1F.21`, `M1F.25`, `M1F.22`.
   probe binds a value now, through `\bind` on stdin, because psql reads a `-c`
   string as SQL unless it starts with a backslash.
   This closes `M1F.24`.
+
+## M9: query cache (post-MVP)
+
+`pgprox-cache` behind the trait `pgprox-core` has carried since M0.
+
+### Why this is worth doing now, which is not the reason it was written
+
+The plan filed this as post-MVP throughput work: read traffic dominates, and a
+cached read costs nothing. That is still true and is no longer the interesting
+part.
+
+`M7.56` measured where the proxy's CPU goes and found 45% of it in one mutex:
+`LivePool::acquire`, its release path, and the `Notify` around them. The cost
+lands per connection because contention is a function of how many are queued.
+A cache hit is a statement that never acquires an upstream connection at all,
+so it does not queue and does not contend. That makes this milestone the first
+thing to try against the constraint `M7.57` is about, and cheaper than either
+of the answers that task lists.
+
+### What a cache may promise, and what it may not
+
+The hazard is the one ADR 0009 is about, arriving from a different direction. A
+replica can be behind; a cache entry can be wrong. The difference is that a
+replica's staleness is measurable, and `pg_last_wal_replay_lsn()` says exactly
+how far behind it is, while a cache entry carries no version of the data it
+copied and no way to learn one.
+
+What this proxy can see is its own traffic. A write through this node can
+invalidate. A write through another node in the fleet needs gossip. A write
+from outside the proxy, a migration, a batch job, an operator with psql, is
+invisible and always will be.
+
+So the honest ceiling is bounded staleness, the mode ADR 0009 already offers
+tenants who prefer throughput to read-your-writes, and the TTL is the bound.
+Everything else the cache does about invalidation is an improvement on that
+bound rather than a promise. `M9.2` writes that down before any code assumes
+otherwise, because a cache whose guarantees were never stated is a cache
+somebody will rely on for read-your-writes.
+
+### Order
+
+The decision first, the store second, and the thing that decides *what* may be
+cached before the thing that serves it. A cache that is fast and occasionally
+wrong is worse than no cache, and the way this goes wrong is that the hook into
+the relay lands before the cacheability rule is finished.
+
+- [x] `M9.1` Define M9: this decomposition and `scripts/m9-complete.sh`. The
+  roadmap's condition is `cargo nextest run -p pgprox-cache`, which only says
+  the crate's own tests pass. Acceptance: the gate runs against the current
+  tree and names what is missing rather than passing vacuously, and the roadmap
+  points at it.
+  Ten failures against the tree it was written on, one per task below it. Its
+  first draft passed a check it should not have: `grep cache` in
+  `pgprox-config` matched the comment on `grant_ttl_cap`, which is about the
+  grant cache. It looks for `query_cache` now. That is the second time in two
+  milestones a gate has been written with a substring loose enough to pass on
+  unrelated prose, so it is worth saying out loud: a gate whose check is a word
+  rather than a name is green for years while the thing it names does not
+  exist.
+- [ ] `M9.2` ADR: what the query cache may promise. The default (off), the
+  scope (one node, not the fleet), the bound (TTL), and what invalidation is
+  and is not. Acceptance: an ADR in `product/decisions/` that states the
+  staleness contract in the same terms ADR 0009 states its own, and says
+  plainly which writes the cache cannot see.
+- [ ] `M9.3` The crate and the store. `pgprox-cache` implementing `QueryCache`
+  with a TTL per entry, a bound on total entries, and per-tenant invalidation.
+  Acceptance: it satisfies the same test suite `FakeQueryCache` does, plus its
+  own for expiry and eviction; an entry past its TTL is never returned even if
+  it is still resident; and the bound is on bytes rather than entries, because
+  a cache bounded by count holds an unbounded amount of memory.
+- [ ] `M9.4` Normalisation, which is the correctness-critical half of the key.
+  Two statements differing only in whitespace, comment or letter case key the
+  same; two differing in anything the server would treat differently do not.
+  Acceptance: a property test over the shape `pgprox-core::sql` already lexes,
+  with the property stated as "normalising never merges two statements a
+  server would answer differently". Literals are *not* normalised into
+  parameters in this task; that is a separate decision and a separate risk.
+- [ ] `M9.5` Cacheability: which statements may be cached at all. Read-only by
+  the existing classifier, not inside a transaction that has written, not on a
+  pinned session, and nothing whose result depends on anything but the
+  arguments. Acceptance: a tested function taking the class, the session state
+  and the SQL, refusing by default; `pgprox-cache` cannot depend on
+  `pgprox-route`, so the class arrives as an argument the way the pin
+  allowlist does.
+- [ ] `M9.6` Invalidation on write. A write by a tenant drops that tenant's
+  entries on this node. Acceptance: a write through the relay invalidates, the
+  test covers a write in a transaction that later rolls back, and the ADR's
+  wording that this is best-effort rather than a guarantee is what the code
+  comments say too.
+- [ ] `M9.7` The relay hook. On a hit, the client is answered from the cache
+  and no upstream connection is acquired. Acceptance: a test that a hit serves
+  the right bytes and the pool records no acquisition, which is the property
+  the whole milestone is for.
+- [ ] `M9.8` Configuration: off by default, opt-in per tenant, with a TTL and a
+  size bound in the config document. Acceptance: a document with no cache
+  section produces a proxy that caches nothing, and the hot-reload path changes
+  the setting without a restart.
+- [ ] `M9.9` Observability: hit, miss, eviction and invalidation counters,
+  `SHOW CACHE`, and the admin endpoint. Acceptance: a run shows a hit rate, and
+  a cache that is doing nothing is distinguishable from one that is off.
+- [ ] `M9.10` Does it help. Measured against the reference workload with
+  `scripts/scale.sh`, and against `M7.56`'s finding specifically: a hit avoids
+  an acquire, so the question is whether contention falls. Acceptance: a
+  recorded run in `product/perf/`, and the number is reported whichever way it
+  comes out.
+- [ ] `M9.11` Close M9. Acceptance: `scripts/m9-complete.sh` exits zero.
