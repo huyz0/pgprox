@@ -24,8 +24,8 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M5 | Pooling and routing (track E) | complete |
 | M6 | Integration | complete |
 | M7 | Scale and performance | complete; 100k connections held at 546 MB against a 500 MB target, and latency demonstrated at 1000 |
-| M8 | FIPS and release | next |
-| M9 | Query cache (post-MVP) | blocked by M8 |
+| M8 | FIPS and release | complete |
+| M9 | Query cache (post-MVP) | next |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -212,19 +212,43 @@ machines, a database that can absorb the offered load, and a real network
 between the three, since every latency number recorded so far is loopback and
 is therefore a floor.
 
-## M8: FIPS and release
+## M8: FIPS and release (complete)
 
 FIPS build stage, driver cipher-suite matrix, Helm chart, probe and preStop
 wiring, rolling upgrade rehearsal.
 
 ```bash
-scripts/release-check.sh
+scripts/release-check.sh      # the gate, seconds, no Docker
+scripts/fips-check.sh         # the FIPS variant, built and run
+scripts/cipher-matrix.sh      # five drivers against both builds
+scripts/rolling-upgrade.sh    # the rehearsal, in a kind cluster
 ```
 
 Checks: the FIPS binary starts and asserts `fips()` true on both client and
 server config, the cipher-suite compatibility matrix is recorded for every
-supported driver, and the rolling upgrade rehearsal shows zero failed
-transactions.
+supported driver, and the rolling upgrade rehearsal loses no transactions.
+
+**Where it stands.** All four run clean. The FIPS image builds and logs
+`crypto=aws-lc-rs-fips`; all five drivers connect to both builds; the chart
+renders manifests a live API server accepts, with the readiness probe, the
+liveness probe and the `preStop` hook the drain needs; and a rolling restart of
+a three-node fleet under load lost none of 21,042 transactions while a node
+killed outright lost 22 of 21,088.
+
+**Two things the numbers do not say.** Every driver on the machine that
+generated the cipher matrix negotiated TLS 1.3, whose suites are all
+FIPS-approved, so the restriction FIPS mode actually imposes on TLS 1.2 was
+never reached. And the rehearsal is three nodes on one machine: it does not say
+what happens when a fleet at its connection cap loses a third of itself, which
+is where shedding has to work.
+
+**What this milestone found by running rather than by reading.** `Flush`
+deadlocked the relay, so asyncpg could not run a single extended query through
+the proxy. "Zero failed transactions" was a target a working drain could never
+hit, because the load client counted a relocation as a loss. The FIPS and
+default Docker stages shared one cargo cache and the default image shipped the
+FIPS binary. And the chart asked for a sysctl the kubelet refuses, so every pod
+failed to start.
 
 ## M9: query cache (post-MVP)
 

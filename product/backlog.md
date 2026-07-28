@@ -1728,7 +1728,12 @@ together. The rehearsal is what proves the wiring, so it comes last.
   toolchains, and a nightly job that flakes on a `dotnet restore` teaches
   people to ignore the nightly. It stays a pre-release step that a human runs,
   which is what `plan.md` calls it.
-- [ ] `M8.10` Close M8. Acceptance: `scripts/release-check.sh` exits zero.
+- [x] `M8.10` Close M8. `scripts/release-check.sh` exits zero, and so do the
+  three runs behind it: `fips-check.sh`, `cipher-matrix.sh` and
+  `rolling-upgrade.sh`. The roadmap says what each showed and what it did not.
+  One process slip worth recording: `M8.9`'s workflow changes were swept into
+  `M8.7`'s commit by a `git add -A`, so its subject does not name them. The
+  work is right and the history is one commit coarser than it should be.
 
 ### The five tasks carried into this milestone
 
