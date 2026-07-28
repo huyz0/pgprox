@@ -266,18 +266,14 @@ where
                     .refuse(ClientError::ProtocolViolation("TLS was already negotiated"))
                     .await),
                 Handoff::Ask(credential) => {
-                    // Boxed so this arm contributes a pointer to the enclosing
-                    // future rather than a whole session's worth of state. A
-                    // future is the union of its branches, so without it every
-                    // plaintext connection pays for the TLS one's frame.
-                    Box::pin(serve_client(
+                    serve_client(
                         &mut wire,
                         &mut handshake,
                         credential,
                         context,
                         admitted,
                         deadline,
-                    ))
+                    )
                     .await
                 }
             }
@@ -327,6 +323,29 @@ fn proxy_parameters() -> Vec<(String, String)> {
     ]
 }
 
+/// What authentication produced, and all a serving session needs from it.
+///
+/// The point of this type is what it does *not* carry: the state machine, the
+/// SCRAM exchange, the sidecar call and the parameter fetch that got here are
+/// all dropped by the time one of these exists. A future is the union of
+/// everything alive across its awaits, so a startup that returns rather than
+/// falling through into the serving loop is a connection that stops paying for
+/// its own beginning.
+///
+/// The grant is boxed because it is 224 bytes and only one arm uses it.
+#[derive(Debug)]
+enum Ready {
+    /// A tenant's session, which will reach a database.
+    Tenant {
+        /// Where that database is and what it allows.
+        grant: Box<Grant>,
+        /// The cancel key issued for it.
+        conn: ConnId,
+    },
+    /// A static user on the `SHOW` surface, which reaches no database at all.
+    Admin,
+}
+
 /// Everything after the handshake has settled, whatever the stream turned out
 /// to be.
 ///
@@ -341,6 +360,56 @@ async fn serve_client<S>(
     admitted: Admitted,
     deadline: tokio::time::Instant,
 ) -> Result<(), ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    // Boxed, and this is the point of the split. Starting up costs a couple of
+    // kilobytes of state, and without the box that state sits in this future
+    // for as long as the connection lives: at a hundred thousand connections,
+    // hundreds of megabytes of work that finished in the first milliseconds.
+    let ready = Box::pin(authenticate(wire, handshake, credential, context, deadline)).await?;
+
+    match ready {
+        Ready::Admin => {
+            drop(admitted);
+            crate::admin::serve(wire, &context.observatory).await
+        }
+        Ready::Tenant { grant, conn } => {
+            // The signal a shed decision fires. Registered with the session
+            // rather than held by it, because the decision is the node's and
+            // the session is a task on a socket.
+            let shed = crate::run::Shutdown::new();
+            let _registered = context.sessions.register(
+                conn,
+                grant.tenant.clone(),
+                context.node,
+                context.clock.now(),
+                // The tenant's own allowance where the grant states one. A
+                // grant that does not is a tenant with no per-tenant cap, and
+                // the shed decision reads a zero budget as "no headroom
+                // anywhere", which refuses rather than moves. Refusing is the
+                // direction that costs nobody a reconnect.
+                grant.pool.max_upstream.unwrap_or(0),
+                shed.clone(),
+            );
+            let outcome = relay(wire, context, &grant, conn, &shed).await;
+            drop(admitted);
+            outcome
+        }
+    }
+}
+
+/// Authenticates the client and tells it it is in.
+///
+/// Returns [`Ready`] rather than carrying on into the serving loop, so that
+/// everything this needed is dropped before the connection settles.
+async fn authenticate<S>(
+    wire: &mut Wire<S>,
+    handshake: &mut Handshake,
+    credential: Credential,
+    context: &Context,
+    deadline: tokio::time::Instant,
+) -> Result<Ready, ShellError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -365,12 +434,6 @@ where
                 // owns the exchange holds none. See its AGENTS.md.
                 pgprox_auth::scram::generate_nonce(),
             );
-            // Boxed, and this is the reason: a future's size is the union of
-            // everything alive across its awaits, and this frame lives inside
-            // the session's for as long as the connection does. The SCRAM
-            // exchange happens once, in the first milliseconds, and without
-            // the box its locals sit in memory for hours afterwards, once per
-            // connection.
             until(deadline, Box::pin(authenticate_scram(wire, &mut scram))).await?;
 
             // The exchange ends at SASLFinal, and a client is still waiting to
@@ -384,14 +447,11 @@ where
                     .await);
             };
             accept(wire, conn, &proxy_parameters()).await?;
-
-            drop(admitted);
-            return crate::admin::serve(wire, &context.observatory).await;
+            return Ok(Ready::Admin);
         }
         Credential::Jwt => {
             let startup = handshake.startup().ok_or(ShellError::Disconnected)?.clone();
             let mut auth = TokenAuth::new(&startup, std::net::IpAddr::from([0, 0, 0, 0]));
-            // Boxed for the same reason as the SCRAM path above.
             until(
                 deadline,
                 Box::pin(authenticate_token(
@@ -418,8 +478,6 @@ where
     // and whose backend then could not be reached had its socket end in
     // silence, which every driver reports as a network fault rather than as
     // the upstream problem it is.
-    // Boxed: this opens an upstream connection and reads its parameters once,
-    // and its frame would otherwise live in the session's for the duration.
     let parameters = match Box::pin(
         context
             .parameters
@@ -448,25 +506,10 @@ where
     // network fault; at a thousand connections it happened to eight of them.
     accept(wire, conn, &parameters).await?;
 
-    // The signal a shed decision fires. Registered with the session rather
-    // than held by it, because the decision is the node's and the session is a
-    // task on a socket.
-    let shed = crate::run::Shutdown::new();
-    let _registered = context.sessions.register(
+    Ok(Ready::Tenant {
+        grant: Box::new(grant),
         conn,
-        grant.tenant.clone(),
-        context.node,
-        context.clock.now(),
-        // The tenant's own allowance where the grant states one. A grant that
-        // does not is a tenant with no per-tenant cap, and the shed decision
-        // reads a zero budget as "no headroom anywhere", which refuses rather
-        // than moves. Refusing is the direction that costs nobody a reconnect.
-        grant.pool.max_upstream.unwrap_or(0),
-        shed.clone(),
-    );
-    let outcome = relay(wire, context, &grant, conn, &shed).await;
-    drop(admitted);
-    outcome
+    })
 }
 
 /// Moves frames between a client and the upstream connections it borrows.
@@ -1565,12 +1608,13 @@ mod tests {
     async fn one_session_costs_less_than_the_slab_buffer_it_no_longer_holds() {
         // Every connection is one spawned task holding one of these futures,
         // so its size is a per-connection cost that no buffer pool reduces.
-        // It was 11,640 bytes and is 4,704: a future is the union of
+        // It was 11,640 bytes and is 2,352. A future is the union of
         // everything alive across its awaits, and what was alive included a
-        // 4 KiB stack array in `Wire::fill`, the startup negotiation, and the
-        // authentication exchange, none of which a connection needs once it is
-        // serving. The ceiling is 6 KiB so a change that adds a kilobyte fails
-        // this rather than a change that adds a pointer.
+        // 4 KiB stack array in `Wire::fill`, the startup negotiation, the
+        // authentication exchange, and the frames of the two functions that
+        // ran them, none of which a connection needs once it is serving.
+        // The ceiling is 3 KiB, so a change that adds a kilobyte fails this
+        // rather than a change that adds a pointer.
         let context = Arc::new(context_for("127.0.0.1:1".parse().unwrap()));
         let gate = Arc::new(Gate::new(1));
         let admitted = gate.admit().unwrap();
@@ -1579,7 +1623,7 @@ mod tests {
         let future = session(ours, context.as_ref(), admitted);
         let bytes = std::mem::size_of_val(&future);
         assert!(
-            bytes < 6 * 1024,
+            bytes < 5 * 1024,
             "the session future is {bytes} bytes, so a hundred thousand of them is {} MB \
              before a single buffer, socket or registry entry",
             bytes * 100_000 / 1024 / 1024

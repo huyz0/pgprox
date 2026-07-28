@@ -1486,6 +1486,16 @@ measurement found three things.
   exchange. The array is 512 bytes now and reads after the first go straight
   into the borrowed buffer; the startup futures are boxed, so their frames are
   freed when startup ends rather than held for the life of the connection.
+- [x] `M7.50` Startup returns rather than falling through into serving.
+  `authenticate` hands back a `Ready` and the caller runs the relay loop, so
+  the state machine, the SCRAM exchange, the sidecar call and the parameter
+  fetch are dropped before a connection settles. The session future is 3,872
+  bytes rather than 4,392 and a connection costs 7,281 rather than 7,528.
+  A smaller win than the arithmetic promised, and the measurement says why:
+  boxing the *serving* half as well took the future to 2,352 and made the
+  connection cost 7,920, because a box relocates long-lived bytes to the heap
+  and adds an allocator header rather than removing anything. Boxing pays only
+  for state that is freed early.
 - [ ] `M7.46` The proxy spends about 3.2 cores serving 700 statements a second
   at 2000 connections, which is 4.5ms of CPU per statement against an
   instruction count of roughly 10us for the decision path. A `perf` profile of
