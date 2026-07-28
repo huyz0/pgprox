@@ -39,6 +39,26 @@ jobs:
       - run: scripts/check-crate.sh
       - run: scripts/check-coverage.sh
 
+  msrv:
+    name: minimum supported rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The version comes from Cargo.toml through scripts/msrv.sh rather than
+      # being written here. A pin recorded in two places drifts, and the copy
+      # that drifts is the one nobody runs.
+      - name: Install the pinned toolchain
+        run: |
+          msrv="$(scripts/msrv.sh)"
+          echo "building on $msrv"
+          rustup toolchain install "$msrv" --profile minimal
+          rustup default "$msrv"
+      - uses: Swatinem/rust-cache@v2
+      # --all-targets so tests and benches are compiled too. A crate whose
+      # library builds on the MSRV and whose tests do not is a crate nobody can
+      # develop on the version this claims to support.
+      - run: cargo check --workspace --all-targets
+
   supply-chain:
     name: supply chain
     runs-on: ubuntu-latest

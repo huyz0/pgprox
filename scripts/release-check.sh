@@ -155,16 +155,18 @@ fi
 #
 # The FIPS toolchain constrains the build image, so the pinned version is a
 # constraint rather than a note. A pin nothing builds against drifts silently.
-msrv=$(grep -m1 '^rust-version' Cargo.toml | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
-if [[ -n $msrv ]]; then
+if [[ -x scripts/msrv.sh ]] && msrv="$(./scripts/msrv.sh 2>/dev/null)"; then
   ok "MSRV pinned: $msrv"
-  if grep -qs "$msrv" .github/workflows/ci.yml; then
-    ok "CI builds on the pinned MSRV"
+  # That CI derives it, rather than that the number appears in ci.yml. A
+  # literal there would satisfy a grep and then drift the moment Cargo.toml
+  # moved, which is the failure this check would exist to prevent.
+  if grep -qs 'scripts/msrv.sh' .github/workflows/ci.yml; then
+    ok "CI builds on the pinned MSRV, read from Cargo.toml"
   else
-    fail "no CI job on $msrv: the pin is a comment, not a constraint"
+    fail "no CI job derives the MSRV: the pin is a comment, not a constraint"
   fi
 else
-  fail "no rust-version in Cargo.toml"
+  fail "scripts/msrv.sh missing or no rust-version in Cargo.toml"
 fi
 
 # --- the usual gates ----------------------------------------------------------

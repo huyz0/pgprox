@@ -1,5 +1,9 @@
 /target
 /target-coverage
+# The MSRV check builds into its own directory for the same reason coverage
+# does: a different toolchain invalidates the cache, so sharing one with the
+# normal dev build means every MSRV run rebuilds the world twice over.
+/target-msrv
 # cargo-fuzz builds into its own directory, since fuzz/ is a separate workspace.
 /fuzz/target
 /fuzz/artifacts

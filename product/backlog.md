@@ -1623,9 +1623,16 @@ together. The rehearsal is what proves the wiring, so it comes last.
   failed transactions, recorded in `product/release/` the way a scale run is,
   and a run where a node is killed rather than drained is shown to fail, so the
   zero means the drain worked rather than that nothing was happening.
-- [ ] `M8.8` MSRV verified rather than declared. `rust-version` is 1.94 and
-  nothing checks it. Acceptance: a CI job builds the workspace on that exact
-  toolchain and fails when a crate needs a newer one.
+- [x] `M8.8` MSRV verified rather than declared. A CI job installs whatever
+  `scripts/msrv.sh` prints and runs `cargo check --workspace --all-targets` on
+  it. Run here first: the whole workspace builds on 1.94.1, so the pin was
+  right, which is the answer to have before writing a gate rather than after.
+  The version is read from `Cargo.toml` rather than written in the workflow,
+  and `release-check.sh` checks that CI *derives* it rather than that the
+  number appears there. A literal in two places drifts, and the copy that
+  drifts is always the one nobody runs.
+  Taken out of order, while the M8.4 stack was building. Nothing depends on
+  either.
 - [ ] `M8.9` The tier 3 workflow. `plan.md` puts the FIPS build and the cipher
   matrix in nightly and pre-release rather than in the per-commit gate, and no
   workflow runs on a schedule. Acceptance: a scheduled job runs
