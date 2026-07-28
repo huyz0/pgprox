@@ -212,6 +212,20 @@ machines, a database that can absorb the offered load, and a real network
 between the three, since every latency number recorded so far is loopback and
 is therefore a floor.
 
+**And the constraint that turns out not to be memory.** Measured after M8, in
+`product/perf/run-2026-07-29-connection-cost.md`: the proxy spends about 2ms of
+CPU per connection per second once a fleet is *active*, near enough regardless
+of what each connection asks for. Two runs at the same statement rate and four
+times apart in connection count gave 2.02ms and 2.23ms. One core holds about
+five hundred such connections.
+
+That does not contradict the 100k hold run, and the pair is the useful part:
+100,000 *idle* connections cost 546 MB and almost no CPU, while 2,000 active
+ones cost five cores. So the roadmap's 100k target is reachable for connections
+that are mostly idle, which is the design point, and the number that decides
+how many of them can be busy at once is this one rather than memory. What the
+2ms actually is has not been named yet; `M7.56` is that.
+
 ## M8: FIPS and release (complete)
 
 FIPS build stage, driver cipher-suite matrix, Helm chart, probe and preStop
