@@ -2062,11 +2062,29 @@ the relay lands before the cacheability rule is finished.
   acceptable is not the list being complete, because it is not, but that the
   cache is off until a tenant turns it on and turning it on is a statement
   about their own workload.
-- [ ] `M9.6` Invalidation on write. A write by a tenant drops that tenant's
+- [x] `M9.6` Invalidation on write. A write by a tenant drops that tenant's
   entries on this node. Acceptance: a write through the relay invalidates, the
   test covers a write in a transaction that later rolls back, and the ADR's
   wording that this is best-effort rather than a guarantee is what the code
   comments say too.
+  Conservative in three directions, each costing a miss rather than a wrong
+  answer. Anything the classifier does not call read-only invalidates,
+  including `Unknown`, because that class exists so a construct nobody has
+  taught it yet is treated as a write. A `Parse` invalidates without waiting to
+  see the statement executed. And a rolled-back transaction invalidates anyway:
+  waiting for the commit would buy a better hit rate and would mean detecting a
+  commit correctly on every path, and getting *that* wrong means failing to
+  invalidate, which is the unsafe direction.
+  It happens before the statement is sent rather than after its answer returns,
+  or a reader arriving in between would be served an entry the write was about
+  to make wrong.
+  The whole path is behind `Option<Arc<dyn QueryCache>>`, `None` on every node
+  until `M9.8` gives a document a way to say otherwise. A node with no cache
+  does not classify either, so the feature is free for anyone who never asked
+  for it, and a test asserts the default is off.
+  Four tests, and the two that matter were confirmed to fail with the hook
+  disabled. The read is what keeps the others honest: if every statement
+  invalidated, the write test would pass for a cache that was never used.
 - [ ] `M9.7` The relay hook. On a hit, the client is answered from the cache
   and no upstream connection is acquired. Acceptance: a test that a hit serves
   the right bytes and the pool records no acquisition, which is the property
