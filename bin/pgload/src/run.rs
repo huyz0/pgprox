@@ -173,11 +173,28 @@ async fn one_connection(
             }
         };
 
+        // A connection thinks before its first transaction as well as between
+        // the rest. Without it, a hundred thousand connections arriving over a
+        // two-minute ramp send a hundred thousand transactions as they land,
+        // and the pool answers that stampede with 53300 however idle the
+        // workload claims to be. Real clients connect and then sit there.
+        //
+        // After the connect rather than before it, or the connection would not
+        // exist during the time it is supposed to be sitting idle.
+        let mut settled = false;
+
         for _ in 0..churn {
             if Instant::now() >= deadline {
                 break;
             }
             let transaction = sampler.next_transaction();
+            if !settled {
+                settled = true;
+                tokio::time::sleep(Duration::from_millis(transaction.think_ms)).await;
+                if Instant::now() >= deadline {
+                    break;
+                }
+            }
             let started = Instant::now();
             match session.transaction(&transaction).await {
                 Ok(()) => {

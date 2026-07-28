@@ -1510,6 +1510,20 @@ measurement found three things.
   that, but `ShedConfig::max_per_tenant_per_minute` caps the damage at sixty a
   minute per tenant, and the 100k run shed three times in five minutes. The
   churn in that run was the credential path, which is M7.51.
+- [x] `M7.53` A hundred thousand connections held on one node: 546 MB of
+  userspace, 5,726 bytes each, stable for six minutes with 99,940 of 100,000
+  registered. Nine per cent over the roadmap's 500 MB. It measures holding
+  rather than serving: the workload thinks for ten to fifteen minutes before
+  its first transaction, so almost none were attempted, and the other two
+  conditions are still the 1000-connection runs'. Recorded in
+  `product/perf/run-2026-07-28-100k-hold.md`.
+- [x] `M7.54` The load generator was hitting limits that looked like the
+  proxy's. A container has 28,231 ephemeral ports and each generator opened
+  20,000 connections, so any churn exhausted it and the failure reads as the
+  proxy refusing; the override now gives the generators the whole unprivileged
+  range and `tcp_tw_reuse`. And every connection ran a transaction the instant
+  it connected, so a hundred thousand arrivals meant a hundred thousand
+  transactions at once: a connection now thinks before its first one.
 - [ ] `M7.46` The proxy spends about 3.2 cores serving 700 statements a second
   at 2000 connections, which is 4.5ms of CPU per statement against an
   instruction count of roughly 10us for the decision path. A `perf` profile of

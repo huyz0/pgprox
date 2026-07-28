@@ -37,6 +37,16 @@ services:
       nofile:
         soft: 262144
         hard: 262144
+    sysctls:
+      # The whole unprivileged range, because this container's limit is the
+      # measurement's limit. The default 32768-60999 is 28,231 ports, and a
+      # client opening twenty thousand connections exhausts it as soon as any
+      # of them churn: the failure is `Cannot assign requested address`, which
+      # looks like the proxy refusing and is the load generator running out.
+      net.ipv4.ip_local_port_range: "1024 65000"
+      # Reuse a TIME_WAIT port for a new outbound connection, which is safe for
+      # a client and is what makes a churning run sustainable.
+      net.ipv4.tcp_tw_reuse: "1"
 
   primary:
     ports:
