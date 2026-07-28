@@ -23,8 +23,8 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M4 | Operations (track D) | complete |
 | M5 | Pooling and routing (track E) | complete |
 | M6 | Integration | complete |
-| M7 | Scale and performance | complete at 1000 connections; the 100k condition needs hardware this repository does not have |
-| M8 | FIPS and release | next, with M7's 100k run outstanding |
+| M7 | Scale and performance | complete; 100k connections held at 546 MB against a 500 MB target, and latency demonstrated at 1000 |
+| M8 | FIPS and release | next |
 | M9 | Query cache (post-MVP) | blocked by M8 |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
@@ -194,23 +194,23 @@ millisecond at p50; this stack cannot resolve it at p99.
 Nine defects came out of those runs rather than out of review, including one
 that meant no node in a fleet had ever granted a quota lease.
 
-**What the 100k condition still needs**, and it is unchanged and unmet:
+**The 100k condition, and which part of it is met.** One node held 100,000
+connections at 546 MB of userspace, 5,726 bytes each, flat for six minutes with
+99,940 registered. That is 9% over the 500 MB target and it is the memory half
+of the condition, recorded in `product/perf/run-2026-07-28-100k-hold.md`.
 
-- A machine that can hold 100k sockets and a load generator that is not
-  competing with the proxy for the same cores. Three instances in one
-  availability zone is the shape; a laptop is not.
-- `scripts/scale.sh` taught to point at remote hosts, which today it is not.
-- The sysctls in `product/plan.md`: `nofile` at 262144, and `tcp_rmem` and
-  `tcp_wmem` minimums, which are host settings rather than container ones.
-- A real network between the client, the proxy and the database. Every latency
-  number recorded so far is loopback, where the network costs nothing, so the
-  added-latency figure is a floor rather than an estimate.
+The other half is not demonstrated at that scale. Those connections were idle:
+the workload has them think for ten to fifteen minutes before their first
+statement, so added p99 and the upstream cap are still shown at a thousand
+connections rather than a hundred thousand. Behind 100k connections here sits
+one Postgres with a 60-connection cap sharing twenty cores with five load
+generators, so serving that many is a fact about the machine before it is a
+fact about the proxy.
 
-The memory figure is the one to watch: 24 KB per connection at a thousand
-extrapolates to 2.3 GB at 100k against a target of 500 MB. It is a slope
-rather than a prediction, and the fixed cost of the process is spread across a
-thousand connections in it, but nothing at this scale says the target is
-reachable without work.
+**What a complete 100k run still needs**: the load generators on their own
+machines, a database that can absorb the offered load, and a real network
+between the three, since every latency number recorded so far is loopback and
+is therefore a floor.
 
 ## M8: FIPS and release
 
