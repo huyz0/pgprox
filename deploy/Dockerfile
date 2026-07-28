@@ -19,8 +19,16 @@ COPY . .
 # ten minutes to tell you about a typo is a check nobody runs. The binaries are
 # copied out of the cache in the same layer, since a cache mount does not
 # survive into the image.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+#
+# The cache ids are explicit, and they matter. Cache mounts are shared by
+# default and BuildKit runs independent stages in parallel, so this stage and
+# the FIPS stage below were writing one `target/release/pgprox` between them:
+# the FIPS stage would land first and this stage would `cp` its binary out. The
+# result was a default image that logged `crypto=aws-lc-rs-fips`, which is not
+# a build failure, not a test failure, and completely wrong. Separate ids per
+# feature set, because that is what a cargo target directory is keyed on.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=pgprox-registry,sharing=locked \
+    --mount=type=cache,target=/src/target,id=pgprox-target-default \
     cargo build --release -p pgprox \
  && cargo build --release -p pgprox-auth --features integration --bin mock_sidecar \
  && cargo build --release -p pgload \
@@ -57,8 +65,10 @@ ENV CC=clang CXX=clang++
 
 WORKDIR /src
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+# Its own target cache, not the default stage's. See the note there: one cache
+# between two feature sets is one binary between two images.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=pgprox-registry,sharing=locked \
+    --mount=type=cache,target=/src/target,id=pgprox-target-fips \
     cargo build --release -p pgprox --features fips \
  && mkdir -p /out \
  && cp target/release/pgprox /out/

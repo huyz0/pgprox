@@ -1590,11 +1590,23 @@ together. The rehearsal is what proves the wiring, so it comes last.
   like a cmake problem and is a missing package. And the image ships the proxy
   alone, with no mock sidecar, because a mock credential resolver inside a
   validated image is something an auditor has to be told to ignore.
-- [ ] `M8.4` The cipher-suite matrix, generated rather than typed. Acceptance:
-  `product/release/cipher-matrix.md` records, for each driver the conformance
-  suite already drives, the suite it negotiated against the default build and
-  against the FIPS build, and a driver that cannot connect at all under FIPS is
-  recorded as a failure rather than omitted.
+- [x] `M8.4` The cipher-suite matrix, generated rather than typed. All five
+  drivers connect to both builds and all five negotiate TLS 1.3, so nothing
+  breaks under FIPS. The report says why that is narrower than it sounds: TLS
+  1.3's suites are all FIPS-approved, so the restriction `plan.md` expects,
+  ChaCha20-Poly1305 dropped and TLS 1.2 confined to ECDHE, was never reached.
+  The drivers that would meet it are older builds than this machine has.
+  The suite is read from the proxy's log rather than from the driver. Only two
+  of the five will tell you what they negotiated, and a matrix with three
+  blanks answers the compatibility question badly; the server knows for all of
+  them. That needed one debug line on the TLS accept path, which is a question
+  a FIPS deployment has to be able to answer anyway.
+  Two defects came out of building it rather than out of review. The FIPS and
+  default Docker stages shared one cargo target cache mount, and BuildKit runs
+  independent stages in parallel, so the default image shipped the FIPS binary
+  and logged `crypto=aws-lc-rs-fips`: not a build failure, not a test failure,
+  and completely wrong. The script's own check that the two nodes are the two
+  builds is what caught it. The second is `M8.11`.
 - [x] `M8.5`, `M8.6` The Helm chart, with the drain wiring in it. Committed
   together because the probes and the `preStop` hook are fields of the very
   workload the chart task creates, and a chart landed without them would be

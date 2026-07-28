@@ -1,0 +1,119 @@
+# A FIPS node beside the default ones, so one run can compare them.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.fips.yml up -d
+#
+# The point of the comparison is the cipher-suite matrix: FIPS mode drops
+# ChaCha20-Poly1305 and restricts TLS 1.2 to ECDHE, and the question is which
+# drivers still connect. Both nodes have to be in the same stack, against the
+# same Postgres, with the same certificate shape, or a difference between them
+# has more than one possible cause.
+#
+# The FIPS image ships the proxy alone. No mock sidecar, and no openssl, which
+# is the right shape for a validated image and means the two things the test
+# stack needs have to come from somewhere else. They come from `fips-tools`,
+# which is the default image doing what a real deployment's sidecar and cert
+# manager would do, over a volume the two containers share.
+
+services:
+  fips-tools:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    volumes:
+      - fips-run:/run/pgprox
+    environment:
+      PGPROX_MOCK_PRIMARY: primary:5432
+      PGPROX_MOCK_REPLICAS: replica-1:5432,replica-2:5432
+      PGPROX_MOCK_DATABASE: tenant_acme
+      PGPROX_MOCK_USER: acme_app
+      PGPROX_MOCK_PASSWORD: acme-password
+      PGPROX_MOCK_TLS: disabled
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        # A socket left by a previous life satisfies the proxy's wait
+        # instantly and then refuses its connection, which is the failure M7.45
+        # spent a while on.
+        rm -f /run/pgprox/sidecar.sock
+        openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+          -subj "/CN=pgprox-fips" \
+          -addext "subjectAltName=DNS:pgprox-fips,DNS:localhost,IP:127.0.0.1" \
+          -keyout /run/pgprox/tls.key -out /run/pgprox/tls.crt >/dev/null 2>&1
+        # World-readable, because the proxy container runs as a different user
+        # and this is a throwaway key for a test stack.
+        chmod 0644 /run/pgprox/tls.key
+        exec /usr/local/bin/mock_sidecar /run/pgprox/sidecar.sock
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/pgprox/sidecar.sock && test -f /run/pgprox/tls.crt"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  pgprox-fips:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: fips
+    depends_on:
+      primary:
+        condition: service_healthy
+      fips-tools:
+        condition: service_healthy
+    volumes:
+      - ./config:/etc/pgprox:ro
+      - fips-run:/run/pgprox
+    # The image's own entrypoint, unchanged. Overriding it with a shell would
+    # mean the thing under test was not the thing that ships.
+    command:
+      - --config
+      - /etc/pgprox/fips.yaml
+      - --sidecar
+      - /run/pgprox/sidecar.sock
+      - --listen
+      - 0.0.0.0:6432
+      - --admin
+      - 0.0.0.0:9090
+      - --gossip
+      - 0.0.0.0:6433
+      - --tls-cert
+      - /run/pgprox/tls.crt
+      - --tls-key
+      - /run/pgprox/tls.key
+      - --require-tls
+      - --node
+      - "9"
+      - --node-name
+      - pgprox-fips
+    environment:
+      # Debug, because the negotiated suite is logged at that level. It is one
+      # line per connection, which is right for a matrix run and wrong for a
+      # node holding a hundred thousand of them.
+      RUST_LOG: "${CIPHER_LOG:-pgprox_app=debug,info}"
+    ports:
+      - "16435:6432"
+      - "19093:9090"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9090/readyz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # The default-build node the FIPS one is compared against. Same debug level,
+  # so both sides of the matrix are read the same way.
+  pgprox-2:
+    environment:
+      PGPROX_NODE: "2"
+      PGPROX_NODE_NAME: pgprox-2
+      PGPROX_PEER_A: 1=pgprox-1:6433
+      PGPROX_PEER_B: 3=pgprox-3:6433
+      PGPROX_MOCK_PRIMARY: primary:5432
+      PGPROX_MOCK_REPLICAS: replica-1:5432,replica-2:5432
+      PGPROX_MOCK_DATABASE: tenant_acme
+      PGPROX_MOCK_USER: acme_app
+      PGPROX_MOCK_PASSWORD: acme-password
+      PGPROX_MOCK_TLS: disabled
+      RUST_LOG: "${CIPHER_LOG:-pgprox_app=debug,info}"
+
+volumes:
+  fips-run:

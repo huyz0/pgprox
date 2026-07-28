@@ -1,0 +1,17 @@
+# The config document the FIPS node reads during a cipher-matrix run.
+#
+# Separate from config.yaml because the node is named differently and the e2e
+# stack's document is asserted against by scripts/e2e.sh. One extra node in
+# that file would be a change to what the e2e run measures, for the sake of a
+# measurement that is not the e2e run's.
+max_client_conns: 200
+drain_grace: 10s
+grant_ttl_cap: 300s
+
+servers:
+  - server: primary:5432
+    max_connections: 60
+    guaranteed_fraction: 0.5
+
+nodes:
+  pgprox-fips: {}
