@@ -319,9 +319,21 @@ pgdog carries a whole logical-decoding subtree. We only track the mode.
 - [x] `M1F.20` `options` startup parameter parsing, including the
   `-c name=value` form. It carries `search_path`, which is part of the cache key
   and therefore correctness-relevant.
-- [ ] `M1F.21` The replayable session-parameter allowlist as a real type, with
+- [x] `M1F.21` The replayable session-parameter allowlist as a real type, with
   `SET`, `SET LOCAL`, `RESET`, and `RESET ALL` handling. ADR 0001 named it; it
   does not exist yet.
+  Most of this was built in M5 and this task never noticed. `SessionParams`
+  handles all four forms plus `DISCARD ALL`, quoting, case-insensitive names
+  and replay-only-what-differs, with nineteen tests. What was missing was the
+  type: the allowlist was a `&[&str]` threaded through as an argument.
+  That is not cosmetic. Two different things consult it, `PinState::
+  observe_statement` deciding whether a `SET` pins and `SessionParams::
+  observe_statement` deciding whether the same `SET` is recorded for replay,
+  and given different lists they disagree without saying so. The shape of that
+  bug is a session recorded as movable whose settings are never replayed: a
+  client's `search_path` quietly reverts between statements and nothing errors.
+  `pgprox_pool::Replayable` is the type, obtainable only from `DEFAULT`,
+  `NONE`, or `from_names`, and ADR 0001 now says why it is one.
 - [ ] `M1F.22` `GSSENCRequest` beyond refusal: confirm the refusal path against
   a GSSAPI-capable client rather than assuming it.
 

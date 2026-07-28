@@ -29,7 +29,7 @@
 use std::time::Instant;
 
 use pgprox_core::route::RouteTarget;
-use pgprox_pool::pin::{PinReason, PinState, REPLAYABLE_PARAMETERS};
+use pgprox_pool::pin::{PinReason, PinState, Replayable};
 use pgprox_proto::backend::{BackendMessage, TxStatus};
 use pgprox_proto::frontend::FrontendMessage;
 use pgprox_proto::session::SessionState;
@@ -163,7 +163,7 @@ impl Relay {
             return self.forward_without_routing();
         };
 
-        let pinned = self.pin.observe_statement(sql, REPLAYABLE_PARAMETERS);
+        let pinned = self.pin.observe_statement(sql, Replayable::DEFAULT);
         if pinned.is_some() {
             // The router has to know: a pinned session is bound to one
             // connection, and that connection is on the primary.

@@ -21,7 +21,7 @@ pub mod statements;
 
 pub use live::{Connector, LivePool};
 pub use params::{ParamChange, SessionParams};
-pub use pin::{PIN_PARAMETER, PinReason, PinState, REPLAYABLE_PARAMETERS, pin_reason};
+pub use pin::{PIN_PARAMETER, PinReason, PinState, Replayable, pin_reason};
 pub use pool::{Acquired, Connection, Pool, PoolConfig};
 pub use reap::{ReapConfig, Reaping, is_expired, reap};
 

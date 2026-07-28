@@ -1001,7 +1001,7 @@ fn observe(
     if let Message::Query { sql } | Message::Parse { sql, .. } = message {
         session
             .params
-            .observe_statement(sql, pgprox_pool::pin::REPLAYABLE_PARAMETERS);
+            .observe_statement(sql, pgprox_pool::pin::Replayable::DEFAULT);
     }
     map_statement_name(message, body, session)
 }

@@ -162,7 +162,7 @@ pub fn before_bind(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use pgprox_pool::pin::REPLAYABLE_PARAMETERS;
+    use pgprox_pool::pin::Replayable;
 
     fn session_with(settings: &[(&str, &str)]) -> SessionMemory {
         let mut memory = SessionMemory::default();
@@ -389,7 +389,7 @@ mod tests {
         let mut session = SessionMemory::default();
         session
             .params
-            .observe_statement("SET work_mem = '64MB'", REPLAYABLE_PARAMETERS);
+            .observe_statement("SET work_mem = '64MB'", Replayable::DEFAULT);
 
         assert!(
             on_acquire(&session, &ConnectionMemory::default()).is_empty(),

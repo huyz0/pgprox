@@ -157,7 +157,7 @@ impl PinState {
     /// Inspects a statement and pins if it requires it.
     ///
     /// Returns the reason if this statement was the one that pinned.
-    pub fn observe_statement(&mut self, sql: &str, allowlist: &[&str]) -> Option<PinReason> {
+    pub fn observe_statement(&mut self, sql: &str, allowlist: Replayable) -> Option<PinReason> {
         if self.is_pinned() {
             // Already unmovable. Scanning further would cost time on every
             // statement of a session that has nothing left to learn.
@@ -186,7 +186,7 @@ impl PinState {
 /// Kept deliberately small. Every addition is a promise that replaying the
 /// parameter is enough, and a wrong promise is a session silently losing a
 /// setting rather than an error anyone sees.
-pub const REPLAYABLE_PARAMETERS: &[&str] = &[
+const REPLAYABLE_NAMES: &[&str] = &[
     "search_path",
     "timezone",
     "application_name",
@@ -203,6 +203,68 @@ pub const REPLAYABLE_PARAMETERS: &[&str] = &[
     "bytea_output",
 ];
 
+/// The set of parameters a session may set and still be moved.
+///
+/// A type rather than the `&[&str]` this was, because two different things
+/// consult it and they have to agree. `PinState::observe_statement` decides
+/// whether a `SET` pins the session; `SessionParams::observe_statement`
+/// decides whether the same `SET` is recorded for replay. Given different
+/// lists they disagree silently, and the shape of that bug is a session
+/// recorded as movable whose settings are never replayed: the client's
+/// `search_path` quietly reverts between statements and nothing errors.
+///
+/// Nothing else in the workspace can construct one except through
+/// [`Replayable::DEFAULT`] and [`Replayable::from_names`], and the second
+/// exists for tests that need to ask what an operator's narrower list would
+/// do. ADR 0001 named this type; it took until M8 to exist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Replayable {
+    names: &'static [&'static str],
+}
+
+impl Replayable {
+    /// The shipped list.
+    ///
+    /// Kept deliberately small. Every addition is a promise that replaying the
+    /// parameter is enough, and a wrong promise is a session silently losing a
+    /// setting rather than an error anyone sees.
+    pub const DEFAULT: Self = Self {
+        names: REPLAYABLE_NAMES,
+    };
+
+    /// Nothing is replayable, so every `SET` pins.
+    ///
+    /// What an operator who empties the list gets: maximum safety at maximum
+    /// cost, rather than an error.
+    pub const NONE: Self = Self { names: &[] };
+
+    /// A narrower or wider list, for a caller that has one.
+    #[must_use]
+    pub const fn from_names(names: &'static [&'static str]) -> Self {
+        Self { names }
+    }
+
+    /// Whether this parameter is replayed rather than pinned.
+    ///
+    /// The name is compared as given. Both callers normalise before asking,
+    /// and doing it again here would hide a caller that had not.
+    #[must_use]
+    pub fn contains(self, name: &str) -> bool {
+        self.names.contains(&name)
+    }
+
+    /// Every name on the list, in the order it was written.
+    pub fn names(self) -> impl Iterator<Item = &'static str> {
+        self.names.iter().copied()
+    }
+}
+
+impl Default for Replayable {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// Why this statement pins the session, if it does.
 ///
 /// A lexical scan, like the classifier: it must be right about which text is
@@ -210,7 +272,7 @@ pub const REPLAYABLE_PARAMETERS: &[&str] = &[
 /// session's share of multiplexing. A missed pin hands a client another
 /// client's temp table.
 #[must_use]
-pub fn pin_reason(sql: &str, allowlist: &[&str]) -> Option<PinReason> {
+pub fn pin_reason(sql: &str, allowlist: Replayable) -> Option<PinReason> {
     // Every statement, not just the first. The simple query protocol allows
     // several in one message, so checking only the leading word would let
     // `SELECT 1; LISTEN c` through unpinned, and the session would silently
@@ -221,7 +283,7 @@ pub fn pin_reason(sql: &str, allowlist: &[&str]) -> Option<PinReason> {
 }
 
 /// Why one statement pins, given its words.
-fn statement_pin_reason(words: &[String], allowlist: &[&str]) -> Option<PinReason> {
+fn statement_pin_reason(words: &[String], allowlist: Replayable) -> Option<PinReason> {
     let first = words.first()?.as_str();
 
     // `LISTEN` and `UNLISTEN` both pin. Unlistening does not undo a pin: a
@@ -269,7 +331,7 @@ fn statement_pin_reason(words: &[String], allowlist: &[&str]) -> Option<PinReaso
 }
 
 /// Whether a `SET` pins, given the replay allowlist.
-fn set_pin_reason(words: &[String], allowlist: &[&str]) -> Option<PinReason> {
+fn set_pin_reason(words: &[String], allowlist: Replayable) -> Option<PinReason> {
     let mut rest = &words[1..];
 
     // `SET SESSION x` is the same as `SET x`.
@@ -296,7 +358,7 @@ fn set_pin_reason(words: &[String], allowlist: &[&str]) -> Option<PinReason> {
         return None;
     }
 
-    if allowlist.iter().any(|allowed| name == allowed) {
+    if allowlist.contains(name) {
         return None;
     }
 
@@ -358,7 +420,7 @@ mod tests {
     use super::*;
 
     fn reason(sql: &str) -> Option<PinReason> {
-        pin_reason(sql, REPLAYABLE_PARAMETERS)
+        pin_reason(sql, Replayable::DEFAULT)
     }
 
     #[test]
@@ -570,10 +632,10 @@ mod tests {
     fn a_requested_pin_is_as_permanent_as_any_other() {
         let mut state = PinState::new();
         assert_eq!(
-            state.observe_statement("SET pgprox.pin = on", REPLAYABLE_PARAMETERS),
+            state.observe_statement("SET pgprox.pin = on", Replayable::DEFAULT),
             Some(PinReason::Requested)
         );
-        state.observe_statement("SET pgprox.pin = off", REPLAYABLE_PARAMETERS);
+        state.observe_statement("SET pgprox.pin = off", Replayable::DEFAULT);
         assert!(state.is_pinned(), "a session unpinned itself");
         assert_eq!(state.reason(), Some(PinReason::Requested));
     }
@@ -679,11 +741,11 @@ mod tests {
         // after the wrong feature.
         let mut state = PinState::new();
         assert_eq!(
-            state.observe_statement("LISTEN c", REPLAYABLE_PARAMETERS),
+            state.observe_statement("LISTEN c", Replayable::DEFAULT),
             Some(PinReason::Listen)
         );
         assert_eq!(
-            state.observe_statement("CREATE TEMP TABLE t (a int)", REPLAYABLE_PARAMETERS),
+            state.observe_statement("CREATE TEMP TABLE t (a int)", Replayable::DEFAULT),
             None,
             "an already-pinned session reported a second pin"
         );
@@ -708,9 +770,9 @@ mod tests {
         // survives whatever else happens. There is no statement that proves a
         // session has stopped needing its connection.
         let mut state = PinState::new();
-        state.observe_statement("LISTEN c", REPLAYABLE_PARAMETERS);
-        state.observe_statement("UNLISTEN *", REPLAYABLE_PARAMETERS);
-        state.observe_statement("SELECT 1", REPLAYABLE_PARAMETERS);
+        state.observe_statement("LISTEN c", Replayable::DEFAULT);
+        state.observe_statement("UNLISTEN *", Replayable::DEFAULT);
+        state.observe_statement("SELECT 1", Replayable::DEFAULT);
         assert!(state.is_pinned());
     }
 
@@ -721,7 +783,7 @@ mod tests {
         // Nothing here may say the same thing, because a pin never clears and
         // a session that once ran a COPY would keep its connection for life.
         let mut state = PinState::new();
-        state.observe_statement("COPY t FROM STDIN", REPLAYABLE_PARAMETERS);
+        state.observe_statement("COPY t FROM STDIN", Replayable::DEFAULT);
         assert!(
             !state.is_pinned(),
             "COPY pinned a session permanently; that belongs to HoldReason"
@@ -762,7 +824,7 @@ mod tests {
         // The allowlist is configuration, and an operator who empties it gets
         // maximum safety at maximum cost rather than an error.
         assert_eq!(
-            pin_reason("SET search_path = public", &[]),
+            pin_reason("SET search_path = public", Replayable::NONE),
             Some(PinReason::UnreplayableSet)
         );
     }

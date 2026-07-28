@@ -36,6 +36,14 @@ while it runs, which is what the release signal above already covers.
 Session parameters inside the allowlist are recorded and replayed on acquire
 rather than pinning.
 
+The allowlist is a type, `pgprox_pool::Replayable`, and not a `&[&str]`. Two
+different things consult it: one decides whether a `SET` pins the session, the
+other decides whether the same `SET` is recorded for replay. Given different
+lists they disagree without saying so, and that bug is a session recorded as
+movable whose settings are never replayed, so a client's `search_path` quietly
+reverts between statements and nothing errors. A caller can obtain one only
+from `Replayable::DEFAULT`, `Replayable::NONE`, or `from_names`.
+
 ## Consequences
 
 - Upstream connection count tracks concurrent *transactions*, not connections,

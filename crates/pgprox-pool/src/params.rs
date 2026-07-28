@@ -29,6 +29,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::pin::Replayable;
+
 /// A session's recorded parameters.
 ///
 /// Ordered, so replay is deterministic and two connections given the same
@@ -112,7 +114,7 @@ impl SessionParams {
     /// Only parameters on `allowlist` are recorded. Anything else is left
     /// alone here and pins the session instead, so a parameter is never both
     /// replayed and pinned on, and never neither.
-    pub fn observe_statement(&mut self, sql: &str, allowlist: &[&str]) -> Option<ParamChange> {
+    pub fn observe_statement(&mut self, sql: &str, allowlist: Replayable) -> Option<ParamChange> {
         let statement = ParsedSet::parse(sql)?;
         match statement {
             ParsedSet::Local => Some(ParamChange::TransactionScoped),
@@ -175,8 +177,8 @@ impl SessionParams {
 }
 
 /// Whether a parameter may be replayed rather than pinned on.
-fn allowed(name: &str, allowlist: &[&str]) -> bool {
-    allowlist.contains(&name)
+fn allowed(name: &str, allowlist: Replayable) -> bool {
+    allowlist.contains(name)
 }
 
 /// Parameter names are case-insensitive in Postgres, so `TimeZone` and
@@ -318,10 +320,9 @@ fn unquote(value: &str) -> &str {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::pin::REPLAYABLE_PARAMETERS;
 
     fn observe(params: &mut SessionParams, sql: &str) -> Option<ParamChange> {
-        params.observe_statement(sql, REPLAYABLE_PARAMETERS)
+        params.observe_statement(sql, Replayable::DEFAULT)
     }
 
     #[test]
@@ -375,7 +376,7 @@ mod tests {
         assert!(params.is_empty());
 
         assert_eq!(
-            crate::pin::pin_reason("SET work_mem = '256MB'", REPLAYABLE_PARAMETERS),
+            crate::pin::pin_reason("SET work_mem = '256MB'", Replayable::DEFAULT),
             Some(crate::pin::PinReason::UnreplayableSet),
             "a parameter was neither replayed nor pinned on"
         );
@@ -384,7 +385,7 @@ mod tests {
     #[test]
     fn every_replayable_parameter_is_recorded_rather_than_pinning() {
         // The other direction of the same invariant, across the whole list.
-        for name in REPLAYABLE_PARAMETERS {
+        for name in Replayable::DEFAULT.names() {
             let sql = format!("SET {name} = 'x'");
             let mut params = SessionParams::new();
             assert!(
@@ -392,7 +393,7 @@ mod tests {
                 "{name} is on the allowlist but was not recorded"
             );
             assert_eq!(
-                crate::pin::pin_reason(&sql, REPLAYABLE_PARAMETERS),
+                crate::pin::pin_reason(&sql, Replayable::DEFAULT),
                 None,
                 "{name} was recorded and also pinned"
             );
