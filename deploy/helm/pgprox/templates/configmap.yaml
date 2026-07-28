@@ -1,0 +1,32 @@
+{{/*
+One document for the fleet, with a per-node section, because that is how a
+ConfigMap works: the same mount on every pod, and a node finds itself in it by
+name. Drain is desired state in this file rather than an imperative RPC, so it
+survives a pod restart and shows up in git.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pgprox.fullname" . }}
+  labels:
+    {{- include "pgprox.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    max_client_conns: {{ .Values.config.maxClientConns }}
+    drain_grace: {{ .Values.drain.graceSeconds }}s
+    grant_ttl_cap: {{ .Values.config.grantTtlCap }}
+
+    servers:
+    {{- if .Values.config.servers }}
+      {{- toYaml .Values.config.servers | nindent 6 }}
+    {{- else }}
+      # No upstream servers configured. See NOTES.txt: a node with an empty
+      # server list has nowhere to send a client, and this is the one value
+      # that cannot have a default.
+      []
+    {{- end }}
+
+    nodes:
+    {{- range $i := until (int .Values.replicaCount) }}
+      {{ include "pgprox.fullname" $ }}-{{ $i }}: {}
+    {{- end }}

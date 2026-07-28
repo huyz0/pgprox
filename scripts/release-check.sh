@@ -96,10 +96,25 @@ if [[ -f $CHART/Chart.yaml ]]; then
     helm lint "$CHART" >/dev/null 2>&1 \
       && ok "helm lint" || fail "helm lint failed for $CHART"
 
-    rendered=$(helm template "$CHART" 2>/dev/null || true)
+    rendered=$(helm template pgprox "$CHART" 2>/dev/null || true)
     if [[ -z $rendered ]]; then
       fail "helm template rendered nothing: the chart produces no manifests"
     else
+      # Against a real API server when one is reachable, because that is the
+      # only thing that checks a field name against the schema rather than
+      # against a grep. A rendered manifest with `readinessProbe` misspelt
+      # passes every offline check there is and is silently ignored by the
+      # kubelet.
+      if kubectl version -o json >/dev/null 2>&1; then
+        if printf '%s' "$rendered" | kubectl apply --dry-run=server -f - >/dev/null 2>&1; then
+          ok "the API server accepts the rendered manifests"
+        else
+          fail "the API server rejected the rendered manifests"
+        fi
+      else
+        skip "kubectl apply --dry-run=server (no cluster reachable)"
+      fi
+
       # The drain sequence needs all three or it does not work. A readiness
       # probe with no preStop hook means Kubernetes pulls the endpoint and then
       # SIGTERMs before the in-flight transactions finish, which is the case

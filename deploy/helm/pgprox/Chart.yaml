@@ -1,0 +1,19 @@
+apiVersion: v2
+name: pgprox
+description: A multitenant Postgres proxy that multiplexes many client connections onto a capped upstream pool.
+type: application
+
+# The chart version and the proxy version move together. There is one artifact
+# here, not a chart with a life of its own, and a chart version that drifted
+# from the binary it deploys is a support question nobody can answer.
+version: 0.1.0
+appVersion: "0.1.0"
+
+home: https://github.com/pgprox/pgprox
+sources:
+  - https://github.com/pgprox/pgprox
+
+keywords:
+  - postgres
+  - proxy
+  - connection-pooling

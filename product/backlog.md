@@ -1595,15 +1595,29 @@ together. The rehearsal is what proves the wiring, so it comes last.
   suite already drives, the suite it negotiated against the default build and
   against the FIPS build, and a driver that cannot connect at all under FIPS is
   recorded as a failure rather than omitted.
-- [ ] `M8.5` The Helm chart: `Chart.yaml`, `values.yaml`, a Deployment, a
-  Service, and the ConfigMap the file provider watches. Acceptance: `helm lint`
-  is clean and `helm template` renders manifests that `kubectl apply
-  --dry-run=client` accepts.
-- [ ] `M8.6` Probe and `preStop` wiring in the chart. Acceptance: the rendered
-  Deployment carries a readiness probe on `/readyz`, a liveness probe on
-  `/healthz`, and a `preStop` hook that triggers the drain and waits past
-  `drain_grace`, with the wait derived from the configured value rather than a
-  literal that drifts away from it.
+- [x] `M8.5`, `M8.6` The Helm chart, with the drain wiring in it. Committed
+  together because the probes and the `preStop` hook are fields of the very
+  workload the chart task creates, and a chart landed without them would be
+  wrong in exactly the way this milestone exists to fix. `helm lint` is clean
+  and a real API server accepts the rendered manifests: `kubectl apply
+  --dry-run=server` against a kind cluster, rather than the client dry run
+  first written down here, which cannot reach a schema and so cannot catch a
+  misspelt field.
+  A StatefulSet rather than a Deployment. Gossip addresses a peer by name and
+  expects that name to mean the same node after a restart, so a Deployment's
+  fresh random name each time would read to the fleet as a node leaving and a
+  stranger arriving, churning the quota that node had reserved. The ordinal is
+  also where the node id comes from, and that has to be numeric and stable
+  because it is encoded into every connection id.
+  One number drives the drain. `drain.graceSeconds` is `drain_grace` in the
+  config document, the `preStop` sleep, and the TTL on the drain request, and
+  `terminationGracePeriodSeconds` is that number plus headroom, because the
+  kubelet starts counting when it starts the hook rather than when the hook
+  returns.
+  Two things the chart does not pretend to set. `net.core.somaxconn` is on the
+  kubelet's safe sysctl list and is set; `nofile` is a container runtime
+  setting that no pod spec can request, so `NOTES.txt` says how to check it
+  instead of the chart quietly leaving it at 1024.
 - [ ] `M8.7` The rolling upgrade rehearsal: `scripts/rolling-upgrade.sh` takes
   the compose stack through a node-by-node restart under load. Acceptance: zero
   failed transactions, recorded in `product/release/` the way a scale run is,

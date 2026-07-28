@@ -23,6 +23,11 @@ repos:
         exclude: '\.md$'   # trailing double-space is meaningful in Markdown
       - id: end-of-file-fixer
       - id: check-yaml
+        # Helm templates are Go templates that produce YAML, not YAML. A
+        # conditional block starts with `{{- if ...}}` and a parser sees a flow
+        # mapping that never closes. `helm lint` and `helm template` are what
+        # check these, and scripts/release-check.sh runs both.
+        exclude: '^deploy/helm/.*/templates/'
       - id: check-json
       - id: check-merge-conflict
       - id: check-executables-have-shebangs

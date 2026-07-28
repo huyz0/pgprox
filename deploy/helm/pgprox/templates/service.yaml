@@ -1,0 +1,59 @@
+{{/*
+Two services, doing different jobs.
+
+The client service is what applications connect to, and its endpoints are
+managed by the readiness probe: a draining node fails /readyz, Kubernetes pulls
+it out here, and no new TCP arrives while its in-flight transactions finish.
+That removal is step one of the drain sequence, and it is the reason readiness
+is a separate probe from liveness rather than the same check twice.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pgprox.fullname" . }}
+  labels:
+    {{- include "pgprox.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: postgres
+      port: {{ .Values.ports.client }}
+      targetPort: postgres
+      protocol: TCP
+    - name: admin
+      port: {{ .Values.ports.admin }}
+      targetPort: admin
+      protocol: TCP
+  selector:
+    {{- include "pgprox.selectorLabels" . | nindent 4 }}
+---
+{{/*
+The headless service is how nodes find each other. Gossip addresses a peer by
+name and expects it to stay put across restarts, which is what a StatefulSet
+pod plus this service gives. `publishNotReadyAddresses` is deliberate: a
+draining node still has to gossip that it is draining, and it is not ready by
+definition, so a service that hid it would break the very sequence readiness
+exists to drive.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pgprox.headless" . }}
+  labels:
+    {{- include "pgprox.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: gossip
+      port: {{ .Values.ports.gossip }}
+      protocol: TCP
+    - name: admin
+      port: {{ .Values.ports.admin }}
+      protocol: TCP
+  selector:
+    {{- include "pgprox.selectorLabels" . | nindent 4 }}

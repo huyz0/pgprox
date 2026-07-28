@@ -1,0 +1,229 @@
+{{/*
+A StatefulSet rather than a Deployment, for one reason: gossip addresses a peer
+by name and expects that name to mean the same node after a restart. A
+Deployment's pods get a new random name each time, so every restart would look
+to the rest of the fleet like a node leaving and a stranger arriving, and the
+quota that node had reserved would churn with it.
+
+The ordinal is also where the node id comes from. It has to be stable and
+numeric because it is encoded into every connection id, so a cancel request
+landing on any node can be routed to the node that owns the connection.
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "pgprox.fullname" . }}
+  labels:
+    {{- include "pgprox.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "pgprox.headless" . }}
+  replicas: {{ .Values.replicaCount }}
+  # OrderedReady, which is the default and is stated here because it is the
+  # property the rolling upgrade depends on: one node at a time, and the next
+  # one does not start until the previous is ready. Parallel would drain the
+  # whole fleet at once, which is an outage rather than an upgrade.
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "pgprox.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pgprox.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the pods when the config document changes. Without this a
+        # ConfigMap edit reaches the mount but nothing restarts, and whether it
+        # takes effect depends on the file watch working, which is a thing to
+        # test rather than a thing to rely on for an upgrade.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      # Long enough for the preStop hook to finish its wait, plus headroom.
+      # The kubelet starts counting when it starts the hook rather than when
+      # the hook returns, so equal values would SIGTERM the node at the exact
+      # moment its drain completed.
+      terminationGracePeriodSeconds: {{ include "pgprox.terminationGrace" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        sysctls:
+          # The proxy asks to listen with a backlog of 8192 and the kernel
+          # trims it to this. The stock 4096 is not enough for a large
+          # reconnect burst: the queue overflows and a client sees a socket
+          # that closed with nothing on it, which is indistinguishable from a
+          # proxy bug and was mistaken for one during M7.
+          #
+          # This one is on the kubelet's safe list. The file descriptor limit
+          # is not: 100k connections need a nofile of 262144, and that is a
+          # container runtime setting rather than anything a pod spec can ask
+          # for. NOTES.txt says so rather than this chart pretending otherwise.
+          - name: net.core.somaxconn
+            value: "16384"
+      containers:
+        - name: pgprox
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              # The ordinal is the node id, and the pod name is the node name
+              # the config document is keyed by. Both come from the hostname
+              # rather than from the downward API because a StatefulSet pod's
+              # name is the one thing guaranteed to carry its ordinal.
+              ordinal="${HOSTNAME##*-}"
+
+              # Every other node, by name. Rendered as a loop rather than a
+              # baked list so that scaling the StatefulSet does not leave the
+              # peers stale, and self is skipped because a node gossiping with
+              # itself is a peer that can never be down.
+              peers=""
+              i=0
+              while [ "$i" -lt {{ .Values.replicaCount }} ]; do
+                if [ "$i" != "$ordinal" ]; then
+                  peers="$peers --peer $i={{ include "pgprox.fullname" . }}-$i.{{ include "pgprox.headless" . }}:{{ .Values.ports.gossip }}"
+                fi
+                i=$((i + 1))
+              done
+
+              exec /usr/local/bin/pgprox \
+                --config /etc/pgprox/config.yaml \
+                --sidecar /run/pgprox/sidecar.sock \
+                --node "$ordinal" \
+                --node-name "$HOSTNAME" \
+                --listen 0.0.0.0:{{ .Values.ports.client }} \
+                --admin 0.0.0.0:{{ .Values.ports.admin }} \
+                --gossip 0.0.0.0:{{ .Values.ports.gossip }} \
+              {{- if .Values.tls.secretName }}
+                --tls-cert /etc/pgprox/tls/{{ .Values.tls.certKey }} \
+                --tls-key /etc/pgprox/tls/{{ .Values.tls.keyKey }} \
+                --require-tls \
+              {{- end }}
+                $peers
+          ports:
+            - name: postgres
+              containerPort: {{ .Values.ports.client }}
+            - name: admin
+              containerPort: {{ .Values.ports.admin }}
+            - name: gossip
+              containerPort: {{ .Values.ports.gossip }}
+          # Readiness and liveness ask different questions, which is why they
+          # are two probes rather than the same check twice.
+          #
+          # /readyz asks whether this node should be sent new clients. A
+          # draining node answers no while it is still serving the clients it
+          # has, which is what pulls it out of the Service and is step one of
+          # the drain sequence.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 2
+          # /healthz asks whether the process should be restarted. It must not
+          # fail during a drain, or the kubelet would kill a node in the middle
+          # of finishing its transactions, which is the opposite of the point.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 2
+            failureThreshold: 30
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    # Ask this node to drain, then wait for the sequence to
+                    # finish before returning and letting SIGTERM land.
+                    #
+                    # The TTL matters. A drain written with no expiry is a node
+                    # that comes back from a restart still draining, which is
+                    # indistinguishable from one somebody meant to drain. It is
+                    # the same wait, in milliseconds.
+                    #
+                    # `|| true` because a node whose admin API is already gone
+                    # is a node that is already stopping. Failing the hook there
+                    # would turn an orderly shutdown into a hard kill.
+                    curl -fsS -m 5 -X POST \
+                      -H 'Content-Type: application/json' \
+                      -d '{"ttl_ms": {{ mul .Values.drain.graceSeconds 1000 }}}' \
+                      http://127.0.0.1:{{ .Values.ports.admin }}/v1/drain || true
+                    sleep {{ .Values.drain.graceSeconds }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/pgprox
+              readOnly: true
+            - name: sidecar-socket
+              mountPath: /run/pgprox
+            {{- if .Values.tls.secretName }}
+            - name: tls
+              mountPath: /etc/pgprox/tls
+              readOnly: true
+            {{- end }}
+        {{- if .Values.sidecar.image }}
+        # The credential sidecar, in the same pod and over a socket neither
+        # container exposes. Never over the network: the token and the real
+        # backend password both cross this boundary.
+        - name: sidecar
+          image: {{ .Values.sidecar.image | quote }}
+          args:
+            {{- toYaml .Values.sidecar.args | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.sidecar.resources | nindent 12 }}
+          volumeMounts:
+            - name: sidecar-socket
+              mountPath: /run/pgprox
+        {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "pgprox.fullname" . }}
+        - name: sidecar-socket
+          emptyDir: {}
+        {{- if .Values.tls.secretName }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.secretName }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

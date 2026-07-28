@@ -1,0 +1,43 @@
+pgprox {{ .Chart.AppVersion }} installed as {{ include "pgprox.fullname" . }}.
+
+Clients connect to:
+
+  {{ include "pgprox.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.ports.client }}
+
+{{ if not .Values.sidecar.image -}}
+WARNING: no credential sidecar image is set.
+
+The proxy resolves every tenant's real backend through a sidecar over a Unix
+socket, and refuses to start without one. These pods will not become ready.
+Set sidecar.image to the image your control plane publishes.
+
+{{ end -}}
+{{ if not .Values.config.servers -}}
+WARNING: no upstream servers are configured.
+
+config.servers is where the upstream Postgres hosts and their connection caps
+are declared. With none, a node has nowhere to send a client. There is no
+default here on purpose: the numbers are the deployment, and a default would
+be a guess that reads like a recommendation.
+
+{{ end -}}
+{{ if not .Values.tls.secretName -}}
+WARNING: frontend TLS is off.
+
+Clients authenticate with a JWT carried in the password field, so a plaintext
+frontend is a token on the wire. Set tls.secretName to a secret holding
+{{ .Values.tls.certKey }} and {{ .Values.tls.keyKey }}, which also turns on
+--require-tls.
+
+{{ end -}}
+File descriptors are the one limit this chart cannot set for you. A node
+holding 100k client connections needs a nofile of 262144, and that is a
+container runtime setting rather than something a pod spec can request. Check
+it on the nodes these pods land on:
+
+  kubectl exec {{ include "pgprox.fullname" . }}-0 -- sh -c 'ulimit -n'
+
+Draining a node by hand, which is what the preStop hook does automatically:
+
+  kubectl exec {{ include "pgprox.fullname" . }}-0 -- \
+    curl -fsS -X POST localhost:{{ .Values.ports.admin }}/v1/drain

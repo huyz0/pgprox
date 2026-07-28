@@ -1,0 +1,90 @@
+# Defaults for the pgprox chart.
+#
+# Rendering this chart with no overrides produces a manifest that is valid and
+# will not serve traffic, because two things cannot have a sensible default: a
+# credential sidecar image, which is not ours to pick, and an upstream server
+# list, which is the deployment. Both are called out in NOTES.txt so the gap is
+# visible at install rather than in a crash loop.
+
+image:
+  repository: pgprox
+  # The default image. The FIPS variant is a separate tag built from the
+  # `fips` stage of deploy/Dockerfile; see values-fips.yaml for what changes.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Three, for the same reason the e2e stack runs three: quota leasing, gossip
+# and cross-node cancellation all behave differently with one node.
+replicaCount: 3
+
+ports:
+  client: 6432
+  admin: 9090
+  gossip: 6433
+
+drain:
+  # One number, used three ways: it is `drain_grace` in the config document,
+  # it is how long the preStop hook waits, and terminationGracePeriodSeconds
+  # is derived from it. Writing the wait as a literal somewhere is how a chart
+  # ends up SIGTERMing a node halfway through its own drain.
+  graceSeconds: 60
+  # Headroom between the end of the preStop wait and SIGTERM. The kubelet
+  # counts the grace period from when it starts the hook, not from when the
+  # hook returns, so without this the two race.
+  terminationHeadroomSeconds: 15
+
+# The credential sidecar. Not ours: it validates the JWT and returns the real
+# backend. The proxy talks to it over a Unix socket in a shared emptyDir and
+# refuses to start without it, which is correct behaviour for a node that
+# cannot resolve credentials.
+sidecar:
+  image: ""
+  args: ["/run/pgprox/sidecar.sock"]
+  resources: {}
+
+# Frontend TLS. Required whenever JWT auth is in use, because the token travels
+# in the password field. Naming a secret here turns on --require-tls; leaving
+# it empty produces a node that will refuse every JWT client it sees.
+tls:
+  secretName: ""
+  certKey: tls.crt
+  keyKey: tls.key
+
+# The config document, mounted as a ConfigMap and watched for changes. The
+# file provider watches the mount directory rather than the file, because a
+# ConfigMap update swaps a symlink and a watch on the file itself misses it.
+config:
+  maxClientConns: 5000
+  grantTtlCap: 300s
+  # The upstream servers and their caps. Empty on purpose: the numbers here
+  # are the deployment, and a default would be a guess that looks like a
+  # recommendation.
+  servers: []
+  #  - server: postgres.internal:5432
+  #    max_connections: 4800
+  #    guaranteed_fraction: 0.3
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+# 100k connections is a file descriptor each, plus upstream connections, peers
+# and listeners. The container's own limit is what has to be raised; a node
+# that hits it refuses clients for a reason that looks nothing like the truth.
+nofile: 262144
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+service:
+  type: ClusterIP
+  annotations: {}
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

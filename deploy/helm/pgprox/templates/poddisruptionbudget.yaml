@@ -1,0 +1,19 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{/*
+What stops a node drain from becoming a fleet drain. Quota leases, rendezvous
+hashing and cross-node cancellation all assume most of the fleet is up; an
+eviction that took two of three nodes at once would rehome every tenant twice
+and shed clients that had somewhere to go.
+*/}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "pgprox.fullname" . }}
+  labels:
+    {{- include "pgprox.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "pgprox.selectorLabels" . | nindent 6 }}
+{{- end }}
