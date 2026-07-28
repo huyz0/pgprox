@@ -8,6 +8,10 @@
 /fuzz/target
 /fuzz/artifacts
 /fuzz/coverage
+# Seeded by crates/pgprox-proto/examples/seed_corpus.rs and then grown by
+# libFuzzer into several thousand small files no human reads. The seeder is
+# the committed part; what a run discovers from it is not.
+/fuzz/corpus
 **/*.rs.bk
 *.profraw
 *.profdata

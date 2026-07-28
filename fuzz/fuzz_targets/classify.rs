@@ -23,14 +23,20 @@ use pgprox_route::{begins_read_only_transaction, classify, statement_hint};
 /// The keywords whose presence means a statement is not a plain read.
 const DML: &[&str] = &["insert", "update", "delete", "merge", "truncate"];
 
-/// Whether `sql` contains a DML keyword outside anything quoted.
+/// Whether `sql` contains a DML keyword outside anything quoted or commented.
 ///
-/// Deliberately crude and deliberately over-eager: it treats every quote as
-/// opening a region it skips to the next matching quote, with no escape
-/// handling at all. Over-eager skipping means it can only ever report *fewer*
-/// keywords than are really there, so when it says "no DML" while `classify`
-/// says "read only", the two agreeing is weak evidence and the two disagreeing
+/// Deliberately crude and deliberately over-eager: every quote opens a region
+/// it skips to the next matching quote, `--` skips to the end of the line and
+/// `/*` to the next `*/`, all with no escape handling and no nesting.
+/// Over-eager skipping means it can only ever report *fewer* keywords than are
+/// really there, so the two agreeing is weak evidence and the two disagreeing
 /// is a real finding.
+///
+/// The comments were not here on the first run of this target, and the first
+/// thing it found was `---kk...update;...` calling `classify` wrong. It was
+/// not wrong: `--` had opened a comment and the keyword was inside it. An
+/// oracle looser than the thing it checks reports the checker's correctness as
+/// a bug, which is worse than no oracle.
 fn mentions_dml(sql: &str) -> bool {
     let lower = sql.to_ascii_lowercase();
     let bytes = lower.as_bytes();
@@ -48,6 +54,46 @@ fn mentions_dml(sql: &str) -> bool {
                 i += 1;
             }
             i += 1;
+            continue;
+        }
+
+        // A line comment, which runs to the newline or to the end.
+        if c == b'-' && bytes.get(i + 1) == Some(&b'-') {
+            word_start = None;
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        // A block comment. Postgres nests these, unlike C, and so does this:
+        // a version that stopped at the first `*/` would think the comment had
+        // closed and read the rest of it as code. That is the second thing
+        // this target found, and it fired on `/* /* merge */ */`, where the
+        // classifier was right and the oracle was not.
+        //
+        // The direction matters and the first attempt had it backwards.
+        // Skipping *less* than the real scanner means seeing more keywords
+        // than are really there, which reports a correct classifier as broken.
+        // The oracle has to skip at least as much as the thing it checks.
+        if c == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            word_start = None;
+            let mut depth = 0_u32;
+            while i < bytes.len() {
+                if bytes[i..].starts_with(b"/*") {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i..].starts_with(b"*/") {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
             continue;
         }
 

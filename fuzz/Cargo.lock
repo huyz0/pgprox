@@ -112,7 +112,9 @@ dependencies = [
 name = "pgprox-route"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "pgprox-core",
+ "tokio",
 ]
 
 [[package]]

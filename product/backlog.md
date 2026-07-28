@@ -351,8 +351,25 @@ pgdog carries a whole logical-decoding subtree. We only track the mode.
   depth cases against `bin/pgprox` over TLS onto real Postgres, recorded in
   `product/conformance/driver-matrix.md`, and `m1f-complete.sh` checks that a
   matrix exists.
-- [ ] `M1F.25` Corpus seeding from the references: extract their protocol test
+- [x] `M1F.25` Corpus seeding from the references: extract their protocol test
   fixtures into the fuzz corpus, so their accumulated edge cases become ours.
+  There are none to extract. pgdog builds its messages in Rust and round-trips
+  them, pgbouncer and odyssey drive real servers through their integration
+  suites, and none of the three ships a file of wire bytes. What they carry is
+  a list of what they thought worth testing, and `seed_corpus.rs` reproduces
+  that: 31 frames and 27 message bodies covering the authentication ladder, the
+  extended-query sequence, the messages whose length field can disagree with
+  their content, and the startup packet.
+  The larger finding was next to the task rather than in it. `fuzz/README.md`
+  had said since M1 that the targets had never been executed, and running them
+  is worth more than seeding them. All three run now, through
+  `scripts/fuzz.sh`, and `classify` found two bugs on its first outing. Both
+  were in its own oracle: it skipped quotes but not line comments, so
+  `---kk...update;` read as DML, and then it did not nest block comments, so
+  `/* /* merge */ */` did the same. An oracle that skips less than the thing it
+  checks reports the checker's correctness as a bug. The classifier was right
+  both times, which is the reassuring part: it is the path that decides whether
+  a statement may reach a replica.
 
 ### Group H: raised by reviewing the first M1F round
 
