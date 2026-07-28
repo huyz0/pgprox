@@ -331,10 +331,14 @@ pgdog carries a whole logical-decoding subtree. We only track the mode.
   record which tags were actually seen in each direction, and fail if a tag with
   a decoder was never exercised. This is what turns "we handle it" into "we
   tested it".
-- [ ] `M1F.24` Driver matrix against real Postgres, not only the harness. The
-  drivers currently only meet our own server; run each against real Postgres
-  through the relay to catch anything the harness gets wrong in the same
-  direction we do.
+- [x] `M1F.24` Driver matrix against real Postgres, not only the harness. Done
+  as `M8.13`, which is this task with a reason rather than a plan: asyncpg
+  could not run a parameterised query through the proxy from M6 until M8, and
+  `scripts/conformance.sh` stayed green throughout because the harness answered
+  a `Flush` the same wrong way the proxy did. All five drivers now pass the
+  depth cases against `bin/pgprox` over TLS onto real Postgres, recorded in
+  `product/conformance/driver-matrix.md`, and `m1f-complete.sh` checks that a
+  matrix exists.
 - [ ] `M1F.25` Corpus seeding from the references: extract their protocol test
   fixtures into the fuzz corpus, so their accumulated edge cases become ours.
 
@@ -1738,6 +1742,39 @@ together. The rehearsal is what proves the wiring, so it comes last.
 ### The five tasks carried into this milestone
 
 M7.46 and the four M1F deferrals are open and have been since their milestones
-closed. They are worked after M8.9 rather than before it, because M8's condition
-does not depend on any of them, in this order: `M7.46`, `M1F.21`, `M1F.22`,
-`M1F.24`, `M1F.25`.
+closed. They are worked after M8 closes rather than before it, because M8's
+condition does not depend on any of them.
+
+The order they were listed in is no longer the right one. M8 changed the case
+for `M1F.24`: pointing asyncpg at the proxy rather than at the conformance
+harness found `Flush`, which is the most serious defect this project has
+shipped past a milestone gate, and every other driver has only ever met the
+harness too. That moves it to the front, and `tests/cipher/` is most of the
+harness it needs.
+
+The order is now `M1F.24`, `M7.46`, `M1F.21`, `M1F.25`, `M1F.22`.
+
+## Found after M8 closed
+
+- [x] `M8.13` The driver matrix meets the proxy, not just the harness. This is
+  `M1F.24` with a reason rather than a plan: five drivers have been run against
+  `conformance_server` since M1 and against the real proxy never, and the one
+  time one of them was pointed at the proxy it deadlocked on its first
+  parameterised query. A shared misunderstanding between our codec and our
+  harness is invisible by construction, and `Flush` is the proof.
+  `tests/cipher/` already connects all five to a running proxy over TLS. What
+  it does not do is exercise anything: it runs `SELECT 1` and stops, because
+  its question was which cipher they negotiate.
+  Acceptance: each driver runs the depth cases the conformance suite already
+  names, `PGPROX_DEPTH_PREPARED_REUSE` and `PGPROX_DEPTH_LARGE_RESULT` among
+  them, against `bin/pgprox` with a real Postgres behind it, and a driver whose
+  toolchain is missing is reported as skipped rather than dropped. Failures are
+  recorded rather than fixed in the same task: what this finds is its own
+  backlog.
+  All five pass. What it found was in the probes rather than in the proxy, and
+  it is the same lesson: `psql -c 'SELECT $1'` is a case the conformance suite
+  has run since M1 and it only works because the harness answers it with a
+  canned row. Real Postgres says `there is no parameter $1`, correctly. The
+  probe binds a value now, through `\bind` on stdin, because psql reads a `-c`
+  string as SQL unless it starts with a backslash.
+  This closes `M1F.24`.

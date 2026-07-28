@@ -117,7 +117,7 @@ for driver in "${DRIVERS[@]}"; do
     if timeout "${PROBE_TIMEOUT:-600}" env \
        PGPROX_HOST=127.0.0.1 PGPROX_PORT="${PORT[$build]}" \
        PGPROX_USER=acme_app PGPROX_DB=tenant_acme PGPROX_TOKEN="$TOKEN" \
-       "tests/cipher/$driver.sh" >/dev/null 2>&1; then
+       "tests/proxy-drivers/$driver.sh" >/dev/null 2>&1; then
       RESULT["$driver,$build"]=connected
     else
       RESULT["$driver,$build"]=refused

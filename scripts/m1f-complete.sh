@@ -94,6 +94,24 @@ else
   fail "scripts/message-coverage.sh missing; coverage is claimed rather than measured"
 fi
 
+# --- Group F: the drivers meet the proxy, not only the harness -----------------
+#
+# conformance.sh answers whether our codec and our harness agree with each
+# other. They are the same code. asyncpg could not run a parameterised query
+# through the real proxy from M6 until M8 and that suite stayed green the whole
+# time, because the harness answered a `Flush` the same wrong way.
+if [[ -x scripts/driver-matrix.sh ]]; then
+  ok "the drivers can be run against the proxy"
+else
+  fail "scripts/driver-matrix.sh missing: the drivers have only ever met the harness"
+fi
+
+if [[ -f product/conformance/driver-matrix.md ]]; then
+  ok "a driver matrix against the proxy is recorded"
+else
+  fail "no driver matrix recorded: the result exists only in a terminal"
+fi
+
 # --- everything still green ---------------------------------------------------
 echo
 ./scripts/check-crate.sh >/dev/null 2>&1 && ok "fmt, clippy, doctests" || fail "workspace checks"
