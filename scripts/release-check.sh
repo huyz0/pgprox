@@ -47,6 +47,15 @@ else
   fail "nothing exercises the linked FIPS module: the feature has never run"
 fi
 
+# And something that runs it. A gated test nothing invokes is a test that
+# passes for years without compiling, which is the state this milestone found
+# the FIPS feature in.
+if [[ -x scripts/fips-check.sh ]]; then
+  ok "scripts/fips-check.sh runs the FIPS suite"
+else
+  fail "scripts/fips-check.sh missing: the FIPS-gated test has no caller"
+fi
+
 if grep -qsE '^FROM .* AS fips' deploy/Dockerfile; then
   ok "the Dockerfile has a FIPS stage"
 else

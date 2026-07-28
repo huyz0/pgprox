@@ -224,6 +224,34 @@ mod tests {
         assert!(server_config(certs, key).is_ok());
     }
 
+    /// The assertion the whole FIPS feature exists to make, with the validated
+    /// module actually linked.
+    ///
+    /// Everything else here tests the decision with the build flag passed in as
+    /// a value, which is what keeps both branches reachable in one build. This
+    /// one cannot: it asks a real `ServerConfig` and a real `ClientConfig` what
+    /// they report, and in a default build there is no FIPS provider to ask. So
+    /// it is gated, and `scripts/fips-check.sh` is what runs it.
+    ///
+    /// `server_config` and `client_config` already refuse a non-FIPS
+    /// configuration, so an `unwrap` here would be the assertion. The explicit
+    /// `fips()` check is deliberate duplication: if that call were ever dropped
+    /// from either builder, this test is what would notice.
+    #[cfg(feature = "fips")]
+    #[test]
+    fn a_fips_build_produces_fips_configurations() {
+        let (_dir, cert_path, key_path) = test_cert();
+        let certs = load_certs(&cert_path).unwrap();
+        let key = load_private_key(&key_path).unwrap();
+
+        let server = server_config(certs, key).expect("a FIPS build must produce a FIPS server");
+        assert!(server.fips(), "server configuration is not in FIPS mode");
+
+        let client =
+            client_config(RootCertStore::empty()).expect("a FIPS build must produce a FIPS client");
+        assert!(client.fips(), "client configuration is not in FIPS mode");
+    }
+
     #[test]
     fn a_client_config_builds_from_a_root_store() {
         let (_dir, cert_path, _key_path) = test_cert();

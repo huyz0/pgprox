@@ -1544,10 +1544,13 @@ The FIPS build stage, the driver cipher-suite matrix, the Helm chart, probe and
 `--features fips` is declared on `pgprox`, `pgprox-tls` and `pgprox-auth`, and
 `pgprox_tls::server_config` and `client_config` already call `assert_fips`, so
 every configuration the process builds is checked rather than only the two the
-roadmap names. What has never happened is a compile: `aws-lc-fips-sys` builds
-AWS-LC from source and needs cmake, Go and clang, and nothing in CI or in a
-Dockerfile has ever asked for that feature. A feature flag that has never been
-built is a claim, and this milestone is where it stops being one.
+roadmap names. `check-crate.sh` runs clippy with `--all-features`, so the
+feature does compile in tier 1.
+
+What has never happened is a run. The coverage gate is default-features, so no
+test has ever executed with the validated module linked, and `ServerConfig::
+fips()` returning true was an expectation rather than an observation. M8.2 is
+where that changes.
 
 The same applies to deployment. The drain sequence in `plan.md` names a
 `preStop` hook and two probes, `bin/pgprox` serves `/readyz` and `/healthz` and
@@ -1560,11 +1563,20 @@ together. The rehearsal is what proves the wiring, so it comes last.
   `feature = "fips"` anywhere in `pgprox-tls` matched the `cfg!` that defines
   `FIPS_BUILD`, so a crate with no FIPS test at all satisfied it. It looks for
   the attribute form now.
-- [ ] `M8.2` The FIPS build compiles. Acceptance: `cargo build -p pgprox
-  --features fips` succeeds on this toolchain, and a test that runs only under
-  the feature asserts a real `ServerConfig` and a real `ClientConfig` both
-  report `fips()`. The existing unit test covers the refusal branch with the
-  flag passed in; this is the other half, and it needs the module.
+- [x] `M8.2` The FIPS build runs, and it needs clang. A test gated on the
+  feature asks a real `ServerConfig` and a real `ClientConfig` what they report,
+  and `scripts/fips-check.sh` builds and runs it. Both answer true, so the
+  assertion the feature exists for is now an observation.
+  The compiler is the finding. AWS-LC's FIPS module is delocated, meaning its
+  assembly is rewritten into one contiguous text section whose hash is checked
+  at startup, and the rewriter refuses any `.data` section in that module. gcc
+  15 emits `.data.rel.ro.local` for the module's relocatable read-only tables
+  as soon as optimisation is on. So `cargo build --features fips` passed and
+  `cargo test --features fips` did not: `[profile.test]` sets opt-level 1,
+  cmake-rs turns that into `RelWithDebInfo`, and the same source stops
+  delocating. A release build fails for the same reason. clang 21 builds both,
+  which is why AWS-LC documents clang for FIPS, and why the script pins the
+  compiler rather than taking whatever `cc` is.
 - [ ] `M8.3` The FIPS image stage in `deploy/Dockerfile`, and a startup line
   that says which provider is loaded. Acceptance: `docker build --target fips`
   produces an image, the default stage builds unchanged, and the process logs
@@ -1592,7 +1604,12 @@ together. The rehearsal is what proves the wiring, so it comes last.
 - [ ] `M8.8` MSRV verified rather than declared. `rust-version` is 1.94 and
   nothing checks it. Acceptance: a CI job builds the workspace on that exact
   toolchain and fails when a crate needs a newer one.
-- [ ] `M8.9` Close M8. Acceptance: `scripts/release-check.sh` exits zero.
+- [ ] `M8.9` The tier 3 workflow. `plan.md` puts the FIPS build and the cipher
+  matrix in nightly and pre-release rather than in the per-commit gate, and no
+  workflow runs on a schedule. Acceptance: a scheduled job runs
+  `scripts/fips-check.sh`, and a failure in it is visible without anyone
+  remembering to run it.
+- [ ] `M8.10` Close M8. Acceptance: `scripts/release-check.sh` exits zero.
 
 ### The five tasks carried into this milestone
 
