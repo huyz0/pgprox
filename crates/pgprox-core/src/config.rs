@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use crate::cluster::NodeMode;
-use crate::ids::ServerId;
+use crate::ids::{ServerId, TenantId};
 
 /// Per-upstream-server limits.
 ///
@@ -42,6 +42,91 @@ pub struct NodeOverride {
     pub mode: NodeMode,
 }
 
+/// What one tenant asked the query cache for.
+///
+/// A tenant opting in is stating something about its own workload: that data
+/// this old is acceptable for these reads. Nobody else can make that judgement,
+/// which is why the number is here and not a global.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TenantCache {
+    /// How stale this tenant accepts its cached reads being.
+    ///
+    /// Bounded from above by [`QueryCacheConfig::ttl_cap`]. Read it through
+    /// [`QueryCacheConfig::ttl_for`] rather than directly, which applies the
+    /// bound; this field is what was asked for, not what is granted.
+    pub ttl: Duration,
+}
+
+/// What the query cache does on this node.
+///
+/// ADR 0021's shape. The cache promises bounded staleness and the TTL is the
+/// bound, so the TTL is doing real safety work and an operator holds a ceiling
+/// over it, exactly as [`Config::grant_ttl_cap`] holds one over a sidecar's.
+///
+/// # Off is an empty map, and that is the only way to be off
+///
+/// There is no `enabled` flag beside the tenant list. Two representations of
+/// off is a bug with no right answer the first time a document sets one and
+/// not the other, and the question the cache actually asks is never "is this
+/// node's cache on" but "may this tenant be served from it".
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct QueryCacheConfig {
+    /// Bytes of results this node may hold.
+    ///
+    /// A byte budget rather than an entry count, because nothing bounds the
+    /// size of one result and a count would bound nothing.
+    pub max_bytes: usize,
+    /// The longest TTL any tenant may have, whatever it asked for.
+    pub ttl_cap: Duration,
+    /// Tenants that have opted in. Empty is a cache that serves nobody.
+    pub tenants: BTreeMap<TenantId, TenantCache>,
+}
+
+impl Default for QueryCacheConfig {
+    fn default() -> Self {
+        Self {
+            // Enough to be worth having on a node that has opted in, small
+            // enough that it is not a surprise: the milestone's own memory
+            // argument is about what a connection costs, and a cache that
+            // defaulted to a gigabyte would undo it.
+            max_bytes: 64 * 1024 * 1024,
+            // Nothing chose this number from measurement; it is a ceiling, so
+            // it only has to be short enough that an operator who never
+            // thought about it has not accidentally allowed a stale hour.
+            ttl_cap: Duration::from_secs(30),
+            // Off. ADR 0021 makes that the default and a tenant has to ask.
+            tenants: BTreeMap::new(),
+        }
+    }
+}
+
+impl QueryCacheConfig {
+    /// How long this tenant's results may be served, or `None` if it has not
+    /// opted in.
+    ///
+    /// The cap is applied here rather than at the point a document is read, so
+    /// that lowering the cap takes effect on the tenants already configured
+    /// instead of only on the next document that mentions them.
+    #[must_use]
+    pub fn ttl_for(&self, tenant: &TenantId) -> Option<Duration> {
+        self.tenants
+            .get(tenant)
+            .map(|asked| asked.ttl.min(self.ttl_cap))
+    }
+
+    /// Whether this tenant may be served from the cache at all.
+    #[must_use]
+    pub fn serves(&self, tenant: &TenantId) -> bool {
+        self.tenants.contains_key(tenant)
+    }
+
+    /// Whether the cache serves nobody, which is the default.
+    #[must_use]
+    pub fn is_off(&self) -> bool {
+        self.tenants.is_empty()
+    }
+}
+
 /// The whole configuration.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Config {
@@ -56,6 +141,8 @@ pub struct Config {
     /// Upper bound on how long a resolved grant may be cached, whatever the
     /// sidecar says.
     pub grant_ttl_cap: Duration,
+    /// What the query cache does. Serves nobody by default.
+    pub query_cache: QueryCacheConfig,
 }
 
 impl Default for Config {
@@ -66,6 +153,7 @@ impl Default for Config {
             max_client_conns: 10_000,
             drain_grace: Duration::from_secs(60),
             grant_ttl_cap: Duration::from_secs(300),
+            query_cache: QueryCacheConfig::default(),
         }
     }
 }
@@ -104,6 +192,37 @@ impl Config {
                 return Err(ConfigError::Invalid {
                     field: format!("servers[{}]", server.server),
                     reason: "listed twice; two caps for one server is ambiguous".into(),
+                });
+            }
+        }
+
+        // Checked whether or not any tenant has opted in. A cache section
+        // saying something impossible is worth refusing before the tenant that
+        // makes it load-bearing is added, rather than at the moment somebody
+        // adds one and cannot see why the node stopped.
+        let cache = &self.query_cache;
+        if cache.ttl_cap.is_zero() {
+            return Err(ConfigError::Invalid {
+                field: "query_cache.ttl_cap".into(),
+                reason: "must be greater than zero; a cap of zero caches nothing at any TTL, \
+                         which is what an empty tenant list already says"
+                    .into(),
+            });
+        }
+        if cache.max_bytes == 0 && !cache.is_off() {
+            return Err(ConfigError::Invalid {
+                field: "query_cache.max_bytes".into(),
+                reason: "must be greater than zero when a tenant has opted in, \
+                         or every result is refused as larger than the budget"
+                    .into(),
+            });
+        }
+        for (tenant, asked) in &cache.tenants {
+            if asked.ttl.is_zero() {
+                return Err(ConfigError::Invalid {
+                    field: format!("query_cache.tenants.{tenant}.ttl"),
+                    reason: "must be greater than zero; remove the tenant to turn its cache off"
+                        .into(),
                 });
             }
         }
@@ -279,6 +398,14 @@ mod tests {
         }
     }
 
+    /// The field a validation error names.
+    fn field_of(err: &ConfigError) -> String {
+        match err {
+            ConfigError::Invalid { field, .. } => field.clone(),
+            other => unreachable!("wrong variant: {other:?}"),
+        }
+    }
+
     #[test]
     fn a_default_config_is_valid() {
         assert!(Config::default().validate().is_ok());
@@ -356,6 +483,111 @@ mod tests {
         // A node with no entry is active, so forgetting to list one cannot
         // accidentally drain it.
         assert_eq!(config.mode_for("pgprox-0"), NodeMode::Active);
+    }
+
+    /// A configuration with one tenant opted in.
+    fn with_cache(tenant: &str, ttl: Duration, ttl_cap: Duration) -> Config {
+        Config {
+            query_cache: QueryCacheConfig {
+                ttl_cap,
+                tenants: [(TenantId::new(tenant), TenantCache { ttl })]
+                    .into_iter()
+                    .collect(),
+                ..QueryCacheConfig::default()
+            },
+            ..valid()
+        }
+    }
+
+    #[test]
+    fn the_cache_serves_nobody_by_default() {
+        // ADR 0021's first consequence, as a property of the type rather than
+        // of the document that produces it: whatever else a configuration says,
+        // a tenant that has not opted in is not served.
+        let config = Config::default();
+        assert!(config.query_cache.is_off());
+        assert!(!config.query_cache.serves(&TenantId::new("acme")));
+        assert_eq!(config.query_cache.ttl_for(&TenantId::new("acme")), None);
+    }
+
+    #[test]
+    fn a_tenant_that_opted_in_gets_the_staleness_it_asked_for() {
+        let config = with_cache("acme", Duration::from_secs(5), Duration::from_secs(30));
+        assert!(config.query_cache.serves(&TenantId::new("acme")));
+        assert_eq!(
+            config.query_cache.ttl_for(&TenantId::new("acme")),
+            Some(Duration::from_secs(5))
+        );
+        // And nobody else is served by its opting in.
+        assert_eq!(config.query_cache.ttl_for(&TenantId::new("globex")), None);
+    }
+
+    #[test]
+    fn a_tenant_asking_for_a_day_gets_the_cap() {
+        // The TTL is the whole guarantee, so it is bounded by something the
+        // operator controls rather than by what the tenant asked for. The same
+        // relationship `grant_ttl_cap` has to a sidecar's TTL.
+        let config = with_cache("acme", Duration::from_secs(86_400), Duration::from_secs(30));
+        assert_eq!(
+            config.query_cache.ttl_for(&TenantId::new("acme")),
+            Some(Duration::from_secs(30))
+        );
+    }
+
+    #[test]
+    fn lowering_the_cap_reaches_the_tenants_already_configured() {
+        // The reason the cap is applied on read rather than when a document is
+        // resolved. An operator lowering it during an incident means it to
+        // apply now, not to the next document that happens to mention a tenant.
+        let mut config = with_cache("acme", Duration::from_secs(20), Duration::from_secs(30));
+        config.query_cache.ttl_cap = Duration::from_secs(1);
+        assert_eq!(
+            config.query_cache.ttl_for(&TenantId::new("acme")),
+            Some(Duration::from_secs(1))
+        );
+    }
+
+    #[test]
+    fn a_cache_setting_that_says_nothing_useful_is_refused_by_field() {
+        let zero_cap = Config {
+            query_cache: QueryCacheConfig {
+                ttl_cap: Duration::ZERO,
+                ..QueryCacheConfig::default()
+            },
+            ..valid()
+        };
+        let err = zero_cap.validate().unwrap_err();
+        assert_eq!(field_of(&err), "query_cache.ttl_cap");
+
+        let no_budget = Config {
+            query_cache: QueryCacheConfig {
+                max_bytes: 0,
+                ..with_cache("acme", Duration::from_secs(5), Duration::from_secs(30)).query_cache
+            },
+            ..valid()
+        };
+        let err = no_budget.validate().unwrap_err();
+        assert_eq!(field_of(&err), "query_cache.max_bytes");
+
+        let zero_ttl = with_cache("acme", Duration::ZERO, Duration::from_secs(30));
+        let err = zero_ttl.validate().unwrap_err();
+        assert_eq!(field_of(&err), "query_cache.tenants.acme.ttl");
+        assert!(err.to_string().contains("remove the tenant"), "got {err}");
+    }
+
+    #[test]
+    fn a_budget_of_zero_is_allowed_while_nothing_is_cached() {
+        // Only a cache with a tenant in it needs a budget. Refusing this would
+        // mean an operator could not write the section down before deciding
+        // who gets it.
+        let idle = Config {
+            query_cache: QueryCacheConfig {
+                max_bytes: 0,
+                ..QueryCacheConfig::default()
+            },
+            ..valid()
+        };
+        assert!(idle.validate().is_ok());
     }
 
     #[test]

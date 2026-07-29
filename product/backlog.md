@@ -2112,7 +2112,7 @@ the relay lands before the cacheability rule is finished.
   allocation and no bytes. And the relay went over clippy's hundred-line limit
   three times on the way, which is what pushed the pump's tail into
   `read_the_answer` and the pre-send half into `cache_before_sending`.
-- [ ] `M9.8` Configuration, the half an operator writes: a `query_cache`
+- [x] `M9.8` Configuration, the half an operator writes: a `query_cache`
   section, and the `pgprox-core` type it resolves to. Split from the wiring in
   `M9.13` because it is a contract change, and the skill's rule that a contract
   change is one commit containing the type, every fake and every call site is
@@ -2175,6 +2175,9 @@ the relay lands before the cacheability rule is finished.
   unrelated numbers that happened to both be durations; the configured TTL
   replaces it.
   Watch the session future: `M9.7` left 32 bytes under the 5 KiB ceiling.
+  The Helm chart and `deploy/config/` grow the section here rather than in
+  `M9.8`, because a chart that writes a setting the node ignores is worse than
+  a chart that does not mention it yet.
   Acceptance: a running node with no `query_cache` section caches nothing, a
   document adding a tenant makes it start caching without a restart, and one
   removing that tenant drops what was held for it.

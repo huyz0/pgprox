@@ -93,6 +93,19 @@ protect the same property and the stricter one governs.
 - Because staleness is bounded by time rather than by correctness, the failure
   mode is visible and dull: a tenant sees data up to its TTL old. Compare the
   failure mode of guessing, which is a write that appears to vanish.
+- The shape this took in `pgprox_core::config::QueryCacheConfig` follows the
+  decision directly: a node-wide byte budget, an operator's `ttl_cap`, and a map
+  of the tenants that opted in with what each accepts. Off is an empty map and
+  there is no second way to spell it, because a document that set an `enabled`
+  flag and an empty list at the same time would have no right answer.
+
+```yaml
+query_cache:
+  max_bytes: 64MiB
+  ttl_cap: 30s
+  tenants:
+    acme: { ttl: 5s }
+```
 
 ## Alternatives rejected
 

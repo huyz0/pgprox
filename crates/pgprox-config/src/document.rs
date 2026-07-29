@@ -24,8 +24,10 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use pgprox_core::cluster::NodeMode;
-use pgprox_core::config::{Config, ConfigError, NodeOverride, ServerConfig};
-use pgprox_core::ids::ServerId;
+use pgprox_core::config::{
+    Config, ConfigError, NodeOverride, QueryCacheConfig, ServerConfig, TenantCache,
+};
+use pgprox_core::ids::{ServerId, TenantId};
 use serde::Deserialize;
 
 /// The document, as written.
@@ -52,6 +54,46 @@ pub struct ConfigDocument {
     /// Upper bound on how long a resolved grant may be cached.
     #[serde(default)]
     pub grant_ttl_cap: Option<String>,
+    /// The query cache. Absent is a node that caches nothing.
+    #[serde(default)]
+    pub query_cache: Option<QueryCacheDocument>,
+}
+
+/// The query cache section.
+///
+/// Absent from a document means the cache serves nobody, and so does a section
+/// with no `tenants` in it. ADR 0021 makes that the default and a tenant has to
+/// ask, which is why there is no `enabled` key to disagree with the list.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryCacheDocument {
+    /// The node's byte budget, written with a unit: `64MiB`.
+    ///
+    /// Named for what it resolves to and written with a unit, the way
+    /// `drain_grace: 60s` is. The alternative, a friendlier `max_size`, means
+    /// that validation rejecting the value names a field the operator never
+    /// wrote.
+    #[serde(default)]
+    pub max_bytes: Option<String>,
+    /// The longest TTL any tenant may have, whatever it asks for.
+    #[serde(default)]
+    pub ttl_cap: Option<String>,
+    /// Tenants that have opted in, keyed by tenant ID.
+    #[serde(default)]
+    pub tenants: BTreeMap<String, TenantCacheDocument>,
+}
+
+/// One tenant's terms.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantCacheDocument {
+    /// How stale this tenant accepts its cached reads being.
+    ///
+    /// Required, with no default. A tenant opting in is stating something about
+    /// its own workload, and a default would be this file guessing at it. The
+    /// serde error for a tenant that omits it names `ttl`, which is the thing
+    /// the operator has to decide.
+    pub ttl: String,
 }
 
 /// One upstream server's limits.
@@ -143,6 +185,13 @@ impl ConfigDocument {
                 .unwrap_or(defaults.drain_grace),
             grant_ttl_cap: optional_duration(self.grant_ttl_cap.as_deref(), "grant_ttl_cap")?
                 .unwrap_or(defaults.grant_ttl_cap),
+            query_cache: match self.query_cache {
+                // No section is a node that caches nothing, which is the
+                // default rather than a special case: the default itself has
+                // an empty tenant list.
+                None => defaults.query_cache,
+                Some(document) => document.into_query_cache_config(&defaults.query_cache)?,
+            },
         };
 
         config.validate()?;
@@ -161,6 +210,43 @@ impl ServerDocument {
             // documented behaviour and not whatever a struct default happens to
             // be.
             guaranteed_fraction: self.guaranteed_fraction.unwrap_or(0.5),
+        })
+    }
+}
+
+impl QueryCacheDocument {
+    /// Resolves the section, filling in what was not written.
+    fn into_query_cache_config(
+        self,
+        defaults: &QueryCacheConfig,
+    ) -> Result<QueryCacheConfig, ConfigError> {
+        let mut tenants = BTreeMap::new();
+        for (name, tenant) in self.tenants {
+            // A key is matched against the tenant a grant names, so a stray
+            // space is not a cosmetic difference: it is a tenant that never
+            // matches anything, silently, which is the same failure
+            // `deny_unknown_fields` exists to prevent one level up. Refused
+            // rather than trimmed, because trimming would quietly change an
+            // identifier this crate does not own.
+            if name.trim() != name || name.is_empty() {
+                return Err(ConfigError::Invalid {
+                    field: "query_cache.tenants".to_owned(),
+                    reason: format!(
+                        "`{name}` is not a tenant ID anything will match; \
+                         a name is required and cannot be padded with spaces"
+                    ),
+                });
+            }
+            let ttl = parse_duration(&tenant.ttl, &format!("query_cache.tenants.{name}.ttl"))?;
+            tenants.insert(TenantId::new(&name), TenantCache { ttl });
+        }
+
+        Ok(QueryCacheConfig {
+            max_bytes: optional_size(self.max_bytes.as_deref(), "query_cache.max_bytes")?
+                .unwrap_or(defaults.max_bytes),
+            ttl_cap: optional_duration(self.ttl_cap.as_deref(), "query_cache.ttl_cap")?
+                .unwrap_or(defaults.ttl_cap),
+            tenants,
         })
     }
 }
@@ -252,6 +338,62 @@ fn parse_duration(text: &str, field: &str) -> Result<Duration, ConfigError> {
         .checked_mul(millis)
         .map(Duration::from_millis)
         .ok_or_else(|| invalid(format!("`{trimmed}` is longer than any useful timeout")))
+}
+
+/// Reads an optional size, naming the field if it is wrong.
+fn optional_size(text: Option<&str>, field: &str) -> Result<Option<usize>, ConfigError> {
+    text.map(|text| parse_size(text, field)).transpose()
+}
+
+/// Reads `512B`, `64MiB` or `2GB`.
+///
+/// A unit is required, for the reason a duration needs one: `max_bytes: 64`
+/// meaning bytes when the operator meant megabytes is `drain_grace: 500` again,
+/// and the failure is a cache that quietly holds nothing.
+///
+/// Both spellings are accepted with their real meanings, `MB` as a million and
+/// `MiB` as 1,048,576, rather than one of them being refused. An operator who
+/// writes the one this file did not choose finds out during a deploy, and the
+/// difference between the two is 5%, which is not worth a failed rollout.
+fn parse_size(text: &str, field: &str) -> Result<usize, ConfigError> {
+    let invalid = |reason: String| ConfigError::Invalid {
+        field: field.to_owned(),
+        reason,
+    };
+
+    let trimmed = text.trim();
+    let split = trimmed
+        .find(|c: char| !c.is_ascii_digit())
+        .ok_or_else(|| invalid(format!("`{trimmed}` has no unit; write `{trimmed}B`")))?;
+    let (value, unit) = trimmed.split_at(split);
+
+    let value: u64 = value
+        .parse()
+        .map_err(|_| invalid(format!("`{trimmed}` does not start with a number")))?;
+
+    let scale: u64 = match unit.trim().to_ascii_lowercase().as_str() {
+        "b" => 1,
+        "kb" => 1_000,
+        "mb" => 1_000_000,
+        "gb" => 1_000_000_000,
+        "kib" => 1 << 10,
+        "mib" => 1 << 20,
+        "gib" => 1 << 30,
+        other => {
+            return Err(invalid(format!(
+                "`{other}` is not a unit; use B, KB, MB, GB, KiB, MiB or GiB"
+            )));
+        }
+    };
+
+    value
+        .checked_mul(scale)
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or_else(|| {
+            invalid(format!(
+                "`{trimmed}` is more memory than this machine addresses"
+            ))
+        })
 }
 
 /// Parses a document and converts it in one step.
@@ -460,6 +602,167 @@ nodes:
         let fraction = "servers:\n  - server: db-1:5432\n    max_connections: 10\n    guaranteed_fraction: 1.5\n";
         let err = parse(fraction).unwrap_err();
         assert!(err.to_string().contains("guaranteed_fraction"), "got {err}");
+    }
+
+    #[test]
+    fn a_document_with_no_cache_section_caches_nothing() {
+        // ADR 0021's first consequence, checked where an operator would notice
+        // it: the document they already have does not start caching under them.
+        let config = parse(EXAMPLE).unwrap();
+        assert!(config.query_cache.is_off());
+        assert!(!config.query_cache.serves(&TenantId::new("acme")));
+    }
+
+    #[test]
+    fn a_cache_section_with_no_tenants_still_caches_nothing() {
+        // The other way to have written nothing. An operator setting a budget
+        // before deciding who gets it has not turned anything on.
+        let config = parse("query_cache:\n  max_bytes: 8MiB\n").unwrap();
+        assert!(config.query_cache.is_off());
+        assert_eq!(config.query_cache.max_bytes, 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn a_tenant_opts_in_with_the_staleness_it_accepts() {
+        let text = "\
+query_cache:
+  max_bytes: 16MiB
+  ttl_cap: 1m
+  tenants:
+    acme: { ttl: 5s }
+    globex: { ttl: 500ms }
+";
+        let config = parse(text).unwrap();
+        assert_eq!(config.query_cache.max_bytes, 16 * 1024 * 1024);
+        assert_eq!(
+            config.query_cache.ttl_for(&TenantId::new("acme")),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(
+            config.query_cache.ttl_for(&TenantId::new("globex")),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(config.query_cache.ttl_for(&TenantId::new("nobody")), None);
+    }
+
+    #[test]
+    fn a_tenant_asking_for_more_than_the_cap_gets_the_cap() {
+        let text = "query_cache:\n  ttl_cap: 10s\n  tenants:\n    acme: { ttl: 1h }\n";
+        let config = parse(text).unwrap();
+        assert_eq!(
+            config.query_cache.ttl_for(&TenantId::new("acme")),
+            Some(Duration::from_secs(10))
+        );
+    }
+
+    #[test]
+    fn a_tenant_that_does_not_say_how_stale_is_refused_by_name() {
+        // Required with no default, because a default would be this file
+        // guessing at somebody else's workload.
+        let err = parse("query_cache:\n  tenants:\n    acme: {}\n").unwrap_err();
+        assert!(err.to_string().contains("ttl"), "got {err}");
+    }
+
+    #[test]
+    fn a_misspelled_cache_key_is_rejected_rather_than_ignored() {
+        for text in [
+            "query_cache:\n  max_size: 8MiB\n",
+            "query_cache:\n  ttl: 5s\n",
+            "query_cache:\n  enabled: true\n",
+            "query_cache:\n  tenants:\n    acme: { stale: 5s }\n",
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Invalid { .. }),
+                "{text:?} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_tenant_ttl_names_the_tenant() {
+        // Which tenant, not just which section. A document with forty tenants
+        // in it and an error naming none of them is a search.
+        let err = parse("query_cache:\n  tenants:\n    globex: { ttl: \"5\" }\n").unwrap_err();
+        assert_eq!(field_of(&err), "query_cache.tenants.globex.ttl");
+        assert!(err.to_string().contains("5s"), "got {err}");
+    }
+
+    #[test]
+    fn a_tenant_name_that_would_never_match_is_refused() {
+        // A padded key is not cosmetic: it is a tenant nothing ever resolves
+        // to, silently, which is the failure `deny_unknown_fields` exists to
+        // prevent one level up.
+        for name in ["\"\"", "\" \"", "\" acme\"", "\"acme \""] {
+            let text = format!("query_cache:\n  tenants:\n    {name}: {{ ttl: 5s }}\n");
+            let err = parse(&text).unwrap_err();
+            assert_eq!(field_of(&err), "query_cache.tenants", "{name}");
+        }
+
+        // And the name it does match is left exactly as written.
+        let config = parse("query_cache:\n  tenants:\n    Acme-EU_1: { ttl: 5s }\n").unwrap();
+        assert!(config.query_cache.serves(&TenantId::new("Acme-EU_1")));
+    }
+
+    #[test]
+    fn sizes_take_a_unit_and_both_spellings_mean_what_they_say() {
+        for (written, expected) in [
+            ("512B", 512),
+            ("64KB", 64_000),
+            ("2MB", 2_000_000),
+            ("1GB", 1_000_000_000),
+            ("64KiB", 64 * 1024),
+            ("8MiB", 8 * 1024 * 1024),
+            ("1GiB", 1024 * 1024 * 1024),
+            // Case is not the operator's problem, and neither is a stray space.
+            (" 8mib ", 8 * 1024 * 1024),
+            ("8MIB", 8 * 1024 * 1024),
+        ] {
+            let text = format!("query_cache:\n  max_bytes: \"{written}\"\n");
+            let config = parse(&text).unwrap_or_else(|e| panic!("{written}: {e}"));
+            assert_eq!(config.query_cache.max_bytes, expected, "{written}");
+        }
+    }
+
+    #[test]
+    fn a_size_without_a_unit_is_refused_with_a_suggestion() {
+        // `max_bytes: 64` meaning megabytes is `drain_grace: 500` again, and
+        // the failure is a cache that quietly holds nothing.
+        let err = parse("query_cache:\n  max_bytes: \"64\"\n").unwrap_err();
+        assert_eq!(field_of(&err), "query_cache.max_bytes");
+        assert!(err.to_string().contains("64B"), "got {err}");
+    }
+
+    #[test]
+    fn a_size_with_a_bad_unit_lists_the_ones_that_work() {
+        let err = parse("query_cache:\n  max_bytes: \"5 buckets\"\n").unwrap_err();
+        assert!(err.to_string().contains("KiB"), "got {err}");
+        assert!(err.to_string().contains("MB"), "got {err}");
+
+        let leading = parse("query_cache:\n  max_bytes: \"MiB\"\n").unwrap_err();
+        assert!(
+            leading.to_string().contains("does not start"),
+            "got {leading}"
+        );
+    }
+
+    #[test]
+    fn a_size_larger_than_memory_is_refused_rather_than_wrapping() {
+        let err = parse("query_cache:\n  max_bytes: \"99999999999GiB\"\n").unwrap_err();
+        assert_eq!(field_of(&err), "query_cache.max_bytes");
+        assert!(err.to_string().contains("addresses"), "got {err}");
+    }
+
+    #[test]
+    fn a_cache_section_that_parses_but_is_invalid_is_still_rejected() {
+        // Validation is Config::validate, so the document and the fake cannot
+        // disagree about what a usable cache setting is.
+        let err = parse("query_cache:\n  ttl_cap: 0s\n").unwrap_err();
+        assert_eq!(field_of(&err), "query_cache.ttl_cap");
+
+        let text = "query_cache:\n  max_bytes: 0B\n  tenants:\n    acme: { ttl: 5s }\n";
+        let err = parse(text).unwrap_err();
+        assert_eq!(field_of(&err), "query_cache.max_bytes");
     }
 
     #[test]
