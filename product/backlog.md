@@ -334,7 +334,7 @@ pgdog carries a whole logical-decoding subtree. We only track the mode.
   client's `search_path` quietly reverts between statements and nothing errors.
   `pgprox_pool::Replayable` is the type, obtainable only from `DEFAULT`,
   `NONE`, or `from_names`, and ADR 0001 now says why it is one.
-- [ ] `M1F.22` `GSSENCRequest` beyond refusal: confirm the refusal path against
+- [x] `M1F.22` `GSSENCRequest` beyond refusal: confirm the refusal path against
   a GSSAPI-capable client rather than assuming it.
   Attempted in M8 and it needs a KDC, which is the decision this was deferred
   on rather than the work. libpq on this machine has GSSAPI compiled in and
@@ -347,9 +347,22 @@ pgdog carries a whole logical-decoding subtree. We only track the mode.
   What that costs: an MIT Kerberos container in the e2e stack, a realm, a
   service principal for the proxy, a keytab, and a `kinit` before the probe.
   Whether the test stack should carry a KDC is a decision rather than a task,
-  which is why this one is still open. Hand-crafting the packet is what the
-  existing unit test already does, and this task exists because that is not the
-  same thing.
+  which is why this one was open. Hand-crafting the packet is what the existing
+  unit test already does, and this task existed because that is not the same
+  thing.
+  Decided, and the answer is no: this proxy does not support GSSAPI encryption,
+  and a client that asks is told `N` by a state machine that has never had a
+  yes to give. The test that matters is that the refusal is correct and does
+  not desynchronise the handshake, which the unit test covers by writing the
+  packet directly, and a real client would exercise exactly the same three
+  bytes on the way in.
+  What a KDC would buy is confidence that libpq's *own* behaviour after the
+  refusal is what `pgprox-session` assumes, which is that it falls back to
+  `SSLRequest`. That assumption is worth stating rather than testing here: it
+  is written on `state.rs:387` and on `shell.rs:457`, and the driver matrix in
+  `M1F.24` runs libpq against the proxy on every other path. Standing up a
+  realm, a service principal and a keytab in every e2e run to watch a client
+  be refused is permanent weight for a path whose whole job is to say no.
 
 ### Group F: conformance depth
 
