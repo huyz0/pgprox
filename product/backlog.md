@@ -1662,6 +1662,9 @@ measurement found three things.
   has headroom, because it decides whether the other two are worth attempting.
   That needs a machine this repository does not have, which is the same
   constraint `M7`'s 100k condition ran into.
+  `M7.58` found a fourth answer that needs no such machine, and it partly
+  answers the third: some of the contention is self-inflicted rather than a
+  picture of saturation.
 
 ## M8: FIPS and release
 
@@ -2209,6 +2212,32 @@ the relay lands before the cacheability rule is finished.
   measured nothing for exactly that reason.
 - [x] `M9.11` Close M9, which needs `M9.13` as well as everything before it.
   Acceptance: `scripts/m9-complete.sh` exits zero.
+- [ ] `M7.58` One connection freed wakes every waiter. `LivePool::release`
+  calls `Notify::notify_waiters`, which wakes *all* of them; at five hundred
+  clients against sixty upstream connections that is roughly four hundred and
+  forty tasks woken to hand out one connection. Each takes the pool mutex, asks
+  `Pool::acquire`, is told to wait, builds and drops a `WaitGuard` for two more
+  acquisitions of the same mutex, and parks again.
+  That is a thundering herd, and it is what `M9.10`'s profile is a picture of:
+  `lock_contended` at 18.7%, dropping a `WaitGuard` at 4.5%, `poll_notified` at
+  4.1%, `notify_waiters` at 2.2%, and the pool's `HashMap` entry lookup at 4.8%
+  with a `PoolKey` clone and a sip hash on every one of those four hundred and
+  forty passes.
+  `notify_one` is the right primitive for the two paths that free exactly one
+  thing: `release`, and `SlotGuard::drop` giving a reserved slot back.
+  `set_limit` keeps `notify_waiters`, because raising a cap can admit many at
+  once and there is no count to notify.
+  The correctness question to answer before touching it is whether a
+  notification can be lost. `acquire_inner` registers interest before it checks,
+  which closes the race the comment on that line names, and `tokio::Notify`
+  passes a notification on when a notified waiter is dropped before polling.
+  What changes is fairness: today the whole herd re-races, so a waiter that
+  keeps losing loses to the crowd; with `notify_one` it can lose to a barging
+  newcomer instead. The deadline bounds that either way and `give_up` reports
+  it, but a test has to say so rather than a paragraph.
+  Acceptance: a test shows one release wakes one waiter, a test shows no waiter
+  is stranded when the woken one loses the connection to a newcomer, and a
+  matched pair of scale runs says what it was worth.
 - [ ] `M9.12` The extended protocol, which `M9.7` left out on purpose. A bound
   statement is a miss today, because `CacheKey::params` would be empty for two
   calls differing only in what was bound and `SELECT $1` with 1 and with 2
