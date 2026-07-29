@@ -1,8 +1,15 @@
 # pgprox-cache
 
-Query result cache. M9, which is in progress: M8 has closed and this is being
-built now. The trait it implements has lived in `pgprox-core` since M0, which is
-what let it be added without touching the session or pool layers.
+Query result cache, built in M9 and closed. The trait it implements has lived
+in `pgprox-core` since M0, which is what let it be added without touching the
+session or pool layers.
+
+It is worth about 7% of median latency and of CPU per statement on the
+reference workload, and it does not move the pool lock that `M7.56` found half
+this proxy's CPU in. See `product/perf/run-2026-07-29-cache.md` before assuming
+a change here is worth making: the ceiling on this workload is the extended
+protocol, which is all miss until `M9.12`, and the write rate, which empties a
+tenant's entries roughly every other lookup.
 
 ## Rules specific to this crate
 

@@ -2207,7 +2207,7 @@ the relay lands before the cacheability rule is finished.
   from the token's first eight bytes, which is right for auth tests and useless
   for a config document that has to name one, and the first cache-on run
   measured nothing for exactly that reason.
-- [ ] `M9.11` Close M9, which needs `M9.13` as well as everything before it.
+- [x] `M9.11` Close M9, which needs `M9.13` as well as everything before it.
   Acceptance: `scripts/m9-complete.sh` exits zero.
 - [ ] `M9.12` The extended protocol, which `M9.7` left out on purpose. A bound
   statement is a miss today, because `CacheKey::params` would be empty for two

@@ -25,7 +25,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M6 | Integration | complete |
 | M7 | Scale and performance | complete; 100k connections held at 546 MB against a 500 MB target, and latency demonstrated at 1000 |
 | M8 | FIPS and release | complete |
-| M9 | Query cache (post-MVP) | in progress |
+| M9 | Query cache (post-MVP) | complete; 7% of median latency and of CPU per statement, and the pool lock is untouched |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -264,7 +264,7 @@ default Docker stages shared one cargo cache and the default image shipped the
 FIPS binary. And the chart asked for a sysctl the kubelet refuses, so every pod
 failed to start.
 
-## M9: query cache (post-MVP)
+## M9: query cache (post-MVP, complete)
 
 `pgprox-cache` behind the trait `pgprox-core` has carried since M0.
 
@@ -296,3 +296,32 @@ the data it copied. This proxy sees its own traffic, can invalidate on writes
 that pass through it, needs gossip for writes through another node, and cannot
 see a migration or an operator with psql at all. So the TTL is the guarantee
 and everything else is an improvement on it.
+
+**What it turned out to be worth.** Seven percent of median latency and seven
+percent of CPU per statement, over five matched pairs whose two sets do not
+overlap, serving 11% of statements at a 39% hit rate. Recorded in
+`product/perf/run-2026-07-29-cache.md`.
+
+It is not the answer to `M7.56`. A profile with the cache on puts the pool and
+its wakeups at ~49% against ~50% with it off: the share is flat because it is a
+share of a smaller total, and the shape does not change. Contention tracks how
+many callers are queued, and 89% of statements still queue. `M7.57` is still
+the task that matters for 100k *active* connections, and this run is more
+evidence for it rather than less.
+
+**Where the ceiling is.** Both halves of it are in the workload rather than in
+the cache. Half of the reference workload goes through the extended protocol,
+which is all miss until `M9.12` teaches the codec to read a `Bind`'s parameter
+values. Thirty percent of its statements are writes, and each one drops the
+tenant's entries, so the cache is emptied roughly every other lookup. A 39% hit
+rate under that is better than it sounds, and a more read-heavy tenant is the
+one this feature is for.
+
+**What building it found.** `Flush` was not the only thing the relay got wrong
+about statements it answered itself: a cache hit returned before
+`record_statement`, so `pgprox_route_total` missed every one and the first
+measurement read as 8.7% *fewer* statements and worse CPU. A denominator
+missing its best cases is worse than no denominator, because it reads as a
+result. And the first cache-on run measured nothing at all, because the mock
+sidecar names its tenant after the token's first eight bytes and the config
+document had opted in a tenant that never arrives.
