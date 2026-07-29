@@ -100,6 +100,14 @@ pub struct LivePool<K: Connector> {
     /// One doorbell per key, kept outside the lock so a waiter can hold an
     /// `Arc` to it without holding the map.
     doorbells: Mutex<HashMap<PoolKey, Arc<Notify>>>,
+    /// Waiters woken that found nothing and parked again.
+    ///
+    /// The number that says whether the pool is doing wasted work, and the
+    /// only way to see the difference between waking one waiter per released
+    /// connection and waking all of them: both leave the same number of
+    /// callers queued afterwards, and only this says how many were disturbed
+    /// getting there. See `M7.58`.
+    futile: std::sync::atomic::AtomicU64,
 }
 
 /// Hand-written rather than derived, because deriving would require the
@@ -126,6 +134,7 @@ impl<K: Connector + 'static> LivePool<K> {
             config,
             keyed: Mutex::new(HashMap::new()),
             doorbells: Mutex::new(HashMap::new()),
+            futile: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -137,6 +146,17 @@ impl<K: Connector + 'static> LivePool<K> {
     /// leaves behind is consistent.
     fn lock(&self) -> MutexGuard<'_, HashMap<PoolKey, Keyed<K::Connection>>> {
         self.keyed.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Waiters this pool has woken that found nothing and parked again.
+    ///
+    /// Zero is a pool waking exactly the callers it has connections for. It
+    /// climbs when a release wakes more waiters than it freed connections, and
+    /// it is the measurement `M7.58` turns on: the queue length afterwards is
+    /// identical either way.
+    #[must_use]
+    pub fn futile_wakeups(&self) -> u64 {
+        self.futile.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The doorbell for a key, creating it if this is the first caller.
@@ -268,6 +288,10 @@ impl<K: Connector + 'static> LivePool<K> {
     ) -> Result<UpstreamGuard, PoolError> {
         let started = self.clock.now();
         let doorbell = self.doorbell(key);
+        // Whether this caller has already been woken once. A first pass that
+        // has to wait is the queue doing its job; a later one is a wakeup that
+        // bought nothing.
+        let mut woken = false;
 
         loop {
             // Registering interest *before* checking is what closes the race
@@ -280,7 +304,14 @@ impl<K: Connector + 'static> LivePool<K> {
             match self.with_pool(key, Pool::acquire) {
                 Acquired::Reused(id) => return self.guard(key, id),
                 Acquired::OpenNew => return self.open(key).await,
-                Acquired::Wait => {}
+                Acquired::Wait => {
+                    if woken {
+                        // Relaxed: a counter read by a test and a scrape, and
+                        // nothing decides anything on its ordering.
+                        self.futile
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
             }
 
             let now = self.clock.now();
@@ -299,6 +330,7 @@ impl<K: Connector + 'static> LivePool<K> {
                 let waited = self.clock.now().saturating_duration_since(started);
                 return Err(self.with_pool(key, |pool| pool.give_up(waited)));
             }
+            woken = true;
         }
     }
 
@@ -393,8 +425,9 @@ impl<K: Connector + 'static> Drop for SlotGuard<'_, K> {
         if !self.consumed {
             self.pool.with_pool(self.key, Pool::open_failed);
             // A slot given back is room that did not exist a moment ago, and
-            // the waiters have no other way to learn that.
-            self.pool.doorbell(self.key).notify_waiters();
+            // the waiters have no other way to learn that. One slot, one
+            // waiter: see `release` for why this is `notify_one`.
+            self.pool.doorbell(self.key).notify_one();
         }
     }
 }
@@ -415,7 +448,20 @@ impl<K: Connector + 'static> ConnectionRelease for LivePool<K> {
         }
         // Outside the lock. A waiter woken while this thread still holds it
         // would immediately block on it.
-        self.doorbell(key).notify_waiters();
+        //
+        // One waiter, not all of them. This released one connection, and there
+        // is one caller that can have it. `notify_waiters` here was a
+        // thundering herd: at five hundred clients against sixty upstream
+        // connections it woke roughly four hundred and forty tasks per
+        // release, and each one took this mutex to be told to wait, then took
+        // it twice more building and dropping a `WaitGuard` on its way back to
+        // sleep. `M9.10`'s profile is a picture of that and nothing else.
+        //
+        // Safe because `acquire_inner` registers its interest before it checks
+        // the pool, so a caller that is going to wait is already a waiter when
+        // this runs, and because `tokio::Notify` hands a notification on to
+        // another waiter when the one it woke is dropped before polling.
+        self.doorbell(key).notify_one();
     }
 }
 
@@ -560,6 +606,121 @@ mod tests {
         let acquired = waiter.await.unwrap();
         assert!(acquired.is_ok(), "the waiter was never woken");
         assert_eq!(pool.stats(&key()).waiting, 0);
+    }
+
+    #[tokio::test]
+    async fn one_release_wakes_one_waiter_rather_than_all_of_them() {
+        // `M7.58`. `notify_waiters` woke every waiter for every release, and
+        // at five hundred clients against sixty connections that was four
+        // hundred and forty tasks woken to hand out one. Each took the pool's
+        // mutex to be told to wait, then twice more building and dropping a
+        // `WaitGuard`, which is what `M9.10`'s profile is a picture of.
+        //
+        // The count is what this checks, because "it still works" was already
+        // true of the herd.
+        let (pool, clock) = pool(1);
+        let mut held = pool.acquire(&key(), never(&clock)).await.unwrap();
+        held.release_clean();
+
+        let mut waiters = Vec::new();
+        for _ in 0..8 {
+            let pool = Arc::clone(&pool);
+            let deadline = never(&clock);
+            waiters.push(tokio::spawn(
+                async move { pool.acquire(&key(), deadline).await },
+            ));
+        }
+        // Let all eight reach the point of parking.
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(pool.stats(&key()).waiting, 8);
+
+        // One connection back. Exactly one waiter may leave the queue, and the
+        // other seven must still be parked rather than having woken, taken the
+        // lock, and gone back to sleep.
+        drop(held);
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(pool.stats(&key()).waiting, 7);
+
+        // The queue length is 7 either way, which is why it cannot be the
+        // assertion: with the herd, all eight woke, one won, and seven took
+        // the lock to be told to wait again. Only the wakeup count sees that.
+        assert_eq!(
+            pool.futile_wakeups(),
+            0,
+            "a release woke waiters it had no connection for"
+        );
+
+        // And the rest are not stranded: each release moves exactly one on.
+        for expected in (0..7).rev() {
+            let mut next = None;
+            for waiter in &mut waiters {
+                if waiter.is_finished() {
+                    next = Some(waiter);
+                    break;
+                }
+            }
+            let mut guard = next
+                .expect("no waiter finished")
+                .await
+                .unwrap()
+                .expect("a woken waiter failed to acquire");
+            guard.release_clean();
+            drop(guard);
+            waiters.retain(|w| !w.is_finished());
+            for _ in 0..16 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(pool.stats(&key()).waiting, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_newcomer_taking_the_connection_does_not_strand_the_waiter() {
+        // The fairness question `notify_one` raises. With the herd, a waiter
+        // that kept losing lost to the crowd; with one wakeup it can lose to a
+        // caller that never queued at all. What must not happen is that the
+        // notification is spent and the waiter sleeps to its deadline with
+        // connections going in and out around it.
+        let (pool, clock) = pool(1);
+        let mut held = pool.acquire(&key(), never(&clock)).await.unwrap();
+        held.release_clean();
+
+        let waiter = {
+            let pool = Arc::clone(&pool);
+            let deadline = never(&clock);
+            tokio::spawn(async move { pool.acquire(&key(), deadline).await })
+        };
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(pool.stats(&key()).waiting, 1);
+
+        // The release wakes the waiter, and this thread takes the connection
+        // before the waiter is polled. The waiter finds nothing and parks
+        // again, having spent its notification on a connection it did not get.
+        drop(held);
+        let mut barger = pool.acquire(&key(), never(&clock)).await.unwrap();
+        barger.release_clean();
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !waiter.is_finished(),
+            "the waiter got the barged connection"
+        );
+
+        // The next release has to reach it. If it did not, this hangs, which
+        // the test timeout reports as the stranding it is.
+        drop(barger);
+        let acquired = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("the waiter was stranded after losing a wakeup to a newcomer")
+            .unwrap();
+        assert!(acquired.is_ok());
     }
 
     #[tokio::test]

@@ -2212,7 +2212,7 @@ the relay lands before the cacheability rule is finished.
   measured nothing for exactly that reason.
 - [x] `M9.11` Close M9, which needs `M9.13` as well as everything before it.
   Acceptance: `scripts/m9-complete.sh` exits zero.
-- [ ] `M7.58` One connection freed wakes every waiter. `LivePool::release`
+- [x] `M7.58` One connection freed wakes every waiter. `LivePool::release`
   calls `Notify::notify_waiters`, which wakes *all* of them; at five hundred
   clients against sixty upstream connections that is roughly four hundred and
   forty tasks woken to hand out one connection. Each takes the pool mutex, asks
@@ -2238,6 +2238,16 @@ the relay lands before the cacheability rule is finished.
   Acceptance: a test shows one release wakes one waiter, a test shows no waiter
   is stranded when the woken one loses the connection to a newcomer, and a
   matched pair of scale runs says what it was worth.
+  It was worth 15.7x of CPU per statement, 687us to 43.7us, and half the p99.
+  `lock_contended` and `LivePool::acquire` are gone from the top of the profile
+  entirely, and the sample count over twenty seconds under the same load fell
+  from 4,119 to 161. The median went up 12%, which is FIFO service replacing a
+  race, and is the same fact as the tail collapsing. See
+  `product/perf/run-2026-07-29-thundering-herd.md`.
+  The test almost did not work. The queue length after a release is identical
+  either way, so the first version asserted on that and passed against the herd.
+  `LivePool::futile_wakeups` is what made the property visible, and it reads 7
+  against 0 for one release with eight waiters.
 - [ ] `M9.12` The extended protocol, which `M9.7` left out on purpose. A bound
   statement is a miss today, because `CacheKey::params` would be empty for two
   calls differing only in what was bound and `SELECT $1` with 1 and with 2
