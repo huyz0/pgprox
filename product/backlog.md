@@ -2131,9 +2131,30 @@ the relay lands before the cacheability rule is finished.
   Acceptance: a document with no `query_cache` section resolves to a
   configuration that serves no tenant, a tenant asking for a day gets the cap,
   and every bad spelling names its field.
-- [ ] `M9.9` Observability: hit, miss, eviction and invalidation counters,
-  `SHOW CACHE`, and the admin endpoint. Acceptance: a run shows a hit rate, and
-  a cache that is doing nothing is distinguishable from one that is off.
+- [ ] `M9.9` Observability, the number and where it comes from. `CacheView` in
+  `pgprox-core::admin`, an `Observatory::cache` with a default so it is
+  additive, the fake, the node's implementation reading the store, and the
+  `pgprox_cache_*` metrics rendered from it.
+  One view behind all three surfaces, which is the property `pgprox-admin`
+  already protects between `SHOW` and HTTP: two readings of the same question
+  that can differ are two numbers an operator has to reconcile during an
+  incident.
+  The acceptance's harder half is that a cache doing nothing is
+  distinguishable from one that is off, and counters cannot say it: both are
+  zeroes. What says it is how many tenants the store is configured for, so
+  that is in the view and exported as a gauge.
+  Split from the surfaces in `M9.14`, because this half is a `pgprox-core`
+  contract change and that one is two parsers.
+  Acceptance: `/metrics` distinguishes a node with no `query_cache` section
+  from one whose tenants are simply idle, and every counter the store keeps has
+  somewhere to appear.
+- [ ] `M9.14` Observability, the two surfaces: `SHOW CACHE` and
+  `GET /v1/cache`, both reading `M9.9`'s view. `SHOW CACHE` is `pgprox` only,
+  since `PgBouncer` has no such command, so its columns are this repo's to
+  choose; the HTTP one needs its OpenAPI entry, which `check-drift.sh` gates.
+  ADR 0021 says the output has to say "bounded staleness" rather than anything
+  warmer, and this is the surface it meant.
+  Acceptance: both answer, both agree, and the drift check passes.
 - [ ] `M9.10` Does it help. Measured against the reference workload with
   `scripts/scale.sh`, and against `M7.56`'s finding specifically: a hit avoids
   an acquire, so the question is whether contention falls. Acceptance: a
