@@ -2171,11 +2171,21 @@ the relay lands before the cacheability rule is finished.
   `SHOW LOCAL CACHE` is the same answer as `SHOW CACHE` rather than an error,
   which is correct here and now pinned by a test rather than being a property
   nobody meant.
-- [ ] `M9.10` Does it help. Measured against the reference workload with
+- [x] `M9.10` Does it help. Measured against the reference workload with
   `scripts/scale.sh`, and against `M7.56`'s finding specifically: a hit avoids
   an acquire, so the question is whether contention falls. Acceptance: a
   recorded run in `product/perf/`, and the number is reported whichever way it
   comes out.
+  It helps by about 7%, on both median latency and CPU per statement, over five
+  matched pairs whose two sets do not overlap. It does not change the shape:
+  the p99 did not move and the pool's share of the profile is flat at ~49%,
+  because contention tracks how many callers are queued and 89% of statements
+  still queue. `M7.57` is still the task that matters for 100k active
+  connections, and this is more evidence for it rather than less.
+  The 11% share is two ceilings in the workload rather than in the cache. Half
+  of every run is the extended protocol, which is all miss until `M9.12`, and
+  30% of statements are writes, which empties the tenant's cache roughly every
+  other lookup. See `product/perf/run-2026-07-29-cache.md`.
 - [x] `M9.16` A cache hit is a statement that went somewhere, and nothing
   counts it. `record_statement` runs after the relay's `decide`, and a hit
   returns before that, so `pgprox_route_total` misses every one.
