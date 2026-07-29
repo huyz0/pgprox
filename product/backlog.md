@@ -2293,9 +2293,25 @@ the relay lands before the cacheability rule is finished.
   bytes against a 5,120 ceiling. Fifty-six bytes will not hold a map of
   portals, so this is a boxed allocation on the sessions that use it and
   nothing on the ones that do not, the way `M9.7`'s `Recording` is.
+  Two things found while sizing it, both of which make it larger than "read the
+  parameters and put them in the key".
+  The response shape is not the same. A simple `Query` is answered with rows, a
+  `CommandComplete` and a `ReadyForQuery`, and `M9.7` caches all of it. An
+  `Execute` is answered with rows and a `CommandComplete` and no
+  `ReadyForQuery`: that arrives in answer to the `Sync` that follows. So a
+  served `Execute` leaves a `Sync` the client still expects an answer to, and
+  the session may hold no upstream connection to send it to. Either the `Sync`
+  is answered locally, which means the relay is now deciding transaction
+  status for itself, or the hit has to be given up when one follows. That is a
+  decision to make before any code, and it is the same class of thing as the
+  `Flush` deadlock: a message with no terminator whose absence nobody noticed.
+  Portals also have to be forgotten. An unnamed portal is destroyed by `Sync`
+  and a named one by `Close`, and a map that only grows is a leak for the
+  length of a session, which for this proxy is measured in days.
   Acceptance: two bindings of `SELECT $1` key separately and are served
-  separately, a session that never binds allocates nothing new, and the session
-  future stays under 5 KiB.
+  separately, a `Sync` after a served `Execute` is answered correctly, a portal
+  is forgotten when the protocol says it is, a session that never binds
+  allocates nothing new, and the session future stays under 5 KiB.
 - [x] `M9.13` Configuration, the half the node obeys. `M9.8` gives an operator
   a way to say it; this is what makes saying it change anything, and it is
   where the hot-reload acceptance lives.
