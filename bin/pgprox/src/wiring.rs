@@ -23,7 +23,7 @@ use crate::dial::TcpUpstream;
 /// and a pool behind it, and a slab of two would make them wait on each other.
 const BUFFER_FLOOR: usize = 256;
 
-use crate::observatory::NodeObservatory;
+use crate::observatory::{NodeObservatory, NodeParts};
 use crate::sessions::Sessions;
 
 use pgprox_cluster::coordinator::CoordinatorConfig;
@@ -275,15 +275,23 @@ impl App {
             DrainConfig::default(),
         )));
         let sessions = Sessions::new();
-        let observatory = Arc::new(NodeObservatory::new(
-            deps.node,
-            Arc::clone(&deps.clock),
-            Arc::clone(&deps.config),
-            Arc::clone(&cluster),
-            Arc::clone(&pool),
-            Arc::clone(&sessions),
-            Arc::clone(&drain),
-        ));
+
+        // Configured from the document that just loaded, so a node that starts
+        // with a cache section is caching from its first client rather than
+        // from its first tick.
+        let cache = pgprox_cache::Store::new(Arc::clone(&deps.clock));
+        cache.reconfigure(&config.query_cache);
+
+        let observatory = Arc::new(NodeObservatory::new(NodeParts {
+            node: deps.node,
+            clock: Arc::clone(&deps.clock),
+            config: Arc::clone(&deps.config),
+            cluster: Arc::clone(&cluster),
+            pool: Arc::clone(&pool),
+            sessions: Arc::clone(&sessions),
+            drain: Arc::clone(&drain),
+            cache: Arc::clone(&cache),
+        }));
 
         // Started, because a node reaches this line only with a configuration
         // that loaded and validated, which is exactly what `Starting` means it
@@ -291,12 +299,6 @@ impl App {
         let health = Health::new(HealthConfig::default());
         let health: SharedHealth = Arc::new(Mutex::new(health));
         lock(&health).started();
-
-        // Configured from the document that just loaded, so a node that starts
-        // with a cache section is caching from its first client rather than
-        // from its first tick.
-        let cache = pgprox_cache::Store::new(Arc::clone(&deps.clock));
-        cache.reconfigure(&config.query_cache);
 
         Ok(Self {
             cache,

@@ -208,6 +208,64 @@ pub struct Stats {
     pub waiting: u32,
 }
 
+/// The query cache on one node, for `SHOW CACHE` and `GET /v1/cache`.
+///
+/// Local by definition. ADR 0021 makes the cache one node's rather than the
+/// fleet's, so there is no cluster-scoped version of this to aggregate: two
+/// nodes hold different entries for the same tenant and summing their hit
+/// counts describes nothing that happened anywhere.
+///
+/// # `tenants` is the field that answers the hard question
+///
+/// A cache nobody has opted in to and a cache whose tenants are simply quiet
+/// both report zero hits and zero entries, and an operator looking at counters
+/// alone cannot tell which they have. This is how they tell: zero tenants is a
+/// cache that is off.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct CacheView {
+    /// Tenants configured to be served. Zero is a cache that is off.
+    pub tenants: u64,
+    /// Entries currently held.
+    pub entries: u64,
+    /// Bytes currently held.
+    pub bytes: u64,
+    /// The byte budget those are held against.
+    pub max_bytes: u64,
+    /// Lookups that found a live entry.
+    pub hits: u64,
+    /// Lookups that found nothing.
+    pub misses: u64,
+    /// Lookups that found an entry past its TTL.
+    ///
+    /// Apart from a miss because the two have opposite fixes: misses say the
+    /// working set does not fit, expiries say the TTL is shorter than the
+    /// interval between reuses.
+    pub expired: u64,
+    /// Entries thrown out to stay inside the budget.
+    pub evicted: u64,
+    /// Entries dropped because a tenant wrote.
+    pub invalidated: u64,
+    /// Results too large to store at all.
+    pub rejected: u64,
+}
+
+impl CacheView {
+    /// Whether the cache serves anybody.
+    ///
+    /// The distinction the counters cannot make. A node with no `query_cache`
+    /// section is off; one whose tenants are idle is not.
+    #[must_use]
+    pub const fn is_off(&self) -> bool {
+        self.tenants == 0
+    }
+
+    /// Lookups that reached the cache, whatever the outcome.
+    #[must_use]
+    pub const fn lookups(&self) -> u64 {
+        self.hits + self.misses + self.expired
+    }
+}
+
 /// Why an admin action could not be carried out.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -275,6 +333,19 @@ pub trait Observatory: Send + Sync + fmt::Debug {
 
     /// Counters.
     fn stats(&self, scope: Scope) -> Stats;
+
+    /// The query cache on this node.
+    ///
+    /// No [`Scope`], because ADR 0021 makes the cache one node's: two nodes
+    /// hold different entries for the same tenant, and a summed hit count
+    /// describes nothing that happened anywhere.
+    ///
+    /// Defaulted to a cache that is off, which is what a node with no
+    /// implementation behind it has. Additive, so an `Observatory` written
+    /// before M9 keeps compiling and keeps telling the truth.
+    fn cache(&self) -> CacheView {
+        CacheView::default()
+    }
 
     /// Client connections.
     ///
@@ -351,6 +422,11 @@ impl<T: Observatory + ?Sized> Observatory for Arc<T> {
     fn stats(&self, scope: Scope) -> Stats {
         (**self).stats(scope)
     }
+    // Forwarded rather than defaulted: an `Arc` around a node with a cache has
+    // a cache, and the default would report every wrapped observatory as off.
+    fn cache(&self) -> CacheView {
+        (**self).cache()
+    }
     async fn clients(&self, scope: Scope) -> Result<Vec<ClientView>, AdminError> {
         (**self).clients(scope).await
     }
@@ -374,9 +450,9 @@ mod fake {
     use std::sync::{Mutex, PoisonError};
 
     use super::{
-        AdminError, Arc, ClientView, ClusterDigest, ClusterView, Config, Duration, MembershipView,
-        NodeId, Observatory, PoolKey, PoolStats, PoolView, Scope, ServerView, Stats, TenantId,
-        TenantView,
+        AdminError, Arc, CacheView, ClientView, ClusterDigest, ClusterView, Config, Duration,
+        MembershipView, NodeId, Observatory, PoolKey, PoolStats, PoolView, Scope, ServerView,
+        Stats, TenantId, TenantView,
     };
     use crate::cluster::{Member, NodeMode};
 
@@ -393,6 +469,7 @@ mod fake {
         drained_for: Option<Duration>,
         config: Arc<Config>,
         digests: BTreeMap<NodeId, ClusterDigest>,
+        cache: CacheView,
     }
 
     /// An in-memory [`Observatory`] for tests.
@@ -444,6 +521,14 @@ mod fake {
         /// Sets the configuration it reports.
         pub fn set_config(&self, config: Config) {
             self.lock().config = Arc::new(config);
+        }
+
+        /// Sets the query cache it reports.
+        ///
+        /// Off until a test says otherwise, which is what a node with no
+        /// `query_cache` section reports.
+        pub fn set_cache(&self, cache: CacheView) {
+            self.lock().cache = cache;
         }
 
         /// Records a node's digest, as gossip would.
@@ -573,6 +658,10 @@ mod fake {
                     .fold(0, u32::saturating_add),
                 ..Stats::default()
             }
+        }
+
+        fn cache(&self) -> CacheView {
+            self.lock().cache
         }
 
         async fn clients(&self, scope: Scope) -> Result<Vec<ClientView>, AdminError> {
@@ -912,6 +1001,67 @@ mod tests {
             "a named tenant is answerable whichever node homes it"
         );
         assert!(observatory.tenant(&TenantId::new("nobody")).is_none());
+    }
+
+    #[test]
+    fn a_cache_that_is_off_and_one_that_is_idle_are_different_answers() {
+        // The whole reason `tenants` is in the view. Both report no hits, no
+        // entries and no bytes, and an operator reading counters alone would
+        // conclude the same thing about two nodes that are behaving
+        // differently: one was never asked to cache, the other is caching for
+        // tenants that happen to be quiet.
+        let off = CacheView::default();
+        let idle = CacheView {
+            tenants: 3,
+            max_bytes: 64 * 1024 * 1024,
+            ..CacheView::default()
+        };
+
+        assert!(off.is_off());
+        assert!(!idle.is_off());
+        assert_eq!(off.lookups(), idle.lookups(), "the counters cannot tell");
+        assert_ne!(off, idle);
+    }
+
+    #[test]
+    fn lookups_count_everything_that_reached_the_cache() {
+        // Hits, misses and expiries are three outcomes of one lookup, so a hit
+        // rate has to divide by all three. Evictions and invalidations are not
+        // lookups: they happen to entries rather than to questions, and adding
+        // them would make the denominator grow when nobody asked anything.
+        let view = CacheView {
+            hits: 7,
+            misses: 2,
+            expired: 1,
+            evicted: 100,
+            invalidated: 50,
+            rejected: 5,
+            ..CacheView::default()
+        };
+        assert_eq!(view.lookups(), 10);
+    }
+
+    #[test]
+    fn an_observatory_with_no_cache_behind_it_reports_one_that_is_off() {
+        // The trait's default, which is what an implementation written before
+        // M9 gives. It has to be off rather than absent: a node reporting
+        // nothing about its cache and a node reporting a cache that serves
+        // nobody are the same node.
+        let observatory = FakeObservatory::new(NodeId::new(1));
+        assert!(observatory.cache().is_off());
+
+        observatory.set_cache(CacheView {
+            tenants: 1,
+            hits: 4,
+            ..CacheView::default()
+        });
+        assert_eq!(observatory.cache().hits, 4);
+
+        // And through an `Arc<dyn>`, which is how every surface holds it. The
+        // forwarding is what stops a wrapped observatory reporting off.
+        let dynamic: Arc<dyn Observatory> = observatory;
+        assert_eq!(dynamic.cache().hits, 4);
+        assert!(!dynamic.cache().is_off());
     }
 
     #[test]

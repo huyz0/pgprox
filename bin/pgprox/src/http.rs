@@ -320,23 +320,24 @@ mod tests {
             ),
             test_slab(),
         ));
-        crate::observatory::NodeObservatory::new(
-            pgprox_core::ids::NodeId::new(1),
-            Arc::clone(&clock),
-            source,
-            pgprox_cluster::service::GossipCoordinator::new(
+        crate::observatory::NodeObservatory::new(crate::observatory::NodeParts {
+            node: pgprox_core::ids::NodeId::new(1),
+            clock: Arc::clone(&clock),
+            config: source,
+            cluster: pgprox_cluster::service::GossipCoordinator::new(
                 pgprox_core::ids::NodeId::new(1),
                 pgprox_cluster::coordinator::CoordinatorConfig::default(),
                 Arc::clone(&clock),
             ),
-            pgprox_pool::live::LivePool::new(
+            pool: pgprox_pool::live::LivePool::new(
                 connector,
                 Arc::clone(&clock),
                 pgprox_pool::pool::PoolConfig::default(),
             ),
-            crate::sessions::Sessions::new(),
+            sessions: crate::sessions::Sessions::new(),
             drain,
-        )
+            cache: pgprox_cache::Store::new(Arc::clone(&clock)),
+        })
     }
 
     #[tokio::test]

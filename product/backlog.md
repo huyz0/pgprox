@@ -2131,7 +2131,7 @@ the relay lands before the cacheability rule is finished.
   Acceptance: a document with no `query_cache` section resolves to a
   configuration that serves no tenant, a tenant asking for a day gets the cap,
   and every bad spelling names its field.
-- [ ] `M9.9` Observability, the number and where it comes from. `CacheView` in
+- [x] `M9.9` Observability, the number and where it comes from. `CacheView` in
   `pgprox-core::admin`, an `Observatory::cache` with a default so it is
   additive, the fake, the node's implementation reading the store, and the
   `pgprox_cache_*` metrics rendered from it.
@@ -2148,6 +2148,16 @@ the relay lands before the cacheability rule is finished.
   Acceptance: `/metrics` distinguishes a node with no `query_cache` section
   from one whose tenants are simply idle, and every counter the store keeps has
   somewhere to appear.
+  Done. `pgprox_cache_tenants` is the metric that carries the distinction and
+  it is emitted on every node including the ones where the cache is off, since
+  an absent series and a zero one are different facts to an alert and only the
+  second is what "off" means.
+  Two things this pulled in. `NodeObservatory::new` went past clippy's
+  seven-argument limit, so it takes a `NodeParts` now, which is the same fix
+  the exporter's `Sources` already is and for the reason written on it. And the
+  view's tenant count is read from the live document rather than from the
+  store, so the number an operator sees and the number the store is holding to
+  cannot be two things.
 - [ ] `M9.14` Observability, the two surfaces: `SHOW CACHE` and
   `GET /v1/cache`, both reading `M9.9`'s view. `SHOW CACHE` is `pgprox` only,
   since `PgBouncer` has no such command, so its columns are this repo's to

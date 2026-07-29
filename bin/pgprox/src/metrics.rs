@@ -22,13 +22,13 @@
 //!
 //! # What has no source yet, said out loud
 //!
-//! Four of the registry's twelve metrics have nothing to read: the two
-//! histograms need instrumentation on the wait and query paths, the auth cache
-//! counter lives inside `pgprox-auth` behind a trait with no accessor, and
-//! replica lag needs the primary's position at the same instant as the
-//! replica's. They are declared in the output with their help and type and no
-//! samples, which is what an absent series should look like, and
-//! [`UNSOURCED`] names them so adding a thirteenth cannot quietly join them.
+//! Four of the registry's metrics have nothing to read: the two histograms
+//! need instrumentation on the wait and query paths, the auth cache counter
+//! lives inside `pgprox-auth` behind a trait with no accessor, and replica lag
+//! needs the primary's position at the same instant as the replica's. They are
+//! declared in the output with their help and type and no samples, which is
+//! what an absent series should look like, and [`UNSOURCED`] names them so a
+//! fifth cannot quietly join them.
 
 use std::fmt::Write as _;
 
@@ -177,6 +177,60 @@ fn slab_samples(
     }
 }
 
+/// The query cache, in the four metrics that describe it.
+///
+/// One function for all four because they read one view: two scrapes of the
+/// same node that disagreed about whether its cache was on would be worse than
+/// either answer.
+fn cache_samples(
+    out: &mut String,
+    metric: &Metric,
+    node: &str,
+    cache: &pgprox_core::admin::CacheView,
+) {
+    match metric.name {
+        // The one that says whether the cache is on. Emitted on every node
+        // including the ones where it is off, because a series that is absent
+        // and a series that is zero are different facts to an alert, and only
+        // the second is what a node with no `query_cache` section means.
+        "pgprox_cache_tenants" => {
+            let _ = writeln!(out, "{}{{node=\"{node}\"}} {}", metric.name, cache.tenants);
+        }
+        "pgprox_cache_entries" => {
+            let _ = writeln!(out, "{}{{node=\"{node}\"}} {}", metric.name, cache.entries);
+        }
+        // The budget beside the usage, the way the slab reports its bound: an
+        // alert on bytes held would otherwise have to hard-code the configured
+        // number.
+        "pgprox_cache_bytes" => {
+            for (state, count) in [("used", cache.bytes), ("bound", cache.max_bytes)] {
+                let _ = writeln!(
+                    out,
+                    "{}{{node=\"{node}\",state=\"{state}\"}} {count}",
+                    metric.name
+                );
+            }
+        }
+        "pgprox_cache_total" => {
+            for (result, count) in [
+                ("hit", cache.hits),
+                ("miss", cache.misses),
+                ("expired", cache.expired),
+                ("evicted", cache.evicted),
+                ("invalidated", cache.invalidated),
+                ("rejected", cache.rejected),
+            ] {
+                let _ = writeln!(
+                    out,
+                    "{}{{node=\"{node}\",result=\"{result}\"}} {count}",
+                    metric.name
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The samples for one metric, or none where nothing can answer it.
 /// What every metric needs to answer for itself.
 ///
@@ -264,6 +318,9 @@ fn samples(out: &mut String, metric: &Metric, from: &Sources<'_>) {
                 metric.name,
                 observatory.cluster().view_hash
             );
+        }
+        name if name.starts_with("pgprox_cache_") => {
+            cache_samples(out, metric, node, &observatory.cache());
         }
         "pgprox_config_reload_total" => {
             // Every scrape reports the config the node is serving, which is
@@ -394,6 +451,67 @@ mod tests {
                 "{}: sampled={sampled}, listed as unsourced={excused}",
                 metric.name
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cache_that_is_off_is_visible_in_a_scrape_as_zero_rather_than_absent() {
+        // ADR 0021's acceptance, at the surface an alert reads. A series that
+        // is absent and a series that is zero are different facts, and a node
+        // with no `query_cache` section means the second one: the cache exists
+        // and serves nobody.
+        let out = rendered().await;
+        assert!(
+            out.contains("pgprox_cache_tenants{node=\"1\"} 0"),
+            "a node with the cache off did not say so: {out}"
+        );
+        assert!(
+            out.contains("pgprox_cache_total{node=\"1\",result=\"hit\"} 0"),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cache_doing_nothing_is_distinguishable_from_one_that_is_off() {
+        // The half of the acceptance the counters cannot meet. Both nodes
+        // report zero hits, zero entries and zero bytes held; only the tenant
+        // count differs, which is why it is a metric of its own.
+        let observatory = seeded();
+        observatory.set_cache(pgprox_core::admin::CacheView {
+            tenants: 3,
+            max_bytes: 64 * 1024 * 1024,
+            ..pgprox_core::admin::CacheView::default()
+        });
+        let idle = render(
+            observatory.as_ref(),
+            NodeId::new(1),
+            &TenantAllowlist::new(),
+            &test_slab(),
+            &crate::routes::RouteCounts::new(),
+        )
+        .await;
+
+        assert!(
+            idle.contains("pgprox_cache_tenants{node=\"1\"} 3"),
+            "{idle}"
+        );
+        assert!(
+            idle.contains("pgprox_cache_bytes{node=\"1\",state=\"bound\"} 67108864"),
+            "the budget is not exported beside the usage: {idle}"
+        );
+
+        // And every counter is still zero, which is the point: an operator
+        // reading only those two scrapes could not have told them apart.
+        for result in [
+            "hit",
+            "miss",
+            "expired",
+            "evicted",
+            "invalidated",
+            "rejected",
+        ] {
+            let sample = format!("pgprox_cache_total{{node=\"1\",result=\"{result}\"}} 0");
+            assert!(idle.contains(&sample), "missing {sample} in {idle}");
         }
     }
 

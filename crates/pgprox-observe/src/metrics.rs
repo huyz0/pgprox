@@ -132,8 +132,9 @@ const ROUTE: Label = Label {
 
 const RESULT: Label = Label {
     name: "result",
-    cardinality: 4,
-    bounded_because: "hit, miss, negative, error",
+    cardinality: 8,
+    bounded_because: "the enumerated outcomes of a lookup, which are code, not data: \
+                      hit, miss, expired, evicted, invalidated, rejected",
 };
 
 const REPLICA: Label = Label {
@@ -283,6 +284,52 @@ pub const CONFIG_RELOAD_TOTAL: Metric = Metric {
     labels: &[RESULT],
 };
 
+/// Tenants the query cache is configured to serve.
+///
+/// The metric that says whether the cache is on, and the reason it exists is
+/// that no counter can. A node nobody opted in to and a node whose tenants are
+/// quiet both report zero hits and zero entries; this is zero on the first and
+/// not on the second. See ADR 0021.
+pub const CACHE_TENANTS: Metric = Metric {
+    name: "pgprox_cache_tenants",
+    kind: Kind::Gauge,
+    help: "Tenants this node's query cache is configured to serve; zero is a cache that is off",
+    labels: &[],
+};
+
+/// Query cache entries held.
+pub const CACHE_ENTRIES: Metric = Metric {
+    name: "pgprox_cache_entries",
+    kind: Kind::Gauge,
+    help: "Results this node's query cache currently holds",
+    labels: &[],
+};
+
+/// Query cache memory, held and allowed.
+///
+/// Both under one name with a `state` label, the way the buffer slab reports
+/// its bound: a usage without the budget beside it is a number nobody can act
+/// on, and an alert on it would have to hard-code the configured value.
+pub const CACHE_BYTES: Metric = Metric {
+    name: "pgprox_cache_bytes",
+    kind: Kind::Gauge,
+    help: "Bytes in this node's query cache, by state: used or the bound",
+    labels: &[STATE],
+};
+
+/// Query cache outcomes.
+///
+/// Every counter the store keeps, under one name. `hit`, `miss` and `expired`
+/// are outcomes of a lookup and divide into a hit rate; `evicted`,
+/// `invalidated` and `rejected` happen to entries rather than to questions and
+/// must not be added to that denominator.
+pub const CACHE_TOTAL: Metric = Metric {
+    name: "pgprox_cache_total",
+    kind: Kind::Counter,
+    help: "Query cache events, by outcome",
+    labels: &[RESULT],
+};
+
 /// The metadata for every metric, in registry order.
 ///
 /// What an exporter emits before its samples. Deterministic, so a diff of two
@@ -311,6 +358,10 @@ pub const ALL: &[Metric] = &[
     CONFIG_RELOAD_TOTAL,
     BUFFER_SLAB,
     ROUTE_TOTAL,
+    CACHE_TENANTS,
+    CACHE_ENTRIES,
+    CACHE_BYTES,
+    CACHE_TOTAL,
 ];
 
 impl Metric {

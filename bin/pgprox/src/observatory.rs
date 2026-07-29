@@ -23,8 +23,8 @@ use std::time::Duration;
 
 use pgprox_cluster::service::GossipCoordinator;
 use pgprox_core::admin::{
-    AdminError, ClientView, ClusterView, Observatory, PoolView, Scope, ServerView, Stats,
-    TenantView,
+    AdminError, CacheView, ClientView, ClusterView, Observatory, PoolView, Scope, ServerView,
+    Stats, TenantView,
 };
 use pgprox_core::clock::Clock;
 use pgprox_core::cluster::{ClusterCoordinator, NodeMode};
@@ -62,21 +62,59 @@ pub struct NodeObservatory {
     /// `App::build` opens no sockets. Empty until it is, which reads as a node
     /// that is alone: the same answer it gave before the fan-out existed.
     peers: std::sync::OnceLock<std::collections::BTreeMap<NodeId, String>>,
+    /// The query cache, for the one view that is local by definition.
+    ///
+    /// The concrete store rather than `dyn QueryCache`, because what this
+    /// reports is the store's counters and the trait deliberately has no
+    /// accessor for them: a cache a session can read its own statistics out of
+    /// is a cache a session could report on, and nothing on the relay path
+    /// should be able to.
+    cache: Arc<pgprox_cache::Store>,
+}
+
+/// The live components an observatory reads.
+///
+/// A struct rather than eight parameters, for the reason the exporter's
+/// `Sources` is one: the list grew a field at a time and each addition was
+/// reasonable on its own, which is how a signature ends up unreadable. Every
+/// field is shared with the node that owns it, so nothing here is a second
+/// copy of a number somebody else is also keeping.
+#[derive(Debug)]
+pub struct NodeParts {
+    /// This node.
+    pub node: NodeId,
+    /// Time, for the age a client view reports.
+    pub clock: Arc<dyn Clock>,
+    /// Where the configuration comes from, read live rather than at startup.
+    pub config: Arc<dyn ConfigSource>,
+    /// Membership, quota and leases.
+    pub cluster: Arc<GossipCoordinator>,
+    /// The upstream connections this node holds.
+    pub pool: Arc<NodePool>,
+    /// Who this node is serving.
+    pub sessions: Arc<Sessions>,
+    /// The imperative drain overlay.
+    pub drain: SharedDrain,
+    /// The query cache.
+    pub cache: Arc<pgprox_cache::Store>,
 }
 
 impl NodeObservatory {
     /// An observatory over one node's live components.
     #[must_use]
-    pub fn new(
-        node: NodeId,
-        clock: Arc<dyn Clock>,
-        config: Arc<dyn ConfigSource>,
-        cluster: Arc<GossipCoordinator>,
-        pool: Arc<NodePool>,
-        sessions: Arc<Sessions>,
-        drain: SharedDrain,
-    ) -> Self {
+    pub fn new(parts: NodeParts) -> Self {
+        let NodeParts {
+            node,
+            clock,
+            config,
+            cluster,
+            pool,
+            sessions,
+            drain,
+            cache,
+        } = parts;
         Self {
+            cache,
             node,
             clock,
             config,
@@ -255,6 +293,28 @@ impl Observatory for NodeObservatory {
         }
     }
 
+    fn cache(&self) -> CacheView {
+        // How many tenants the *live* configuration serves, rather than a
+        // count the store keeps: the store's copy and the document's are the
+        // same thing, and reading it here means one of them cannot go stale
+        // while the other is what an operator is looking at.
+        let tenants = self.config.watch().borrow().query_cache.tenants.len();
+        let stats = self.cache.stats();
+
+        CacheView {
+            tenants: tenants as u64,
+            entries: stats.entries,
+            bytes: stats.bytes,
+            max_bytes: self.cache.max_bytes() as u64,
+            hits: stats.hits,
+            misses: stats.misses,
+            expired: stats.expired,
+            evicted: stats.evicted,
+            invalidated: stats.invalidated,
+            rejected: stats.rejected,
+        }
+    }
+
     async fn clients(&self, scope: Scope) -> Result<Vec<ClientView>, AdminError> {
         let mut clients = self.sessions.views(self.clock.now());
         if matches!(scope, Scope::Local) {
@@ -399,6 +459,7 @@ mod tests {
         pool: Arc<NodePool>,
         clock: FakeClock,
         source: Arc<FakeConfigSource>,
+        cache: Arc<pgprox_cache::Store>,
     }
 
     fn fixture(config: Config) -> Fixture {
@@ -426,20 +487,25 @@ mod tests {
             PoolConfig::default(),
         );
         let sessions = Sessions::new();
-        let observatory = NodeObservatory::new(
-            NodeId::new(1),
-            Arc::clone(&shared),
-            Arc::clone(&source) as Arc<dyn ConfigSource>,
+        // Configured from the same document the fixture serves, so a test that
+        // opts a tenant in gets a store that agrees with the view.
+        let cache = pgprox_cache::Store::new(Arc::clone(&shared));
+        cache.reconfigure(&source.watch().borrow().query_cache);
+        let observatory = NodeObservatory::new(NodeParts {
+            node: NodeId::new(1),
+            clock: Arc::clone(&shared),
+            config: Arc::clone(&source) as Arc<dyn ConfigSource>,
             cluster,
-            Arc::clone(&pool),
-            Arc::clone(&sessions),
-            Arc::new(std::sync::Mutex::new(
+            pool: Arc::clone(&pool),
+            sessions: Arc::clone(&sessions),
+            drain: Arc::new(std::sync::Mutex::new(
                 pgprox_config::drain::DrainState::new(
                     "pgprox-1",
                     pgprox_config::drain::DrainConfig::default(),
                 ),
             )),
-        );
+            cache: Arc::clone(&cache),
+        });
 
         Fixture {
             observatory,
@@ -447,6 +513,7 @@ mod tests {
             pool,
             clock,
             source,
+            cache,
         }
     }
 
@@ -558,6 +625,54 @@ mod tests {
     fn a_tenant_nobody_has_heard_of_is_not_invented() {
         let fixture = fixture(config());
         assert!(fixture.observatory.tenant(&TenantId::new("nope")).is_none());
+    }
+
+    #[tokio::test]
+    async fn the_cache_view_reports_the_store_this_node_actually_has() {
+        use pgprox_core::cache::QueryCache;
+        use pgprox_core::config::{QueryCacheConfig, TenantCache};
+
+        // Off, because the fixture's document says nothing about a cache.
+        let fixture = fixture(config());
+        let off = fixture.observatory.cache();
+        assert!(off.is_off());
+        assert_eq!(off.entries, 0);
+
+        // On, through the document, which is the only way it goes on. Both
+        // halves move: the store starts serving, and the view's tenant count
+        // comes from the same document rather than from a copy.
+        let mut with_cache = config();
+        with_cache.query_cache = QueryCacheConfig {
+            tenants: [(
+                TenantId::new("acme"),
+                TenantCache {
+                    ttl: Duration::from_secs(5),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..QueryCacheConfig::default()
+        };
+        fixture.source.publish(with_cache.clone()).unwrap();
+        fixture.cache.reconfigure(&with_cache.query_cache);
+
+        let on = fixture.observatory.cache();
+        assert!(!on.is_off());
+        assert_eq!(on.tenants, 1);
+        assert_eq!(on.max_bytes, 64 * 1024 * 1024);
+
+        // And the counters are the store's rather than zeroes standing in for
+        // them, which is the failure that would leave every dashboard flat.
+        fixture
+            .cache
+            .get(&pgprox_core::cache::CacheKey {
+                tenant: TenantId::new("acme"),
+                normalized_sql: Arc::from("select 1"),
+                params: Vec::new(),
+                search_path: Arc::from("public"),
+            })
+            .await;
+        assert_eq!(fixture.observatory.cache().misses, 1);
     }
 
     #[test]
