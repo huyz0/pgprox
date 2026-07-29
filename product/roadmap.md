@@ -23,7 +23,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M4 | Operations (track D) | complete |
 | M5 | Pooling and routing (track E) | complete |
 | M6 | Integration | complete |
-| M7 | Scale and performance | complete; 100k connections held at 546 MB against a 500 MB target, and latency demonstrated at 1000 |
+| M7 | Scale and performance | complete; 100k connections held at 546 MB against a 500 MB target, and `M7.58` later took CPU per statement from 687us to 43.7us |
 | M8 | FIPS and release | complete |
 | M9 | Query cache (post-MVP) | complete; 7% of median latency and of CPU per statement, and the pool lock is untouched |
 
@@ -223,8 +223,23 @@ That does not contradict the 100k hold run, and the pair is the useful part:
 100,000 *idle* connections cost 546 MB and almost no CPU, while 2,000 active
 ones cost five cores. So the roadmap's 100k target is reachable for connections
 that are mostly idle, which is the design point, and the number that decides
-how many of them can be busy at once is this one rather than memory. What the
-2ms actually is has not been named yet; `M7.56` is that.
+how many of them can be busy at once is this one rather than memory.
+
+**What the 2ms was.** `M7.56` put 45% of the proxy's CPU in the upstream pool's
+lock. `M7.58` found why, and it was not saturation: `LivePool::release` woke
+*every* waiter, so one connection handed back woke roughly four hundred and
+forty tasks, each of which took the pool mutex three times on its way back to
+sleep. Waking one waiter per released connection took CPU per statement from
+687us to 43.7us, a 15.7x reduction, and halved the p99. `lock_contended` and
+`LivePool::acquire` left the top of the profile entirely, and the sample count
+under the same load fell from 4,119 in twenty seconds to 161. See
+`product/perf/run-2026-07-29-thundering-herd.md`.
+
+On the same workload that puts the per-connection cost at roughly 0.13ms per
+second rather than 2ms, so a core holds something closer to seven thousand
+active connections than five hundred. The figures above are left as they were
+measured, because a run is a record of what was true when it was taken, and the
+correction belongs here rather than in a rewritten history.
 
 ## M8: FIPS and release (complete)
 

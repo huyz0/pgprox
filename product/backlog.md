@@ -1648,7 +1648,7 @@ measurement found three things.
   not appear at all, which is the other half of `M7.46`'s correction.
   Recorded in `product/perf/run-2026-07-29-pool-lock.md`. What to do about it
   is `M7.57`, deliberately not decided here.
-- [ ] `M7.57` What to do about the pool lock. `M7.56` names the cost and stops,
+- [x] `M7.57` What to do about the pool lock. `M7.56` names the cost and stops,
   because the three obvious answers have different consequences and one of them
   is that there is nothing to fix.
   Sharding `LivePool` by `PoolKey` removes contention between tenants and
@@ -1665,6 +1665,18 @@ measurement found three things.
   `M7.58` found a fourth answer that needs no such machine, and it partly
   answers the third: some of the contention is self-inflicted rather than a
   picture of saturation.
+  Answered, and the answer is that neither of the first two is worth doing.
+  `M7.58` removed the herd and with it 94% of the proxy's CPU; `lock_contended`
+  and `LivePool::acquire` are no longer in the top sixteen of a profile taken
+  under the same load, and the sample count over twenty seconds fell from 4,119
+  to 161. Sharding by `PoolKey` would not have helped this workload anyway,
+  because a scale run has one pool key and the contention was entirely within
+  it. A lock-free free list is a rewrite of the code the quota invariant
+  depends on, aimed now at 2.25 seconds of CPU rather than 33.
+  What is left of the third answer stands: at five hundred connections against
+  sixty upstreams the queue is the design working, and the remaining wait is
+  the database's. That part still wants a machine with headroom to measure, and
+  it is no longer in the way of anything.
 
 ## M8: FIPS and release
 
