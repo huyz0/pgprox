@@ -2112,10 +2112,25 @@ the relay lands before the cacheability rule is finished.
   allocation and no bytes. And the relay went over clippy's hundred-line limit
   three times on the way, which is what pushed the pump's tail into
   `read_the_answer` and the pre-send half into `cache_before_sending`.
-- [ ] `M9.8` Configuration: off by default, opt-in per tenant, with a TTL and a
-  size bound in the config document. Acceptance: a document with no cache
-  section produces a proxy that caches nothing, and the hot-reload path changes
-  the setting without a restart.
+- [ ] `M9.8` Configuration, the half an operator writes: a `query_cache`
+  section, and the `pgprox-core` type it resolves to. Split from the wiring in
+  `M9.13` because it is a contract change, and the skill's rule that a contract
+  change is one commit containing the type, every fake and every call site is
+  much easier to hold to when the commit is not also introducing a mechanism.
+  The shape is ADR 0021's own: a node-wide byte budget, an operator-controlled
+  `ttl_cap`, and a map of tenants that have opted in, each with the staleness it
+  accepts. The effective TTL is the smaller of the tenant's and the cap, which
+  is exactly how `grant_ttl_cap` bounds a sidecar's TTL. An empty map is off,
+  and off is the default: there is one way for the cache to be off rather than
+  two, because a separate `enabled` flag disagreeing with an empty tenant list
+  is a bug with no right answer.
+  A size takes a unit for the reason a duration does. `max_bytes: 64` meaning
+  bytes when the operator meant megabytes is `drain_grace: 500` again, so the
+  unit is required and both `MB` and `MiB` are accepted with their real
+  meanings rather than one of them being refused during a deploy.
+  Acceptance: a document with no `query_cache` section resolves to a
+  configuration that serves no tenant, a tenant asking for a day gets the cap,
+  and every bad spelling names its field.
 - [ ] `M9.9` Observability: hit, miss, eviction and invalidation counters,
   `SHOW CACHE`, and the admin endpoint. Acceptance: a run shows a hit rate, and
   a cache that is doing nothing is distinguishable from one that is off.
@@ -2124,4 +2139,42 @@ the relay lands before the cacheability rule is finished.
   an acquire, so the question is whether contention falls. Acceptance: a
   recorded run in `product/perf/`, and the number is reported whichever way it
   comes out.
-- [ ] `M9.11` Close M9. Acceptance: `scripts/m9-complete.sh` exits zero.
+- [ ] `M9.11` Close M9, which needs `M9.13` as well as everything before it.
+  Acceptance: `scripts/m9-complete.sh` exits zero.
+- [ ] `M9.12` The extended protocol, which `M9.7` left out on purpose. A bound
+  statement is a miss today, because `CacheKey::params` would be empty for two
+  calls differing only in what was bound and `SELECT $1` with 1 and with 2
+  would share an entry.
+  What it needs is for `pgprox-proto` to read a `Bind`'s parameter values,
+  which it has never had a reason to do. That is a change to the codec, the
+  most exposed parser in the process, so it is its own task rather than a
+  detail of the hook: a `Bind` carries a count and then that many length-
+  prefixed values, and a length the decoder trusts is how a malformed message
+  becomes an allocation.
+  Acceptance: the values reach `CacheKey::params`, the fuzz corpus gains a
+  `Bind` with parameters, and a test shows two bindings of the same statement
+  keying separately. Worth doing only if `M9.10` says the cache helps: most
+  drivers use the extended protocol, so a cache that cannot serve it is a cache
+  most traffic misses.
+- [ ] `M9.13` Configuration, the half the node obeys. `M9.8` gives an operator
+  a way to say it; this is what makes saying it change anything, and it is
+  where the hot-reload acceptance lives.
+  Three pieces. The store's settings become live rather than constructor
+  arguments, so a `reconfigure` can raise the budget, lower it and evict down
+  to it, and drop the entries of a tenant that has just been taken out of the
+  list. The composition root builds a store once and the tick loop reconfigures
+  it, next to `gate.set_ceiling`, which is the same shape and the same reason:
+  an operator changing a limit is usually doing it while the node is misbehaving.
+  And the relay needs a gate cheaper than building a key. Today it is
+  `context.cache.is_none()`, which stops working the moment the store is always
+  present, so `QueryCache` gains a defaulted `serves(&TenantId) -> bool`. It is
+  not async and it is checked before `normalize` allocates, because off is the
+  default and therefore every node's hot path.
+  This is also where `store_answer` stops using `grant.ttl`. That is a
+  credential's lifetime standing in for a staleness bound, which are two
+  unrelated numbers that happened to both be durations; the configured TTL
+  replaces it.
+  Watch the session future: `M9.7` left 32 bytes under the 5 KiB ceiling.
+  Acceptance: a running node with no `query_cache` section caches nothing, a
+  document adding a tenant makes it start caching without a restart, and one
+  removing that tenant drops what was held for it.
