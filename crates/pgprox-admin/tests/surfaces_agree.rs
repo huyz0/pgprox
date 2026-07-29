@@ -246,6 +246,74 @@ async fn both_surfaces_report_the_same_tenants() {
 }
 
 #[tokio::test]
+async fn both_surfaces_report_the_same_cache() {
+    let fake = fleet();
+    fake.set_cache(pgprox_core::admin::CacheView {
+        tenants: 2,
+        entries: 17,
+        bytes: 4096,
+        max_bytes: 64 * 1024 * 1024,
+        hits: 40,
+        misses: 8,
+        expired: 2,
+        evicted: 1,
+        invalidated: 3,
+        rejected: 0,
+    });
+
+    let json = http(&fake, "/v1/cache").await;
+    let rows = show(&fake, "SHOW CACHE").await;
+
+    // One row, because the cache is one thing on one node.
+    assert_eq!(rows.len(), 1);
+
+    for column in [
+        "tenants",
+        "entries",
+        "bytes",
+        "max_bytes",
+        "hits",
+        "misses",
+        "expired",
+        "evicted",
+        "invalidated",
+        "rejected",
+    ] {
+        assert_eq!(
+            rows.get(0, column).unwrap(),
+            json[column].as_u64().unwrap().to_string(),
+            "the surfaces disagree about {column}"
+        );
+    }
+
+    // And the word, which ADR 0021 asks for in as many words on every surface
+    // an operator reads. A cache that described itself as consistent, or
+    // described itself as nothing at all, is one somebody relies on for
+    // read-your-writes.
+    assert_eq!(rows.get(0, "promise").unwrap(), "bounded staleness");
+    assert_eq!(json["promise"].as_str().unwrap(), "bounded staleness");
+    assert!(
+        !json["promise"].as_str().unwrap().contains("consisten"),
+        "the cache described itself as something it is not"
+    );
+}
+
+#[tokio::test]
+async fn a_cache_that_is_off_says_so_on_both_surfaces() {
+    // Every number is zero either way, so the word and the tenant count are
+    // the whole difference between a cache nobody opted in to and one whose
+    // tenants are quiet.
+    let fake = fleet();
+    let json = http(&fake, "/v1/cache").await;
+    let rows = show(&fake, "SHOW CACHE").await;
+
+    assert_eq!(rows.get(0, "tenants").unwrap(), "0");
+    assert_eq!(rows.get(0, "promise").unwrap(), "off");
+    assert_eq!(json["tenants"].as_u64().unwrap(), 0);
+    assert_eq!(json["promise"].as_str().unwrap(), "off");
+}
+
+#[tokio::test]
 async fn both_surfaces_report_the_same_cluster_view() {
     let fake = fleet();
     let json = http(&fake, "/v1/cluster").await;

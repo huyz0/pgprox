@@ -363,6 +363,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn show_cache_reaches_a_psql_session() {
+        // The surface an operator is actually in when they want to know
+        // whether the cache is on. The rows come from `pgprox-admin`, which has
+        // its own tests; what this checks is that the console reaches them,
+        // because a command that parses everywhere except here is a command
+        // nobody can run.
+        let frames = ask("SHOW CACHE").await;
+        let tags: Vec<Tag> = frames.iter().map(|(tag, _)| *tag).collect();
+
+        assert!(
+            tags.contains(&Tag::ROW_DESCRIPTION),
+            "SHOW CACHE answered with no columns: {tags:?}"
+        );
+        let described = frames
+            .iter()
+            .find(|(tag, _)| *tag == Tag::ROW_DESCRIPTION)
+            .map(|(_, body)| String::from_utf8_lossy(body).into_owned())
+            .unwrap_or_default();
+        assert!(described.contains("tenants"), "got {described:?}");
+        assert!(described.contains("promise"), "got {described:?}");
+    }
+
+    #[tokio::test]
     async fn a_statement_that_is_not_a_show_is_refused_and_the_session_continues() {
         // An operator mistyping a command should not be disconnected for it,
         // and there is no upstream on this connection to relay it to.

@@ -168,6 +168,28 @@ const QUOTA: &[&str] = &[
 /// `SHOW TENANTS`, which is `pgprox` only.
 const TENANTS: &[&str] = &["tenant", "home", "client_conns", "upstream_conns"];
 
+/// `SHOW CACHE`, which is `pgprox` only.
+///
+/// One row, because the cache is one thing on one node. `tenants` leads
+/// because it is the column that says whether the cache is on at all: every
+/// other number is zero both when nobody opted in and when the tenants who did
+/// are quiet. `promise` is a word rather than a number for the reason ADR 0021
+/// gives: the guarantee people infer from a cache is read-your-writes, this one
+/// does not offer it, and the place to say so is the place they are looking.
+const CACHE: &[&str] = &[
+    "tenants",
+    "promise",
+    "entries",
+    "bytes",
+    "max_bytes",
+    "hits",
+    "misses",
+    "expired",
+    "evicted",
+    "invalidated",
+    "rejected",
+];
+
 /// The columns a command produces.
 #[must_use]
 pub const fn columns_for(target: ShowTarget) -> &'static [&'static str] {
@@ -179,6 +201,7 @@ pub const fn columns_for(target: ShowTarget) -> &'static [&'static str] {
         ShowTarget::Peers => PEERS,
         ShowTarget::Quota => QUOTA,
         ShowTarget::Tenants => TENANTS,
+        ShowTarget::Cache => CACHE,
     }
 }
 
@@ -244,6 +267,7 @@ pub async fn render(
         ShowTarget::Peers => peer_rows(observatory),
         ShowTarget::Quota => quota_rows(observatory, scope),
         ShowTarget::Tenants => tenant_rows(observatory, scope),
+        ShowTarget::Cache => cache_rows(observatory),
     };
 
     Ok(Rows { columns, rows })
@@ -447,6 +471,36 @@ fn tenant_rows(observatory: &dyn Observatory, scope: Scope) -> Vec<Vec<String>> 
             ]
         })
         .collect()
+}
+
+/// The query cache on the node that answered.
+///
+/// No scope. ADR 0021 makes the cache one node's, and a `SHOW LOCAL CACHE`
+/// that differed from `SHOW CACHE` would be promising an aggregate that cannot
+/// exist.
+fn cache_rows(observatory: &dyn Observatory) -> Vec<Vec<String>> {
+    let cache = observatory.cache();
+    vec![vec![
+        cache.tenants.to_string(),
+        // Not "read-your-writes", not "consistent", and not blank. A tenant
+        // that believed either of the first two would be wrong the first time
+        // a batch job wrote straight to the database, and a blank column is an
+        // invitation to assume.
+        if cache.is_off() {
+            "off".to_owned()
+        } else {
+            "bounded staleness".to_owned()
+        },
+        cache.entries.to_string(),
+        cache.bytes.to_string(),
+        cache.max_bytes.to_string(),
+        cache.hits.to_string(),
+        cache.misses.to_string(),
+        cache.expired.to_string(),
+        cache.evicted.to_string(),
+        cache.invalidated.to_string(),
+        cache.rejected.to_string(),
+    ]]
 }
 
 #[cfg(test)]
@@ -701,6 +755,29 @@ mod tests {
         let tenants = show(ShowTarget::Tenants, Scope::Cluster).await;
         assert_eq!(tenants.get(0, "tenant"), Some("acme"));
         assert_eq!(tenants.get(0, "home"), Some("1"));
+    }
+
+    #[tokio::test]
+    async fn show_cache_answers_for_the_node_whatever_scope_was_asked_for() {
+        // `SHOW LOCAL CACHE` is not refused, it is the same answer. ADR 0021
+        // makes the cache one node's, so the two forms genuinely mean the same
+        // thing here, and this pins that rather than leaving it as a property
+        // nobody meant.
+        let cluster = show(ShowTarget::Cache, Scope::Cluster).await;
+        let local = show(ShowTarget::Cache, Scope::Local).await;
+
+        assert_eq!(cluster.rows, local.rows);
+        assert_eq!(cluster.len(), 1);
+        assert_eq!(cluster.get(0, "tenants"), Some("0"));
+        assert_eq!(cluster.get(0, "promise"), Some("off"));
+    }
+
+    #[test]
+    fn show_cache_is_not_offered_as_a_pgbouncer_command() {
+        // `PgBouncer` has no `SHOW CACHE`, so no existing dashboard reads
+        // these columns and they are this repo's to choose. Saying it was
+        // compatible would freeze a layout nobody is depending on.
+        assert!(!ShowTarget::Cache.is_pgbouncer_compatible());
     }
 
     #[tokio::test]

@@ -2158,13 +2158,19 @@ the relay lands before the cacheability rule is finished.
   view's tenant count is read from the live document rather than from the
   store, so the number an operator sees and the number the store is holding to
   cannot be two things.
-- [ ] `M9.14` Observability, the two surfaces: `SHOW CACHE` and
+- [x] `M9.14` Observability, the two surfaces: `SHOW CACHE` and
   `GET /v1/cache`, both reading `M9.9`'s view. `SHOW CACHE` is `pgprox` only,
   since `PgBouncer` has no such command, so its columns are this repo's to
   choose; the HTTP one needs its OpenAPI entry, which `check-drift.sh` gates.
   ADR 0021 says the output has to say "bounded staleness" rather than anything
   warmer, and this is the surface it meant.
   Acceptance: both answer, both agree, and the drift check passes.
+  Done. `promise` is a column and a field rather than a comment, because ADR
+  0021 asks for the words on every surface an operator reads and a cache that
+  described itself as nothing at all is one somebody fills in for themselves.
+  `SHOW LOCAL CACHE` is the same answer as `SHOW CACHE` rather than an error,
+  which is correct here and now pinned by a test rather than being a property
+  nobody meant.
 - [ ] `M9.10` Does it help. Measured against the reference workload with
   `scripts/scale.sh`, and against `M7.56`'s finding specifically: a hit avoids
   an acquire, so the question is whether contention falls. Acceptance: a

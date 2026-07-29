@@ -264,6 +264,21 @@ pub async fn stats(
     Ok(Json(StatsBody::from(observatory.stats(scope))))
 }
 
+/// `GET /v1/cache`
+///
+/// No `scope`. ADR 0021 makes the cache one node's rather than the fleet's, so
+/// there is nothing to aggregate: two nodes hold different entries for the same
+/// tenant, and a summed hit count would describe nothing that happened
+/// anywhere. A caller wanting the fleet's picture asks every node, which is the
+/// honest shape of the question.
+#[utoipa::path(
+    get, path = "/v1/cache", tag = "read",
+    responses((status = 200, description = "The query cache on the node that answered")),
+)]
+pub async fn cache(State(observatory): State<Shared>) -> Json<CacheBody> {
+    Json(CacheBody::from(observatory.cache()))
+}
+
 /// `GET /v1/config`
 #[utoipa::path(
     get, path = "/v1/config", tag = "read",
@@ -459,6 +474,7 @@ declare_routes!(
     get "/v1/clients" => clients,
     get "/v1/stats" => stats,
     get "/v1/config" => config,
+    get "/v1/cache" => cache,
 );
 
 // The write half.
@@ -596,6 +612,60 @@ impl From<ServerView> for ServerBody {
             headroom: view.headroom(),
             guaranteed: view.guaranteed,
             leased: view.leased,
+        }
+    }
+}
+
+/// The query cache on one node.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct CacheBody {
+    /// Tenants configured to be served. Zero is a cache that is off.
+    pub tenants: u64,
+    /// What the cache guarantees, in words rather than by omission.
+    ///
+    /// `off`, or `bounded staleness`. ADR 0021 asks for this in as many words:
+    /// the guarantee people infer from a cache is read-your-writes, this one
+    /// does not offer it, and a field that simply said nothing would be read as
+    /// agreement.
+    pub promise: String,
+    /// Entries currently held.
+    pub entries: u64,
+    /// Bytes currently held.
+    pub bytes: u64,
+    /// The budget those are held against.
+    pub max_bytes: u64,
+    /// Lookups that found a live entry.
+    pub hits: u64,
+    /// Lookups that found nothing.
+    pub misses: u64,
+    /// Lookups that found an entry past its TTL.
+    pub expired: u64,
+    /// Entries thrown out to stay inside the budget.
+    pub evicted: u64,
+    /// Entries dropped because a tenant wrote.
+    pub invalidated: u64,
+    /// Results too large to store at all.
+    pub rejected: u64,
+}
+
+impl From<pgprox_core::admin::CacheView> for CacheBody {
+    fn from(view: pgprox_core::admin::CacheView) -> Self {
+        Self {
+            tenants: view.tenants,
+            promise: if view.is_off() {
+                "off".to_owned()
+            } else {
+                "bounded staleness".to_owned()
+            },
+            entries: view.entries,
+            bytes: view.bytes,
+            max_bytes: view.max_bytes,
+            hits: view.hits,
+            misses: view.misses,
+            expired: view.expired,
+            evicted: view.evicted,
+            invalidated: view.invalidated,
+            rejected: view.rejected,
         }
     }
 }

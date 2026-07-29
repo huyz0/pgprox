@@ -59,6 +59,12 @@ pub enum ShowTarget {
     Quota,
     /// Tenants. `pgprox` only.
     Tenants,
+    /// The query cache on the node that answered. `pgprox` only.
+    ///
+    /// Local whatever the scope says, because ADR 0021 makes the cache one
+    /// node's: entries are not shared and a summed hit count across the fleet
+    /// describes nothing that happened anywhere.
+    Cache,
 }
 
 impl ShowTarget {
@@ -74,6 +80,7 @@ impl ShowTarget {
             Self::Peers => "peers",
             Self::Quota => "quota",
             Self::Tenants => "tenants",
+            Self::Cache => "cache",
         }
     }
 
@@ -101,6 +108,7 @@ impl ShowTarget {
             Self::Peers,
             Self::Quota,
             Self::Tenants,
+            Self::Cache,
         ]
     }
 
