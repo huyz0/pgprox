@@ -19,6 +19,12 @@ fuzz_target!(|data: &[u8]| {
     let _ = backend::decode(&frame);
     let _ = frontend::decode(&frame);
 
+    // And the one decoder that reads past the two names into counted,
+    // length-prefixed data the client controls. It is reached only from the
+    // cache path, so `frontend::decode` above does not cover it, and a length
+    // a decoder trusts is how a nine-byte message becomes an allocation.
+    let _ = frontend::bind_parameters(&frame);
+
     // The startup packet is the first thing an unauthenticated peer sends, so
     // it is the most exposed parser in the process.
     let _ = startup::decode(data);

@@ -2260,7 +2260,7 @@ the relay lands before the cacheability rule is finished.
   either way, so the first version asserted on that and passed against the herd.
   `LivePool::futile_wakeups` is what made the property visible, and it reads 7
   against 0 for one release with eight waiters.
-- [ ] `M9.12` The extended protocol, which `M9.7` left out on purpose. A bound
+- [x] `M9.12` The extended protocol, which `M9.7` left out on purpose. A bound
   statement is a miss today, because `CacheKey::params` would be empty for two
   calls differing only in what was bound and `SELECT $1` with 1 and with 2
   would share an entry.
@@ -2270,11 +2270,32 @@ the relay lands before the cacheability rule is finished.
   detail of the hook: a `Bind` carries a count and then that many length-
   prefixed values, and a length the decoder trusts is how a malformed message
   becomes an allocation.
-  Acceptance: the values reach `CacheKey::params`, the fuzz corpus gains a
-  `Bind` with parameters, and a test shows two bindings of the same statement
-  keying separately. Worth doing only if `M9.10` says the cache helps: most
-  drivers use the extended protocol, so a cache that cannot serve it is a cache
-  most traffic misses.
+  Acceptance: the codec can read them, the fuzz corpus gains a `Bind` with
+  parameters, and the target exercises the new reader. `M9.17` is the half that
+  reaches `CacheKey::params`. Worth doing only if `M9.10` says the cache helps:
+  most drivers use the extended protocol, so a cache that cannot serve it is a
+  cache most traffic misses. It says 7%, with the ceiling roughly doubling.
+  Done, and split, because the two halves are different work. The codec half is
+  `frontend::bind_parameters`, read on demand rather than as a field on the
+  `Bind` variant: every extended-protocol statement sends one, so a `Vec` in
+  the variant is an allocation on a path that currently makes none, on every
+  node, for a feature that is off by default. The one caller that wants the
+  values has already decided to build a cache key.
+- [ ] `M9.17` The extended protocol reaches the cache key. `M9.12` gave the
+  codec a way to read a `Bind`'s parameters; this is what carries them to
+  `CacheKey::params`.
+  The work is state, not parsing. A cache key needs the SQL and the parameter
+  values together, and the relay sees them in three separate messages: `Parse`
+  carries the SQL, `Bind` carries the values and names a portal, and `Execute`
+  names the portal and is the point the statement runs. Something has to hold
+  the portal's SQL and values between the `Bind` and the `Execute`.
+  The constraint that decides the shape is the session future, which is 5,064
+  bytes against a 5,120 ceiling. Fifty-six bytes will not hold a map of
+  portals, so this is a boxed allocation on the sessions that use it and
+  nothing on the ones that do not, the way `M9.7`'s `Recording` is.
+  Acceptance: two bindings of `SELECT $1` key separately and are served
+  separately, a session that never binds allocates nothing new, and the session
+  future stays under 5 KiB.
 - [x] `M9.13` Configuration, the half the node obeys. `M9.8` gives an operator
   a way to say it; this is what makes saying it change anything, and it is
   where the hot-reload acceptance lives.

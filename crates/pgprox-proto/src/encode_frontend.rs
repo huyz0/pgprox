@@ -142,6 +142,42 @@ pub fn bind(out: &mut Vec<u8>, portal: &str, statement: &str) {
     });
 }
 
+/// `B`: bind a portal, with parameter values. `None` is SQL `NULL`.
+///
+/// For tests and for the fuzz corpus. Nothing in the proxy writes one of
+/// these: a client's own `Bind` is rewritten in place by
+/// `rewrite::bind_statement` rather than re-encoded, so its parameters never
+/// pass through here. It exists so [`crate::frontend::bind_parameters`] has
+/// something to read that this crate agrees is well-formed.
+pub fn bind_with_parameters(
+    out: &mut Vec<u8>,
+    portal: &str,
+    statement: &str,
+    values: &[Option<&[u8]>],
+) {
+    tagged(out, Tag::BIND, |b| {
+        cstr(b, portal);
+        cstr(b, statement);
+        // No format codes, so every value is text, which is the default.
+        b.extend_from_slice(&0_i16.to_be_bytes());
+        let count = i16::try_from(values.len()).unwrap_or(i16::MAX);
+        b.extend_from_slice(&count.to_be_bytes());
+        for value in values.iter().take(usize::try_from(count).unwrap_or(0)) {
+            match value {
+                // -1 rather than 0. A null and an empty string are different
+                // values, and the length is where the wire says which.
+                None => b.extend_from_slice(&(-1_i32).to_be_bytes()),
+                Some(bytes) => {
+                    let len = i32::try_from(bytes.len()).unwrap_or(i32::MAX);
+                    b.extend_from_slice(&len.to_be_bytes());
+                    b.extend_from_slice(bytes);
+                }
+            }
+        }
+        b.extend_from_slice(&0_i16.to_be_bytes());
+    });
+}
+
 /// `C`: close a prepared statement.
 ///
 /// The protocol-level counterpart of SQL `DEALLOCATE`, and the only one that

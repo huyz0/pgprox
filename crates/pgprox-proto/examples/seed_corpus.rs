@@ -154,6 +154,20 @@ fn extended_frames() -> Vec<(String, Vec<u8>)> {
         }),
     ));
     out.push(("bind".into(), built(|b| encode_frontend::bind(b, "", "s1"))));
+    // A `Bind` that actually carries values, including a null and an empty
+    // string, which are the two the length field distinguishes and the pair a
+    // reader is most likely to conflate.
+    out.push((
+        "bind-with-parameters".into(),
+        built(|b| {
+            encode_frontend::bind_with_parameters(
+                b,
+                "",
+                "s1",
+                &[Some(b"alice"), None, Some(b""), Some(&[0xff, 0x00, 0xfe])],
+            );
+        }),
+    ));
     out.push(("execute".into(), built(|b| encode_frontend::execute(b, ""))));
     out.push((
         "close-statement".into(),

@@ -135,6 +135,108 @@ pub enum FrontendError {
     /// A `Describe` or `Close` named neither a statement nor a portal.
     #[error("unknown describe/close target byte {0:?}")]
     UnknownTarget(u8),
+    /// [`bind_parameters`] was handed something that is not a `Bind`.
+    #[error("expected a Bind frame, got tag {0:?}")]
+    NotABind(u8),
+}
+
+/// The parameter values a `Bind` carries, read on demand.
+///
+/// # Why this is not a field on [`FrontendMessage::Bind`]
+///
+/// Every extended-protocol statement sends a `Bind`, and the relay decodes one
+/// for each. Parameter values are variable in number and length, so holding
+/// them in the variant means a `Vec` allocated on a path that currently
+/// allocates nothing, on every node, whether or not anything wants them.
+///
+/// The one thing that wants them is the query cache, which is off by default
+/// and opt-in per tenant. So the values are read by a caller that has already
+/// decided to build a cache key, and the decode stays what it was.
+///
+/// # What the wire says
+///
+/// After the two names a `Bind` carries a count of parameter format codes and
+/// that many `int16`s, then a count of parameter values and that many
+/// length-prefixed byte strings, then the result format codes. A length of
+/// `-1` is SQL `NULL`, which is not the same as a value of length zero and is
+/// kept apart here for the same reason it is on the wire: two rows that differ
+/// only in a null are two different rows.
+///
+/// # Lengths are not trusted
+///
+/// A count and a length both come from the client, and a decoder that
+/// allocated on either is a decoder that a malformed message turns into an
+/// allocation. Nothing here reserves ahead of what it has read, and every read
+/// goes through [`Reader`], which refuses to move past the end of the frame.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct BindParameters<'a> {
+    values: Vec<Option<&'a [u8]>>,
+}
+
+impl<'a> BindParameters<'a> {
+    /// The values, in order. `None` is SQL `NULL`.
+    #[must_use]
+    pub fn values(&self) -> &[Option<&'a [u8]>] {
+        &self.values
+    }
+
+    /// How many there are.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Whether the statement was bound with no parameters at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+}
+
+/// Reads the parameter values out of a `Bind` frame.
+///
+/// # Errors
+///
+/// [`FrontendError::NotABind`] if the frame is not one, and
+/// [`FrontendError::Field`] if it is truncated or its counts do not match what
+/// follows them.
+pub fn bind_parameters<'a>(frame: &Frame<'a>) -> Result<BindParameters<'a>, FrontendError> {
+    if frame.tag() != Tag::BIND {
+        return Err(FrontendError::NotABind(frame.tag().0));
+    }
+
+    let mut r = Reader::new(frame.body());
+    r.cstr("portal_name")?;
+    r.cstr("statement_name")?;
+
+    // The format codes are skipped rather than returned. They say how the
+    // values are encoded, text or binary, and a caller keying a cache on the
+    // bytes does not need to know: two `Bind`s that encoded the same value
+    // differently produce different bytes and therefore different keys, which
+    // costs an entry and cannot merge two questions into one.
+    let formats = r.i16("parameter_format_count")?;
+    for _ in 0..formats.max(0) {
+        r.i16("parameter_format")?;
+    }
+
+    let count = r.i16("parameter_count")?;
+    // Not `with_capacity`. The count is the client's and the values have not
+    // been read yet, so reserving on it is a nine-byte message asking for
+    // thirty-two thousand pointers.
+    let mut values = Vec::new();
+    for _ in 0..count.max(0) {
+        let len = r.i32("parameter_length")?;
+        if len < 0 {
+            // SQL NULL. Any negative length is one: the protocol says -1, and
+            // treating -2 as a length would be reading backwards.
+            values.push(None);
+            continue;
+        }
+        let len = usize::try_from(len).unwrap_or(0);
+        values.push(Some(r.bytes(len, "parameter_value")?));
+    }
+
+    Ok(BindParameters { values })
 }
 
 /// Decodes a frontend frame.
@@ -186,6 +288,140 @@ pub fn decode<'a>(frame: &Frame<'a>) -> Result<FrontendMessage<'a>, FrontendErro
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    #[test]
+    fn a_binds_parameter_values_come_back_in_order() {
+        // `M9.12`. Two bindings of one statement are two questions, and until
+        // this existed they shared a cache key.
+        let mut out = Vec::new();
+        crate::encode_frontend::bind_with_parameters(
+            &mut out,
+            "",
+            "s1",
+            &[Some(b"alice"), None, Some(b""), Some(b"42")],
+        );
+        let frame = frame(Tag::BIND, &out[5..]);
+
+        let params = bind_parameters(&frame).unwrap();
+        assert_eq!(
+            params.values(),
+            &[Some(&b"alice"[..]), None, Some(&b""[..]), Some(&b"42"[..])]
+        );
+        assert_eq!(params.len(), 4);
+        assert!(!params.is_empty());
+    }
+
+    #[test]
+    fn a_null_and_an_empty_value_are_not_the_same_parameter() {
+        // The distinction the wire draws with a length of -1, and the one a
+        // cache key has to keep: `WHERE name = ''` and `WHERE name IS NULL`
+        // are different questions with different answers.
+        let mut null = Vec::new();
+        crate::encode_frontend::bind_with_parameters(&mut null, "", "s", &[None]);
+        let mut empty = Vec::new();
+        crate::encode_frontend::bind_with_parameters(&mut empty, "", "s", &[Some(b"")]);
+
+        let null = bind_parameters(&frame(Tag::BIND, &null[5..])).unwrap();
+        let empty = bind_parameters(&frame(Tag::BIND, &empty[5..])).unwrap();
+
+        assert_eq!(null.values(), &[None]);
+        assert_eq!(empty.values(), &[Some(&b""[..])]);
+        assert_ne!(null, empty);
+    }
+
+    #[test]
+    fn a_bind_with_no_parameters_reads_as_none_rather_than_failing() {
+        let mut out = Vec::new();
+        crate::encode_frontend::bind(&mut out, "p", "s");
+        let params = bind_parameters(&frame(Tag::BIND, &out[5..])).unwrap();
+        assert!(params.is_empty());
+        assert_eq!(params.len(), 0);
+    }
+
+    #[test]
+    fn format_codes_are_skipped_rather_than_read_as_values() {
+        // A `Bind` may carry a format code per parameter before the values.
+        // A reader that did not skip them would take the first code as a
+        // length and read the values at an offset.
+        let mut body = Vec::new();
+        body.extend_from_slice(b"\0");
+        body.extend_from_slice(b"s\0");
+        body.extend_from_slice(&2_i16.to_be_bytes()); // two format codes
+        body.extend_from_slice(&0_i16.to_be_bytes());
+        body.extend_from_slice(&1_i16.to_be_bytes()); // binary
+        body.extend_from_slice(&2_i16.to_be_bytes()); // two values
+        body.extend_from_slice(&3_i32.to_be_bytes());
+        body.extend_from_slice(b"abc");
+        body.extend_from_slice(&1_i32.to_be_bytes());
+        body.extend_from_slice(&[0xff]);
+        body.extend_from_slice(&0_i16.to_be_bytes());
+
+        let params = bind_parameters(&frame(Tag::BIND, &body)).unwrap();
+        assert_eq!(params.values(), &[Some(&b"abc"[..]), Some(&[0xff_u8][..])]);
+    }
+
+    #[test]
+    fn something_that_is_not_a_bind_is_refused_by_tag() {
+        let mut out = Vec::new();
+        crate::encode_frontend::query(&mut out, "SELECT 1");
+        let err = bind_parameters(&frame(Tag::QUERY, &out[5..])).unwrap_err();
+        assert!(matches!(err, FrontendError::NotABind(_)), "{err:?}");
+    }
+
+    #[test]
+    fn a_length_longer_than_the_frame_is_refused_rather_than_allocated() {
+        // The reason this is its own task. A count and a length both come from
+        // the client, and a decoder that trusted either is how a nine-byte
+        // message becomes an allocation.
+        let mut body = Vec::new();
+        body.extend_from_slice(b"\0");
+        body.extend_from_slice(b"\0");
+        body.extend_from_slice(&0_i16.to_be_bytes());
+        body.extend_from_slice(&1_i16.to_be_bytes());
+        body.extend_from_slice(&i32::MAX.to_be_bytes()); // two gigabytes, in a nine-byte frame
+        assert!(bind_parameters(&frame(Tag::BIND, &body)).is_err());
+    }
+
+    #[test]
+    fn a_count_larger_than_what_follows_it_is_refused() {
+        // Thirty-two thousand parameters claimed and none supplied. Nothing
+        // reserves on the count, so this is a short read rather than a
+        // half-gigabyte `Vec`.
+        let mut body = Vec::new();
+        body.extend_from_slice(b"\0");
+        body.extend_from_slice(b"\0");
+        body.extend_from_slice(&0_i16.to_be_bytes());
+        body.extend_from_slice(&i16::MAX.to_be_bytes());
+        assert!(bind_parameters(&frame(Tag::BIND, &body)).is_err());
+    }
+
+    #[test]
+    fn a_negative_count_reads_as_no_parameters() {
+        // Not a length the protocol produces, so what matters is that it is
+        // refused or read as nothing rather than turned into a loop bound.
+        for count in [-1_i16, i16::MIN] {
+            let mut body = Vec::new();
+            body.extend_from_slice(b"\0");
+            body.extend_from_slice(b"\0");
+            body.extend_from_slice(&0_i16.to_be_bytes());
+            body.extend_from_slice(&count.to_be_bytes());
+            body.extend_from_slice(&0_i16.to_be_bytes());
+            let params = bind_parameters(&frame(Tag::BIND, &body)).unwrap();
+            assert!(params.is_empty(), "{count}");
+        }
+    }
+
+    #[test]
+    fn reading_parameters_never_panics_on_arbitrary_bytes() {
+        // The fuzz target covers this properly; this is the cheap version that
+        // runs in tier 1, where the fuzz target does not.
+        for len in 0..40_usize {
+            let body: Vec<u8> = (0..len)
+                .map(|i| u8::try_from(i % 256).unwrap_or(0).wrapping_mul(37))
+                .collect();
+            let _ = bind_parameters(&frame(Tag::BIND, &body));
+        }
+    }
+
     use super::*;
 
     fn frame(tag: Tag, body: &[u8]) -> Frame<'_> {
