@@ -22,11 +22,12 @@
 //! sixteen.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::Instant;
 
 use pgprox_core::cache::{CacheKey, CachedResult, QueryCache};
 use pgprox_core::clock::Clock;
+use pgprox_core::config::QueryCacheConfig;
 use pgprox_core::ids::TenantId;
 
 /// What the cache has been doing, for metrics and for `SHOW CACHE`.
@@ -86,22 +87,76 @@ struct Inner {
 }
 
 /// A query result cache bounded by bytes.
+///
+/// # Settings are live, not constructor arguments
+///
+/// A node is built once and runs for weeks, and its configuration is pulled
+/// rather than pushed: an operator adding a tenant to a `ConfigMap` expects the
+/// running node to start caching for it, not to need a restart. So the budget,
+/// the TTL cap and the tenant list all live behind a lock the tick loop
+/// replaces through [`Store::reconfigure`].
+///
+/// They are in a second lock rather than in `inner` because they are read on
+/// every statement and written once a second, which is what an `RwLock` is for,
+/// and because [`Store::serves`] has to answer without touching the entry map
+/// at all.
 #[derive(Debug)]
 pub struct Store {
     clock: Arc<dyn Clock>,
-    max_bytes: usize,
+    settings: RwLock<QueryCacheConfig>,
     inner: Mutex<Inner>,
 }
 
 impl Store {
-    /// Builds a cache holding at most `max_bytes`.
+    /// Builds a cache that serves nobody.
+    ///
+    /// Off, because that is what a node with no `query_cache` section is and
+    /// the composition root builds this before it has read one.
     #[must_use]
-    pub fn new(clock: Arc<dyn Clock>, max_bytes: usize) -> Arc<Self> {
+    pub fn new(clock: Arc<dyn Clock>) -> Arc<Self> {
         Arc::new(Self {
             clock,
-            max_bytes,
+            settings: RwLock::new(QueryCacheConfig::default()),
             inner: Mutex::new(Inner::default()),
         })
+    }
+
+    /// Applies a new configuration.
+    ///
+    /// Three things happen, and the order matters: the settings are replaced,
+    /// then every entry for a tenant that is no longer served is dropped, then
+    /// what is left is evicted down to the new budget. A tenant taken out of
+    /// the document has had its cache turned off, and leaving its results
+    /// resident would mean an operator who revoked the opt-in still had a node
+    /// holding that tenant's rows.
+    pub fn reconfigure(&self, config: &QueryCacheConfig) {
+        {
+            let mut settings = self
+                .settings
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *settings == *config {
+                // The common case by far: a tick that changed nothing. Nothing
+                // below would do anything either, and taking the entry lock
+                // once a second for that is a lock a profile does not need to
+                // show.
+                return;
+            }
+            settings.clone_from(config);
+        }
+
+        let mut inner = self.lock();
+        let doomed: Vec<CacheKey> = inner
+            .entries
+            .keys()
+            .filter(|key| !config.serves(&key.tenant))
+            .cloned()
+            .collect();
+        for key in doomed {
+            inner.remove(&key);
+            inner.stats.invalidated += 1;
+        }
+        inner.evict_to_fit(config.max_bytes);
     }
 
     /// What it has been doing.
@@ -115,10 +170,20 @@ impl Store {
         }
     }
 
-    /// The byte budget it was built with.
+    /// The byte budget it is currently holding to.
     #[must_use]
-    pub const fn max_bytes(&self) -> usize {
-        self.max_bytes
+    pub fn max_bytes(&self) -> usize {
+        self.with_settings(|settings| settings.max_bytes)
+    }
+
+    /// Reads something out of the settings.
+    ///
+    /// A closure returning a small value rather than a method handing out the
+    /// settings themselves: the tenant list is a map, and cloning it on every
+    /// statement to answer one question about it is the kind of cost that only
+    /// shows up under load.
+    fn with_settings<T>(&self, read: impl FnOnce(&QueryCacheConfig) -> T) -> T {
+        read(&self.settings.read().unwrap_or_else(PoisonError::into_inner))
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -168,7 +233,18 @@ impl Inner {
 
 #[async_trait::async_trait]
 impl QueryCache for Store {
+    fn serves(&self, tenant: &TenantId) -> bool {
+        self.with_settings(|settings| settings.serves(tenant))
+    }
+
     async fn get(&self, key: &CacheKey) -> Option<CachedResult> {
+        // Not counted as a miss. A miss says the working set does not fit;
+        // this says the tenant is not using the cache, and mixing them makes
+        // the hit rate of the tenants that did opt in unreadable.
+        if !self.serves(&key.tenant) {
+            return None;
+        }
+
         let now = self.clock.now();
         let mut inner = self.lock();
 
@@ -193,6 +269,23 @@ impl QueryCache for Store {
     }
 
     async fn put(&self, key: CacheKey, value: CachedResult) {
+        // What the tenant is configured for, and nothing stored for a tenant
+        // that is not. This is where ADR 0021's bound is actually applied:
+        // whatever the caller asked for, the entry expires no later than the
+        // configured TTL, which is itself already bounded by the operator's
+        // cap.
+        let (Some(granted), max_bytes) =
+            self.with_settings(|settings| (settings.ttl_for(&key.tenant), settings.max_bytes))
+        else {
+            return;
+        };
+        // Rewritten rather than only used to compute `expires_at`, so what a
+        // hit reports as its TTL is what the entry actually got.
+        let value = CachedResult {
+            ttl: value.ttl.min(granted),
+            ..value
+        };
+
         let bytes = weigh(&key, &value);
         let now = self.clock.now();
         let mut inner = self.lock();
@@ -200,14 +293,15 @@ impl QueryCache for Store {
         // Bigger than the whole budget. Storing it would evict everything else
         // and then be evicted itself by the next insert, which is a cache that
         // does nothing but churn.
-        if bytes > self.max_bytes {
+        if bytes > max_bytes {
             inner.stats.rejected += 1;
             return;
         }
 
-        // A TTL far enough out to overflow the clock. Nothing sensible is
-        // being asked for, and refusing is better than storing an entry that
-        // never expires.
+        // A TTL far enough out to overflow the clock. Unreachable through a
+        // configuration a document produced, because `parse_duration` refuses
+        // one that long, and kept because `reconfigure` takes a `Config` and
+        // this file is not the place that gets to assume where it came from.
         let Some(expires_at) = now.checked_add(value.ttl) else {
             inner.stats.rejected += 1;
             return;
@@ -231,7 +325,7 @@ impl QueryCache for Store {
             },
         );
 
-        inner.evict_to_fit(self.max_bytes);
+        inner.evict_to_fit(max_bytes);
     }
 
     async fn invalidate_tenant(&self, tenant: &TenantId) {
@@ -280,6 +374,7 @@ mod tests {
     use std::time::Duration;
 
     use pgprox_core::clock::FakeClock;
+    use pgprox_core::config::TenantCache;
 
     use super::*;
 
@@ -299,9 +394,34 @@ mod tests {
         }
     }
 
+    /// A configuration serving `tenants`, with room for anything a test asks.
+    ///
+    /// An hour, so the cap is never what a test below is measuring. The tests
+    /// that are about the cap set their own.
+    fn config(max_bytes: usize, tenants: &[&str]) -> QueryCacheConfig {
+        QueryCacheConfig {
+            max_bytes,
+            ttl_cap: Duration::from_secs(3600),
+            tenants: tenants
+                .iter()
+                .map(|name| {
+                    (
+                        TenantId::new(name),
+                        TenantCache {
+                            ttl: Duration::from_secs(3600),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// A store serving the two tenants the tests below use.
     fn store(max_bytes: usize) -> (Arc<Store>, Arc<FakeClock>) {
         let clock = Arc::new(FakeClock::new());
-        (Store::new(clock.clone(), max_bytes), clock)
+        let store = Store::new(clock.clone());
+        store.reconfigure(&config(max_bytes, &["acme", "other"]));
+        (store, clock)
     }
 
     #[tokio::test]
@@ -426,18 +546,158 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_ttl_that_would_overflow_the_clock_is_refused() {
-        // Nothing sensible is being asked for, and an entry that never expires
-        // is the one thing ADR 0021 does not allow.
-        let (cache, _clock) = store(64 * 1024);
+    async fn a_caller_asking_to_keep_something_forever_gets_the_configured_ttl() {
+        // The relay asks for `Duration::MAX`, meaning it has no staleness
+        // bound of its own. ADR 0021's bound is the configured one, applied
+        // here, and this is what makes an entry that never expires
+        // unrepresentable rather than merely refused.
+        let clock = Arc::new(FakeClock::new());
+        let cache = Store::new(clock.clone());
+        cache.reconfigure(&QueryCacheConfig {
+            ttl_cap: Duration::from_secs(30),
+            ..config(64 * 1024, &["acme"])
+        });
+
         let forever = CachedResult {
             frames: Arc::from(vec![0_u8; 16].as_slice()),
             ttl: Duration::MAX,
         };
         cache.put(key("acme", "forever"), forever).await;
 
-        assert_eq!(cache.stats().rejected, 1);
-        assert!(cache.get(&key("acme", "forever")).await.is_none());
+        assert_eq!(cache.stats().rejected, 0, "the entry was refused, not cut");
+        // Cut to the cap, and reported as the TTL it actually got rather than
+        // the one that was asked for.
+        assert_eq!(
+            cache.get(&key("acme", "forever")).await.unwrap().ttl,
+            Duration::from_secs(30)
+        );
+
+        clock.advance(Duration::from_secs(30));
+        assert!(
+            cache.get(&key("acme", "forever")).await.is_none(),
+            "an entry outlived the cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_caller_asking_for_less_than_the_cap_keeps_its_own_number() {
+        // The cap is a ceiling, not a setting. A caller with a shorter bound
+        // of its own keeps it.
+        let (cache, clock) = store(64 * 1024);
+        cache.put(key("acme", "brief"), result(16, 50)).await;
+
+        clock.advance(Duration::from_millis(50));
+        assert!(
+            cache.get(&key("acme", "brief")).await.is_none(),
+            "a short TTL was stretched to the configured one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_store_serves_nobody() {
+        // What the composition root builds before it has read a document, and
+        // what a node with no `query_cache` section keeps for its whole life.
+        let cache = Store::new(Arc::new(FakeClock::new()));
+        assert!(!cache.serves(&TenantId::new("acme")));
+
+        cache.put(key("acme", "SELECT 1"), result(16, 1000)).await;
+        assert!(cache.get(&key("acme", "SELECT 1")).await.is_none());
+
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 0);
+        // Not counted as a miss or a rejection. A miss says the working set
+        // does not fit and a rejection says a result was too big; neither is
+        // true of a node that was never turned on, and counting them here
+        // would make the hit rate of a node that is on unreadable.
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.rejected, 0);
+    }
+
+    #[tokio::test]
+    async fn a_tenant_that_never_opted_in_is_not_served_by_a_store_that_is_on() {
+        let (cache, _clock) = store(64 * 1024);
+        assert!(cache.serves(&TenantId::new("acme")));
+        assert!(!cache.serves(&TenantId::new("globex")));
+
+        cache.put(key("globex", "SELECT 1"), result(16, 1000)).await;
+        assert!(cache.get(&key("globex", "SELECT 1")).await.is_none());
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[tokio::test]
+    async fn a_document_adding_a_tenant_starts_serving_it_without_a_restart() {
+        // The acceptance for hot reload, at the level this crate owns: the
+        // same store, no rebuild, and a tenant that was refused a moment ago.
+        let (cache, _clock) = store(64 * 1024);
+        assert!(!cache.serves(&TenantId::new("globex")));
+
+        cache.reconfigure(&config(64 * 1024, &["acme", "other", "globex"]));
+
+        assert!(cache.serves(&TenantId::new("globex")));
+        cache.put(key("globex", "SELECT 1"), result(16, 1000)).await;
+        assert!(cache.get(&key("globex", "SELECT 1")).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_tenant_taken_out_of_the_document_leaves_nothing_behind() {
+        // An opt-in that was revoked. Leaving the entries resident would mean
+        // an operator who turned a tenant's cache off still had a node holding
+        // that tenant's rows, which is the thing they turned it off to stop.
+        let (cache, _clock) = store(64 * 1024);
+        cache.put(key("acme", "SELECT 1"), result(1024, 1000)).await;
+        cache
+            .put(key("other", "SELECT 1"), result(1024, 1000))
+            .await;
+        assert_eq!(cache.stats().entries, 2);
+
+        cache.reconfigure(&config(64 * 1024, &["other"]));
+
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 1);
+        assert!(
+            cache.get(&key("other", "SELECT 1")).await.is_some(),
+            "the tenant that stayed lost its entries"
+        );
+        assert_eq!(stats.invalidated, 1);
+        // And the bytes came back, rather than a budget that slowly stops
+        // meaning anything as tenants come and go.
+        assert!(stats.bytes < 1200, "held {} bytes", stats.bytes);
+    }
+
+    #[tokio::test]
+    async fn lowering_the_budget_evicts_down_to_it_immediately() {
+        // Rather than at the next insert. An operator lowering this is usually
+        // doing it because the node is using too much memory now.
+        let (cache, _clock) = store(64 * 1024);
+        for name in ["a", "b", "c", "d"] {
+            cache.put(key("acme", name), result(1024, 1000)).await;
+        }
+        assert_eq!(cache.stats().entries, 4);
+
+        cache.reconfigure(&config(2400, &["acme", "other"]));
+
+        let stats = cache.stats();
+        assert!(stats.bytes <= 2400, "still holding {} bytes", stats.bytes);
+        assert!(stats.evicted >= 2, "evicted {}", stats.evicted);
+        assert_eq!(cache.max_bytes(), 2400);
+    }
+
+    #[tokio::test]
+    async fn a_reconfigure_that_changes_nothing_disturbs_nothing() {
+        // The common case: a tick a second, for weeks. If this evicted or
+        // counted anything the cache would be emptied by its own config loop.
+        let (cache, _clock) = store(64 * 1024);
+        cache.put(key("acme", "SELECT 1"), result(16, 1000)).await;
+
+        for _ in 0..10 {
+            cache.reconfigure(&config(64 * 1024, &["acme", "other"]));
+        }
+
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 1);
+        assert_eq!(stats.evicted, 0);
+        assert_eq!(stats.invalidated, 0);
+        assert!(cache.get(&key("acme", "SELECT 1")).await.is_some());
     }
 
     #[tokio::test]

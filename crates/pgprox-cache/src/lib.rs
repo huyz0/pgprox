@@ -13,6 +13,15 @@
 //! ways: a store that
 //! expires badly serves stale data, which the TTL bounds, while a store handed
 //! something uncacheable serves wrong data, which nothing bounds.
+//!
+//! # Who it serves is configuration, and configuration moves
+//!
+//! [`Store`] holds no settings of its own. The byte budget, the TTL cap and
+//! the tenant list all come from `pgprox_core::config::QueryCacheConfig`
+//! through [`Store::reconfigure`], which the node's tick loop calls with
+//! whatever the document currently says. A store built and then never
+//! reconfigured serves nobody, which is the right thing for a node that has
+//! not been told otherwise.
 
 #![forbid(unsafe_code)]
 

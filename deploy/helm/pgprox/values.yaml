@@ -73,6 +73,20 @@ config:
   #    max_connections: 4800
   #    guaranteed_fraction: 0.3
 
+  # The query result cache. Off, and off means no tenant listed.
+  #
+  # It promises bounded staleness and nothing stronger: an entry may be up to
+  # its TTL old, and a write through another proxy node or straight into the
+  # database is not something this node can see. Listing a tenant here is that
+  # tenant saying reads this old are acceptable for its workload, so it is not
+  # a decision to make on their behalf. See ADR 0021.
+  queryCache:
+    maxBytes: 64MiB
+    # The ceiling on any tenant's ttl below, whatever it asks for.
+    ttlCap: 30s
+    tenants: {}
+    #  acme: { ttl: 5s }
+
 resources:
   requests:
     cpu: 500m

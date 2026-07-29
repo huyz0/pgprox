@@ -646,6 +646,38 @@ query_cache:
     }
 
     #[test]
+    fn the_section_the_helm_chart_renders_parses() {
+        // Block style with unquoted scalars, which is what `toYaml` emits and
+        // not what the flow-style tests above write. A chart that rendered a
+        // document the node refuses is a failed rollout, and it would be found
+        // in a cluster rather than here.
+        let text = "\
+max_client_conns: 5000
+drain_grace: 60s
+grant_ttl_cap: 300s
+
+query_cache:
+  max_bytes: 16MiB
+  ttl_cap: 10s
+  tenants:
+    acme:
+      ttl: 5s
+    globex:
+      ttl: 500ms
+";
+        let config = parse(text).unwrap();
+        assert_eq!(config.query_cache.max_bytes, 16 * 1024 * 1024);
+        assert_eq!(
+            config.query_cache.ttl_for(&TenantId::new("acme")),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(
+            config.query_cache.ttl_for(&TenantId::new("globex")),
+            Some(Duration::from_millis(500))
+        );
+    }
+
+    #[test]
     fn a_tenant_asking_for_more_than_the_cap_gets_the_cap() {
         let text = "query_cache:\n  ttl_cap: 10s\n  tenants:\n    acme: { ttl: 1h }\n";
         let config = parse(text).unwrap();

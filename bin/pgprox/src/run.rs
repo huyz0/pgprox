@@ -250,9 +250,11 @@ fn bind_client(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
 #[must_use]
 pub fn context(app: &App, shutdown: &Shutdown) -> Context {
     Context {
-        // Off. ADR 0021 makes that the default, and `M9.8` is what a config
-        // document will use to say otherwise.
-        cache: None,
+        // Present on every node and serving nobody until a document names a
+        // tenant. ADR 0021 makes off the default; what makes it off is an
+        // empty tenant list rather than an absent store, so an operator can
+        // turn it on without a restart.
+        cache: Some(Arc::clone(&app.cache) as Arc<dyn pgprox_core::cache::QueryCache>),
         slab: Arc::clone(&app.slab),
         routes: Arc::clone(&app.routes),
         statics: app.statics.clone(),
@@ -647,8 +649,16 @@ async fn ticker(
         probes.beat();
 
         // The ceiling follows the document, because an operator raising it is
-        // usually doing so while the node is refusing connections.
-        gate.set_ceiling(app.deps.config.watch().borrow().max_client_conns);
+        // usually doing so while the node is refusing connections. The cache
+        // follows it for the same reason and in the same place: a tenant added
+        // to a ConfigMap starts being served on the next tick, and one removed
+        // has its results dropped on it.
+        {
+            let live = app.deps.config.watch();
+            let live = live.borrow();
+            gate.set_ceiling(live.max_client_conns);
+            app.cache.reconfigure(&live.query_cache);
+        }
         app.cluster.tick();
         app.cluster.report(
             app.sessions.len(),
@@ -1040,6 +1050,79 @@ mod tests {
         .expect("the tick stopped when the reaper was added");
 
         assert!(ran >= 1);
+    }
+
+    #[tokio::test]
+    async fn a_document_that_adds_a_tenant_turns_the_cache_on_without_a_restart() {
+        // `M9.13`'s acceptance. The store is built once, at startup, when no
+        // tenant has opted in; what a document changes is who it serves, and
+        // the tick loop is what carries that across. A node that had to be
+        // restarted to start caching would make every opt-in a deploy.
+        use pgprox_core::cache::QueryCache;
+
+        let acme = pgprox_core::ids::TenantId::new("acme");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "max_client_conns: 100\n").unwrap();
+
+        let source = pgprox_config::provider::FileSource::new(
+            pgprox_config::provider::FileConfig::at(&path),
+        )
+        .unwrap();
+        let app = App::build(Deps {
+            config: Arc::clone(&source) as Arc<dyn pgprox_core::config::ConfigSource>,
+            ..deps()
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            !app.cache.serves(&acme),
+            "a document with no query_cache section built a node that caches"
+        );
+
+        let probes = probes(&app);
+        let shutdown = Shutdown::new();
+        let context = Arc::new(context(&app, &shutdown));
+        let gate = Arc::new(Gate::new(10));
+        let drainer = Drainer {
+            context: &context,
+            gate: &gate,
+            addresses: &[],
+            grace: Duration::from_millis(50),
+        };
+
+        // The poll is what notices the file, and nothing starts it here: in a
+        // running node `run` does, and this test drives the tick loop alone.
+        let polling = tokio::spawn(pgprox_core::config::ConfigSource::run_loop(Arc::clone(
+            &source,
+        )));
+
+        std::fs::write(
+            &path,
+            "max_client_conns: 100\nquery_cache:\n  tenants:\n    acme: { ttl: 5s }\n",
+        )
+        .unwrap();
+
+        let turned_on = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                () = async {
+                    loop {
+                        if app.cache.serves(&acme) {
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                } => {}
+                _ = ticker(&app, &probes, &[], &drainer, &shutdown) => {}
+            }
+        })
+        .await;
+
+        shutdown.fire();
+        polling.abort();
+        turned_on.expect("a tenant added to the document never reached the running cache");
+        assert!(app.cache.serves(&acme));
     }
 
     #[tokio::test]

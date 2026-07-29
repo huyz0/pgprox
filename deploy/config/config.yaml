@@ -16,3 +16,17 @@ nodes:
   pgprox-1: {}
   pgprox-2: {}
   pgprox-3: {}
+
+# The query cache, shown and left off.
+#
+# Off is the default and this stack keeps it, because e2e checks what the
+# proxy does with statements and a cached read is a statement the database
+# never sees. Turning it on here would change what those checks measure rather
+# than add a check. `M9.10` measures the cache against the scale workload,
+# which is where the question is whether it helps.
+#
+# query_cache:
+#   max_bytes: 64MiB
+#   ttl_cap: 30s
+#   tenants:
+#     acme: { ttl: 5s }

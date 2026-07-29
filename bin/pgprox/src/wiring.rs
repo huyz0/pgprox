@@ -183,6 +183,14 @@ pub struct App {
     /// connections, so the bound is on the node's buffer memory rather than on
     /// each side of it separately.
     pub slab: Arc<BufferSlab>,
+    /// The query cache.
+    ///
+    /// Built on every node and serving nobody until a document says otherwise,
+    /// rather than built only when one does. An empty store is a lock and two
+    /// empty maps, and building it conditionally would mean a node could not
+    /// be told to start caching without being restarted, which is the one
+    /// thing ADR 0006 says configuration must never require.
+    pub cache: Arc<pgprox_cache::Store>,
 }
 
 impl App {
@@ -284,7 +292,14 @@ impl App {
         let health: SharedHealth = Arc::new(Mutex::new(health));
         lock(&health).started();
 
+        // Configured from the document that just loaded, so a node that starts
+        // with a cache section is caching from its first client rather than
+        // from its first tick.
+        let cache = pgprox_cache::Store::new(Arc::clone(&deps.clock));
+        cache.reconfigure(&config.query_cache);
+
         Ok(Self {
+            cache,
             listener_tls: deps.listener_tls.clone(),
             statics: deps.statics.clone(),
             tenants: Arc::new(pgprox_observe::tenants::TenantAllowlist::new()),

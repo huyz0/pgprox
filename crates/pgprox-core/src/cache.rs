@@ -65,6 +65,26 @@ pub struct CachedResult {
 /// they are the ones a TTL cannot repair. See ADR 0021.
 #[async_trait::async_trait]
 pub trait QueryCache: Send + Sync + fmt::Debug {
+    /// Whether this cache would hold anything for a tenant.
+    ///
+    /// Not async, and cheap enough to call before deciding to build a
+    /// [`CacheKey`]. That is what it is for: normalizing a statement allocates,
+    /// and off is the default, so on most nodes every statement would pay to
+    /// discover there was nothing to look it up in.
+    ///
+    /// Defaulted to true because an implementation that serves everybody it is
+    /// asked about is a valid one, and the default a trait method takes should
+    /// be the behaviour of the simplest implementation rather than the safest
+    /// answer for the caller. A cache that serves nobody would make the fake
+    /// useless by default.
+    ///
+    /// It is a hint about configuration, not a promise about content:
+    /// [`QueryCache::get`] may still return `None`, and a caller must not read
+    /// a `true` here as "there is an entry".
+    fn serves(&self, _tenant: &TenantId) -> bool {
+        true
+    }
+
     /// Looks up a result.
     async fn get(&self, key: &CacheKey) -> Option<CachedResult>;
 
@@ -78,6 +98,13 @@ pub trait QueryCache: Send + Sync + fmt::Debug {
 
 #[async_trait::async_trait]
 impl<T: QueryCache + ?Sized> QueryCache for Arc<T> {
+    // Forwarded rather than defaulted: an `Arc` around a cache that serves
+    // nobody serves nobody, and taking the default here would tell every
+    // caller behind an `Arc` to go on and build a key.
+    fn serves(&self, tenant: &TenantId) -> bool {
+        (**self).serves(tenant)
+    }
+
     async fn get(&self, key: &CacheKey) -> Option<CachedResult> {
         (**self).get(key).await
     }
@@ -96,7 +123,7 @@ pub use fake::FakeQueryCache;
 
 #[cfg(any(test, feature = "test-fakes"))]
 mod fake {
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
     use std::sync::{Mutex, PoisonError};
 
     use super::{Arc, CacheKey, CachedResult, QueryCache, TenantId};
@@ -105,13 +132,29 @@ mod fake {
     #[derive(Debug, Default)]
     pub struct FakeQueryCache {
         entries: Mutex<HashMap<CacheKey, CachedResult>>,
+        /// Who it serves, or everybody if unset.
+        ///
+        /// The real store is off until a document names a tenant, and a fake
+        /// that could not be off would let a test of the "not configured for
+        /// this tenant" path pass without one existing.
+        served: Mutex<Option<BTreeSet<TenantId>>>,
     }
 
     impl FakeQueryCache {
-        /// Builds an empty cache.
+        /// Builds an empty cache that serves everybody.
         #[must_use]
         pub fn new() -> Arc<Self> {
             Arc::new(Self::default())
+        }
+
+        /// Narrows it to these tenants, and drops what the others had.
+        ///
+        /// Dropping is what the real store does when a tenant leaves the
+        /// document: an opt-in that was revoked leaves nothing behind.
+        pub fn serve_only(&self, tenants: impl IntoIterator<Item = TenantId>) {
+            let allowed: BTreeSet<TenantId> = tenants.into_iter().collect();
+            self.lock().retain(|key, _| allowed.contains(&key.tenant));
+            *self.served.lock().unwrap_or_else(PoisonError::into_inner) = Some(allowed);
         }
 
         /// How many entries it holds.
@@ -133,11 +176,25 @@ mod fake {
 
     #[async_trait::async_trait]
     impl QueryCache for FakeQueryCache {
+        fn serves(&self, tenant: &TenantId) -> bool {
+            self.served
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .is_none_or(|allowed| allowed.contains(tenant))
+        }
+
         async fn get(&self, key: &CacheKey) -> Option<CachedResult> {
+            if !self.serves(&key.tenant) {
+                return None;
+            }
             self.lock().get(key).cloned()
         }
 
         async fn put(&self, key: CacheKey, value: CachedResult) {
+            if !self.serves(&key.tenant) {
+                return;
+            }
             self.lock().insert(key, value);
         }
 
@@ -251,6 +308,7 @@ mod tests {
     #[tokio::test]
     async fn cache_works_through_an_arc_dyn() {
         let cache: Arc<dyn QueryCache> = FakeQueryCache::new();
+        assert!(cache.serves(&TenantId::new("acme")));
         cache.put(key("acme", "SELECT 1", "public"), result()).await;
         assert!(
             cache
@@ -258,5 +316,52 @@ mod tests {
                 .await
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn a_cache_that_does_not_serve_a_tenant_says_so_before_being_asked() {
+        // The question the relay asks before it builds a key, because building
+        // one allocates and off is the default. The fake answers it the way the
+        // real store does, so a test of the gate is a test of the gate.
+        let cache = FakeQueryCache::new();
+        cache.put(key("acme", "SELECT 1", "public"), result()).await;
+        cache
+            .put(key("globex", "SELECT 1", "public"), result())
+            .await;
+
+        cache.serve_only([TenantId::new("acme")]);
+
+        assert!(cache.serves(&TenantId::new("acme")));
+        assert!(!cache.serves(&TenantId::new("globex")));
+
+        // And narrowing dropped what the tenant that left had, rather than
+        // leaving its rows resident on a node that no longer serves it.
+        assert_eq!(cache.len(), 1);
+        assert!(
+            cache
+                .get(&key("globex", "SELECT 1", "public"))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tenant_that_is_not_served_stores_nothing() {
+        let cache = FakeQueryCache::new();
+        cache.serve_only([TenantId::new("acme")]);
+        cache
+            .put(key("globex", "SELECT 1", "public"), result())
+            .await;
+        assert!(cache.is_empty(), "a cache stored for a tenant it refuses");
+    }
+
+    #[tokio::test]
+    async fn serving_everybody_is_what_an_unconfigured_cache_does() {
+        // The default the trait takes, checked through the fake: a cache that
+        // was never narrowed answers for anyone.
+        let cache: Arc<dyn QueryCache> = FakeQueryCache::new();
+        for tenant in ["acme", "globex", ""] {
+            assert!(cache.serves(&TenantId::new(tenant)), "{tenant}");
+        }
     }
 }

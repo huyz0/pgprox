@@ -2156,7 +2156,7 @@ the relay lands before the cacheability rule is finished.
   keying separately. Worth doing only if `M9.10` says the cache helps: most
   drivers use the extended protocol, so a cache that cannot serve it is a cache
   most traffic misses.
-- [ ] `M9.13` Configuration, the half the node obeys. `M9.8` gives an operator
+- [x] `M9.13` Configuration, the half the node obeys. `M9.8` gives an operator
   a way to say it; this is what makes saying it change anything, and it is
   where the hot-reload acceptance lives.
   Three pieces. The store's settings become live rather than constructor
@@ -2181,3 +2181,14 @@ the relay lands before the cacheability rule is finished.
   Acceptance: a running node with no `query_cache` section caches nothing, a
   document adding a tenant makes it start caching without a restart, and one
   removing that tenant drops what was held for it.
+  Done. The session future came in at 5,064 bytes rather than 5,088: dropping
+  the grant from `store_answer` also dropped it from `read_the_answer`, which
+  is 24 bytes back in every session. The hot-reload test was checked by
+  deleting the `reconfigure` call and watching it fail, because a test of a
+  wiring change that passes either way is the shape this milestone has already
+  shipped twice.
+  The e2e stack keeps the cache off, with the section written out and commented
+  in `deploy/config/config.yaml`. Turning it on there would change what M6's
+  three properties measure rather than add a check: a cached read is a
+  statement the database never sees. `M9.10` turns it on against the scale
+  workload, which is where the question is whether it helps.

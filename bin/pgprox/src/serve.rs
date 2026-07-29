@@ -189,12 +189,17 @@ pub struct Context {
     /// serves in the clear. The handshake config is what decides whether that
     /// is allowed; this is only the means.
     pub tls: Option<tokio_rustls::TlsAcceptor>,
-    /// The query cache, when a document turned one on.
+    /// The query cache.
     ///
-    /// `None` is a node that caches nothing, which is what ADR 0021 makes the
-    /// default: the cache promises bounded staleness and a tenant has to ask
-    /// for it. Every path that touches it is behind this, so a node without
-    /// one does not pay for the decision.
+    /// A running node always has one and it serves nobody until a document
+    /// names a tenant, which is what ADR 0021 makes the default: the cache
+    /// promises bounded staleness and a tenant has to ask for it. Being off is
+    /// a property of the store rather than of this field, so an operator can
+    /// turn it on without a restart.
+    ///
+    /// Still an `Option`, because a test that is not about the cache should
+    /// not have to build one, and because the type here is the trait rather
+    /// than the store: nothing on this path knows which implementation it has.
     pub cache: Option<Arc<dyn pgprox_core::cache::QueryCache>>,
 }
 
@@ -692,7 +697,6 @@ where
             conn,
             &mut pumping,
             &message,
-            grant,
         );
         if Box::pin(answered).await? && grant.pool.mode != pgprox_core::auth::PoolMode::Session {
             Box::pin(release(&mut held, &mut relay, context, conn)).await?;
@@ -764,7 +768,6 @@ async fn read_the_answer<S>(
     conn: ConnId,
     pumping: &mut Pumping,
     asked: &pgprox_proto::frontend::FrontendMessage<'_>,
-    grant: &Grant,
 ) -> Result<bool, ShellError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -774,7 +777,7 @@ where
     // Only when there is something to store, so a node that caches nothing
     // pays one comparison here.
     if pumping.recording.is_some() {
-        store_answer(context, pumping, grant).await;
+        store_answer(context, pumping).await;
     }
 
     Ok(releasable)
@@ -803,11 +806,20 @@ async fn cache_before_sending<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    // The guard is here rather than at the call site, so a node with no cache
-    // pays one comparison and returns. Boxing this to keep it out of the
-    // session's frame was tried and cost more than it saved: the borrow it
-    // needs cannot be taken lazily, so the future had to be built either way.
-    if context.cache.is_none() {
+    // The guard is here rather than at the call site, so a tenant nobody has
+    // opted in for pays a read lock and a map lookup and returns. Boxing this
+    // to keep it out of the session's frame was tried and cost more than it
+    // saved: the borrow it needs cannot be taken lazily, so the future had to
+    // be built either way.
+    //
+    // `serves` rather than `is_none`, because the store is now built on every
+    // node and turned on by a document. A node that caches nothing has one
+    // that serves nobody rather than no store at all.
+    if !context
+        .cache
+        .as_ref()
+        .is_some_and(|cache| cache.serves(&grant.tenant))
+    {
         return Ok(false);
     }
 
@@ -839,9 +851,10 @@ where
 
 /// The cache key for a simple query, when this statement may be cached.
 ///
-/// `None` covers three different things and does not distinguish them: no
-/// cache on this node, not a simple query, or a statement the cacheability
-/// rule refused. `M9.9` is what will count them apart.
+/// `None` covers four different things and does not distinguish them: no cache
+/// wired in at all, a tenant that has not opted in, a message that is not a
+/// simple query, or a statement the cacheability rule refused. `M9.9` is what
+/// will count them apart.
 ///
 /// # Only the simple protocol, for now
 ///
@@ -863,7 +876,15 @@ fn cache_key(
 ) -> Option<Box<Recording>> {
     use pgprox_proto::frontend::FrontendMessage;
 
-    context.cache.as_ref()?;
+    // Before anything that allocates. `normalize` builds a string per
+    // statement, and on a node where no tenant has opted in, which is the
+    // default and so most nodes, that would be a string built to look up
+    // nothing. `serves` is a read lock and a map lookup.
+    let cache = context.cache.as_ref()?;
+    if !cache.serves(&grant.tenant) {
+        return None;
+    }
+
     let FrontendMessage::Query { sql } = message else {
         return None;
     };
@@ -889,12 +910,22 @@ fn cache_key(
     }))
 }
 
+/// What the relay asks a cached entry to live for.
+///
+/// The longest there is, which is how a caller with no opinion says so: the
+/// cache takes the smaller of this and what the tenant is configured for, so
+/// asking for forever means asking for exactly the configured TTL. It is not a
+/// request to keep anything forever, and the store could not honour one.
+const NO_STALENESS_BOUND_HERE: Duration = Duration::MAX;
+
 /// Stores what the server just said, when it may be stored.
 ///
-/// The TTL is the grant's. A tenant's own bound on how long a resolved grant
-/// may be trusted is the same bound its results may be served under, and one
-/// number an operator can reason about beats two.
-async fn store_answer(context: &Context, pumping: &mut Pumping, grant: &Grant) {
+/// No TTL of its own. The relay knows nothing about how stale a tenant's reads
+/// may be, so it says so with [`NO_STALENESS_BOUND_HERE`] and the cache applies
+/// the configured one. It used to pass the grant's TTL, which is a credential's
+/// lifetime standing in for a staleness bound: two unrelated numbers that
+/// happened to both be durations.
+async fn store_answer(context: &Context, pumping: &mut Pumping) {
     // Taken whatever happens, so a statement that must not be stored cannot
     // leave bytes behind for the next one to pick up.
     let recorded = pumping.recording.take();
@@ -911,7 +942,7 @@ async fn store_answer(context: &Context, pumping: &mut Pumping, grant: &Grant) {
             recording.key,
             pgprox_core::cache::CachedResult {
                 frames: std::sync::Arc::from(recording.frames.as_slice()),
-                ttl: grant.ttl,
+                ttl: NO_STALENESS_BOUND_HERE,
             },
         )
         .await;
@@ -941,9 +972,10 @@ async fn invalidate_on_write(
 ) {
     use pgprox_proto::frontend::FrontendMessage;
 
-    // Nothing to do on a node with no cache, which is every node until a
-    // document says otherwise. The classifier is not run either: this is the
-    // guard that keeps the feature free for anyone not using it.
+    // Nothing to do on a node with no cache. The caller has already checked
+    // that this tenant is served, so this is the narrower guard of the two and
+    // exists because a function that can drop a tenant's results should not
+    // depend on where it was called from to be safe.
     let Some(cache) = context.cache.as_ref() else {
         return;
     };
@@ -2371,6 +2403,34 @@ mod tests {
         (context, cache)
     }
 
+    /// A context with the real store in it, configured for `tenants`.
+    ///
+    /// The fake serves everybody, which is right for the tests that are about
+    /// the relay and wrong for the ones that are about who the cache is for.
+    /// Its clock comes back so a test can walk past a TTL.
+    fn context_with_store(
+        addr: SocketAddr,
+        tenants: &[&str],
+        ttl: Duration,
+    ) -> (Context, Arc<pgprox_cache::Store>, Arc<FakeClock>) {
+        use pgprox_core::config::{QueryCacheConfig, TenantCache};
+
+        let clock = Arc::new(FakeClock::new());
+        let store = pgprox_cache::Store::new(clock.clone());
+        store.reconfigure(&QueryCacheConfig {
+            max_bytes: 1024 * 1024,
+            ttl_cap: Duration::from_secs(60),
+            tenants: tenants
+                .iter()
+                .map(|name| (pgprox_core::ids::TenantId::new(name), TenantCache { ttl }))
+                .collect(),
+        });
+
+        let mut context = context_for(addr);
+        context.cache = Some(store.clone());
+        (context, store, clock)
+    }
+
     /// An entry for `acme`, so a test can watch it disappear.
     fn seed(cache: &Arc<FakeQueryCache>) -> pgprox_core::cache::CacheKey {
         let key = pgprox_core::cache::CacheKey {
@@ -2488,6 +2548,55 @@ mod tests {
             before,
             "a hit still sent the statement upstream"
         );
+    }
+
+    #[tokio::test]
+    async fn a_tenant_nobody_opted_in_for_is_never_cached_for() {
+        // ADR 0021's first consequence, at the layer a client would notice it.
+        // Every node has a store now, so this is what makes "off by default"
+        // true: the store is there and it serves nobody.
+        let addr = fake_postgres().await;
+        let (context, store, _clock) = context_with_store(addr, &[], Duration::from_secs(5));
+        let context = Arc::new(context);
+
+        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        let after_first = statements_seen(addr).len();
+        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+
+        assert_eq!(store.stats().entries, 0, "a result was stored for nobody");
+        assert!(
+            statements_seen(addr).len() > after_first,
+            "the second statement was answered from a cache serving nobody"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_lives_for_the_configured_ttl_rather_than_the_grants() {
+        // The relay has no opinion about staleness and says so. It used to
+        // pass the grant's TTL, which is how long a credential may be trusted:
+        // a different question that happens to have the same units.
+        let addr = fake_postgres().await;
+        let (context, store, clock) = context_with_store(addr, &["acme"], Duration::from_secs(5));
+        let context = Arc::new(context);
+
+        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        assert_eq!(store.stats().entries, 1, "the answer was not stored");
+        let after_first = statements_seen(addr).len();
+
+        // Inside the TTL, the server hears nothing.
+        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        assert_eq!(statements_seen(addr).len(), after_first);
+        assert_eq!(store.stats().hits, 1);
+
+        // Past it, the statement goes upstream again. Whatever the grant said,
+        // this is the number the document chose.
+        clock.advance(Duration::from_secs(5));
+        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        assert!(
+            statements_seen(addr).len() > after_first,
+            "an entry outlived the configured TTL"
+        );
+        assert_eq!(store.stats().expired, 1);
     }
 
     #[tokio::test]
