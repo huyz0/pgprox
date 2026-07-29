@@ -2176,6 +2176,27 @@ the relay lands before the cacheability rule is finished.
   an acquire, so the question is whether contention falls. Acceptance: a
   recorded run in `product/perf/`, and the number is reported whichever way it
   comes out.
+- [x] `M9.16` A cache hit is a statement that went somewhere, and nothing
+  counts it. `record_statement` runs after the relay's `decide`, and a hit
+  returns before that, so `pgprox_route_total` misses every one.
+  Found while taking `M9.10`'s measurement, where it made the arithmetic wrong
+  in the direction that flatters: the cache-on runs reported 8.7% fewer
+  statements and slightly worse CPU per statement, when what had actually
+  happened was that eight thousand statements per run were served and not
+  counted. A denominator missing its best cases is worse than no denominator.
+  `route="cache"` as a third value rather than a new metric, because the
+  question `pgprox_route_total` answers is "where did the statements go" and
+  the cache is now one of the places. A third counter on `RouteCounts` rather
+  than a third `RouteTarget`, because the target is what the router chose and a
+  hit never reached the router: adding a variant there would be a `pgprox-core`
+  contract change to describe something the routing layer does not do.
+  Acceptance: a scale run with the cache on reports as many statements as one
+  with it off, plus or minus the noise, and the share the cache served is
+  readable from `/metrics`.
+  Done. `PGPROX_MOCK_TENANT` came with it: the mock sidecar derives a tenant
+  from the token's first eight bytes, which is right for auth tests and useless
+  for a config document that has to name one, and the first cache-on run
+  measured nothing for exactly that reason.
 - [ ] `M9.11` Close M9, which needs `M9.13` as well as everything before it.
   Acceptance: `scripts/m9-complete.sh` exits zero.
 - [ ] `M9.12` The extended protocol, which `M9.7` left out on purpose. A bound

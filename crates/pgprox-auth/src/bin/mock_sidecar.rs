@@ -31,6 +31,14 @@
 //! | `PGPROX_MOCK_USER`      | the startup user the client asked for |
 //! | `PGPROX_MOCK_PASSWORD`  | `mock-password` |
 //! | `PGPROX_MOCK_TLS`       | `verified`, or `disabled` |
+//! | `PGPROX_MOCK_TENANT`    | `tenant-for-<the token's first eight bytes>` |
+//!
+//! The tenant is derived from the token by default because a test wanting two
+//! tenants gets them by sending two tokens, with nothing to configure. That
+//! stops working the moment something has to *name* the tenant somewhere else:
+//! the query cache is opted into per tenant in the config document, and a
+//! document naming a tenant derived from a base64 prefix is a document nobody
+//! can write. `PGPROX_MOCK_TENANT` is for that, and only that.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stdout)]
 
@@ -111,7 +119,8 @@ impl pb::credential_resolver_server::CredentialResolver for MockSidecar {
             .unwrap_or_else(|_| "db-1-replica.internal:5432".into());
 
         Ok(Response::new(pb::ResolveResponse {
-            tenant_id: format!("tenant-for-{}", &token[..token.len().min(8)]),
+            tenant_id: std::env::var("PGPROX_MOCK_TENANT")
+                .unwrap_or_else(|_| format!("tenant-for-{}", &token[..token.len().min(8)])),
             primary: Some(backend(&primary, &database, &user)),
             replicas: replicas
                 .split(',')

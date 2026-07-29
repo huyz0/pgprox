@@ -144,7 +144,11 @@ fn route_samples(
     node: &str,
     routes: &crate::routes::RouteCounts,
 ) {
-    for (route, count) in [("primary", routes.primary()), ("replica", routes.replica())] {
+    for (route, count) in [
+        ("primary", routes.primary()),
+        ("replica", routes.replica()),
+        ("cache", routes.cache()),
+    ] {
         let _ = writeln!(
             out,
             "{}{{node=\"{node}\",route=\"{route}\"}} {count}",

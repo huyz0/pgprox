@@ -1,10 +1,17 @@
 //! Where statements went.
 //!
-//! Two counters, incremented once per statement as the relay decides. They
+//! Three counters, incremented once per statement as the relay decides. They
 //! exist because the question "what share of reads did a replica serve" had no
 //! answer: the pools show connections rather than statements, and a replica
 //! pool at zero could mean the router never chose one or that it chose one and
 //! the connection was already warm.
+//!
+//! The third is the query cache, which is not a `RouteTarget` and has its own
+//! method rather than sharing [`RouteCounts::record`]. A hit never reached the
+//! router, so there is nothing for the router to have chosen; putting it in
+//! the same enum would describe a decision the routing layer does not make.
+//! It belongs in the same *metric* because the question is where the
+//! statements went, and a hit went here.
 //!
 //! Counters rather than a gauge, because the interesting quantity is a ratio
 //! over a run and a gauge would only say what happened at the moment of the
@@ -17,6 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub struct RouteCounts {
     primary: AtomicU64,
     replica: AtomicU64,
+    cache: AtomicU64,
 }
 
 impl RouteCounts {
@@ -43,10 +51,25 @@ impl RouteCounts {
         self.primary.load(Ordering::Relaxed)
     }
 
+    /// Records one statement answered from the query cache.
+    ///
+    /// Apart from [`RouteCounts::record`] because a hit has no
+    /// `RouteTarget`: it is a statement that went nowhere upstream, which is
+    /// the whole point of it.
+    pub fn record_cache_hit(&self) {
+        self.cache.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Statements sent to a replica.
     #[must_use]
     pub fn replica(&self) -> u64 {
         self.replica.load(Ordering::Relaxed)
+    }
+
+    /// Statements answered from the query cache.
+    #[must_use]
+    pub fn cache(&self) -> u64 {
+        self.cache.load(Ordering::Relaxed)
     }
 }
 
@@ -68,13 +91,23 @@ mod tests {
             2,
             "a replica index was counted as primary"
         );
+
+        // And the cache, which is not a target. Recorded through its own
+        // method, and it must not land in either of the other two: a hit
+        // counted as a primary statement would say the proxy sent something
+        // upstream that it did not.
+        counts.record_cache_hit();
+        assert_eq!(counts.cache(), 1);
+        assert_eq!(counts.primary(), 1, "a cache hit was counted as primary");
+        assert_eq!(counts.replica(), 2, "a cache hit was counted as a replica");
     }
 
     #[test]
-    fn a_fresh_pair_counts_nothing() {
+    fn a_fresh_set_counts_nothing() {
         let counts = RouteCounts::default();
         assert_eq!(counts.primary(), 0);
         assert_eq!(counts.replica(), 0);
+        assert_eq!(counts.cache(), 0);
     }
 
     #[test]

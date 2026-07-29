@@ -127,7 +127,7 @@ const REASON: Label = Label {
 const ROUTE: Label = Label {
     name: "route",
     cardinality: 4,
-    bounded_because: "primary or one of a handful of replicas",
+    bounded_because: "primary, the query cache, or one of a handful of replicas",
 };
 
 const RESULT: Label = Label {
@@ -253,10 +253,16 @@ pub const CLUSTER_VIEW_HASH: Metric = Metric {
 /// already warm. A read that a session's own write watermark sends to the
 /// primary is correct and shows up here as a primary statement, which is what
 /// makes the ratio worth watching rather than alarming.
+///
+/// `cache` is the third place a statement can go, and it is the one that never
+/// left the process. It belongs in this metric rather than beside it because
+/// the question is where the statements went: a hit left out of the total
+/// makes every ratio built on it wrong in the direction that flatters the
+/// cache, since its best cases would be missing from the denominator.
 pub const ROUTE_TOTAL: Metric = Metric {
     name: "pgprox_route_total",
     kind: Kind::Counter,
-    help: "Statements routed, by where they went: primary or replica",
+    help: "Statements routed, by where they went: primary, replica, or the query cache",
     labels: &[ROUTE],
 };
 

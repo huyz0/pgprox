@@ -115,6 +115,7 @@ local_up() {
   PGPROX_MOCK_USER=acme_app \
   PGPROX_MOCK_PASSWORD=acme-password \
   PGPROX_MOCK_TLS=disabled \
+  PGPROX_MOCK_TENANT="${LOCAL_TENANT:-acme}" \
     ./target/release/mock_sidecar "$LOCAL_DIR/sidecar.sock" >"$LOCAL_DIR/sidecar.log" 2>&1 &
   echo $! > "$LOCAL_DIR/sidecar.pid"
 
@@ -140,6 +141,22 @@ servers:
 nodes:
   pgprox-1: {}
 CONFIG
+
+  # The query cache, off unless a run asks for it. `LOCAL_QUERY_CACHE` is a TTL
+  # and turns it on for `acme`, which is the tenant every token in a scale run
+  # carries. Off by default because that is what a node is, and because a
+  # measurement harness that quietly enabled a feature would make every number
+  # taken before it incomparable without anybody noticing.
+  if [[ -n "${LOCAL_QUERY_CACHE:-}" ]]; then
+    cat >> "$LOCAL_DIR/config.yaml" <<CACHE
+
+query_cache:
+  max_bytes: ${LOCAL_QUERY_CACHE_BYTES:-64MiB}
+  ttl_cap: ${LOCAL_QUERY_CACHE}
+  tenants:
+    acme: { ttl: ${LOCAL_QUERY_CACHE} }
+CACHE
+  fi
 
   local proxy="${LOCAL_PROXY_BIN:-}"
   if [[ -z "$proxy" ]]; then

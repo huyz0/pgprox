@@ -629,6 +629,12 @@ where
         // must not carry this in every frame.
         pumping.recording = cache_key(context, grant, &message, &session_state, &relay);
         if cache_before_sending(wire, context, grant, &message, &mut pumping).await? {
+            // Counted here rather than left to `record_statement` below, which
+            // this `continue` skips. A hit is a statement the client asked for
+            // and got an answer to, and leaving it out makes every ratio built
+            // on this counter wrong in the direction that flatters the cache:
+            // its best cases vanish from the denominator.
+            context.routes.record_cache_hit();
             continue;
         }
 
@@ -2547,6 +2553,21 @@ mod tests {
             statements_seen(addr).len(),
             before,
             "a hit still sent the statement upstream"
+        );
+
+        // And it is still a statement. A hit that went uncounted makes every
+        // ratio built on this counter wrong in the direction that flatters the
+        // cache: the statements it served best are the ones missing from the
+        // denominator, which is what `M9.16` was opened for.
+        assert_eq!(
+            context.routes.cache(),
+            1,
+            "a hit was answered and not counted"
+        );
+        assert_eq!(
+            context.routes.primary(),
+            1,
+            "the miss that filled the cache was not counted as a primary statement"
         );
     }
 

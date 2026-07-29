@@ -213,7 +213,32 @@ route_counts() {
   awk '
     /^pgprox_route_total\{.*route="primary"/ { primary = $NF }
     /^pgprox_route_total\{.*route="replica"/ { replica = $NF }
-    END { printf "%d %d\n", primary, replica }
+    /^pgprox_route_total\{.*route="cache"/ { cached = $NF }
+    END { printf "%d %d %d\n", primary, replica, cached }
+  ' <<< "$metrics"
+}
+
+# What the query cache did: tenants configured, then hits, misses and expiries.
+#
+# From the same `/metrics` the route counts come from, because a run that
+# reported a hit rate from somewhere else would be reporting a second number
+# for the same thing. `tenants` first, since zero means the cache was off and
+# every other figure below it is a zero that means nothing.
+cache_counts() {
+  local metrics
+  if [[ "$MODE" == "local" ]]; then
+    metrics="$(curl --silent "http://127.0.0.1:$LOCAL_ADMIN_PORT/metrics" 2>/dev/null)"
+  else
+    metrics="$("${COMPOSE[@]}" exec -T pgprox-1 \
+      curl --silent http://127.0.0.1:9090/metrics 2>/dev/null)"
+  fi
+  awk '
+    /^pgprox_cache_tenants\{/ { tenants = $NF }
+    /^pgprox_cache_total\{.*result="hit"/ { hits = $NF }
+    /^pgprox_cache_total\{.*result="miss"/ { misses = $NF }
+    /^pgprox_cache_total\{.*result="expired"/ { expired = $NF }
+    /^pgprox_cache_total\{.*result="invalidated"/ { invalidated = $NF }
+    END { printf "%d %d %d %d %d\n", tenants, hits, misses, expired, invalidated }
   ' <<< "$metrics"
 }
 
@@ -319,8 +344,8 @@ run_scale() {
   # Last, because it is the phase that leaves the machine busiest, and because
   # what it measures does not compare against anything: memory, the upstream
   # cap and the error count are all about this node under many connections.
-  local routed_primary_before routed_replica_before cpu_before
-  read -r routed_primary_before routed_replica_before < <(route_counts)
+  local routed_primary_before routed_replica_before routed_cache_before cpu_before
+  read -r routed_primary_before routed_replica_before routed_cache_before < <(route_counts)
   cpu_before="$(proxy_cpu_ms)"
 
   echo "  running $CONNECTIONS connections through pgprox-1 for ${DURATION}s"
@@ -337,10 +362,15 @@ run_scale() {
   # The delta across the full-count phase, not the counter's total: the
   # matched-load phase runs through the same node and its statements are in
   # the same counter, so a total would be a ratio over two different workloads.
-  local routed_primary routed_replica
-  read -r routed_primary routed_replica < <(route_counts)
+  local routed_primary routed_replica routed_cache
+  read -r routed_primary routed_replica routed_cache < <(route_counts)
   routed_primary=$(( routed_primary - routed_primary_before ))
   routed_replica=$(( routed_replica - routed_replica_before ))
+  routed_cache=$(( routed_cache - routed_cache_before ))
+
+  local cache_tenants cache_hits cache_misses cache_expired cache_invalidated
+  read -r cache_tenants cache_hits cache_misses cache_expired cache_invalidated \
+    < <(cache_counts)
 
   local peak_rss peak_upstream
   read -r peak_rss peak_upstream < "$proxy_report.watch"
@@ -380,14 +410,28 @@ run_scale() {
   echo "    p50            ${loaded_p50}us"
   echo "    p99            ${loaded_p99}us"
   echo "  upstream conns   $peak_upstream of $UPSTREAM_CAP"
-  local routed_total=$(( routed_primary + routed_replica ))
+  # Every statement, including the ones the cache answered. Leaving those out
+  # would make the per-statement CPU below wrong in the direction that flatters
+  # the cache, which is exactly what `M9.16` was opened for.
+  local routed_total=$(( routed_primary + routed_replica + routed_cache ))
   if (( routed_total > 0 )); then
-    echo "  statements       $routed_total: $routed_replica on a replica ($(( routed_replica * 100 / routed_total ))%)"
+    echo "  statements       $routed_total: $routed_replica on a replica ($(( routed_replica * 100 / routed_total ))%), $routed_cache from the cache ($(( routed_cache * 100 / routed_total ))%)"
     # CPU per statement, which M7.46 is about. A number nobody can reproduce
     # is a number nobody can tell has changed, and 4.5ms came from an ad-hoc
     # `perf` session that left nothing behind.
     if (( cpu_ms > 0 )); then
       echo "  proxy cpu        ${cpu_ms}ms over the phase, $(( cpu_ms * 1000 / routed_total ))us per statement"
+    fi
+  fi
+  # The cache, and only when it is on. A run against a node with no
+  # `query_cache` section should not print five zeroes an operator has to
+  # decide the meaning of.
+  if (( cache_tenants > 0 )); then
+    local cache_lookups=$(( cache_hits + cache_misses + cache_expired ))
+    if (( cache_lookups > 0 )); then
+      echo "  cache            $cache_hits hit / $cache_lookups lookup ($(( cache_hits * 100 / cache_lookups ))%), $cache_invalidated invalidated"
+    else
+      echo "  cache            on for $cache_tenants tenant(s), never looked in"
     fi
   fi
   echo "  baseline         $direct_connections connections, $direct_errors error(s)"
