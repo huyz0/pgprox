@@ -2658,8 +2658,21 @@ the relay lands before the cacheability rule is finished.
   improves on a hang. That is its reason in the baseline.
   Coverage went from 98.9% to 99.06%, which is the smaller half of what the six
   tests were worth.
-- [ ] `M10.6` The survivors in `pgprox-route`, eight of them, five of which are
+- [x] `M10.6` The survivors in `pgprox-route`, eight of them, five of which are
   timeouts. Same rule as `M10.4`.
+  Two were real and both are now tests. `begins_read_only_transaction` joins its
+  `SET` arm with `&&`, and replacing that with `||` made a bare `SET` open a
+  transaction; nothing noticed because no case in the table was a `SET` that is
+  read only and is not a transaction. `SET SESSION CHARACTERISTICS AS
+  TRANSACTION READ ONLY` is exactly that, and it is a statement a real
+  application sends. And `ReplicaWatch::is_empty` returning true unconditionally
+  survived everything, because the only assertion on it was for a watch with no
+  replicas: it now has one for a watch with two, which is what decides whether a
+  grant's replicas are polled at all.
+  The other six stay, five as hangs and one as an equivalent mutant. The
+  equivalent one is worth the sentence it gets in the baseline: `i < len` becomes
+  `i <= len`, and because `bytes[i..]` at the end is an empty slice rather than
+  out of bounds, the loop exits one iteration later with the same answer.
 - [ ] `M10.7` The survivors in `pgprox-proto`, eighteen. Same rule. This is the
   crate whose own rules say a malformed frame must not take down a node, so a
   survivor in a length or a bound is the highest-value kind in the repo.

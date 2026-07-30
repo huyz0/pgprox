@@ -354,6 +354,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_watch_with_no_replicas_polls_nothing() {
+        // Built first, because the binding below shadows the helper that makes
+        // one. And asserted at all because nothing did until `M10.6`:
+        // `is_empty` returning true unconditionally survived every test here,
+        // and it is what decides whether a grant's replicas are polled.
+        let (populated, _) = watch(2);
+        assert!(!populated.is_empty());
+
         let (watch, _clock) = watch(0);
         let probe = Arc::new(FakeProbe::new(Vec::new()));
 

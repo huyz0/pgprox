@@ -823,6 +823,11 @@ mod tests {
             "BEGIN ISOLATION LEVEL SERIALIZABLE",
             "SELECT 1",
             "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+            // Sets the default for transactions that have not started yet, and
+            // opens none. `M10.6` found that replacing the `&&` in the `SET`
+            // arm with an `||` survived every case here, because none of them
+            // was a `SET` that is read only and is not a transaction.
+            "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY",
             "",
             "'BEGIN READ ONLY'",
         ] {

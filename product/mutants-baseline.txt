@@ -51,14 +51,12 @@ pgprox-proto|crates/pgprox-proto/src/session.rs|SessionState::on_frontend|	untri
 pgprox-proto|crates/pgprox-proto/src/startup.rs|Startup<'_>::options|&&	untriaged
 
 # --- pgprox-route ---
-pgprox-route|crates/pgprox-route/src/classify.rs|begins_read_only_transaction|||	untriaged
-pgprox-route|crates/pgprox-route/src/classify.rs|classify_one|(Default::default(), true)	untriaged (timeout: the mutant made something not terminate)
-pgprox-route|crates/pgprox-route/src/classify.rs|classify|	untriaged (timeout: the mutant made something not terminate)
-pgprox-route|crates/pgprox-route/src/hints.rs|split_block_comment|*=	untriaged (timeout: the mutant made something not terminate)
-pgprox-route|crates/pgprox-route/src/hints.rs|split_block_comment|-=	untriaged (timeout: the mutant made something not terminate)
-pgprox-route|crates/pgprox-route/src/hints.rs|split_block_comment|<=	untriaged
-pgprox-route|crates/pgprox-route/src/hints.rs|statement_hint|==	untriaged (timeout: the mutant made something not terminate)
-pgprox-route|crates/pgprox-route/src/poller.rs|ReplicaWatch::is_empty|true	untriaged
+pgprox-route|crates/pgprox-route/src/classify.rs|classify_one|(Default::default(), true)	as above, a whole-body replacement that does not terminate
+pgprox-route|crates/pgprox-route/src/classify.rs|classify|	the body is replaced wholesale and the mutant does not terminate; the suite detects it by hanging, which the tool reports as a survivor rather than a kill
+pgprox-route|crates/pgprox-route/src/hints.rs|split_block_comment|*=	as above: `i *= 1` is a no-op and the scan never advances
+pgprox-route|crates/pgprox-route/src/hints.rs|split_block_comment|-=	the scan index stops advancing, so the walk over a block comment never ends; a hang rather than a wrong answer
+pgprox-route|crates/pgprox-route/src/hints.rs|split_block_comment|<=	equivalent. The loop guard becomes `i <= bytes.len()`, and at `i == len` the slice `bytes[i..]` is empty rather than out of bounds, so the body matches nothing, adds one, and the loop exits with the same result one iteration later
+pgprox-route|crates/pgprox-route/src/hints.rs|statement_hint|==	as above
 
 # --- pgprox-session ---
 pgprox-session|crates/pgprox-session/src/auth.rs|<impl StaticCredentials for Arc<T>>::challenge|None	untriaged
