@@ -26,7 +26,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M7 | Scale and performance | complete; 100k connections held at 546 MB against a 500 MB target, and `M7.58` later took CPU per statement from 687us to 43.7us |
 | M8 | FIPS and release | complete |
 | M9 | Query cache (post-MVP) | complete; it costs 7.8% of the median on the reference workload, which is the opposite of what `M9.10` measured and is a fact about `M7.58` |
-| M10 | The claims nothing enforces | open |
+| M10 | The claims nothing enforces | open; every task is done and `scripts/m10-complete.sh`, which this file names as the condition, does not exist |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -428,3 +428,40 @@ run says the cache costs 8% of the median on a workload with 30% writes and two
 thirds of its statements inside a transaction, and that it says nothing about the
 workload the feature is for. A read-heavy workload document and a matched pair
 against it is a day's answer to a question the milestone left open.
+
+**Where it stands.** All three claims are now enforced by something that fails.
+Eleven milestone gates run in CI, the fuzz target and the mutation run are
+nightly jobs with artifacts, and `standards/testing.md` describes what runs.
+
+**What mutation testing was worth, which is the part that could not be predicted
+from the claim.** 89 survivors against line coverage of 96% to 99%, and working
+through them found real gaps rather than bookkeeping: a `StaticCredentials`
+blanket impl that production takes and no test did, so forwarding that returned
+`None` would have refused every login on a real node while the suite stayed
+green; `is_done` and `is_closed` asserted in one direction only, which is the
+shape of a session admitted without authenticating; three `Debug` impls whose
+redaction tests asserted only what must not appear, so an impl that printed
+nothing passed; a `Bind` and a `Close` that were never counted because an
+`Execute`'s completion settled the sequence either way; and a bounds check in
+`sequence::split` whose test had to be written twice, because a payload
+truncated after the completion is refused for another reason entirely.
+
+**And one finding about the tool rather than the code.** `cargo mutants` gives
+the whole suite one budget, so under `cargo test` a mutant that hangs one test
+costs the run its verdict and is reported as surviving whether or not another
+test failed it. `M10.13` found that by writing assertions that fail six mutants
+and watching all six come back as timeouts. Running the suite under nextest with
+a per-test cap turned twenty-three baseline entries into kills without a line of
+test code. What is left is nine equivalent mutants, each with an argument beside
+it. **A timeout was a run nobody read, not a mutant the suite caught**, and
+every reason written beside those entries had said otherwise.
+
+**What the measurements said.** The cache is 24.4% better on a read-heavy
+workload at five hundred connections and 17.5% worse on the same document at two
+thousand, where that workload saturates. So whether it helps is a property of
+the workload *and the load*, not of the workload alone, and `M9.24`'s queueing
+explanation survives the test built to break it. Serving 36% of statements costs
+17.5% of the median where serving 3% cost 7.8%: the regression grows with the
+hit rate, which is the mechanism's own signature. See
+`product/perf/run-2026-07-30-cached-workload.md` and
+`run-2026-07-31-saturation.md`.

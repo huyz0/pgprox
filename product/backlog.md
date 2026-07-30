@@ -2982,7 +2982,7 @@ the relay lands before the cacheability rule is finished.
   three orders of magnitude below the reference workload's and its throughput is
   three times higher. A run with no queue cannot confirm a claim about queues.
   `M10.9` is that test.
-- [ ] `M10.9` Test the queueing explanation directly. `M9.24` said the cache
+- [x] `M10.9` Test the queueing explanation directly. `M9.24` said the cache
   regressed the median because the database was saturated, throughput was pinned
   by it, and a statement answered instantly returned its client to the queue
   sooner. `M10.5` improved the median on a workload that saturates nothing, which
@@ -2994,3 +2994,44 @@ the relay lands before the cacheability rule is finished.
   either number.
   Acceptance: a connection count at which the read-heavy workload saturates,
   recorded with how it was found, and a matched pair at that count.
+  It saturates between one and two thousand connections, four times what the
+  reference workload needs, and the walk says so three ways at once: throughput
+  stops rising (53,597 then 106,890 then 136,798 then 135,705 as the count
+  doubles and doubles again), the median leaves the direct baseline by a factor
+  of 144, and the direct baseline itself never moves off 320us.
+  The pair ran at two thousand. The cache is **17.5% worse on the median**, sets
+  not overlapping, so `M9.24`'s explanation stands as stated rather than as
+  incomplete. The prediction written before the run named both readings, and
+  this is the one that leaves the claim intact.
+  The falsification that mattered did not fire. Throughput with the cache on is
+  4.2% higher on the means, which would have said the database does not pin it,
+  and the sets overlap by 330 transactions out of 136,000. By the standard
+  `M9.24` applied to its own hop figure that is not a result, and it is not
+  claimed as one. It is left open in the run document rather than resolved,
+  because three pairs cannot separate 4% from noise and settling it is a
+  different task.
+  The size is the part worth keeping. `M9.24` served 3% of statements and cost
+  7.8% of the median; this serves 36% and costs 17.5%. Serving more made it
+  worse, which is the mechanism's own signature rather than a surprise.
+  And the finding that outlives both: whether the cache helps is not a property
+  of the workload. The same document is 24.4% better at five hundred connections
+  and 17.5% worse at two thousand. ADR 0021 says opt-in per tenant; this says an
+  operator also has to know where their fleet sits against its database.
+  Recorded in `product/perf/run-2026-07-31-saturation.md`.
+- [ ] `M10.17` Write `scripts/m10-complete.sh`, which the roadmap has named as
+  this milestone's completion condition since the milestone was filed and which
+  does not exist. Every other task in M10 is done and the milestone cannot be
+  called complete, which is precisely the failure mode M10 is about: a claim
+  with nothing that fails when it stops holding. It was found by trying to run
+  the gate rather than by reading the file.
+  The roadmap already says what it checks: every milestone gate that does not
+  need Docker runs in CI, the fuzz target runs on a schedule rather than only by
+  hand, mutation testing exists as a script with a recorded baseline, and
+  `standards/testing.md` describes what actually runs.
+  Some of that is already enforced elsewhere. `scripts/check-drift.sh` asserts
+  that every `scripts/m*-complete.sh`, `release-check.sh`, `fuzz.sh` and
+  `mutants.sh` is named in `.github/workflows/ci.yml`, which is the first check
+  in a different place. The gate should assert what is not covered rather than
+  restate it, and should say where the overlap is.
+  Acceptance: the script exists, runs without Docker, fails if any of the four
+  claims stops holding, is named in CI like its siblings, and passes.
