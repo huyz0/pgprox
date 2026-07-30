@@ -2569,7 +2569,7 @@ the relay lands before the cacheability rule is finished.
 - [x] `M10.0` Decompose it, which is a task here because the commit-msg hook
   wants a task ID on every commit and a milestone's plan is a commit. The five
   below, the roadmap section, and the completion condition.
-- [ ] `M10.1` CI runs every milestone gate, and notices the next one that is not
+- [x] `M10.1` CI runs every milestone gate, and notices the next one that is not
   wired. Eleven `scripts/m*-complete.sh` exist and CI's milestone job runs three:
   M-1, M6 and M7. The other eight passed on the commit that closed their
   milestone and nothing has checked them since, which makes them a record of what
@@ -2582,6 +2582,9 @@ the relay lands before the cacheability rule is finished.
   than no gate, because the roadmap cites it as evidence.
   Acceptance: CI names every `m*-complete.sh` and `release-check.sh`, the drift
   check fails when one is missing, and all of them pass on this commit.
+  All eight passed, so wiring them added no failures and the gap was only ever
+  that nothing would have said. The drift check was watched failing on all eight
+  before the workflow was touched.
 - [ ] `M10.2` The codec is fuzzed by something other than memory.
   `pgprox-proto/AGENTS.md` says a malformed frame must not take down a node and
   that this is "fuzzed, not assumed". `scripts/fuzz.sh` exists and no scheduled

@@ -82,6 +82,29 @@ else
   fail ".agents/skills/ missing"
 fi
 
+# --- every milestone gate is wired into CI -----------------------------------
+#
+# A gate nobody runs is worse than no gate, because the roadmap cites it as
+# evidence that a milestone still holds. Eight of these had fired exactly once,
+# on the commit that closed their milestone, until `M10.1`. This is here rather
+# than in a milestone script so that adding an `m11-complete.sh` and forgetting
+# to wire it fails the pre-commit hook rather than waiting for somebody to
+# notice.
+CI_WORKFLOW=".github/workflows/ci.yml"
+if [[ -f "$CI_WORKFLOW" ]]; then
+  unwired=0
+  for gate in scripts/m*-complete.sh scripts/release-check.sh; do
+    [[ -f "$gate" ]] || continue
+    if ! grep -qF "$gate" "$CI_WORKFLOW"; then
+      fail "$gate is not run by $CI_WORKFLOW: a gate nobody runs is a record, not a gate"
+      unwired=1
+    fi
+  done
+  (( unwired == 0 )) && ok "every milestone gate is wired into CI"
+else
+  fail "missing $CI_WORKFLOW"
+fi
+
 # --- standards referenced by AGENTS.md actually exist ------------------------
 missing=0
 while read -r link; do

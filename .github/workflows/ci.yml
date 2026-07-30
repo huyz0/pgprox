@@ -138,13 +138,38 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
+      # Every gate for every milestone that has closed, in order. Each passed on
+      # the commit that closed it, so a failure here is a regression rather than
+      # unfinished work, and all of them together take less time than the
+      # coverage job.
+      #
+      # Three of these ran here until `M10.1` and the other eight did not, which
+      # made them a record of what was once true while the roadmap cited them as
+      # evidence. `scripts/check-drift.sh` now fails when a gate is not named
+      # here, so the next one cannot be forgotten.
+      #
+      # The parts that need Docker or a driver toolchain are in the scripts these
+      # call out to and are not run here: e2e.sh, scale.sh, conformance.sh and
+      # rolling-upgrade.sh all want a stack.
       - name: M-1
         run: scripts/m-1-complete.sh
-      # The gates for the milestones that have closed. Each one passed on the
-      # commit that closed it, so a failure here is a regression rather than
-      # unfinished work. The parts that need Docker are in the scripts these
-      # call out to and are not run here: e2e.sh and scale.sh want a stack.
+      - name: M0
+        run: scripts/m0-complete.sh
+      - name: M1R
+        run: scripts/m1r-complete.sh
+      - name: M1F
+        run: scripts/m1f-complete.sh
+      - name: M3
+        run: scripts/m3-complete.sh
+      - name: M4
+        run: scripts/m4-complete.sh
+      - name: M5
+        run: scripts/m5-complete.sh
       - name: M6
         run: scripts/m6-complete.sh
       - name: M7
         run: scripts/m7-complete.sh
+      - name: M8
+        run: scripts/release-check.sh
+      - name: M9
+        run: scripts/m9-complete.sh
