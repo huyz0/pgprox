@@ -2563,3 +2563,74 @@ the relay lands before the cacheability rule is finished.
   three properties measure rather than add a check: a cached read is a
   statement the database never sees. `M9.10` turns it on against the scale
   workload, which is where the question is whether it helps.
+
+## M10: the claims nothing enforces
+
+- [x] `M10.0` Decompose it, which is a task here because the commit-msg hook
+  wants a task ID on every commit and a milestone's plan is a commit. The five
+  below, the roadmap section, and the completion condition.
+- [ ] `M10.1` CI runs every milestone gate, and notices the next one that is not
+  wired. Eleven `scripts/m*-complete.sh` exist and CI's milestone job runs three:
+  M-1, M6 and M7. The other eight passed on the commit that closed their
+  milestone and nothing has checked them since, which makes them a record of what
+  was once true rather than a gate. All eight are Docker-free and run in seconds,
+  and `scripts/release-check.sh` is the same story for M8.
+  The wiring is the easy half. The half that matters is that adding an
+  `m11-complete.sh` and forgetting to wire it must fail something, so
+  `scripts/check-drift.sh` grows the assertion: every milestone gate in
+  `scripts/` is named in `.github/workflows/ci.yml`. A gate nobody runs is worse
+  than no gate, because the roadmap cites it as evidence.
+  Acceptance: CI names every `m*-complete.sh` and `release-check.sh`, the drift
+  check fails when one is missing, and all of them pass on this commit.
+- [ ] `M10.2` The codec is fuzzed by something other than memory.
+  `pgprox-proto/AGENTS.md` says a malformed frame must not take down a node and
+  that this is "fuzzed, not assumed". `scripts/fuzz.sh` exists and no scheduled
+  job runs it, so the most exposed parser in the process is fuzzed exactly as
+  often as somebody remembers to.
+  It goes in the nightly job the FIPS build already uses, with a time budget
+  rather than a target count, because a fuzzer on a shared runner is measured in
+  minutes and not in executions. The corpus that finds something is committed, so
+  the next run starts where the last one stopped rather than from nothing.
+  Acceptance: the scheduled job runs `scripts/fuzz.sh` with a bounded duration,
+  the script takes that duration as an argument, and a crash leaves a committed
+  reproducer rather than a line in a log nobody reads.
+- [ ] `M10.3` Mutation testing, which `standards/testing.md` says already runs.
+  It says `cargo-mutants` runs nightly against the pure state machines and that
+  surviving mutants are treated as missing tests. There is no script, no job, and
+  the tool is not installed. Either the sentence goes or the thing exists.
+  M9 is the argument for the thing existing. Three of its defects were invisible
+  because a fake answered something Postgres refuses, and one fix went in
+  half-applied and green. Each is exactly what a surviving mutant looks like: a
+  line whose removal changes nothing any test can see.
+  `scripts/mutants.sh` runs against the sans-I/O crates the standard names, with
+  a timeout per mutant and a baseline file of survivors that are accepted with a
+  reason each. New survivors fail the script; the baseline is a list nobody may
+  grow without saying why.
+  Acceptance: the script exists, runs, and records a baseline; the nightly job
+  calls it; and `standards/testing.md` describes what runs rather than what was
+  intended.
+- [ ] `M10.4` The survivors worth killing. `M10.3` produces the list; this is the
+  part that turns it into tests, and it is filed separately because the list is
+  not knowable until the tool has run.
+  The rule for triage, so it does not become a scoreboard: a survivor in
+  `pgprox-session`, `pgprox-proto`, `pgprox-route` or `pgprox-cache` earns a test
+  if the mutation it survived would be a wrong answer to a client. A survivor
+  that only changes a log line or an error's wording goes in the baseline with
+  that as its reason.
+  Acceptance: every survivor is either killed by a test or in the baseline with a
+  reason, and the crates' coverage gates still hold.
+- [ ] `M10.5` What the cache is worth on a workload it is for. `M9.24` measured
+  the reference workload and named this as the cheapest thing left, because that
+  workload answers a different question: 30% of its statements are writes, two
+  thirds are inside a `BEGIN`, and only 27% reach a lookup at all.
+  A second workload document, versioned the way `workload.yaml` is, with a
+  read-heavy mix and single-statement transactions. It is not a friendlier
+  version of the same thing and must not be tuned until the answer improves: it
+  is the shape of a tenant that would opt in, chosen once and then measured.
+  The prediction to record before running, so the run can contradict it: below
+  saturation the queueing effect `M9.24` found disappears, because there is no
+  queue to move work to the back of. If the median improves at 500 connections
+  too, then `M9.24`'s explanation is wrong and that is worth more than the
+  improvement.
+  Acceptance: a committed workload document, a matched pair against it whose sets
+  do not overlap, and the prediction recorded before the numbers.

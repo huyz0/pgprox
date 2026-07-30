@@ -25,7 +25,8 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M6 | Integration | complete |
 | M7 | Scale and performance | complete; 100k connections held at 546 MB against a 500 MB target, and `M7.58` later took CPU per statement from 687us to 43.7us |
 | M8 | FIPS and release | complete |
-| M9 | Query cache (post-MVP) | complete; 7% of median latency and of CPU per statement, and the pool lock is untouched |
+| M9 | Query cache (post-MVP) | complete; it costs 7.8% of the median on the reference workload, which is the opposite of what `M9.10` measured and is a fact about `M7.58` |
+| M10 | The claims nothing enforces | open |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -385,3 +386,45 @@ missing its best cases is worse than no denominator, because it reads as a
 result. And the first cache-on run measured nothing at all, because the mock
 sidecar names its tenant after the token's first eight bytes and the config
 document had opted in a tenant that never arrives.
+
+
+## M10: the claims nothing enforces
+
+Every milestone through M9 is complete, and this one exists because three of the
+things this repo says about itself are not true today. None is a feature. Each is
+a claim a reader would take at face value, with nothing that fails when it stops
+holding.
+
+```bash
+scripts/m10-complete.sh
+```
+
+Checks: every milestone gate that does not need Docker runs in CI, the fuzz
+target runs on a schedule rather than only by hand, mutation testing exists as a
+script with a recorded baseline, and `standards/testing.md` describes what
+actually runs.
+
+**The three claims.**
+
+*Eight gates that fired once.* Eleven `scripts/m*-complete.sh` exist and CI runs
+three. Each passed on the commit that closed its milestone and nothing has
+checked it since, so a regression in M0's contract rules or M5's classifier
+property would surface whenever somebody next ran the script by hand. All eight
+are Docker-free and take seconds.
+
+*A codec that is "fuzzed, not assumed".* `pgprox-proto`'s own `AGENTS.md` says
+so, `scripts/fuzz.sh` exists, and nothing runs it. The most exposed parser in the
+process is fuzzed exactly as often as somebody remembers to.
+
+*Mutation testing that "runs nightly".* `standards/testing.md` says
+`cargo-mutants` runs against the pure state machines and that surviving mutants
+are treated as missing tests. There is no script, no job, and the tool is not
+installed. M9 is the argument for doing it rather than deleting the claim: three
+of its defects were invisible because a fake was kinder than Postgres, and one
+fix went in half-applied and green. All four are mutation-shaped.
+
+**And one measurement, because M9.24 named it as the cheapest thing left.** That
+run says the cache costs 8% of the median on a workload with 30% writes and two
+thirds of its statements inside a transaction, and that it says nothing about the
+workload the feature is for. A read-heavy workload document and a matched pair
+against it is a day's answer to a question the milestone left open.
