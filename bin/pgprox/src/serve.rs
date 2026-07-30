@@ -1187,13 +1187,23 @@ where
     };
 
     for (tag, body) in sequence.replay() {
-        let frame = Frame::new(tag, body);
-        let Ok(message) = pgprox_proto::frontend::decode(&frame) else {
+        let Ok(message) = pgprox_proto::frontend::decode(&Frame::new(tag, body)) else {
             // Unreachable: every held frame decoded on its way in, and nothing
             // has touched the bytes since.
             return Err(wire
                 .refuse(ClientError::ProtocolViolation(
                     "a held frame stopped decoding",
+                ))
+                .await);
+        };
+        // Mapped here rather than stored mapped, because the map is one way: a
+        // `Parse` stored under this proxy's own name decodes to a statement no
+        // session's map contains, and what pays for that is the connection's
+        // record of which statements it holds. `M9.24` found it by running.
+        let Some(mapped) = map_statement_name(&message, body, &mut live.session) else {
+            return Err(wire
+                .refuse(ClientError::ProtocolViolation(
+                    "a held frame named a statement this session never parsed",
                 ))
                 .await);
         };
@@ -1235,7 +1245,7 @@ where
             &mut live.pumping,
             &message,
             &live.session,
-            frame,
+            Frame::new(tag, &mapped),
         )
         .await?;
     }
@@ -3486,6 +3496,9 @@ mod tests {
                     encode::ready_for_query(&mut out, TxStatus::Idle);
                     let _ = socket.write_all(&out).await;
 
+                    // What this connection has been asked to prepare, by name.
+                    let mut parsed: std::collections::BTreeSet<String> =
+                        std::collections::BTreeSet::new();
                     loop {
                         let mut header = [0_u8; 5];
                         if socket.read_exact(&mut header).await.is_err() {
@@ -3510,8 +3523,33 @@ mod tests {
 
                         let mut out: Vec<u8> = Vec::new();
                         match header[0] {
-                            // Parse, answered with ParseComplete.
-                            b'P' => out.extend_from_slice(&[b'1', 0, 0, 0, 4]),
+                            // Parse, answered with ParseComplete, unless this
+                            // connection already holds the name.
+                            //
+                            // Postgres refuses that, and a fake that accepted
+                            // it would let the desync `M9.24` found pass every
+                            // test in this file: the proxy's record of what a
+                            // connection holds is only correct if something
+                            // notices when it is not.
+                            b'P' => {
+                                let name = String::from_utf8_lossy(
+                                    &body[..body.iter().position(|b| *b == 0).unwrap_or(0)],
+                                )
+                                .into_owned();
+                                if parsed.contains(&name) {
+                                    let text = format!(
+                                        "SERROR\0C42P05\0Mprepared statement \"{name}\" already exists\0\0"
+                                    );
+                                    out.push(Tag::ERROR_RESPONSE.get());
+                                    out.extend_from_slice(
+                                        &u32::try_from(text.len() + 4).unwrap().to_be_bytes(),
+                                    );
+                                    out.extend_from_slice(text.as_bytes());
+                                } else {
+                                    parsed.insert(name);
+                                    out.extend_from_slice(&[b'1', 0, 0, 0, 4]);
+                                }
+                            }
                             // Describe of a statement: the parameters it takes,
                             // then the row it returns. Two messages, one of
                             // which ends the exchange.
@@ -3668,6 +3706,69 @@ mod tests {
             "a second binding was served the first's answer"
         );
         assert_eq!(cache.len(), 2, "two bindings shared one entry");
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_replayed_sequence_leaves_the_connection_recorded_correctly() {
+        // What `M9.24`'s first run found, at 177 errors in fifteen seconds.
+        //
+        // A held frame was stored after the statement-name rewrite, so the
+        // replay decoded a `Parse` whose name was already this proxy's own.
+        // `statement_of` looks that name up in a map keyed by the client's name,
+        // found nothing, and the connection's record of what it holds was never
+        // updated. The server held the statement and the proxy believed it did
+        // not, so the next `Bind` on that connection prepared it again:
+        // `prepared statement "pgprox_..." already exists`, and after that
+        // `does not exist` as the two sides diverged further.
+        //
+        // The second sequence is the assertion. It only reaches the server
+        // because the write in between drops the entry the first one stored.
+        let addr = fake_postgres_extended().await;
+        let (context, _cache) = context_with_cache(addr);
+        let context = Arc::new(context);
+        let (mut client, served) = extended_client(&context).await;
+
+        client
+            .write_all(&one_binding("SELECT $1", b"1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            four_answers(&mut client).await,
+            vec![
+                Tag(b'1'),
+                Tag(b'2'),
+                Tag::COMMAND_COMPLETE,
+                Tag::READY_FOR_QUERY
+            ]
+        );
+
+        // A write, which drops what the read stored.
+        let mut write = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut write, "UPDATE t SET a = 1");
+        client.write_all(&write).await.unwrap();
+        for _ in 0..2 {
+            expect(&mut client).await;
+        }
+
+        // The same sequence again, now a miss, and it is replayed onto the same
+        // connection the first one prepared the statement on.
+        client
+            .write_all(&one_binding("SELECT $1", b"1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            four_answers(&mut client).await,
+            vec![
+                Tag(b'1'),
+                Tag(b'2'),
+                Tag::COMMAND_COMPLETE,
+                Tag::READY_FOR_QUERY
+            ],
+            "the replayed statement was prepared twice on one connection"
+        );
 
         drop(client);
         let _ = served.await;

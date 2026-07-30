@@ -92,10 +92,14 @@ pub struct Facts<'a> {
 /// statement.
 #[derive(Debug, Default)]
 pub struct HeldSequence {
-    /// The frames as they will go upstream: tag, length, body.
+    /// The frames as the client sent them: tag, length, body.
     ///
-    /// After the statement-name rewrite rather than before it, because a replay
-    /// has to send what would have been sent.
+    /// Before the statement-name rewrite, not after it. The rewrite maps the
+    /// client's private name to this proxy's own, and it is not idempotent to
+    /// read back: a `Parse` stored after it decodes to a statement name that no
+    /// session's map contains, so a replay could not tell which statement it was
+    /// about. `M9.24` found that by running, as a connection whose record of
+    /// what it held had diverged from what the server held.
     frames: Vec<u8>,
     /// The statement's SQL, from whichever frame told the caller about it.
     sql: Option<Arc<str>>,
@@ -233,9 +237,9 @@ impl HeldSequence {
 
     /// Feeds in one client frame.
     ///
-    /// `body` is what would go upstream, so the statement name is already this
-    /// proxy's own. `tag` is its tag, kept alongside because a replay writes
-    /// both.
+    /// `body` is the client's own, so a replay maps its statement name the way
+    /// the frame's first pass through the relay did. `tag` is kept alongside
+    /// because a replay writes both.
     pub fn feed(
         &mut self,
         message: &FrontendMessage<'_>,

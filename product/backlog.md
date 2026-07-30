@@ -2424,7 +2424,7 @@ the relay lands before the cacheability rule is finished.
   Acceptance: a simple query is still served correctly from its own entry after
   the change, the stored bytes no longer contain a `ReadyForQuery`, and a hit
   inside a transaction is still refused rather than answered with `'I'`.
-- [ ] `M9.23` The relay withholds, serves and records. The wiring, and the last
+- [x] `M9.23` The relay withholds, serves and records. The wiring, and the last
   of the code: the machine from `M9.20` behind an `Option<Box<..>>` in the
   session, the assembler from `M9.21` on the hit path, the recording from
   `M9.22` on the miss path, and the hit counted the way `M9.16` counts one.
@@ -2433,6 +2433,27 @@ the relay lands before the cacheability rule is finished.
   ends holding no connection, a `Flush` mid-sequence is answered exactly as it
   is today, a session that never binds allocates nothing new, and the session
   future stays under 5 KiB.
+- [x] `M9.25` A replayed sequence left the connection's statement record wrong.
+  The first thing `M9.24` ran found it: 1,083 errors in a thirty-second run,
+  `prepared statement "pgprox_..." already exists` and then `does not exist` as
+  the two sides diverged further. Nothing in the test suite had caught it.
+  `M9.20` stored the held frames after the statement-name rewrite, on the
+  reasoning that a replay has to send what would have been sent. The rewrite is
+  one way. A `Parse` stored under this proxy's own global name decodes to a
+  statement name that no session's map contains, so at replay `statement_of`
+  found nothing, and the connection's record of which statements it holds was
+  never updated. The server held the statement and the proxy believed it did
+  not, so the next `Bind` on that connection prepared it again.
+  The fix is to hold the client's own bytes and map the name at replay, which is
+  what the relay loop does for a frame arriving now.
+  What let it through is more interesting than the bug. The fake upstream
+  answered every `Parse` with a `ParseComplete`, including a second one for a
+  name it had already prepared, so no test in the file could tell a correct
+  statement record from a wrong one. Postgres refuses that with `42P05`, and the
+  fake now does too. That is the crate rule about fakes behaving like the real
+  thing, and this is what it is for.
+  Acceptance: a sequence replayed onto a connection that already holds its
+  statement is not prepared twice, with a test that fails before the fix.
 - [ ] `M9.24` What it was worth. A matched pair of scale runs with the cache on,
   the way `M9.10` did it, recorded in `product/perf/` and reflected in the
   roadmap's M9 section.
