@@ -2381,7 +2381,7 @@ the relay lands before the cacheability rule is finished.
   Acceptance: a key built from a `Bind` with a null and one built from a `Bind`
   with an empty value are not equal, the store's byte accounting counts the new
   shape, and nothing in the workspace still names the old one.
-- [ ] `M9.20` The withheld sequence, as a state machine with no I/O in it. A new
+- [x] `M9.20` The withheld sequence, as a state machine with no I/O in it. A new
   module in `pgprox-session`, which is where a per-session protocol machine
   belongs and which already depends on everything it needs.
   It is fed the frames the relay decodes and answers what to do with each:

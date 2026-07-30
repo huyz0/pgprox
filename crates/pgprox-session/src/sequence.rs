@@ -167,6 +167,56 @@ impl HeldSequence {
         Frames { rest: &self.frames }
     }
 
+    /// Writes the answer this sequence is owed, out of a stored payload.
+    ///
+    /// The frames the client is owed rather than the frames the server sent
+    /// last time: a `ParseComplete` for its `Parse`, a `BindComplete` for its
+    /// `Bind`, the payload's description for its `Describe`, the rows and the
+    /// completion for its `Execute`, and a `ReadyForQuery('I')` for the `Sync`
+    /// that got here.
+    ///
+    /// That is what makes one payload serve two drivers whose framing differs.
+    /// The proxy already synthesises a `ParseComplete` when a pooled connection
+    /// turns out to hold the statement a `Parse` names, which is this move at
+    /// one frame rather than five.
+    ///
+    /// The `'I'` is an assertion rather than something relayed, and it is true
+    /// because of where withholding is allowed to start: a session with no
+    /// connection held and no transaction open. See ADR 0022.
+    ///
+    /// # Errors
+    ///
+    /// [`Unservable`] when the payload cannot answer this sequence, which the
+    /// caller treats as a miss. Nothing is written to `out` in that case, so a
+    /// refusal cannot leave half an answer in the client's buffer.
+    pub fn assemble(&self, payload: &[u8], out: &mut Vec<u8>) -> Result<(), Unservable> {
+        if self.step != Step::Executed {
+            return Err(Unservable::NothingRan);
+        }
+        let (description, rows) = split(payload)?;
+        if self.described && description.is_none() {
+            return Err(Unservable::NoRowDescription);
+        }
+
+        for (tag, _) in self.replay() {
+            // Frontend tags, so `D` is a `Describe` rather than a `DataRow` and
+            // `E` is an `Execute` rather than an `ErrorResponse`. The two
+            // directions share bytes and this loop only ever walks one of them.
+            match tag {
+                Tag::PARSE => out.extend_from_slice(&PARSE_COMPLETE),
+                Tag::BIND => out.extend_from_slice(&BIND_COMPLETE),
+                Tag::DESCRIBE => out.extend_from_slice(description.unwrap_or_default()),
+                Tag::EXECUTE => out.extend_from_slice(rows),
+                // Unreachable: nothing else is ever held. Ignored rather than
+                // asserted, because a panic here would be on the path of a node
+                // serving 100k other connections.
+                _ => {}
+            }
+        }
+        pgprox_proto::encode::ready_for_query(out, pgprox_proto::backend::TxStatus::Idle);
+        Ok(())
+    }
+
     /// Forgets everything, keeping the buffer.
     ///
     /// Called on every exit, which is what makes forgetting a portal automatic
@@ -286,6 +336,105 @@ impl HeldSequence {
             FrontendMessage::Execute { .. } => self.step = Step::Executed,
             _ => {}
         }
+    }
+}
+
+/// `ParseComplete`, which the client is owed for a `Parse` nothing ran.
+const PARSE_COMPLETE: [u8; 5] = [b'1', 0, 0, 0, 4];
+
+/// `BindComplete`, likewise.
+const BIND_COMPLETE: [u8; 5] = [b'2', 0, 0, 0, 4];
+
+/// Why a stored payload cannot answer a held sequence.
+///
+/// Every variant is a miss rather than a failure. The caller replays the
+/// sequence upstream and the client is never told any of this happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum Unservable {
+    /// The client asked for a description the payload does not carry.
+    ///
+    /// Reachable across an upgrade rather than in steady state: an entry stored
+    /// by a node that recorded a different payload shape.
+    #[error("the payload carries no row description")]
+    NoRowDescription,
+    /// The payload is not a description, rows and a completion.
+    #[error("the payload is not a stored statement answer")]
+    Malformed,
+    /// Asked to answer a sequence that has not run a statement.
+    #[error("the sequence has not executed anything")]
+    NothingRan,
+}
+
+/// Whether a backend frame belongs in a stored payload.
+///
+/// The one list, so the recorder and the assembler cannot disagree about what a
+/// payload is. Two lists with overlapping entries drift, and the one nobody
+/// remembers to fix is always the second.
+///
+/// A `ParseComplete`, a `BindComplete` and a `ReadyForQuery` are deliberately
+/// out: they answer the client's framing rather than its question, and keeping
+/// them is what would make an entry serve only the driver that filled it.
+#[must_use]
+pub fn belongs_in_payload(tag: Tag) -> bool {
+    matches!(
+        tag,
+        Tag::ROW_DESCRIPTION | Tag::DATA_ROW | Tag::COMMAND_COMPLETE | Tag::EMPTY_QUERY_RESPONSE
+    )
+}
+
+/// Splits a payload into its description, if any, and everything after it.
+///
+/// Validated rather than trusted even though this proxy wrote it. The bytes do
+/// not outlive the node that stored them, but they do outlive the code that
+/// stored them: an entry written by a node running a different version has the
+/// same shape as a corrupt one, and both have to be a miss rather than a
+/// desynchronised client.
+fn split(payload: &[u8]) -> Result<(Option<&[u8]>, &[u8]), Unservable> {
+    let mut at = 0;
+    let mut description = None;
+    let mut rows_from = 0;
+    let mut completed = false;
+
+    while at < payload.len() {
+        // Anything after the completion, including a second one.
+        if completed || payload.len() - at < 5 {
+            return Err(Unservable::Malformed);
+        }
+        let tag = Tag(payload[at]);
+        let len = u32::from_be_bytes([
+            payload[at + 1],
+            payload[at + 2],
+            payload[at + 3],
+            payload[at + 4],
+        ]) as usize;
+        let end = at + 5 + len.checked_sub(4).ok_or(Unservable::Malformed)?;
+        if end > payload.len() || !belongs_in_payload(tag) {
+            return Err(Unservable::Malformed);
+        }
+
+        match tag {
+            Tag::ROW_DESCRIPTION => {
+                if at != 0 {
+                    // A description after a row describes nothing the assembler
+                    // could put anywhere.
+                    return Err(Unservable::Malformed);
+                }
+                description = Some(&payload[..end]);
+                rows_from = end;
+            }
+            Tag::COMMAND_COMPLETE | Tag::EMPTY_QUERY_RESPONSE => completed = true,
+            _ => {}
+        }
+        at = end;
+    }
+
+    if completed {
+        Ok((description, &payload[rows_from..]))
+    } else {
+        // Including an empty payload. A statement's answer ends in a completion,
+        // and one that does not is half of one.
+        Err(Unservable::Malformed)
     }
 }
 
@@ -690,6 +839,151 @@ mod tests {
             feed(&mut held, &bind("", "s1"), ok("SELECT 1")),
             Held::Withheld
         );
+    }
+
+    /// One frame, built the way a payload's frames are.
+    fn backend(tag: Tag, body: &[u8]) -> Vec<u8> {
+        let mut out = vec![tag.get()];
+        out.extend_from_slice(&u32::try_from(body.len() + 4).unwrap().to_be_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// A stored payload: a description, one row, and a completion.
+    fn payload(with_description: bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        if with_description {
+            out.extend_from_slice(&backend(Tag::ROW_DESCRIPTION, b"desc"));
+        }
+        out.extend_from_slice(&backend(Tag::DATA_ROW, b"row"));
+        out.extend_from_slice(&backend(Tag::COMMAND_COMPLETE, b"SELECT 1\0"));
+        out
+    }
+
+    /// A sequence the whole way through, optionally asking for a description.
+    fn ran(describing: bool) -> HeldSequence {
+        let mut held = HeldSequence::new();
+        let sql = "SELECT $1";
+        feed(&mut held, &parse("s1", sql), ok(sql));
+        feed(&mut held, &bound("", "s1", &[Some(b"7")]), ok(sql));
+        if describing {
+            feed(&mut held, &describe_portal(""), NONE);
+        }
+        feed(&mut held, &execute("", 0), NONE);
+        held
+    }
+
+    #[test]
+    fn a_hit_is_assembled_from_the_frames_the_client_sent() {
+        // Byte for byte, because this is the whole of what the client sees and
+        // an ordering mistake here is a driver that desynchronises rather than
+        // one that reports an error.
+        let mut out = Vec::new();
+        ran(true).assemble(&payload(true), &mut out).unwrap();
+
+        let mut want = Vec::new();
+        want.extend_from_slice(&PARSE_COMPLETE);
+        want.extend_from_slice(&BIND_COMPLETE);
+        want.extend_from_slice(&backend(Tag::ROW_DESCRIPTION, b"desc"));
+        want.extend_from_slice(&backend(Tag::DATA_ROW, b"row"));
+        want.extend_from_slice(&backend(Tag::COMMAND_COMPLETE, b"SELECT 1\0"));
+        want.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
+
+        assert_eq!(out, want);
+    }
+
+    #[test]
+    fn a_client_that_asked_for_no_description_is_not_sent_one() {
+        // The reason the payload keeps the description apart from the rows. One
+        // entry answers a driver that describes its portal and one that does
+        // not, and handing a `RowDescription` to the second is a frame it has
+        // no state to receive.
+        let mut out = Vec::new();
+        let mut held = HeldSequence::new();
+        feed(&mut held, &bind("", "s1"), ok("SELECT 1"));
+        feed(&mut held, &execute("", 0), NONE);
+        held.assemble(&payload(true), &mut out).unwrap();
+
+        let mut want = Vec::new();
+        want.extend_from_slice(&BIND_COMPLETE);
+        want.extend_from_slice(&backend(Tag::DATA_ROW, b"row"));
+        want.extend_from_slice(&backend(Tag::COMMAND_COMPLETE, b"SELECT 1\0"));
+        want.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
+
+        assert_eq!(out, want);
+    }
+
+    #[test]
+    fn a_payload_with_no_description_cannot_answer_a_client_that_asked() {
+        // Reachable across an upgrade rather than in steady state, and a miss
+        // rather than an assembled answer with a frame missing from the middle.
+        let mut out = Vec::new();
+        assert_eq!(
+            ran(true).assemble(&payload(false), &mut out),
+            Err(Unservable::NoRowDescription)
+        );
+        assert!(
+            out.is_empty(),
+            "a refusal left half an answer in the buffer"
+        );
+    }
+
+    #[test]
+    fn a_sequence_that_ran_nothing_has_no_answer_to_assemble() {
+        let mut out = Vec::new();
+        let mut held = HeldSequence::new();
+        feed(&mut held, &bind("", "s1"), ok("SELECT 1"));
+
+        assert_eq!(
+            held.assemble(&payload(true), &mut out),
+            Err(Unservable::NothingRan)
+        );
+    }
+
+    #[test]
+    fn a_payload_that_is_not_an_answer_is_refused_rather_than_replayed() {
+        let held = ran(false);
+        let mut out = Vec::new();
+
+        for (case, bytes) in [
+            ("empty", Vec::new()),
+            ("no completion", backend(Tag::DATA_ROW, b"row")),
+            ("a short header", vec![b'D', 0, 0]),
+            ("a length under its own header", vec![b'D', 0, 0, 0, 3]),
+            ("a length past the end", vec![b'D', 0, 0, 0, 99]),
+            ("a frame that is not part of an answer", {
+                let mut out = backend(Tag::PARSE_COMPLETE, b"");
+                out.extend_from_slice(&backend(Tag::COMMAND_COMPLETE, b"SELECT 1\0"));
+                out
+            }),
+            ("a description after the rows", {
+                let mut out = backend(Tag::DATA_ROW, b"row");
+                out.extend_from_slice(&backend(Tag::ROW_DESCRIPTION, b"desc"));
+                out.extend_from_slice(&backend(Tag::COMMAND_COMPLETE, b"SELECT 1\0"));
+                out
+            }),
+            ("anything after the completion", {
+                let mut out = payload(true);
+                out.extend_from_slice(&backend(Tag::DATA_ROW, b"late"));
+                out
+            }),
+        ] {
+            assert_eq!(
+                held.assemble(&bytes, &mut out),
+                Err(Unservable::Malformed),
+                "{case} was accepted as a stored answer"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_query_response_ends_a_payload_as_a_completion_does() {
+        let mut out = Vec::new();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&backend(Tag::EMPTY_QUERY_RESPONSE, b""));
+        ran(false).assemble(&bytes, &mut out).unwrap();
+
+        assert!(out.ends_with(&[b'Z', 0, 0, 0, 5, b'I']));
     }
 
     #[test]
