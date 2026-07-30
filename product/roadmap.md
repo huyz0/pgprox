@@ -343,6 +343,17 @@ instantly does is return those clients to the queue sooner, which lengthens it
 for the other 97%. A cache in front of a saturated resource moves work from the
 front of the queue to the back of it.
 
+**One sentence of this milestone is now known to be wrong, and `M11.1` is where.**
+`M9.24` concluded that throughput is pinned by the database, so the cache cannot
+make the fleet do more work and can only change who waits. Eight matched pairs
+at saturation say the fleet does 4.11% more work with the cache on, eight out of
+eight, 95% CI +1.14% to +7.08%. The queueing mechanism survives and explains
+both numbers: the served statements are nearly free rather than merely
+reordered, so they add completions while the statements that still reach the
+database wait longer. Total throughput up, median down, and the median statement
+is in the slower two thirds. See `product/perf/run-2026-07-31-throughput.md`.
+The runs below are left as they were written.
+
 **Where the ceiling is.** Both halves of it are in the workload rather than in
 the cache. Half of the reference workload goes through the extended protocol,
 which is all miss until `M9.12` teaches the codec to read a `Bind`'s parameter

@@ -3085,7 +3085,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   owner outside this repo. Filing them as tasks would put entries in a backlog
   that nobody could ever start, which reads as progress not made rather than as
   progress not possible.
-- [ ] `M11.1` Settle the throughput question `M10.9` left open. That run found
+- [x] `M11.1` Settle the throughput question `M10.9` left open. That run found
   the cache 4.2% ahead on transactions at saturation, with sets overlapping by
   330 out of 136,000, and declined to claim it. It matters because `M9.24`'s
   whole explanation rests on throughput being pinned by the database: if the
@@ -3097,6 +3097,28 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Acceptance: a number of pairs justified before running them, and a verdict
   that says either "throughput rises and here is by how much" or "the difference
   is inside the noise and here is the bound".
+  Eight pairs, argued from `M10.9`'s six runs before any were run: d is 1.66, so
+  six per arm gives 80% power and eight gives 90%, and 90% was taken because a
+  null result is the outcome that leaves `M9.24` standing and a weak null is
+  worth little.
+  **Throughput rises. Eight pairs out of eight.** 4.11% on the means, 95% CI
+  from +1.14% to +7.08%, paired t 3.28 on 7 df, sign test p = 0.008. The
+  unpaired sets still overlap, which is exactly why `M10.9` was right not to
+  claim it and why the pairing rather than the count is what settled it.
+  So `M9.24`'s premise is false as stated: the fleet does more work with the
+  cache on, on a database saturated by every other measure.
+  Its mechanism survives and now explains both numbers at once. The 36% served
+  from memory return to the queue sooner and the 64% that reach the database
+  wait longer, which is the median regression, 16.6% here on eight pairs against
+  `M10.9`'s 17.5% on three. What `M9.24` missed is that served statements are
+  nearly free rather than merely reordered, so they add completions on top. The
+  workload splits in two and the median statement is in the slower half.
+  The confound is stated rather than waved away: the control runs first in every
+  pair, so a machine warming up would produce this. The direct baseline is the
+  control for it and does not move, 314us against 315us. That is evidence, not
+  proof, and a re-run should alternate which arm goes first.
+  `M9.24`'s document is left as written. Recorded in
+  `product/perf/run-2026-07-31-throughput.md`.
 - [ ] `M11.2` The TLS 1.2 restriction FIPS mode imposes, which `M8` never
   reached. `scripts/cipher-matrix.sh` says it in its own comments: FIPS drops
   ChaCha20-Poly1305 and restricts TLS 1.2 to ECDHE suites with extended master
