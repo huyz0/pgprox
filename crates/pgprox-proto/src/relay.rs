@@ -323,6 +323,45 @@ mod tests {
     }
 
     #[test]
+    fn what_is_buffered_is_counted_exactly() {
+        // `buffered` is what an operator reads to know a session is not holding
+        // a gigabyte, and `M10.7` found that returning 0, returning 1, or
+        // subtracting the two halves instead of adding them survived every test
+        // here. A number nobody asserts is a number that can be anything.
+        let mut relay = FrameRelay::new(Direction::Backend);
+        assert_eq!(relay.buffered(), 0);
+
+        // Three bytes of a header: short of the five a header needs, so they
+        // sit in the header buffer and nothing is in the body buffer.
+        let bytes = wire(Tag::READY_FOR_QUERY, b"I");
+        relay.push(&bytes[..3]).unwrap();
+        assert_eq!(relay.buffered(), 3);
+
+        // And back to nothing once the message is through, because what was
+        // held has been handed over.
+        relay.push(&bytes[3..]).unwrap();
+        assert_eq!(relay.buffered(), 0);
+    }
+
+    #[test]
+    fn four_bytes_are_not_yet_a_header() {
+        // A header is a tag and a four-byte length. `M10.7` found that
+        // `1 + LEN_PREFIX` could become `1 * LEN_PREFIX`, which is four, and
+        // nothing noticed: a four-byte prefix would then be read as a complete
+        // header and its length taken from bytes that are not all there.
+        let mut relay = FrameRelay::new(Direction::Backend);
+        let bytes = wire(Tag::READY_FOR_QUERY, b"I");
+
+        let outcome = relay.push(&bytes[..4]).unwrap();
+        assert_eq!(outcome.consumed, 4);
+        assert!(
+            outcome.completed.is_none(),
+            "four bytes were treated as a header: {outcome:?}"
+        );
+        assert_eq!(relay.buffered(), 4);
+    }
+
+    #[test]
     fn a_whole_inspected_message_yields_its_body() {
         let mut relay = FrameRelay::new(Direction::Backend);
         let bytes = wire(Tag::READY_FOR_QUERY, b"I");

@@ -2673,9 +2673,41 @@ the relay lands before the cacheability rule is finished.
   equivalent one is worth the sentence it gets in the baseline: `i < len` becomes
   `i <= len`, and because `bytes[i..]` at the end is an empty slice rather than
   out of bounds, the loop exits one iteration later with the same answer.
-- [ ] `M10.7` The survivors in `pgprox-proto`, eighteen. Same rule. This is the
-  crate whose own rules say a malformed frame must not take down a node, so a
-  survivor in a length or a bound is the highest-value kind in the repo.
+- [x] `M10.7` The survivors in `pgprox-proto` that are about bounded inspection,
+  nine of the eighteen. Split from the rest because they are one property: how
+  much of a message the proxy is willing to hold, which is the crate's answer to
+  a malformed frame not taking down a node.
+  Five are the prefix sizes themselves, where `8 * 1024` becoming `8 + 1024`
+  survived everything: the existing test records *which* messages are inspected
+  and never how much of them. Four are `FrameRelay::buffered`, which is what an
+  operator reads to know a session is not holding a gigabyte and which nothing
+  asserted at all. Two are the header boundary, where `1 + LEN_PREFIX` could
+  become `1 * LEN_PREFIX` and a four-byte prefix would be read as a header whose
+  length came from bytes that had not arrived.
+  Acceptance: the prefix sizes and the relay's byte count are asserted as
+  numbers, and the crate's mutation run has no survivor outside the baseline.
+  Nine killed by two tests. The header boundary was scoped into this task and
+  should not have been: asserting that four bytes do not complete a *message*
+  does not discriminate, because a message completes when its body arrives and
+  not when its header does. Those two moved to `M10.10`, which is the honest
+  place for them.
+  The run also produced a survivor that was caught the time before, in
+  `Reader::cstr`, and the gate failed on it as designed. It is not a regression:
+  the mutant makes a proptest fail and then shrink, and whether the shrinking
+  fits inside the per-mutant timeout depends on machine load. Worth knowing about
+  this repo's baseline in general, since a timeout here means slow rather than
+  undetected.
+- [ ] `M10.10` The other nine `pgprox-proto` survivors: `conn_id_from_key`,
+  `row_description`, `untagged`, `push_body`, `push_header`,
+  `SessionState::on_frontend` and `Startup::options`.
+  `push_header` is the interesting one and the reason it needs a task rather than
+  a line: `1 + LEN_PREFIX` becoming `1 * LEN_PREFIX` makes four bytes a complete
+  header, whose length field is then read from a byte that has not arrived. The
+  test that kills it has to assert where the *next* message starts, not that this
+  one is unfinished. Same rule as `M10.4`, and filed apart from `M10.7` because
+  they are six unrelated functions rather than one property, and because at least
+  one of them, `push_body`'s `> 0` becoming `>= 0`, looks equivalent and has to
+  be shown to be rather than assumed.
 - [ ] `M10.8` The survivors in `pgprox-session`, fifty-three, ten of them
   timeouts. Same rule, and the largest list, which is consistent with it being
   the most correctness-critical crate and the one M9 kept finding defects in.

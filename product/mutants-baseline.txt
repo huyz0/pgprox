@@ -31,19 +31,11 @@
 pgprox-cache|crates/pgprox-cache/src/store.rs|Inner::remove|None	the body becomes `None`, so nothing is removed and `evict_to_fit` never terminates. The suite does detect it, by hanging, which the tool reports as a timeout rather than a kill. There is no assertion that improves on a hang, and `evict_to_fit` already returns rather than loops when the index and the map disagree, which is the real hazard this shape points at.
 
 # --- pgprox-proto ---
+pgprox-proto|crates/pgprox-proto/src/read.rs|Reader<'a>::cstr|-	caught, and reported as a timeout. `pos -= end + 1` underflows and the proptest `reading_never_panics_on_arbitrary_input` fails, then spends its budget shrinking. Whether that lands inside the per-mutant timeout depends on machine load, which is why this one appears and disappears between runs: the timeout category here means slow, not undetected
 pgprox-proto|crates/pgprox-proto/src/backend.rs|conn_id_from_key|^	untriaged
 pgprox-proto|crates/pgprox-proto/src/encode.rs|row_description|	untriaged
 pgprox-proto|crates/pgprox-proto/src/encode.rs|row_description|	untriaged
 pgprox-proto|crates/pgprox-proto/src/encode_frontend.rs|untagged|+	untriaged
-pgprox-proto|crates/pgprox-proto/src/frame.rs|inspect_policy|+	untriaged
-pgprox-proto|crates/pgprox-proto/src/frame.rs|inspect_policy|+	untriaged
-pgprox-proto|crates/pgprox-proto/src/frame.rs|inspect_policy|+	untriaged
-pgprox-proto|crates/pgprox-proto/src/frame.rs|inspect_policy|/	untriaged
-pgprox-proto|crates/pgprox-proto/src/frame.rs|inspect_policy|/	untriaged
-pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::buffered|*	untriaged
-pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::buffered|-	untriaged
-pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::buffered|0	untriaged
-pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::buffered|1	untriaged
 pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::push_body|>=	untriaged
 pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::push_header|*	untriaged
 pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::push_header|>	untriaged

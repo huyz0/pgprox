@@ -981,6 +981,39 @@ mod tests {
     }
 
     #[test]
+    fn the_prefix_sizes_are_the_sizes_they_say() {
+        // The list above records which messages are inspected. It says nothing
+        // about how much of them, and `M10.7` found that: replacing the `*` in
+        // `8 * 1024` with a `+` or a `/` survived every test in this crate.
+        // These are the numbers that keep a gigabyte body from becoming a
+        // gigabyte of memory, so they are asserted rather than described.
+        assert_eq!(
+            inspect_policy(Direction::Backend, Tag::ERROR_RESPONSE),
+            Inspect::Prefix(8192)
+        );
+        assert_eq!(
+            inspect_policy(Direction::Backend, Tag::NOTIFICATION_RESPONSE),
+            Inspect::Prefix(8192)
+        );
+        assert_eq!(
+            inspect_policy(Direction::Frontend, Tag::QUERY),
+            Inspect::Prefix(65536)
+        );
+        assert_eq!(
+            inspect_policy(Direction::Frontend, Tag::PARSE),
+            Inspect::Prefix(65536)
+        );
+        assert_eq!(
+            inspect_policy(Direction::Frontend, Tag::BIND),
+            Inspect::Prefix(4096)
+        );
+        assert_eq!(
+            inspect_policy(Direction::Frontend, Tag::EXECUTE),
+            Inspect::Prefix(4096)
+        );
+    }
+
+    #[test]
     fn every_protocol_message_has_a_stated_inspect_policy() {
         // inspect_policy is total, so this cannot fail by omission. It exists to
         // record the answers, so a change to any of them shows up as a diff on
