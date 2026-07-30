@@ -2800,11 +2800,40 @@ the relay lands before the cacheability rule is finished.
   dropping the `Bind` arm changed nothing any test could see. `Close` was never
   sent by any test at all. Both now have a test that sends one on its own and
   requires its own completion tag to settle it.
-- [ ] `M10.12` The `sequence.rs` survivors, ten. The M9 machine, and the newest
+- [x] `M10.12` The `sequence.rs` survivors, ten. The M9 machine, and the newest
   code in the crate: `feed`'s size ceiling three ways, `may_hold`, `begins`,
   `split`, `is_empty`, `assemble_simple` and the `Frames` iterator bound. The
   ceiling ones matter most, because `MAX_HELD_BYTES` is what stops a client
   holding a proxy's memory by never finishing a sequence.
+  Acceptance: all ten killed, or a written reason for any that cannot be.
+  Eight killed by four tests, two equivalent.
+  The ceiling had a test that fed a body far over the limit, which every
+  arithmetic mistake in the comparison survives: too large is too large whether
+  the terms are added, subtracted or multiplied. The boundary is where it is
+  decided, so the new test feeds the frame that exactly fits and the one a byte
+  past it, and asserts `MAX_HELD_BYTES` as a number besides, since `64 * 1024`
+  becoming `64 + 1024` moves the limit without moving anything measured
+  relative to it. That is `M10.7`'s finding in a different file.
+  `assemble_simple` had no test in this crate at all. Only the binary called
+  it, so the whole simple-query hit path was assembled by a function whose
+  output nothing asserted; replacing its body with `Ok(())` wrote nothing to
+  the client and passed. It now has the same byte-for-byte test its extended
+  sibling already had.
+  `split`'s bound was the one worth the most. The first attempt at a test did
+  not kill it, because a truncated payload that follows a `CommandComplete` is
+  refused by the check for anything after the completion and never reaches the
+  bound at all. The stub has to come before the completion, and then the mutant
+  reads a length field out of bytes that are not there: an index out of bounds
+  on a node serving everybody else, rather than the `Unservable::Malformed` the
+  original returns.
+  The two equivalents are both guards duplicated by a later check, which is the
+  same pattern `M10.10` found in `pgprox-proto`. `may_hold`'s `Parse` arm tests
+  `frames.is_empty() && step == Step::Nothing`, and those are the same boolean
+  at every reachable state, so `&&` and `||` agree. `begins` guards the first
+  frame of a sequence, and letting everything through only defers the refusal
+  to `may_hold`, which with an empty buffer accepts a `Parse` or a `Bind` and
+  nothing else. Both arguments are in the baseline where a reader can disagree
+  with them.
 - [ ] `M10.13` The `shell.rs` survivors, eighteen, ten of them timeouts. The
   wire buffer: `fill`, `fill_held`, `consume`, `compact`, `borrow`, `reclaim`,
   `queue`, `flush` and `is_buffered`. Ten hangs in one file is itself the

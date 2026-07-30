@@ -848,6 +848,45 @@ mod tests {
     }
 
     #[test]
+    fn the_ceiling_counts_the_header_it_is_about_to_write() {
+        // The test above feeds a body far over the limit, which every mistake
+        // in the comparison survives: too large is too large whichever way the
+        // arithmetic goes. The boundary is where it is decided. `MAX_HELD_BYTES`
+        // bounds the buffer, and the buffer gets the body plus the five bytes
+        // of header written in front of it, so the frame that exactly fits has
+        // a body five bytes short of the limit.
+        assert_eq!(MAX_HELD_BYTES, 65_536);
+
+        // A `Bind` wraps its one value in fourteen bytes of framing.
+        let exact = bound("", "s1", &[Some(&vec![b'x'; MAX_HELD_BYTES - 19])]);
+        assert_eq!(exact.1.len() + 5, MAX_HELD_BYTES);
+        let mut held = HeldSequence::new();
+        assert_eq!(feed(&mut held, &exact, ok("SELECT $1")), Held::Withheld);
+        assert!(!held.is_empty());
+
+        let over = bound("", "s1", &[Some(&vec![b'x'; MAX_HELD_BYTES - 18])]);
+        assert_eq!(over.1.len() + 5, MAX_HELD_BYTES + 1);
+        let mut held = HeldSequence::new();
+        assert_eq!(feed(&mut held, &over, ok("SELECT $1")), Held::Send);
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn a_frame_with_an_empty_body_is_still_a_frame() {
+        // `Frames` bounds-checks a buffer this module wrote, on the stated
+        // grounds that a reader which trusts a length is one that panics the
+        // day something else writes one. Five bytes exactly are a whole frame:
+        // a tag, a length of four, and no body. Nothing `feed` holds has an
+        // empty body today, so the boundary is pinned here directly rather
+        // than through a sequence that cannot reach it.
+        let mut walk = Frames {
+            rest: &[b'S', 0, 0, 0, 4],
+        };
+        assert_eq!(walk.next(), Some((Tag(b'S'), &[][..])));
+        assert_eq!(walk.next(), None);
+    }
+
+    #[test]
     fn clearing_forgets_the_portal_and_keeps_the_buffer() {
         // Forgetting is what happens at the end of every sequence rather than
         // a rule about which portal names outlive which message. A map that
@@ -928,6 +967,50 @@ mod tests {
         want.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
 
         assert_eq!(out, want);
+    }
+
+    #[test]
+    fn a_simple_query_hit_is_the_stored_frames_and_a_ready() {
+        // The other half of the assembler, and the half with no test in this
+        // crate: only the binary called it. A simple `Query` gets the stored
+        // frames as they are and then the `ReadyForQuery` it is waiting for.
+        let mut out = Vec::new();
+        assemble_simple(&payload(true), &mut out).unwrap();
+
+        let mut want = Vec::new();
+        want.extend_from_slice(&backend(Tag::ROW_DESCRIPTION, b"desc"));
+        want.extend_from_slice(&backend(Tag::DATA_ROW, b"row"));
+        want.extend_from_slice(&backend(Tag::COMMAND_COMPLETE, b"SELECT 1\0"));
+        want.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
+        assert_eq!(out, want);
+
+        // A payload stored for a client that described its portal carries no
+        // description, and a simple query has no `Describe` of its own to have
+        // got one from. That is a miss, not an answer with a frame missing.
+        let mut out = Vec::new();
+        assert_eq!(
+            assemble_simple(&payload(false), &mut out),
+            Err(Unservable::NoRowDescription)
+        );
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_payload_ending_mid_header_is_refused_rather_than_read() {
+        // `split` walks a buffer the store handed back, and three bytes at the
+        // end of it are not a header. Reading a length out of them is a read
+        // past the end of the payload, which is a panic on a node serving
+        // everybody else.
+        //
+        // Before the completion rather than after it: a stub that follows a
+        // `CommandComplete` is refused by the check for anything after the
+        // completion, which reaches the same answer without ever testing the
+        // bound.
+        let mut stub = backend(Tag::ROW_DESCRIPTION, b"desc");
+        stub.extend_from_slice(&[b'D', 0, 0]);
+
+        let mut out = Vec::new();
+        assert_eq!(assemble_simple(&stub, &mut out), Err(Unservable::Malformed));
     }
 
     #[test]
