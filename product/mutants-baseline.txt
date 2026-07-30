@@ -26,21 +26,29 @@
 # about the byte accounting, three more to two tests about the recency index and
 # the expiry guard, and the last is a timeout with a reason below. That is what
 # this file is for: the count only goes down, and every line that stays says why.
+#
+# `M10.7` and `M10.10` did `pgprox-proto`. Between them nine survivors fell to
+# four tests, and the six that remain are equivalent mutants: programs that
+# differ from the original in their text and not in anything they can be made to
+# do. That is the answer nobody should reach for first, so each one below
+# carries the argument rather than the assertion: two operands with no bit in
+# common, a `usize` compared against zero, a guard in front of a callee that
+# already guards, an empty match arm that exists to hold a comment, a `continue`
+# whose case the code below it drops anyway. An equivalent mutant is a claim
+# about the code, and the way to tell one from a missing test is to write down
+# why no test could distinguish the two programs, then let a reader disagree.
 
 # --- pgprox-cache ---
 pgprox-cache|crates/pgprox-cache/src/store.rs|Inner::remove|None	the body becomes `None`, so nothing is removed and `evict_to_fit` never terminates. The suite does detect it, by hanging, which the tool reports as a timeout rather than a kill. There is no assertion that improves on a hang, and `evict_to_fit` already returns rather than loops when the index and the map disagree, which is the real hazard this shape points at.
 
 # --- pgprox-proto ---
 pgprox-proto|crates/pgprox-proto/src/read.rs|Reader<'a>::cstr|-	caught, and reported as a timeout. `pos -= end + 1` underflows and the proptest `reading_never_panics_on_arbitrary_input` fails, then spends its budget shrinking. Whether that lands inside the per-mutant timeout depends on machine load, which is why this one appears and disappears between runs: the timeout category here means slow, not undetected
-pgprox-proto|crates/pgprox-proto/src/backend.rs|conn_id_from_key|^	untriaged
-pgprox-proto|crates/pgprox-proto/src/encode.rs|row_description|	untriaged
-pgprox-proto|crates/pgprox-proto/src/encode.rs|row_description|	untriaged
-pgprox-proto|crates/pgprox-proto/src/encode_frontend.rs|untagged|+	untriaged
-pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::push_body|>=	untriaged
-pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::push_header|*	untriaged
-pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::push_header|>	untriaged
-pgprox-proto|crates/pgprox-proto/src/session.rs|SessionState::on_frontend|	untriaged
-pgprox-proto|crates/pgprox-proto/src/startup.rs|Startup<'_>::options|&&	untriaged
+pgprox-proto|crates/pgprox-proto/src/backend.rs|conn_id_from_key|^	equivalent. `(u64::from(pid as u32) << 32) | u64::from(secret as u32)`: the left operand's low thirty-two bits are all zero and the right operand's high thirty-two are, so the two operands share no set bit and OR, XOR and ADD agree on every input. No test can tell the three apart
+pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::push_body|>=	equivalent. `self.want_inspect > 0` becomes `>= 0` on a `usize`, which is always true, and the body it then runs is `copy = 0.min(take)`, an `extend_from_slice` of an empty slice and a subtraction of zero. The guard is an optimisation, not a decision, and the mutant only removes the optimisation
+pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::push_header|*	equivalent. `1 + LEN_PREFIX` becomes `1 * LEN_PREFIX`, four rather than five, so four buffered bytes stop taking the early return. They reach `decode_header` instead, whose own first line returns `Ok(None)` below five bytes, and the `else` branch returns the same `RelayOutcome` the early return would have. `need` on the line above is unmutated, so the buffer still never exceeds five. `M10.10` filed this expecting a length field read from a byte that had not arrived; the callee's guard is what makes that impossible
+pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::push_header|>	equivalent, and for the same reason as the entry above. `len < 5` becomes `len > 5`, which never holds because `need` caps the buffer at five, so every partial header falls through to `decode_header` and comes back `Ok(None)`. The early return duplicates a check the callee already makes; that is what both of these mutants are reporting
+pgprox-proto|crates/pgprox-proto/src/session.rs|SessionState::on_frontend|	equivalent. The deleted arm is `FrontendMessage::Sync => {}`, whose body is empty. Without it `Sync` falls to the guarded arm, and `starts_extended_sequence` lists Parse, Bind, Execute, Describe and Close but not Sync, so it falls again to `_ => {}`. The arm exists to hold the comment above it, which is the reason a reader needs and the compiler does not
+pgprox-proto|crates/pgprox-proto/src/startup.rs|Startup<'_>::options|&&	equivalent. `setting.is_empty() || setting == "-c"` becomes `&&`, which no string satisfies, so nothing is skipped. Both skipped values then reach `setting.split_once('=')`, which returns `None` for `""` and for `"-c"` because neither contains an equals sign, and nothing is pushed either way. The `continue` names the case instead of leaving it to the absence of a separator
 
 # --- pgprox-route ---
 pgprox-route|crates/pgprox-route/src/classify.rs|classify_one|(Default::default(), true)	as above, a whole-body replacement that does not terminate

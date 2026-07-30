@@ -2697,7 +2697,7 @@ the relay lands before the cacheability rule is finished.
   fits inside the per-mutant timeout depends on machine load. Worth knowing about
   this repo's baseline in general, since a timeout here means slow rather than
   undetected.
-- [ ] `M10.10` The other nine `pgprox-proto` survivors: `conn_id_from_key`,
+- [x] `M10.10` The other nine `pgprox-proto` survivors: `conn_id_from_key`,
   `row_description`, `untagged`, `push_body`, `push_header`,
   `SessionState::on_frontend` and `Startup::options`.
   `push_header` is the interesting one and the reason it needs a task rather than
@@ -2708,6 +2708,31 @@ the relay lands before the cacheability rule is finished.
   they are six unrelated functions rather than one property, and because at least
   one of them, `push_body`'s `> 0` becoming `>= 0`, looks equivalent and has to
   be shown to be rather than assumed.
+  Three killed, six equivalent, and the ratio is the finding. The three are both
+  halves of a `RowDescription` column that no test read: `typlen` and `typmod`
+  are each -1, and dropping either unary minus writes 1, which moves every byte
+  after it by nothing and changes what a client makes of them entirely. The
+  existing test counted forward to the type OID and stopped, so the four fields
+  after it were never looked at; the new one asserts all eighteen bytes. The
+  third is `untagged`'s length prefix, where `out.len() - len_at` becoming `+`
+  is wrong for every buffer that is not empty when the message starts, and every
+  test in that module started from an empty one. `pgprox-session` appends
+  several messages into one buffer, so this was reachable, not theoretical.
+  The six are equivalent mutants and each carries its argument in the baseline.
+  The two `push_header` ones are the interesting pair, because this task's own
+  guess about them was wrong: the boundary cannot be moved to four bytes,
+  because `decode_header` returns `Ok(None)` below five on its own first line
+  and the fall-through path returns the same `RelayOutcome` the early return
+  would have. What the tool actually found there is a guard duplicated in caller
+  and callee, which is a fact about the code rather than a missing test. The
+  others are `|` against `^` on operands with no bit in common, `> 0` against
+  `>= 0` on a `usize` guarding a no-op, an empty match arm that exists to hold
+  the comment above it, and a `continue` for a case the `split_once` below it
+  drops anyway.
+  Acceptance: every proto entry in the baseline says why, `untriaged` appears
+  nowhere in that section, and the crate's run has no survivor outside it.
+  351 mutants, 7 surviving, all seven in the baseline with reasons. Coverage
+  98.52%. `pgprox-proto` is finished; `pgprox-session` is the last crate.
 - [ ] `M10.8` The survivors in `pgprox-session`, fifty-three, ten of them
   timeouts. Same rule, and the largest list, which is consistent with it being
   the most correctness-critical crate and the one M9 kept finding defects in.

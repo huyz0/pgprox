@@ -246,6 +246,31 @@ mod answered_tests {
     }
 
     #[test]
+    fn a_column_carries_all_seven_of_its_fields() {
+        // The test above reads the type OID by counting past the fields before
+        // it, which only says where that OID is. What follows it matters just
+        // as much: `typlen` and `typmod` are both -1, meaning a variable-length
+        // value with no modifier, and a client that read 1 there would take the
+        // next byte as the start of the next column.
+        let mut out = Vec::new();
+        row_description(&mut out, &["node"]);
+
+        let (_, body) = frame(&out);
+        let at = 2 + "node\0".len();
+        assert_eq!(
+            &body[at..],
+            &[
+                0, 0, 0, 0, // no table OID: this row came from the proxy
+                0, 0, // and so no column index within one
+                0, 0, 0, 25, // text
+                0xff, 0xff, // typlen -1, a varlena
+                0xff, 0xff, 0xff, 0xff, // typmod -1, no modifier
+                0, 0, // text format, matching the type
+            ]
+        );
+    }
+
+    #[test]
     fn a_data_row_carries_its_values_with_lengths() {
         let mut out = Vec::new();
         data_row(&mut out, &["acme".to_owned(), "transaction".to_owned()]);

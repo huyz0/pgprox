@@ -270,6 +270,23 @@ mod tests {
     }
 
     #[test]
+    fn a_length_prefix_measures_its_own_message_and_not_the_buffer() {
+        // Every writer here appends, and the sequence replay in pgprox-session
+        // appends several messages into one buffer. A length taken from the
+        // buffer's total length rather than from where this message started is
+        // right only while the buffer starts empty, which is the case every
+        // other test in this module happens to use.
+        let mut out = Vec::new();
+        sync(&mut out);
+        let at = out.len();
+        startup_message(&mut out, crate::encode::PROTOCOL_3_0, &[("user", "acme")]);
+
+        let len = u32::from_be_bytes(out[at..at + LEN_PREFIX].try_into().unwrap()) as usize;
+        assert_eq!(len, out.len() - at);
+        round_trip_untagged(&out[at..]);
+    }
+
+    #[test]
     fn a_startup_packet_terminates_its_parameter_list() {
         // Without the extra null the server waits for a parameter that never
         // arrives, which looks like a hung connection rather than an error.
