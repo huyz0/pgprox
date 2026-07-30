@@ -2868,7 +2868,7 @@ the relay lands before the cacheability rule is finished.
   baseline, and in `pgprox-route`'s and `pgprox-cache`'s, is a verdict nobody
   has actually seen. `M10.16` is the fix, and it is a change to the runner
   rather than to any test.
-- [ ] `M10.14` The last three real gaps, and the last task in M10's mutation
+- [x] `M10.14` The last three real gaps, and the last task in M10's mutation
   work. `M10.16` took this from six to four and then `M10.15`'s one loose end
   joined it, so the list is `borrow`'s deadline both ways, `fill_held`'s two
   `start + n` arithmetic mutants, and `probe::text_row`'s bound.
@@ -2878,10 +2878,32 @@ the relay lands before the cacheability rule is finished.
   exhausted. The test fixture sizes its slab small so that state is reachable,
   and nothing reaches it, so the retry loop that absorbs a burst as latency has
   never run in a test. That is `ADR 0008`'s claim untested.
-  `probe::text_row`'s `at + 4` is the same shape as `sequence::split`'s bound,
-  which `M10.12` found needs input truncated *before* the frame that would stop
-  the walk for another reason. Worth writing with that in hand.
+  `probe::text_row` was filed as an `at + 4` bound, twice, and it is not one:
+  the mutant is `len < 0` becoming `len <= 0`, which reads an empty string as a
+  SQL NULL. The bound is already covered by
+  `a_truncated_row_is_rejected_rather_than_panicking`. Reading the replacement
+  text rather than the function name would have caught that both times it was
+  written down.
   After this the baseline is equivalents only, every one with an argument.
+  Three tests, five mutants, and each one had the same cause: a test that
+  covered one ending of a two-ended thing.
+  `borrow` had a test that holds the slab empty for good, so the retry loop
+  only ever ran out. Both mutants, the deadline computed backwards and the
+  comparison inverted, reach that same refusal, so neither was visible. The new
+  test frees the buffer while the read is waiting, which is `ADR 0008`'s claim
+  and the loop's other ending, and it had never run. No sleep is needed: the
+  read is polled first and gets as far as an empty slab, so the drop lands
+  while it waits rather than before it asks.
+  `fill_held` resizes to make room, reads, and trims back. Both arithmetic
+  mistakes leave the frame decodable, which is why nothing noticed. One
+  over-trims and shows up as bytes that were never sent; the other
+  over-allocates, and that one is the buffer growing past what the slab lent,
+  which is the thing this type exists to stop. Asserted as the buffered bytes
+  and as a bound on the capacity after one read.
+  `text_row` had `a_null_field_is_not_an_empty_one` and not its converse. The
+  existing test pairs a NULL with a non-empty value, so `len <= 0` reading an
+  empty string as NULL passed it. A length of zero is an empty string and only
+  -1 is NULL, and that distinction is the reason the function has a doc comment.
 - [x] `M10.15` The last twelve, which had nothing in common but being left:
   six `shell.rs` hangs `M10.8` baselined, six cursor mutants `M10.13` had
   written assertions for, and three loose ends elsewhere. Filed as waiting on

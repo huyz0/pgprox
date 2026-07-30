@@ -757,6 +757,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_buffer_freed_while_a_read_waits_is_picked_up() {
+        // ADR 0008's claim, and the half of the retry loop no test ran. The
+        // test above holds the slab empty for good, so the loop only ever ends
+        // by giving up; both ways of breaking the deadline reach that same
+        // ending and neither was visible. This is the other ending: a burst
+        // becomes latency, not a refusal.
+        let slab = BufferSlab::new(64, 1);
+        let held = slab.try_borrow().unwrap();
+
+        let (server, client) = duplex(4096);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+        peer.send(&untagged(b"hello")).await;
+
+        // The read is polled first and gets as far as an empty slab, so the
+        // buffer comes back while it is waiting rather than before it asks.
+        let mut body = Vec::new();
+        let (result, ()) = tokio::join!(wire.read_untagged(&mut body), async {
+            drop(held);
+        });
+
+        result.unwrap();
+        assert_eq!(body, b"hello");
+    }
+
+    #[tokio::test]
+    async fn a_mid_frame_read_grows_the_buffer_by_one_read_and_no_more() {
+        // `fill_held` resizes to make room, reads, and trims back to what
+        // arrived. Both arithmetic mistakes leave the frame decodable, which is
+        // why nothing noticed: one over-trims and one over-allocates, and the
+        // second is the buffer growing past what the slab lent, which is the
+        // thing this type exists to stop.
+        let (mut wire, mut peer) = pair();
+        let mut buf = Wire::<DuplexStream>::borrow(&wire.slab).await.unwrap();
+        buf.extend_from_slice(b"first");
+        wire.read = Some(buf);
+
+        peer.send(b"next").await;
+        wire.fill_held().await.unwrap();
+
+        assert_eq!(wire.buffered(), b"firstnext");
+        let capacity = wire.read.as_mut().unwrap().as_mut_vec().capacity();
+        assert!(
+            capacity <= 2 * HELD_READ,
+            "one read grew the buffer to {capacity} bytes"
+        );
+    }
+
+    #[tokio::test]
     async fn messages_queued_while_the_slab_is_empty_keep_their_order() {
         // Once anything has overflowed, everything after it must too. A second
         // message that found a buffer while the first was in the overflow

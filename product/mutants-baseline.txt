@@ -70,10 +70,5 @@ pgprox-proto|crates/pgprox-proto/src/startup.rs|Startup<'_>::options|&&	equivale
 pgprox-route|crates/pgprox-route/src/hints.rs|split_block_comment|<=	equivalent. The loop guard becomes `i <= bytes.len()`, and at `i == len` the slice `bytes[i..]` is empty rather than out of bounds, so the body matches nothing, adds one, and the loop exits with the same result one iteration later
 
 # --- pgprox-session ---
-pgprox-session|crates/pgprox-session/src/probe.rs|text_row|<=	untriaged
 pgprox-session|crates/pgprox-session/src/sequence.rs|HeldSequence::may_hold|||	equivalent. The `Parse` arm reads `self.frames.is_empty() && self.step == Step::Nothing`, and those two are the same boolean at every reachable state: `feed` only reaches `may_hold` with an empty buffer for a `Parse` or a `Bind`, `record` and the push into `frames` happen together, and `clear` resets both. `A && A` and `A || A` agree, so the second conjunct is a restatement of the first rather than a second condition
 pgprox-session|crates/pgprox-session/src/sequence.rs|begins|true	equivalent. `begins` guards the first frame of a sequence, and making it accept everything only lets a message reach `may_hold`, which with an empty buffer returns true for a `Parse` or a `Bind` and false for every other arm: `Describe` and `Execute` both require `Step::Bound` and the catch-all is false. So the frames the guard would have turned away are turned away one check later, with the same `Held::Send`. The guard is worth keeping for saying so at the top of the function, and no test can distinguish the two programs
-pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::borrow|-	untriaged
-pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::borrow|<	untriaged
-pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::fill_held|*	untriaged
-pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::fill_held|*	untriaged

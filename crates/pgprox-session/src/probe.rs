@@ -867,6 +867,19 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_field_is_not_a_null_one() {
+        // The other direction of the test above, and the one it does not
+        // cover: a length of zero is an empty string, and only -1 is NULL. The
+        // test above pairs a NULL with a non-empty value, so a rule that read
+        // "nothing there" as NULL passed it. `pg_is_in_recovery` never returns
+        // an empty string, but this function reads whatever a server sends.
+        let row = data_row(&[Some(""), Some("t")]);
+        let fields = text_row(&row[5..]).unwrap();
+
+        assert_eq!(fields, vec![Some(String::new()), Some("t".to_owned())]);
+    }
+
+    #[test]
     fn a_truncated_row_is_rejected_rather_than_panicking() {
         // These bytes come from the network like any others.
         let row = data_row(&[Some("16/B374D848"), Some("t")]);
