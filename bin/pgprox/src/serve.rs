@@ -36,6 +36,7 @@ use pgprox_session::cancel::Registry;
 use pgprox_session::connect::Upstreamed;
 use pgprox_session::probe::ParameterCache;
 use pgprox_session::relay::{ClientAction, Relay};
+use pgprox_session::sequence::{Facts, Held};
 use pgprox_session::shell::{
     Handoff, ShellError, Wire, accept, authenticate_scram, authenticate_token, negotiate,
 };
@@ -562,33 +563,15 @@ async fn relay<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut relay = Relay::new();
-    // What this session expects any connection it borrows to look like, and
-    // what each borrowed connection currently carries. A transaction-pooling
-    // proxy hands a session a different connection per transaction, so without
-    // these a `SET` is silently lost at the next boundary.
-    let mut session_state = pgprox_session::resume::SessionMemory::default();
-    let mut held: Option<(UpstreamGuard, Upstreamed<crate::dial::Stream>)> = None;
     let mut body = Vec::new();
-    // How many `ParseComplete`s belong to statements this proxy replayed
-    // rather than to anything the client sent.
-    let mut pumping = Pumping::default();
-    // The watch this grant's replicas are polled into, shared with every other
-    // session on the same primary. A grant with no replicas gets none, and
-    // every route decision for it lands on the primary by the same rule that
-    // sends a read to the primary when no replica is eligible.
-    // Where the connection this session currently holds is pointed, so a
-    // statement sent on it is counted against the right target.
-    let mut serving = pgprox_core::route::RouteTarget::Primary;
-    let watch = context.replicas.watch_for(grant);
-    let none = Replicas::new(0, pgprox_route::replica::ReplicaConfig::default());
+    let mut live = Live::new(context, grant);
 
     loop {
         // A session between transactions leaves as soon as the node says it is
         // draining. One holding a connection stays until it gives it back, or
         // until the grace timer says otherwise: finishing in-flight work is
         // what a drain is for.
-        let idle = held.is_none();
+        let idle = live.upstream.is_none();
         let tag = tokio::select! {
             result = wire.read_tagged(&mut body) => result?,
             () = context.draining.waited(), if idle => {
@@ -607,38 +590,34 @@ where
             }
             () = context.closing.waited() => return Ok(()),
         };
-        let frame = Frame::new(tag, &body);
-        let Ok(message) = pgprox_proto::frontend::decode(&frame) else {
-            return Err(wire
-                .refuse(ClientError::ProtocolViolation("undecodable message"))
-                .await);
-        };
-
         let now = context.clock.now();
-        let Some(outgoing) = observe(&message, &body, &mut session_state) else {
-            return Err(wire
-                .refuse(ClientError::ProtocolViolation(
-                    "a statement name this session never parsed",
-                ))
-                .await);
+        let (message, outgoing) = match decoded(tag, &body, &mut live.session) {
+            Ok(pair) => pair,
+            Err(err) => return Err(wire.refuse(err).await),
         };
 
-        // Invalidate on a write, then answer from the cache if it can. Boxed
-        // and behind the guard because a session future is the union of
-        // everything alive across its awaits, and a node that caches nothing
-        // must not carry this in every frame.
-        pumping.recording = cache_key(context, grant, &message, &session_state, &relay);
-        if cache_before_sending(wire, context, grant, &message, &mut pumping).await? {
-            // Counted here rather than left to `record_statement` below, which
-            // this `continue` skips. A hit is a statement the client asked for
-            // and got an answer to, and leaving it out makes every ratio built
-            // on this counter wrong in the direction that flatters the cache:
-            // its best cases vanish from the denominator.
-            context.routes.record_cache_hit();
+        // The cache, both protocols, and everything it may have to do first:
+        // invalidate on a write, answer a simple query, hold an extended
+        // sequence back or give one up. Not boxed, and measured rather than
+        // assumed: the compiler lays this branch over the one below it, so the
+        // session future is the same size either way and a box here would be an
+        // allocation per frame for nothing.
+        let incoming = Incoming {
+            message: &message,
+            tag,
+            outgoing: &outgoing,
+        };
+        if cached(wire, context, grant, conn, &mut live, incoming, now).await? {
             continue;
         }
 
-        let outcome = decide(&mut relay, watch.as_ref(), &none, &message, now);
+        let outcome = decide(
+            &mut live.relay,
+            live.watch.as_ref(),
+            &live.none,
+            &message,
+            now,
+        );
         if let Some(reason) = outcome.pinned {
             context.sessions.set_pinned(conn, reason.as_str());
         }
@@ -660,19 +639,19 @@ where
                 // did, and reported a share of acquisitions under a name that
                 // said statements.
                 if acquire {
-                    serving = target;
+                    live.serving = target;
                 }
-                record_statement(context, &message, serving);
+                record_statement(context, &message, live.serving);
                 if acquire {
                     let taken =
-                        take_connection(wire, context, grant, serving, conn, &session_state);
-                    held = Some(taken.await?);
-                    relay.acquired();
+                        take_connection(wire, context, grant, live.serving, conn, &live.session);
+                    live.upstream = Some(taken.await?);
+                    live.relay.acquired();
                 }
             }
         }
 
-        let Some((_guard, upstream)) = held.as_mut() else {
+        let Some((_guard, upstream)) = live.upstream.as_mut() else {
             return Err(wire.refuse(NO_CONNECTION).await);
         };
 
@@ -680,9 +659,9 @@ where
         let sent = send_upstream(
             wire,
             upstream,
-            &mut pumping,
+            &mut live.pumping,
             &message,
-            &session_state,
+            &live.session,
             onward,
         );
         if !sent.await? {
@@ -698,14 +677,14 @@ where
         let answered = read_the_answer(
             wire,
             upstream,
-            &mut relay,
+            &mut live.relay,
             context,
             conn,
-            &mut pumping,
+            &mut live.pumping,
             &message,
         );
         if Box::pin(answered).await? && grant.pool.mode != pgprox_core::auth::PoolMode::Session {
-            Box::pin(release(&mut held, &mut relay, context, conn)).await?;
+            Box::pin(release(&mut live.upstream, &mut live.relay, context, conn)).await?;
         }
     }
 }
@@ -913,24 +892,377 @@ fn cache_key(
     );
     pgprox_cache::cacheable(sql, pgprox_route::classify(sql), facts).ok()?;
 
-    // `search_path` decides what the SQL names, so it is part of the key. A
-    // session that never set one is on the server's default, which every
-    // session on this tenant shares; the empty string stands for it and cannot
-    // collide with a real path, since a real one is never empty.
-    let search_path = session.params.get("search_path").unwrap_or_default();
-
     Some(Box::new(Recording {
-        key: pgprox_core::cache::CacheKey {
-            tenant: grant.tenant.clone(),
-            normalized_sql: std::sync::Arc::from(pgprox_cache::normalize(sql)),
-            // Nothing bound: a simple query has no `Bind` behind it. `M9.23`
-            // is where an extended sequence puts its own bytes here.
-            params: std::sync::Arc::from(&[][..]),
-            search_path: std::sync::Arc::from(search_path),
-        },
+        // Nothing bound: a simple query has no `Bind` behind it, and an empty
+        // run is the same key material as an extended statement with no
+        // parameters. That is the same question asked two ways, and `M9.22` is
+        // what makes one entry answer both.
+        key: key_for(grant, sql, std::sync::Arc::from(&[][..]), session),
         frames: Vec::new(),
         failed: false,
     }))
+}
+
+/// One session's own state, all of it.
+///
+/// Held together rather than as eight locals because the cache path needs most
+/// of it at once, and eight parameters that always travel together are one
+/// parameter wearing a disguise. Nothing else owns one: it lives for exactly as
+/// long as [`relay`] does, and its size is a per-connection cost.
+struct Live {
+    relay: Relay,
+    /// The connection this session holds, if it holds one.
+    upstream: Option<(UpstreamGuard, Upstreamed<crate::dial::Stream>)>,
+    /// Where that connection points, so a statement sent on it is counted
+    /// against the right target.
+    serving: pgprox_core::route::RouteTarget,
+    pumping: Pumping,
+    /// The extended-query sequence being held back, if any.
+    ///
+    /// A pointer here and everything else behind it, because a session future is
+    /// the union of everything alive across its awaits and the ceiling has bytes
+    /// rather than kilobytes to spare. Allocated at the first sequence a tenant
+    /// opts into and reused after that, so a node that caches nothing never
+    /// allocates one at all.
+    sequence: Option<Box<pgprox_session::sequence::HeldSequence>>,
+    /// The replica state this grant is polled into.
+    watch: Option<Arc<pgprox_route::poller::ReplicaWatch>>,
+    /// What a grant with no replicas routes against.
+    none: Replicas,
+    /// What this session expects any connection it borrows to look like.
+    ///
+    /// A transaction-pooling proxy hands a session a different connection per
+    /// transaction, so without this a `SET` is silently lost at the next
+    /// boundary.
+    session: pgprox_session::resume::SessionMemory,
+}
+
+impl Live {
+    /// A session that has authenticated, holds nothing and has run nothing.
+    fn new(context: &Context, grant: &Grant) -> Self {
+        Self {
+            relay: Relay::new(),
+            upstream: None,
+            serving: pgprox_core::route::RouteTarget::Primary,
+            pumping: Pumping::default(),
+            sequence: None,
+            // Shared with every other session on the same primary. A grant with
+            // no replicas gets none, and every route decision for it lands on
+            // the primary by the same rule that sends a read there when no
+            // replica is eligible.
+            watch: context.replicas.watch_for(grant),
+            none: Replicas::new(0, pgprox_route::replica::ReplicaConfig::default()),
+            session: pgprox_session::resume::SessionMemory::default(),
+        }
+    }
+}
+
+/// One client frame, decoded, with the bytes that would go upstream.
+///
+/// `outgoing` is not `body`: a `Parse` or a `Bind` has had its statement name
+/// rewritten to this proxy's own by then, and a replay has to send what would
+/// have been sent.
+#[derive(Clone, Copy)]
+struct Incoming<'a> {
+    message: &'a pgprox_proto::frontend::FrontendMessage<'a>,
+    tag: pgprox_proto::frame::Tag,
+    outgoing: &'a [u8],
+}
+
+/// The cache path for one frame, both protocols.
+///
+/// Returns whether the client has already been answered, in which case the
+/// relay loop is finished with this frame and nothing was taken from the pool.
+/// That is the point of the whole milestone: `M7.56` found 45% of this proxy's
+/// CPU in the pool's lock, with the cost landing per connection because
+/// contention tracks how many are queued, and a statement answered here never
+/// queues.
+///
+/// One function for the two protocols because a hit is one thing and is counted
+/// in one place. They arrive at it differently: a simple query is a statement on
+/// its own, and an extended one is a sequence that has to be held back first,
+/// because forwarding its `Parse` would acquire a connection before anything was
+/// looked up. See ADR 0022.
+async fn cached<S>(
+    wire: &mut Wire<S>,
+    context: &Context,
+    grant: &Grant,
+    conn: ConnId,
+    live: &mut Live,
+    incoming: Incoming<'_>,
+    now: std::time::Instant,
+) -> Result<bool, ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let message = incoming.message;
+    live.pumping.recording = cache_key(context, grant, message, &live.session, &live.relay);
+
+    let mut hit = cache_before_sending(wire, context, grant, message, &mut live.pumping).await?;
+    if !hit {
+        match withhold(context, grant, live, incoming) {
+            Held::Withheld => return Ok(true),
+            Held::Complete => hit = Box::pin(serve_held(wire, context, grant, live)).await?,
+            Held::Send => {}
+        }
+    }
+    if hit {
+        // Counted here rather than left to `record_statement`, which the caller
+        // skips on a hit. A hit is a statement the client asked for and got an
+        // answer to, and leaving it out makes every ratio built on this counter
+        // wrong in the direction that flatters the cache: its best cases vanish
+        // from the denominator.
+        context.routes.record_cache_hit();
+        return Ok(true);
+    }
+
+    // Whatever is still held goes upstream in the order it arrived, before this
+    // frame does. Both the guard and the box are deliberate: nothing is held on
+    // any frame of a node that caches nothing, and boxing unconditionally would
+    // be an allocation per frame for a path most frames never take.
+    if live
+        .sequence
+        .as_deref()
+        .is_some_and(|held| !held.is_empty())
+    {
+        Box::pin(replay_held(wire, context, grant, conn, live, now)).await?;
+    }
+    Ok(false)
+}
+
+/// Holds one frame back, when this session is one a sequence may be held from.
+///
+/// The entry condition lives here rather than in the machine, because it is the
+/// caller's: the tenant's configuration, the pool, the transaction status and
+/// the cacheability rule are all things this file can see and `pgprox-session`
+/// cannot. See [`facts_for`].
+///
+/// Nothing is allocated until the first frame is actually held, so a node with
+/// no cache pays one `serves` call per frame and no more.
+fn withhold(context: &Context, grant: &Grant, live: &mut Live, incoming: Incoming<'_>) -> Held {
+    let facts = facts_for(context, grant, &live.relay, incoming.message, &live.session);
+    if live.sequence.is_none() {
+        if !facts.may_begin {
+            return Held::Send;
+        }
+        live.sequence = Some(Box::new(pgprox_session::sequence::HeldSequence::new()));
+    }
+    live.sequence.as_deref_mut().map_or(Held::Send, |held| {
+        held.feed(incoming.message, incoming.tag, incoming.outgoing, facts)
+    })
+}
+
+/// What this file knows about a frame that the sequence machine cannot.
+///
+/// `may_begin` is the whole of ADR 0022's entry condition. Two of its four parts
+/// are about the session rather than the statement:
+///
+/// - **No connection held.** A session holding one is either mid-sequence, in a
+///   transaction, or on session pooling. In the first case part of the sequence
+///   is already upstream and answering the rest locally would leave a bound
+///   portal nobody executes.
+/// - **No transaction open.** A hit generates a `ReadyForQuery('I')`, which is
+///   only true for a session with nothing open. `M9.18` is the same rule for
+///   the simple protocol.
+fn facts_for<'a>(
+    context: &Context,
+    grant: &Grant,
+    relay: &Relay,
+    message: &pgprox_proto::frontend::FrontendMessage<'a>,
+    session: &'a pgprox_session::resume::SessionMemory,
+) -> Facts<'a> {
+    use pgprox_proto::frontend::FrontendMessage;
+
+    // Before anything else, because off is the default and therefore every
+    // node's hot path. `serves` is a read lock and a map lookup.
+    if !context
+        .cache
+        .as_ref()
+        .is_some_and(|cache| cache.serves(&grant.tenant))
+    {
+        return Facts::default();
+    }
+
+    // A `Parse` carries its own SQL. A `Bind` names a statement this session
+    // prepared, possibly in a round trip of its own against another connection,
+    // which is what every driver with a statement cache does.
+    let sql = match message {
+        FrontendMessage::Parse { sql, .. } => Some(*sql),
+        FrontendMessage::Bind { statement, .. } => session
+            .statements
+            .get(statement)
+            .map(|held| held.sql.as_str()),
+        _ => None,
+    };
+    let Some(sql) = sql else {
+        return Facts::default();
+    };
+
+    let facts = pgprox_cache::SessionFacts::new(
+        relay.wrote(),
+        relay.pin_reason().is_some(),
+        !matches!(relay.session().tx_status(), TxStatus::Idle),
+    );
+    Facts {
+        sql: Some(sql),
+        may_begin: !relay.is_holding()
+            && pgprox_cache::cacheable(sql, pgprox_route::classify(sql), facts).is_ok(),
+    }
+}
+
+/// Answers a complete held sequence from the cache, if the cache can.
+///
+/// Returns whether the client has been answered. On a miss it arms the recording
+/// instead, so the answer the replayed sequence comes back with is stored:
+/// `belongs_in_payload` filters the pump's copy down to exactly the payload
+/// shape ADR 0022 describes, which is why there is no second recorder here.
+async fn serve_held<S>(
+    wire: &mut Wire<S>,
+    context: &Context,
+    grant: &Grant,
+    live: &mut Live,
+) -> Result<bool, ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (Some(cache), Some(held)) = (context.cache.as_ref(), live.sequence.as_deref()) else {
+        return Ok(false);
+    };
+    let Some(sql) = held.sql() else {
+        return Ok(false);
+    };
+    let key = key_for(grant, sql, held.params().clone(), &live.session);
+
+    let Some(entry) = cache.get(&key).await else {
+        // Armed for the answer the replay is about to bring back. A `Sync` is
+        // what the pump will be reading when it arrives, and this is the only
+        // place that knows the key it belongs under.
+        live.pumping.recording = Some(Box::new(Recording {
+            key,
+            frames: Vec::new(),
+            failed: false,
+        }));
+        return Ok(false);
+    };
+
+    // Written straight into the client's buffer, and nothing is written unless
+    // the whole thing can be: `assemble` validates the payload before it emits a
+    // byte, so a refusal here leaves the buffer as it was and the sequence goes
+    // upstream instead.
+    let mut assembled = Ok(());
+    wire.queue(|out| assembled = held.assemble(&entry.frames, out));
+    if assembled.is_err() {
+        return Ok(false);
+    }
+
+    wire.flush().await?;
+    if let Some(held) = live.sequence.as_deref_mut() {
+        held.clear();
+    }
+    Ok(true)
+}
+
+/// Sends a held sequence upstream, in the order the client sent it.
+///
+/// Every frame goes through the relay's own decision and the same statement
+/// readiness check a frame arriving now would, because that is where the pin,
+/// the route and the connection's record of what it holds are kept up to date.
+/// The first frame acquires and the rest travel on what it took.
+///
+/// A no-op when nothing is held, which is the common case and the reason it is
+/// called unconditionally.
+async fn replay_held<S>(
+    wire: &mut Wire<S>,
+    context: &Context,
+    grant: &Grant,
+    conn: ConnId,
+    live: &mut Live,
+    now: std::time::Instant,
+) -> Result<(), ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let Some(sequence) = live.sequence.as_deref_mut() else {
+        return Ok(());
+    };
+
+    for (tag, body) in sequence.replay() {
+        let frame = Frame::new(tag, body);
+        let Ok(message) = pgprox_proto::frontend::decode(&frame) else {
+            // Unreachable: every held frame decoded on its way in, and nothing
+            // has touched the bytes since.
+            return Err(wire
+                .refuse(ClientError::ProtocolViolation(
+                    "a held frame stopped decoding",
+                ))
+                .await);
+        };
+
+        let outcome = decide(
+            &mut live.relay,
+            live.watch.as_ref(),
+            &live.none,
+            &message,
+            now,
+        );
+        if let Some(reason) = outcome.pinned {
+            context.sessions.set_pinned(conn, reason.as_str());
+        }
+        let ClientAction::Send { acquire, target } = outcome.action else {
+            // Unreachable: only a `Parse`, `Bind`, `Describe` or `Execute` is
+            // ever held, and the cacheability rule refuses the statements the
+            // relay answers itself. Skipped rather than asserted, because a
+            // panic here is on a node serving 100k other connections.
+            continue;
+        };
+        if acquire {
+            live.serving = target;
+        }
+        record_statement(context, &message, live.serving);
+        if acquire {
+            let taken =
+                take_connection(wire, context, grant, live.serving, conn, &live.session).await?;
+            live.upstream = Some(taken);
+            live.relay.acquired();
+        }
+
+        let Some((_guard, upstream)) = live.upstream.as_mut() else {
+            return Err(wire.refuse(NO_CONNECTION).await);
+        };
+        send_upstream(
+            wire,
+            upstream,
+            &mut live.pumping,
+            &message,
+            &live.session,
+            frame,
+        )
+        .await?;
+    }
+
+    sequence.clear();
+    Ok(())
+}
+
+/// The key a statement's answer is stored under.
+///
+/// One place, so the two protocols cannot come to disagree about what a key is.
+/// `search_path` decides what the SQL names, so it is part of it. A session that
+/// never set one is on the server's default, which every session on this tenant
+/// shares; the empty string stands for it and cannot collide with a real path,
+/// since a real one is never empty.
+fn key_for(
+    grant: &Grant,
+    sql: &str,
+    params: std::sync::Arc<[u8]>,
+    session: &pgprox_session::resume::SessionMemory,
+) -> pgprox_core::cache::CacheKey {
+    pgprox_core::cache::CacheKey {
+        tenant: grant.tenant.clone(),
+        normalized_sql: std::sync::Arc::from(pgprox_cache::normalize(sql)),
+        params,
+        search_path: std::sync::Arc::from(session.params.get("search_path").unwrap_or_default()),
+    }
 }
 
 /// What the relay asks a cached entry to live for.
@@ -1262,6 +1594,26 @@ fn evict_for(
         }
     });
     evict.len()
+}
+
+/// Decodes one client frame and records what it does to the session.
+///
+/// Two steps rather than one, and they fail differently, which is why the error
+/// comes back rather than a bare `None`: a frame this proxy cannot decode is not
+/// the same problem as a `Bind` naming a statement this session never parsed,
+/// and an operator reading the log needs to know which.
+fn decoded<'a>(
+    tag: pgprox_proto::frame::Tag,
+    body: &'a [u8],
+    session: &mut pgprox_session::resume::SessionMemory,
+) -> Result<(pgprox_proto::frontend::FrontendMessage<'a>, Vec<u8>), ClientError> {
+    let frame = Frame::new(tag, body);
+    let message = pgprox_proto::frontend::decode(&frame)
+        .map_err(|_| ClientError::ProtocolViolation("undecodable message"))?;
+    let outgoing = observe(&message, body, session).ok_or(ClientError::ProtocolViolation(
+        "a statement name this session never parsed",
+    ))?;
+    Ok((message, outgoing))
 }
 
 /// Records what this statement does to the session, and maps its name.
@@ -2059,6 +2411,11 @@ mod tests {
         // The ceiling is 5 KiB, which the comment said was 3 for two
         // milestones after M7.50 lowered it from 6. A change that adds a
         // kilobyte fails this; one that adds a pointer does not.
+        //
+        // It is 5,048 bytes as `M9.23` left it, and that is 16 fewer than
+        // before it, which is not luck: holding one session's state in one
+        // struct costs less across an await than the same fields as eight
+        // locals, and it paid for the sequence the cache holds back.
         let context = Arc::new(context_for("127.0.0.1:1".parse().unwrap()));
         let gate = Arc::new(Gate::new(1));
         let admitted = gate.admit().unwrap();
@@ -3140,6 +3497,17 @@ mod tests {
                             return;
                         }
 
+                        // One entry per frame, by tag, so a test can see what
+                        // reached the server. A held sequence that was answered
+                        // from the cache leaves nothing here at all, which is
+                        // the property `M9.23` is about.
+                        seen()
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .entry(addr.port())
+                            .or_default()
+                            .push((header[0] as char).to_string());
+
                         let mut out: Vec<u8> = Vec::new();
                         match header[0] {
                             // Parse, answered with ParseComplete.
@@ -3185,6 +3553,276 @@ mod tests {
         });
 
         addr
+    }
+
+    /// An authenticated client on a session of its own, for tests that send
+    /// extended-protocol frames by hand.
+    ///
+    /// The gate lives inside the admitted guard, so the caller keeps only the
+    /// two ends it needs: the client's socket and the session's task.
+    async fn extended_client(
+        context: &Arc<Context>,
+    ) -> (tokio::io::DuplexStream, tokio::task::JoinHandle<()>) {
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(context);
+        let served = tokio::spawn(async move {
+            let _ = session(ours, held.as_ref(), admitted).await;
+        });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+        (client, served)
+    }
+
+    /// `Parse`, `Bind`, `Execute`, `Sync`: what a driver sends the first time it
+    /// runs a parameterised statement.
+    fn one_binding(sql: &str, value: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut out, "s1", sql);
+        pgprox_proto::encode_frontend::bind_with_parameters(&mut out, "", "s1", &[Some(value)]);
+        pgprox_proto::encode_frontend::execute(&mut out, "");
+        pgprox_proto::encode_frontend::sync(&mut out);
+        out
+    }
+
+    /// The four frames the client is owed for [`one_binding`].
+    async fn four_answers(client: &mut tokio::io::DuplexStream) -> Vec<Tag> {
+        let mut tags = Vec::new();
+        for _ in 0..4 {
+            tags.push(
+                tokio::time::timeout(Duration::from_secs(5), expect(client))
+                    .await
+                    .expect("the sequence was never answered")
+                    .0,
+            );
+        }
+        tags
+    }
+
+    #[tokio::test]
+    async fn two_bindings_of_one_statement_are_served_separately() {
+        // The acceptance criterion `M9.17` was opened for. Until the parameters
+        // reached the key, `SELECT $1` with 1 and with 2 shared an entry, which
+        // is one question answered with another's rows.
+        let addr = fake_postgres_extended().await;
+        let (context, cache) = context_with_cache(addr);
+        let context = Arc::new(context);
+        let (mut client, served) = extended_client(&context).await;
+
+        // A miss: the whole sequence goes upstream and its answer is stored.
+        client
+            .write_all(&one_binding("SELECT $1", b"1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            four_answers(&mut client).await,
+            vec![
+                Tag(b'1'),
+                Tag(b'2'),
+                Tag::COMMAND_COMPLETE,
+                Tag::READY_FOR_QUERY
+            ]
+        );
+        assert_eq!(cache.len(), 1, "the sequence's answer was not stored");
+
+        // The same binding again: answered here, and the server never hears it.
+        let before = statements_seen(addr).len();
+        client
+            .write_all(&one_binding("SELECT $1", b"1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            four_answers(&mut client).await,
+            vec![
+                Tag(b'1'),
+                Tag(b'2'),
+                Tag::COMMAND_COMPLETE,
+                Tag::READY_FOR_QUERY
+            ],
+            "the assembled hit is not the answer the client was owed"
+        );
+        assert_eq!(context.routes.cache(), 1, "the hit was not counted");
+        assert_eq!(
+            statements_seen(addr).len(),
+            before,
+            "a hit still sent the sequence upstream"
+        );
+
+        // A different binding is a different question, so it goes upstream and
+        // gets an entry of its own rather than the first one's rows.
+        client
+            .write_all(&one_binding("SELECT $1", b"2"))
+            .await
+            .unwrap();
+        four_answers(&mut client).await;
+        assert_eq!(
+            context.routes.cache(),
+            1,
+            "a second binding was served the first's answer"
+        );
+        assert_eq!(cache.len(), 2, "two bindings shared one entry");
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_served_sequence_takes_nothing_from_the_pool() {
+        // The whole point of holding the sequence back rather than serving at
+        // the `Execute`. Forwarding a `Parse` acquires, so a hit there would
+        // have paid for the pool before it looked anything up, and `M7.56` put
+        // 45% of this proxy's CPU in that lock.
+        // The pool is emptied and capped before the hit, so a sequence that
+        // needed a connection could not have one: the assertion is that the
+        // client is answered anyway.
+        let addr = fake_postgres_extended().await;
+        let (mut context, _cache) = context_with_cache(addr);
+        // Short, so a version of this that did acquire fails on the answer
+        // rather than on the clock.
+        context.acquire_timeout = Duration::from_millis(250);
+        let context = Arc::new(context);
+        let key = grant_for(addr).primary.pool_key();
+
+        // Fill the cache, on a session that then goes away and leaves its
+        // connection idle in the pool.
+        let (mut first, first_task) = extended_client(&context).await;
+        first
+            .write_all(&one_binding("SELECT $1", b"1"))
+            .await
+            .unwrap();
+        four_answers(&mut first).await;
+        drop(first);
+        let _ = first_task.await;
+
+        // A second session takes that idle connection and keeps it: a `Parse`
+        // the cacheability rule refuses, ended with a `Flush` rather than a
+        // `Sync`, so the sequence stays open and the connection stays out.
+        // `random()` rather than a write, because a write would drop the entry
+        // this test is about.
+        let (mut holding, holding_task) = extended_client(&context).await;
+        let mut open = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut open, "volatile", "SELECT random()");
+        open.extend_from_slice(&[b'H', 0, 0, 0, 4]);
+        holding.write_all(&open).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), expect(&mut holding))
+                .await
+                .expect("the holding session was never answered")
+                .0,
+            Tag(b'1')
+        );
+        assert_eq!(
+            context.pool.stats(&key),
+            pgprox_core::pool::PoolStats {
+                active: 1,
+                idle: 0,
+                waiting: 0,
+                limit: 20,
+            },
+            "the holding session did not take the only connection"
+        );
+
+        // And now nothing more may be opened.
+        context.pool.set_limit(&key, 1);
+
+        let (mut client, served) = extended_client(&context).await;
+        client
+            .write_all(&one_binding("SELECT $1", b"1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            four_answers(&mut client).await,
+            vec![
+                Tag(b'1'),
+                Tag(b'2'),
+                Tag::COMMAND_COMPLETE,
+                Tag::READY_FOR_QUERY
+            ],
+            "a hit could not be served without a connection to take"
+        );
+        assert_eq!(
+            context.pool.stats(&key).active,
+            1,
+            "the served session is holding a connection of its own"
+        );
+
+        drop(client);
+        drop(holding);
+        let _ = served.await;
+        let _ = holding_task.await;
+    }
+
+    #[tokio::test]
+    async fn a_sequence_the_cache_gives_up_on_is_answered_as_it_always_was() {
+        // asyncpg's prepare round trip, on a tenant that has opted in. A
+        // statement `Describe` is not held, so the `Parse` that was held has to
+        // reach the server before the `Describe` does, in that order, and the
+        // client sees exactly what it saw before any of this existed.
+        let addr = fake_postgres_extended().await;
+        let (context, _cache) = context_with_cache(addr);
+        let context = Arc::new(context);
+        let (mut client, served) = extended_client(&context).await;
+
+        let mut prepare = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut prepare, "s1", "SELECT $1");
+        prepare.push(b'D');
+        let described = b"S\x73\x31\x00";
+        prepare.extend_from_slice(&u32::try_from(described.len() + 4).unwrap().to_be_bytes());
+        prepare.extend_from_slice(described);
+        prepare.extend_from_slice(&[b'H', 0, 0, 0, 4]);
+        client.write_all(&prepare).await.unwrap();
+
+        let mut tags = Vec::new();
+        for _ in 0..3 {
+            tags.push(
+                tokio::time::timeout(Duration::from_secs(5), expect(&mut client))
+                    .await
+                    .expect("the proxy never answered the Flush")
+                    .0,
+            );
+        }
+        assert_eq!(
+            tags,
+            vec![Tag(b'1'), Tag(b't'), Tag(b'n')],
+            "the held Parse did not reach the server before the Describe"
+        );
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[test]
+    fn a_session_that_never_binds_holds_nothing() {
+        // "Allocates nothing new", at the line that would do the allocating. A
+        // node with no cache pays one `serves` call per frame and never builds
+        // the buffer a sequence would need.
+        let context = context_for("127.0.0.1:1".parse().unwrap());
+        let grant = grant_for("127.0.0.1:1".parse().unwrap());
+
+        let mut out = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut out, "SELECT 1");
+        let body = out[5..].to_vec();
+        let frame = Frame::new(Tag::QUERY, &body);
+        let message = pgprox_proto::frontend::decode(&frame).unwrap();
+
+        let mut live = Live::new(&context, &grant);
+        let incoming = Incoming {
+            message: &message,
+            tag: Tag::QUERY,
+            outgoing: &body,
+        };
+        assert_eq!(withhold(&context, &grant, &mut live, incoming), Held::Send);
+        assert!(
+            live.sequence.is_none(),
+            "a session that never binds allocated a sequence buffer"
+        );
     }
 
     #[tokio::test]

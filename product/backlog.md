@@ -2412,7 +2412,7 @@ the relay lands before the cacheability rule is finished.
   with a `Describe` and one without, a payload whose `RowDescription` is absent
   is refused rather than assembled around, and a malformed payload cannot make
   the assembler read past its end.
-- [ ] `M9.22` One payload shape for both protocols. `M9.7` stores the whole
+- [x] `M9.22` One payload shape for both protocols. `M9.7` stores the whole
   answer to a simple `Query`, `ReadyForQuery` and all, and ADR 0022 makes the
   stored payload the statement's answer instead: the `RowDescription`, the rows,
   the `CommandComplete`. So the recording filters what it keeps, and the simple
