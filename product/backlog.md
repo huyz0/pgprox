@@ -2365,7 +2365,7 @@ the relay lands before the cacheability rule is finished.
   nor stored in it, with a test that fails before the fix. `M9.23` depends on
   this: withholding a sequence is only sound from a session with no transaction
   open, and the invariant has to exist before anything rests on it.
-- [ ] `M9.19` The key can carry what a `Bind` carries. `CacheKey::params` is
+- [x] `M9.19` The key can carry what a `Bind` carries. `CacheKey::params` is
   `Vec<Vec<u8>>` and has been empty since M9.7, and it cannot hold what the
   extended protocol needs: a SQL `NULL` is not a zero-length value, and
   `Vec<Vec<u8>>` cannot tell them apart. Two bindings of `SELECT $1`, one with
