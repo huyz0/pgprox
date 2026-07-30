@@ -2733,9 +2733,68 @@ the relay lands before the cacheability rule is finished.
   nowhere in that section, and the crate's run has no survivor outside it.
   351 mutants, 7 surviving, all seven in the baseline with reasons. Coverage
   98.52%. `pgprox-proto` is finished; `pgprox-session` is the last crate.
-- [ ] `M10.8` The survivors in `pgprox-session`, fifty-three, ten of them
+- [x] `M10.8` The survivors in `pgprox-session`, fifty-three, ten of them
   timeouts. Same rule, and the largest list, which is consistent with it being
   the most correctness-critical crate and the one M9 kept finding defects in.
+  Split on reading the list, the way `M10.4` and `M10.7` were. The current run
+  reports fifty-five, two more than the baseline, both of them timeouts that
+  come and go with machine load. They fall into four groups that have nothing
+  to do with each other, and one commit that touched all four would be one
+  commit nobody could review: this task takes the sixteen about what the crate
+  reports about itself, and `M10.11` through `M10.13` take the rest.
+  The sixteen are `Registry::len` and `is_empty`, `PgConnector::known`,
+  `ParameterCache::is_empty`, `SqlReplicaProbe::len` and `is_empty`,
+  `TokenAuth::is_done`, `ScramAuth::is_done`, the three `Debug` impls, and the
+  four in the `StaticCredentials for Arc<T>` blanket impl.
+  Acceptance: each of those is asserted by a test that fails without it.
+  Eighteen, not sixteen. The re-run turned up two more of exactly this shape in
+  `state.rs`, `Handshake::is_closed` and `is_awaiting_credential`, neither of
+  which was in `M10.3`'s baseline. They were checked by hand rather than
+  assumed: with `is_closed` returning true unconditionally the whole suite
+  passes, so it is a missing test today whatever it was then.
+  Five tests, four additions to existing ones. Three findings worth the task:
+  The `Debug` impls had a test each asserting what they must *not* print, and a
+  `Debug` that prints nothing passes that. Redaction has two halves and only one
+  was being checked, so an impl could lose the field an operator actually reads
+  and no test would notice. The assertions now name what has to appear as well.
+  `is_done` was asserted true at the end of both exchanges and never false
+  before, so a machine that reported itself finished with no grant in hand
+  survived. That is the shape of a session admitted without authenticating,
+  which is worth more than the mutant that pointed at it.
+  The `StaticCredentials for Arc<T>` blanket impl had no test at all. It is the
+  path production takes, since the composition root shares one set of keys
+  across every session, and the bare impl is the one the tests took. Forwarding
+  that returned `None` would have refused every login on a real node while the
+  whole suite stayed green.
+  Six timeouts in `shell.rs` that `M10.3` did not see are now in the baseline
+  rather than killed, because they belong to `M10.13` and because the reason is
+  the same one for all six. `flush -> Ok(())` was reproduced by hand: five probe
+  tests wait for bytes that are never written and run past sixty seconds, so the
+  suite does detect it, by not terminating. Which of these appear in a given run
+  depends on how loaded the machine is, which is the effect already recorded for
+  `Reader::cstr`.
+- [ ] `M10.11` The `relay.rs` and `flush.rs` survivors, eight: `Relay::wrote`
+  both ways, `record_write`, `released`, `forward_without_routing`,
+  `Outstanding::sent` twice and `discharge`. One property rather than eight
+  functions: whether a connection is safe to hand back. `wrote` is what decides
+  a pool release, and `Outstanding` is what decides when a pipelined sequence is
+  over. `M9.26` already found one defect here by way of a fake server that was
+  too polite, so these are the ones to read closely rather than to rubber-stamp.
+- [ ] `M10.12` The `sequence.rs` survivors, ten. The M9 machine, and the newest
+  code in the crate: `feed`'s size ceiling three ways, `may_hold`, `begins`,
+  `split`, `is_empty`, `assemble_simple` and the `Frames` iterator bound. The
+  ceiling ones matter most, because `MAX_HELD_BYTES` is what stops a client
+  holding a proxy's memory by never finishing a sequence.
+- [ ] `M10.13` The `shell.rs` survivors, eighteen, ten of them timeouts. The
+  wire buffer: `fill`, `fill_held`, `consume`, `compact`, `borrow`, `reclaim`,
+  `queue`, `flush` and `is_buffered`. Ten hangs in one file is itself the
+  finding to explain before writing anything, because a mutant that hangs is
+  usually an index that stops advancing, and the honest question is whether the
+  suite detects it or merely fails to terminate. `standards/testing.md` says a
+  timeout is a survivor here; whether that is the right call for this file is
+  part of the task.
+  Also the three loose ends that are not the wire buffer: `probe::text_row`'s
+  `at + 4` bound, `run_replica_query` and `cancel::send`.
 - [x] `M10.5` What the cache is worth on a workload it is for. `M9.24` measured
   the reference workload and named this as the cheapest thing left, because that
   workload answers a different question: 30% of its statements are writes, two

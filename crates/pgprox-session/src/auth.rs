@@ -560,7 +560,12 @@ mod tests {
     #[test]
     fn a_resolved_grant_finishes_the_exchange() {
         let mut auth = machine();
+        // Both ends of the flag. Only the second was ever asserted, so a
+        // machine that reported itself finished before it had a grant went
+        // unnoticed, and that is a session admitted without one.
+        assert!(!auth.is_done());
         auth.on_password(b"a.token.here\0");
+        assert!(!auth.is_done());
         let Progress::Ready(resolved) = auth.on_resolved(Ok(grant()), SystemTime::now()) else {
             panic!("a valid grant did not authenticate");
         };
@@ -721,6 +726,45 @@ mod tests {
         )
     }
 
+    #[test]
+    fn credentials_behind_an_arc_answer_the_same_as_the_credentials() {
+        // The blanket impl exists so a composition root can share one set of
+        // keys between every session, which means the shared path is the one
+        // production runs and the bare one is the one tests ran. Forwarding
+        // that returned `None` would refuse every login on a real node while
+        // every test here passed.
+        let one = OneUser {
+            user: "pgprox_admin",
+            proof: "cHJvb2Y=",
+        };
+        let shared = Arc::new(OneUser {
+            user: "pgprox_admin",
+            proof: "cHJvb2Y=",
+        });
+
+        assert_eq!(
+            shared.challenge("pgprox_admin"),
+            one.challenge("pgprox_admin")
+        );
+        assert!(shared.challenge("pgprox_admin").is_some());
+        assert!(shared.challenge("somebody_else").is_none());
+
+        let auth_message = "n=,r=CLIENTNONCE,r=CLIENTNONCESERVERNONCE,s=QSXCR+Q6sek8bf92,i=4096,c=biws,r=CLIENTNONCESERVERNONCE";
+        assert_eq!(
+            shared.verify("pgprox_admin", auth_message, "cHJvb2Y="),
+            one.verify("pgprox_admin", auth_message, "cHJvb2Y="),
+        );
+        assert_eq!(
+            shared.verify("pgprox_admin", auth_message, "cHJvb2Y="),
+            Some("c2lnbmF0dXJl".to_owned()),
+        );
+        assert!(
+            shared
+                .verify("pgprox_admin", auth_message, "d3Jvbmc=")
+                .is_none()
+        );
+    }
+
     fn initial(mechanism: &str, payload: &str) -> Vec<u8> {
         let mut body = mechanism.as_bytes().to_vec();
         body.push(0);
@@ -732,11 +776,15 @@ mod tests {
     #[test]
     fn a_correct_proof_completes_the_exchange() {
         let mut auth = scram();
+        assert!(!auth.is_done());
         let SaslProgress::Continue(server_first) =
             auth.on_initial(&initial(SCRAM_SHA_256, "n,,n=,r=CLIENTNONCE"))
         else {
             panic!("a well-formed client-first-message was refused");
         };
+        // Not after the challenge either: the proof has not arrived yet, and a
+        // machine that called itself finished here would let one through.
+        assert!(!auth.is_done());
         assert_eq!(
             server_first,
             "r=CLIENTNONCESERVERNONCE,s=QSXCR+Q6sek8bf92,i=4096"

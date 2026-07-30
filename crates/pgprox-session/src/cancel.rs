@@ -255,6 +255,32 @@ mod tests {
     }
 
     #[test]
+    fn the_registry_counts_what_it_holds_and_prints_none_of_it() {
+        // Two things nothing asserted. The count is what an operator reads to
+        // know whether a node still has cancellable queries, so it has to
+        // move; and the Debug has to say the count without saying the keys,
+        // each of which is a bearer token for cancelling somebody's query.
+        // Printing nothing satisfies the second half and fails the first.
+        let registry = registry();
+        assert_eq!(registry.len(), 0);
+        assert!(registry.is_empty());
+
+        let conn = registry.issue().unwrap();
+        registry.hold(conn, cancellation());
+        assert_eq!(registry.len(), 1);
+        assert!(!registry.is_empty());
+
+        let shown = format!("{registry:?}");
+        assert!(shown.contains("live: 1"), "{shown}");
+        assert!(!shown.contains("4242"), "{shown}");
+        assert!(!shown.contains(&0x0bad_beef_i32.to_string()), "{shown}");
+
+        registry.release(conn);
+        assert_eq!(registry.len(), 0);
+        assert!(registry.is_empty());
+    }
+
+    #[test]
     fn a_key_another_node_issued_is_forwarded_to_it() {
         // The whole reason the node is encoded in the key. Without this,
         // cancellation silently breaks the moment there is a second pod.

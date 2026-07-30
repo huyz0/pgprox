@@ -522,6 +522,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_cache_says_how_many_pairs_it_holds() {
+        // `probes` counts what it cost and `len` counts what it has, and only
+        // the first was ever read. They answer different questions: a cache
+        // that probed twice and holds one entry is working, and one that
+        // probed twice and holds two is not caching.
+        let cache = ParameterCache::new();
+        let connector = connector("17.2");
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+
+        cache.ensure(&connector, &backend("acme")).await.unwrap();
+        assert!(!cache.is_empty());
+        assert_eq!(cache.len(), 1);
+
+        cache.ensure(&connector, &backend("globex")).await.unwrap();
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[tokio::test]
     async fn a_second_pool_for_the_same_database_opens_no_second_probe() {
         // The acceptance criterion. Without the cache every new pool would
         // open a connection to ask a question whose answer has not changed.
@@ -706,6 +725,38 @@ mod tests {
     fn prober(replica: Replica, count: usize) -> SqlReplicaProbe<Replica> {
         let replicas = (0..count).map(|n| backend(&format!("r{n}"))).collect();
         SqlReplicaProbe::new(replica, replicas, test_slab())
+    }
+
+    #[test]
+    fn a_prober_counts_its_replicas_and_prints_nothing_else() {
+        // The count decides whether the poller runs at all, and the Debug ends
+        // up in a log line beside a type that holds live connections. It has
+        // to name the count and stop there.
+        let none = prober(
+            Replica {
+                replayed: None,
+                in_recovery: true,
+                refuse: false,
+            },
+            0,
+        );
+        assert_eq!(none.len(), 0);
+        assert!(none.is_empty());
+
+        let two = prober(
+            Replica {
+                replayed: None,
+                in_recovery: true,
+                refuse: false,
+            },
+            2,
+        );
+        assert_eq!(two.len(), 2);
+        assert!(!two.is_empty());
+
+        let shown = format!("{two:?}");
+        assert!(shown.contains("replicas: 2"), "{shown}");
+        assert!(!shown.contains("hunter2"), "{shown}");
     }
 
     #[tokio::test]

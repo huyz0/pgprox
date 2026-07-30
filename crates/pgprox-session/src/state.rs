@@ -362,11 +362,16 @@ mod tests {
         // network fault and sends the operator to the wrong place; a driver
         // shown 28000 with this message reports it verbatim.
         let mut hs = Handshake::new(HandshakeConfig::default());
+        assert!(!hs.is_closed(), "a fresh handshake is not finished");
         let params = login();
         let reply = hs.on_startup(&message(196_608, &params));
 
         assert_eq!(reply.action, Action::Fail(ClientError::TlsRequired));
         assert!(hs.is_closed());
+        // And not waiting for anything. A refused handshake that still says it
+        // wants a credential would have the shell read a password message on a
+        // connection it has already decided to close.
+        assert!(!hs.is_awaiting_credential());
     }
 
     #[test]
@@ -412,12 +417,17 @@ mod tests {
     #[test]
     fn a_token_client_is_asked_for_a_password() {
         let mut hs = encrypted(HandshakeConfig::default());
+        assert!(!hs.is_awaiting_credential(), "nothing has been asked yet");
         let params = login();
         let reply = hs.on_startup(&message(196_608, &params));
 
         assert_eq!(reply.negotiate, None);
         assert_eq!(reply.action, Action::Ask(Credential::Jwt));
         assert!(hs.is_awaiting_credential());
+        // Asked, not finished. Both flags read the same field, and a `Closed`
+        // that answered true here would end the connection before the password
+        // it just asked for could arrive.
+        assert!(!hs.is_closed());
         assert_eq!(hs.startup().unwrap().user, "acme_app");
         assert_eq!(hs.startup().unwrap().database, "acme");
     }

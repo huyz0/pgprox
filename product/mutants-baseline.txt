@@ -59,26 +59,10 @@ pgprox-route|crates/pgprox-route/src/hints.rs|split_block_comment|<=	equivalent.
 pgprox-route|crates/pgprox-route/src/hints.rs|statement_hint|==	as above
 
 # --- pgprox-session ---
-pgprox-session|crates/pgprox-session/src/auth.rs|<impl StaticCredentials for Arc<T>>::challenge|None	untriaged
-pgprox-session|crates/pgprox-session/src/auth.rs|<impl StaticCredentials for Arc<T>>::verify|None	untriaged
-pgprox-session|crates/pgprox-session/src/auth.rs|<impl StaticCredentials for Arc<T>>::verify|Some("xyzzy".into())	untriaged
-pgprox-session|crates/pgprox-session/src/auth.rs|<impl StaticCredentials for Arc<T>>::verify|Some(String::new())	untriaged
-pgprox-session|crates/pgprox-session/src/auth.rs|ScramAuth<C>::is_done|true	untriaged
-pgprox-session|crates/pgprox-session/src/auth.rs|TokenAuth::is_done|true	untriaged
-pgprox-session|crates/pgprox-session/src/cancel.rs|<impl fmt::Debug for Registry>::fmt|Ok(Default::default())	untriaged
-pgprox-session|crates/pgprox-session/src/cancel.rs|Registry::is_empty|false	untriaged
-pgprox-session|crates/pgprox-session/src/cancel.rs|Registry::is_empty|true	untriaged
-pgprox-session|crates/pgprox-session/src/cancel.rs|Registry::len|1	untriaged
 pgprox-session|crates/pgprox-session/src/cancel.rs|send|Ok(())	untriaged (timeout: the mutant made something not terminate)
-pgprox-session|crates/pgprox-session/src/connect.rs|<impl fmt::Debug for Upstreamed<S>>::fmt|Ok(Default::default())	untriaged
-pgprox-session|crates/pgprox-session/src/connect.rs|PgConnector<U>::known|1	untriaged
 pgprox-session|crates/pgprox-session/src/flush.rs|Outstanding::discharge|!=	untriaged
 pgprox-session|crates/pgprox-session/src/flush.rs|Outstanding::sent|	untriaged
 pgprox-session|crates/pgprox-session/src/flush.rs|Outstanding::sent|	untriaged
-pgprox-session|crates/pgprox-session/src/probe.rs|<impl fmt::Debug for SqlReplicaProbe<U>>::fmt|Ok(Default::default())	untriaged
-pgprox-session|crates/pgprox-session/src/probe.rs|ParameterCache::is_empty|true	untriaged
-pgprox-session|crates/pgprox-session/src/probe.rs|SqlReplicaProbe<U>::is_empty|false	untriaged
-pgprox-session|crates/pgprox-session/src/probe.rs|SqlReplicaProbe<U>::len|1	untriaged
 pgprox-session|crates/pgprox-session/src/probe.rs|run_replica_query|!=	untriaged (timeout: the mutant made something not terminate)
 pgprox-session|crates/pgprox-session/src/probe.rs|text_row|<=	untriaged
 pgprox-session|crates/pgprox-session/src/relay.rs|Relay::forward_without_routing|	untriaged
@@ -97,6 +81,12 @@ pgprox-session|crates/pgprox-session/src/sequence.rs|assemble_simple|Ok(())	untr
 pgprox-session|crates/pgprox-session/src/sequence.rs|begins|true	untriaged
 pgprox-session|crates/pgprox-session/src/sequence.rs|split|+	untriaged
 pgprox-session|crates/pgprox-session/src/shell.rs|?|+	untriaged
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::flush|Ok(())	a write path replaced by a no-op, detected by the suite failing to terminate rather than by an assertion. Reproduced by hand for `flush -> Ok(())`: five probe tests wait for bytes that are never written and run past sixty seconds. The other five are the same shape. These five were not in `M10.3`'s baseline and appear now, which is the load dependence already recorded for `Reader::cstr`: whether a hang lands inside the per-mutant timeout depends on the machine. `M10.13` owns the question of whether hang-detection is good enough for this file
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::flush|	a write path replaced by a no-op, detected by the suite failing to terminate rather than by an assertion. Reproduced by hand for `flush -> Ok(())`: five probe tests wait for bytes that are never written and run past sixty seconds. The other five are the same shape. These five were not in `M10.3`'s baseline and appear now, which is the load dependence already recorded for `Reader::cstr`: whether a hang lands inside the per-mutant timeout depends on the machine. `M10.13` owns the question of whether hang-detection is good enough for this file
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::flush|||	a write path replaced by a no-op, detected by the suite failing to terminate rather than by an assertion. Reproduced by hand for `flush -> Ok(())`: five probe tests wait for bytes that are never written and run past sixty seconds. The other five are the same shape. These five were not in `M10.3`'s baseline and appear now, which is the load dependence already recorded for `Reader::cstr`: whether a hang lands inside the per-mutant timeout depends on the machine. `M10.13` owns the question of whether hang-detection is good enough for this file
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::queue|()	a write path replaced by a no-op, detected by the suite failing to terminate rather than by an assertion. Reproduced by hand for `flush -> Ok(())`: five probe tests wait for bytes that are never written and run past sixty seconds. The other five are the same shape. These five were not in `M10.3`'s baseline and appear now, which is the load dependence already recorded for `Reader::cstr`: whether a hang lands inside the per-mutant timeout depends on the machine. `M10.13` owns the question of whether hang-detection is good enough for this file
+pgprox-session|crates/pgprox-session/src/shell.rs|accept|Ok(())	a write path replaced by a no-op, detected by the suite failing to terminate rather than by an assertion. Reproduced by hand for `flush -> Ok(())`: five probe tests wait for bytes that are never written and run past sixty seconds. The other five are the same shape. These five were not in `M10.3`'s baseline and appear now, which is the load dependence already recorded for `Reader::cstr`: whether a hang lands inside the per-mutant timeout depends on the machine. `M10.13` owns the question of whether hang-detection is good enough for this file
+pgprox-session|crates/pgprox-session/src/shell.rs|authenticate_scram|Ok(())	a write path replaced by a no-op, detected by the suite failing to terminate rather than by an assertion. Reproduced by hand for `flush -> Ok(())`: five probe tests wait for bytes that are never written and run past sixty seconds. The other five are the same shape. These five were not in `M10.3`'s baseline and appear now, which is the load dependence already recorded for `Reader::cstr`: whether a hang lands inside the per-mutant timeout depends on the machine. `M10.13` owns the question of whether hang-detection is good enough for this file
 pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::borrow|-	untriaged
 pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::borrow|<	untriaged
 pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::buffered|Vec::leak(Vec::new())	untriaged (timeout: the mutant made something not terminate)

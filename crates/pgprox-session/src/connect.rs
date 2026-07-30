@@ -1195,6 +1195,39 @@ mod tests {
         );
         assert!(!rendered.contains("4242"), "{rendered}");
         assert!(!rendered.contains("beef"), "{rendered}");
+        // And it still says what it is. A Debug that prints nothing passes
+        // every assertion above and takes the field count out of the log line
+        // with it, which is the half of this that is worth reading.
+        assert!(rendered.contains("Upstreamed"), "{rendered}");
+        assert!(rendered.contains("parameters: 1"), "{rendered}");
+    }
+
+    #[test]
+    fn a_connector_counts_the_backends_it_has_learned() {
+        // What `known` is for: an operator asking whether grants have reached
+        // this node at all. Nothing read it, so a count that never moved off
+        // one went unnoticed.
+        let connector = PgConnector::new(Unreachable, test_slab());
+        assert_eq!(connector.known(), 0);
+
+        connector.learn(&backend());
+        assert_eq!(connector.known(), 1);
+
+        // Overwriting rather than adding, which is what a rotated password
+        // does: same pool key, new secret.
+        let rotated = Backend {
+            password: SecretString::new("hunter3"),
+            ..backend()
+        };
+        connector.learn(&rotated);
+        assert_eq!(connector.known(), 1);
+
+        let other = Backend {
+            database: "globex".into(),
+            ..backend()
+        };
+        connector.learn(&other);
+        assert_eq!(connector.known(), 2);
     }
 
     #[tokio::test]
