@@ -2400,7 +2400,7 @@ the relay lands before the cacheability rule is finished.
   `Terminate` mid-sequence; the SQL comes from the `Parse` in the sequence or
   from what the session prepared earlier; the parameters come from the `Bind`;
   and the machine is empty again after the `Sync`. Nothing uses it yet.
-- [ ] `M9.21` A hit, assembled from the frames the client sent. The other half
+- [x] `M9.21` A hit, assembled from the frames the client sent. The other half
   of `M9.20` and the same module: given a withheld sequence and a stored
   payload, produce the bytes the client is owed.
   A `ParseComplete` for the `Parse`, a `BindComplete` for the `Bind`, the

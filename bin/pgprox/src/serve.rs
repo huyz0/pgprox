@@ -841,7 +841,14 @@ where
     // ceiling has none to spare.
     let served = match cache.get(&recording.key).await {
         Some(hit) => {
-            wire.queue(|out| out.extend_from_slice(&hit.frames));
+            wire.queue(|out| {
+                out.extend_from_slice(&hit.frames);
+                // The payload carries none, by ADR 0022, so the terminator is
+                // generated here. `'I'` because `M9.18` refuses to serve a
+                // session with a transaction open, which is what makes it true
+                // rather than the relay's guess.
+                encode::ready_for_query(out, TxStatus::Idle);
+            });
             true
         }
         None => false,
@@ -1549,15 +1556,22 @@ where
 
         forward(wire, tag, &body);
 
-        // The same bytes, kept for the cache. After `forward` rather than
-        // instead of it, so what is stored is exactly what the client saw: any
-        // divergence is a cached answer that differs from the one it was taken
-        // from.
+        // The same bytes, kept for the cache, filtered to the ones that answer
+        // the statement rather than the client's framing. A `ReadyForQuery`
+        // arrives once per simple query and once per `Sync`, so an entry
+        // carrying one could only serve the protocol that filled it; ADR 0022
+        // makes the payload a description, the rows and the completion, and
+        // both hit paths generate their own terminator.
+        //
+        // `belongs_in_payload` is the assembler's own list. Two lists here
+        // would drift, and the one nobody remembers to fix is always the second.
         if let Some(recording) = pumping.recording.as_mut() {
-            recording.frames.push(tag.get());
-            let len = u32::try_from(body.len() + 4).unwrap_or(u32::MAX);
-            recording.frames.extend_from_slice(&len.to_be_bytes());
-            recording.frames.extend_from_slice(&body);
+            if pgprox_session::sequence::belongs_in_payload(tag) {
+                recording.frames.push(tag.get());
+                let len = u32::try_from(body.len() + 4).unwrap_or(u32::MAX);
+                recording.frames.extend_from_slice(&len.to_be_bytes());
+                recording.frames.extend_from_slice(&body);
+            }
             if tag == pgprox_proto::frame::Tag::ERROR_RESPONSE {
                 recording.failed = true;
             }
@@ -2578,6 +2592,40 @@ mod tests {
             context.routes.primary(),
             1,
             "the miss that filled the cache was not counted as a primary statement"
+        );
+    }
+
+    #[tokio::test]
+    async fn what_is_stored_is_the_statements_answer_and_not_the_sessions() {
+        // ADR 0022's payload shape. A `ReadyForQuery` answers the client's
+        // framing rather than its question: the simple protocol gets one per
+        // statement, an extended sequence gets one per `Sync`, and an entry
+        // carrying one could only ever serve the protocol that filled it.
+        let addr = fake_postgres().await;
+        let (context, cache) = context_with_cache(addr);
+        let context = Arc::new(context);
+        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+
+        let key = pgprox_core::cache::CacheKey {
+            tenant: pgprox_core::ids::TenantId::new("acme"),
+            normalized_sql: Arc::from("select 1"),
+            params: Arc::from(&[][..]),
+            // Never set, so the server's own default, which every session on
+            // this tenant shares.
+            search_path: Arc::from(""),
+        };
+        let stored = futures_lite_block_on(cache.get(&key)).expect("nothing was stored");
+
+        // What the fake answers a query with, and nothing else.
+        let text = b"SELECT 1\0";
+        let mut want = vec![Tag::COMMAND_COMPLETE.get()];
+        want.extend_from_slice(&u32::try_from(text.len() + 4).unwrap().to_be_bytes());
+        want.extend_from_slice(text);
+
+        assert_eq!(
+            stored.frames.as_ref(),
+            want.as_slice(),
+            "the stored payload is not the statement's answer alone"
         );
     }
 

@@ -375,6 +375,11 @@ pub enum Unservable {
 /// A `ParseComplete`, a `BindComplete` and a `ReadyForQuery` are deliberately
 /// out: they answer the client's framing rather than its question, and keeping
 /// them is what would make an entry serve only the driver that filled it.
+///
+/// A `NoticeResponse` is out for a different reason. It is a message to the
+/// session that ran the statement, and replaying one to the next session is a
+/// warning about something that did not happen to it. Notices are asynchronous,
+/// so dropping one desynchronises nothing.
 #[must_use]
 pub fn belongs_in_payload(tag: Tag) -> bool {
     matches!(
