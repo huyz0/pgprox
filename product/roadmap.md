@@ -320,9 +320,25 @@ overlap, serving 11% of statements at a 39% hit rate. Recorded in
 It is not the answer to `M7.56`. A profile with the cache on puts the pool and
 its wakeups at ~49% against ~50% with it off: the share is flat because it is a
 share of a smaller total, and the shape does not change. Contention tracks how
-many callers are queued, and 89% of statements still queue. `M7.57` is still
-the task that matters for 100k *active* connections, and this run is more
-evidence for it rather than less.
+many callers are queued, and 89% of statements still queue.
+
+**And that seven percent has since gone the other way, which is the useful part
+of this milestone.** `M7.58` took CPU per statement from 687us to 43.7us by
+waking one waiter per released connection instead of all of them. The cache's own
+cost per statement did not change; what it was buying shrank by a factor of
+fifteen underneath it. Re-measured after the extended protocol landed, the same
+comparison puts the cache 7.8% *worse* on the median at five hundred
+connections, over three matched pairs whose sets do not overlap. See
+`product/perf/run-2026-07-30-extended-cache.md`.
+
+Two thirds of that cost is the hits rather than the bookkeeping, which a third
+configuration separated: opted in with a 64-byte budget, so every lookup and
+every withheld sequence happens and nothing can be stored, the median is 1% worse
+rather than 8%. Throughput is identical in all three, pinned by the database. So
+the cache cannot make the fleet do more work, and what serving 3% of statements
+instantly does is return those clients to the queue sooner, which lengthens it
+for the other 97%. A cache in front of a saturated resource moves work from the
+front of the queue to the back of it.
 
 **Where the ceiling is.** Both halves of it are in the workload rather than in
 the cache. Half of the reference workload goes through the extended protocol,
@@ -341,9 +357,25 @@ would move the query off the database and leave every bit of the pool work
 `M7.56` measured exactly where it is. And the answer to a sequence is not a
 function of the SQL and the parameters: whether a `RowDescription` belongs in it
 depends on the client's framing, so one driver's recorded bytes desynchronise
-another driver. ADR 0022 is the decision, `M9.18` through `M9.24` are the work,
+another driver. ADR 0022 is the decision, `M9.18` through `M9.27` are the work,
 and `scripts/m9-complete.sh` passes either way because none of this changes what
 the cache promises.
+
+**What building that found, all of it in the fakes.** Three defects, and each was
+invisible because a fake upstream was kinder than Postgres. It answered a second
+`Parse` under a name it had already prepared, so a connection whose record of its
+own statements had diverged looked correct: `M9.25`. It answered the write
+position query with a bare completion, so `relay.wrote()` never cleared and
+nothing after a write in that world was cacheable, which kept a test away from the
+path it was written for: `M9.26`. And it answered a `SELECT` with no
+`RowDescription`, a shape no server produces, which hid the fact that the two
+protocols do not store the same payload and that a simple query was being served
+rows with nothing describing them: `M9.27`.
+
+`M9.25` also went in half-applied and green, taking a run from 1,083 errors to
+207, which read as progress and was the same bug wearing a different symptom.
+Two of these three arrived from `M9.24` running rather than from review, which is
+the milestone's own argument for its completion condition being a run.
 
 **What building it found.** `Flush` was not the only thing the relay got wrong
 about statements it answered itself: a cache hit returned before

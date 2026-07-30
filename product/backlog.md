@@ -2294,7 +2294,7 @@ the relay lands before the cacheability rule is finished.
   the variant is an allocation on a path that currently makes none, on every
   node, for a feature that is off by default. The one caller that wants the
   values has already decided to build a cache key.
-- [ ] `M9.17` The extended protocol reaches the cache key. `M9.12` gave the
+- [x] `M9.17` The extended protocol reaches the cache key. `M9.12` gave the
   codec a way to read a `Bind`'s parameters; this is what carries them to
   `CacheKey::params`.
   The work is state, not parsing. A cache key needs the SQL and the parameter
@@ -2499,7 +2499,7 @@ the relay lands before the cacheability rule is finished.
   asserts the description is there.
   Acceptance: a simple query is not served a sequence's description-less
   payload, with a test that fails before the fix.
-- [ ] `M9.24` What it was worth. A matched pair of scale runs with the cache on,
+- [x] `M9.24` What it was worth. A matched pair of scale runs with the cache on,
   the way `M9.10` did it, recorded in `product/perf/` and reflected in the
   roadmap's M9 section.
   The number to watch is not the hit rate. `M9.10` served 11% of statements at a
@@ -2510,6 +2510,23 @@ the relay lands before the cacheability rule is finished.
   Acceptance: two runs whose sets do not overlap, the hit rate and the share of
   statements served recorded, and an honest sentence about the pool's share of
   the profile whichever way it went.
+  It went the other way. Three matched pairs put the cache 7.8% *worse* on the
+  median at five hundred connections, sets not overlapping, serving 3% of
+  statements at a 26% hit rate. Recorded in
+  `product/perf/run-2026-07-30-extended-cache.md`.
+  A third configuration separated the two costs, because the pair cannot: opted
+  in with a 64-byte budget, so every lookup and every withheld sequence happens
+  and nothing can be stored. That is 1% worse rather than 8%, so two thirds of
+  the cost is the hits themselves. Throughput is identical across all three,
+  pinned by the database, so the cache cannot make the fleet do more work: what
+  serving a statement instantly does is return that client to the queue sooner,
+  which lengthens it for everyone still in it.
+  `M9.10`'s +7% was measured when the pool lock cost 687us per statement and the
+  proxy was a bottleneck in front of the database. `M7.58` removed that. The
+  cache's own cost did not change; what it was buying shrank fifteenfold
+  underneath it. The sentence about the pool's share is now that there is no
+  pool share worth talking about, which is the answer this task was asked for
+  even though it is not the one it expected.
 - [x] `M9.13` Configuration, the half the node obeys. `M9.8` gives an operator
   a way to say it; this is what makes saying it change anything, and it is
   where the hot-reload acceptance lives.
