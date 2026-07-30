@@ -2454,6 +2454,27 @@ the relay lands before the cacheability rule is finished.
   thing, and this is what it is for.
   Acceptance: a sequence replayed onto a connection that already holds its
   statement is not prepared twice, with a test that fails before the fix.
+- [x] `M9.26` The other half of `M9.25`, which never landed, and the two harness
+  gaps that hid it.
+  `M9.25` was two changes: hold the client's own bytes, and map the statement
+  name at replay. Only the second was applied. The tree was green and the run
+  went from 1,083 errors to 207, which read as progress and was not: the same
+  divergence, surfacing as a refusal instead. `map_statement_name` at replay was
+  handed an already-rewritten body, so for a sequence carrying a `Parse` it
+  inserted an alias keyed by the global name and papered over itself, and for a
+  sequence with no `Parse` in it there was nothing to alias and the frame was
+  refused. Every driver sends `Bind`, `Execute`, `Sync` once it believes a
+  statement is prepared, so that is most extended-protocol traffic.
+  Two things in the harness had to change before a test could see it. The fake
+  extended server answered the position query the proxy asks the primary for
+  after a write with a bare completion, so `relay.wrote()` never cleared and
+  nothing after a write in that fake's world was cacheable: the test reached
+  neither the hit nor the replay. And the ordering matters, because a sequence
+  that replays inserts the alias that hides the bug, so the test has to fill the
+  entry through the simple protocol, take a hit on the extended one, and only
+  then force a miss. That the two protocols can share an entry is `M9.22`.
+  Acceptance: a `Bind`, `Execute`, `Sync` with no `Parse` in it is replayed
+  rather than refused, with a test that fails on the half-applied fix.
 - [ ] `M9.24` What it was worth. A matched pair of scale runs with the cache on,
   the way `M9.10` did it, recorded in `product/perf/` and reflected in the
   roadmap's M9 section.

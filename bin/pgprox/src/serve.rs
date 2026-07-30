@@ -605,7 +605,7 @@ where
         let incoming = Incoming {
             message: &message,
             tag,
-            outgoing: &outgoing,
+            body: &body,
         };
         if cached(wire, context, grant, conn, &mut live, incoming, now).await? {
             continue;
@@ -957,16 +957,17 @@ impl Live {
     }
 }
 
-/// One client frame, decoded, with the bytes that would go upstream.
+/// One client frame, decoded, as the client sent it.
 ///
-/// `outgoing` is not `body`: a `Parse` or a `Bind` has had its statement name
-/// rewritten to this proxy's own by then, and a replay has to send what would
-/// have been sent.
+/// `body` is the client's own bytes rather than the rewritten ones a `Parse` or
+/// a `Bind` goes upstream as, because the rewrite cannot be read back: it writes
+/// this proxy's own global name, and no session's statement map is keyed by
+/// that. See `M9.26`.
 #[derive(Clone, Copy)]
 struct Incoming<'a> {
     message: &'a pgprox_proto::frontend::FrontendMessage<'a>,
     tag: pgprox_proto::frame::Tag,
-    outgoing: &'a [u8],
+    body: &'a [u8],
 }
 
 /// The cache path for one frame, both protocols.
@@ -1048,7 +1049,7 @@ fn withhold(context: &Context, grant: &Grant, live: &mut Live, incoming: Incomin
         live.sequence = Some(Box::new(pgprox_session::sequence::HeldSequence::new()));
     }
     live.sequence.as_deref_mut().map_or(Held::Send, |held| {
-        held.feed(incoming.message, incoming.tag, incoming.outgoing, facts)
+        held.feed(incoming.message, incoming.tag, incoming.body, facts)
     })
 }
 
@@ -3475,6 +3476,78 @@ mod tests {
     /// message meaning "that was all". `fake_postgres` answers every frame as
     /// though it were a simple query, which is enough for the rest of the
     /// suite and cannot show this.
+    /// One frame's answer from the fake extended-protocol server.
+    ///
+    /// Split out of the accept loop, which clippy holds to a hundred lines.
+    /// `parsed` is what this connection has been asked to prepare, by name.
+    fn extended_answer(
+        tag: u8,
+        body: &[u8],
+        parsed: &mut std::collections::BTreeSet<String>,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        let completion = |out: &mut Vec<u8>| {
+            out.push(Tag::COMMAND_COMPLETE.get());
+            let text = b"SELECT 1\0";
+            out.extend_from_slice(&u32::try_from(text.len() + 4).unwrap().to_be_bytes());
+            out.extend_from_slice(text);
+        };
+
+        // The position the proxy asks the primary for after a write, before it
+        // lets the connection go. A fake that answered it with a bare completion
+        // left every session that had written looking like one that still had:
+        // `relay.wrote()` never cleared, so nothing after a write was cacheable
+        // and `M9.26`'s test could not reach the path it was written for.
+        if tag == b'Q' && String::from_utf8_lossy(body).contains("pg_current_wal_insert_lsn") {
+            out.extend_from_slice(&text_row(&[Some(PRIMARY_WRITTEN)]));
+            encode::ready_for_query(&mut out, TxStatus::Idle);
+            return out;
+        }
+
+        match tag {
+            // Parse, answered with ParseComplete unless this connection already
+            // holds the name. Postgres refuses that with 42P05, and a fake that
+            // accepted it let the desync `M9.24` found pass every test in this
+            // file: the proxy's record of what a connection holds is only
+            // correct if something notices when it is not.
+            b'P' => {
+                let name = String::from_utf8_lossy(
+                    &body[..body.iter().position(|b| *b == 0).unwrap_or(0)],
+                )
+                .into_owned();
+                if parsed.contains(&name) {
+                    let text = format!(
+                        "SERROR\0C42P05\0Mprepared statement \"{name}\" already exists\0\0"
+                    );
+                    out.push(Tag::ERROR_RESPONSE.get());
+                    out.extend_from_slice(&u32::try_from(text.len() + 4).unwrap().to_be_bytes());
+                    out.extend_from_slice(text.as_bytes());
+                } else {
+                    parsed.insert(name);
+                    out.extend_from_slice(&[b'1', 0, 0, 0, 4]);
+                }
+            }
+            // Describe of a statement: the parameters it takes, then the row it
+            // returns. Two messages, one of which ends the exchange.
+            b'D' => {
+                out.extend_from_slice(&[b't', 0, 0, 0, 6, 0, 0]);
+                out.extend_from_slice(&[b'n', 0, 0, 0, 4]);
+            }
+            b'B' => out.extend_from_slice(&[b'2', 0, 0, 0, 4]),
+            b'E' => completion(&mut out),
+            // Sync, and only Sync, produces a ReadyForQuery.
+            b'S' => encode::ready_for_query(&mut out, TxStatus::Idle),
+            // Flush. Postgres pushes out what it has and says nothing else,
+            // which is what an empty buffer does here.
+            b'H' => {}
+            _ => {
+                completion(&mut out);
+                encode::ready_for_query(&mut out, TxStatus::Idle);
+            }
+        }
+        out
+    }
+
     async fn fake_postgres_extended() -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -3521,67 +3594,7 @@ mod tests {
                             .or_default()
                             .push((header[0] as char).to_string());
 
-                        let mut out: Vec<u8> = Vec::new();
-                        match header[0] {
-                            // Parse, answered with ParseComplete, unless this
-                            // connection already holds the name.
-                            //
-                            // Postgres refuses that, and a fake that accepted
-                            // it would let the desync `M9.24` found pass every
-                            // test in this file: the proxy's record of what a
-                            // connection holds is only correct if something
-                            // notices when it is not.
-                            b'P' => {
-                                let name = String::from_utf8_lossy(
-                                    &body[..body.iter().position(|b| *b == 0).unwrap_or(0)],
-                                )
-                                .into_owned();
-                                if parsed.contains(&name) {
-                                    let text = format!(
-                                        "SERROR\0C42P05\0Mprepared statement \"{name}\" already exists\0\0"
-                                    );
-                                    out.push(Tag::ERROR_RESPONSE.get());
-                                    out.extend_from_slice(
-                                        &u32::try_from(text.len() + 4).unwrap().to_be_bytes(),
-                                    );
-                                    out.extend_from_slice(text.as_bytes());
-                                } else {
-                                    parsed.insert(name);
-                                    out.extend_from_slice(&[b'1', 0, 0, 0, 4]);
-                                }
-                            }
-                            // Describe of a statement: the parameters it takes,
-                            // then the row it returns. Two messages, one of
-                            // which ends the exchange.
-                            b'D' => {
-                                out.extend_from_slice(&[b't', 0, 0, 0, 6, 0, 0]);
-                                out.extend_from_slice(&[b'n', 0, 0, 0, 4]);
-                            }
-                            b'B' => out.extend_from_slice(&[b'2', 0, 0, 0, 4]),
-                            b'E' => {
-                                out.push(Tag::COMMAND_COMPLETE.get());
-                                let text = b"SELECT 1\0";
-                                out.extend_from_slice(
-                                    &u32::try_from(text.len() + 4).unwrap().to_be_bytes(),
-                                );
-                                out.extend_from_slice(text);
-                            }
-                            // Sync, and only Sync, produces a ReadyForQuery.
-                            b'S' => encode::ready_for_query(&mut out, TxStatus::Idle),
-                            // Flush. Postgres pushes out what it has and says
-                            // nothing else, which is exactly what this does by
-                            // writing an empty buffer.
-                            b'H' => {}
-                            _ => {
-                                out.push(Tag::COMMAND_COMPLETE.get());
-                                let text = b"SELECT 1\0";
-                                out.extend_from_slice(
-                                    &u32::try_from(text.len() + 4).unwrap().to_be_bytes(),
-                                );
-                                out.extend_from_slice(text);
-                                encode::ready_for_query(&mut out, TxStatus::Idle);
-                            }
-                        }
+                        let out = extended_answer(header[0], &body, &mut parsed);
                         if !out.is_empty() && socket.write_all(&out).await.is_err() {
                             return;
                         }
@@ -3624,6 +3637,20 @@ mod tests {
     fn one_binding(sql: &str, value: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         pgprox_proto::encode_frontend::parse(&mut out, "s1", sql);
+        pgprox_proto::encode_frontend::bind_with_parameters(&mut out, "", "s1", &[Some(value)]);
+        pgprox_proto::encode_frontend::execute(&mut out, "");
+        pgprox_proto::encode_frontend::sync(&mut out);
+        out
+    }
+
+    /// `Bind`, `Execute`, `Sync`: what a driver sends for a statement it has
+    /// already parsed on this connection, which is every run after the first.
+    ///
+    /// The shape `M9.26` was wrong about. It carries no `Parse`, so nothing in
+    /// the sequence names the statement by the client's own name, and a replay
+    /// that could not read the name back had nothing to fall back on.
+    fn a_binding(value: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
         pgprox_proto::encode_frontend::bind_with_parameters(&mut out, "", "s1", &[Some(value)]);
         pgprox_proto::encode_frontend::execute(&mut out, "");
         pgprox_proto::encode_frontend::sync(&mut out);
@@ -3768,6 +3795,117 @@ mod tests {
                 Tag::READY_FOR_QUERY
             ],
             "the replayed statement was prepared twice on one connection"
+        );
+
+        // And the shape with no `Parse` in it at all, which is every run after
+        // a driver's first: another write to drop the entry, then a `Bind` for
+        // the statement this session parsed earlier. Nothing in this sequence
+        // carries the client's name for it, so a replay that reads the name out
+        // of the frames it holds has to have held the client's own bytes.
+        client.write_all(&write).await.unwrap();
+        for _ in 0..2 {
+            expect(&mut client).await;
+        }
+
+        client.write_all(&a_binding(b"1")).await.unwrap();
+        let mut tags = Vec::new();
+        for _ in 0..3 {
+            tags.push(
+                tokio::time::timeout(Duration::from_secs(5), expect(&mut client))
+                    .await
+                    .expect("the second binding was never answered")
+                    .0,
+            );
+        }
+        assert_eq!(
+            tags,
+            vec![Tag(b'2'), Tag::COMMAND_COMPLETE, Tag::READY_FOR_QUERY],
+            "a sequence with no Parse in it could not be replayed"
+        );
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_sequence_with_no_parse_in_it_can_still_be_replayed() {
+        // `M9.26`, and the ordering is the whole test.
+        //
+        // A held frame was stored after the statement-name rewrite, so a replay
+        // decoded a `Bind` naming this proxy's own global name and looked it up
+        // in a map keyed by the client's name. It only shows when the sequence
+        // that would have inserted an alias never ran: a hit replays nothing, so
+        // the next sequence is the first thing to reach the server, and a
+        // `Bind`, `Execute`, `Sync` is what every driver sends once it believes
+        // the statement is prepared.
+        //
+        // The simple query is how the entry gets there without a replay: `M9.22`
+        // made both protocols store the same payload, so a `Bind` with nothing
+        // bound has the same key as the simple query of the same SQL.
+        let addr = fake_postgres_extended().await;
+        let (context, cache) = context_with_cache(addr);
+        let context = Arc::new(context);
+        let (mut client, served) = extended_client(&context).await;
+
+        let mut simple = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut simple, "SELECT 1");
+        client.write_all(&simple).await.unwrap();
+        for _ in 0..2 {
+            expect(&mut client).await;
+        }
+        assert_eq!(cache.len(), 1, "the simple query stored nothing");
+
+        // The extended sequence for the same statement: a hit, so nothing is
+        // replayed and nothing upstream learns the name.
+        let mut prepared = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut prepared, "s1", "SELECT 1");
+        pgprox_proto::encode_frontend::bind(&mut prepared, "", "s1");
+        pgprox_proto::encode_frontend::execute(&mut prepared, "");
+        pgprox_proto::encode_frontend::sync(&mut prepared);
+        client.write_all(&prepared).await.unwrap();
+        assert_eq!(
+            four_answers(&mut client).await,
+            vec![
+                Tag(b'1'),
+                Tag(b'2'),
+                Tag::COMMAND_COMPLETE,
+                Tag::READY_FOR_QUERY
+            ]
+        );
+        assert_eq!(context.routes.cache(), 1, "the sequence was not a hit");
+
+        // A write drops it, and now the `Bind` has to go upstream.
+        let mut write = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut write, "UPDATE t SET a = 1");
+        client.write_all(&write).await.unwrap();
+        for _ in 0..2 {
+            expect(&mut client).await;
+        }
+
+        let mut rebind = Vec::new();
+        pgprox_proto::encode_frontend::bind(&mut rebind, "", "s1");
+        pgprox_proto::encode_frontend::execute(&mut rebind, "");
+        pgprox_proto::encode_frontend::sync(&mut rebind);
+        client.write_all(&rebind).await.unwrap();
+
+        let mut tags = Vec::new();
+        for _ in 0..3 {
+            tags.push(
+                tokio::time::timeout(Duration::from_secs(5), expect(&mut client))
+                    .await
+                    .expect("the replayed sequence was never answered")
+                    .0,
+            );
+        }
+        assert_eq!(
+            tags,
+            vec![Tag(b'2'), Tag::COMMAND_COMPLETE, Tag::READY_FOR_QUERY],
+            "a sequence with no Parse in it was refused rather than replayed"
+        );
+        assert_eq!(
+            context.routes.cache(),
+            1,
+            "the replayed sequence was answered from the cache after a write"
         );
 
         drop(client);
@@ -3917,7 +4055,7 @@ mod tests {
         let incoming = Incoming {
             message: &message,
             tag: Tag::QUERY,
-            outgoing: &body,
+            body: &body,
         };
         assert_eq!(withhold(&context, &grant, &mut live, incoming), Held::Send);
         assert!(
