@@ -128,6 +128,38 @@ jobs:
       # expensive without allocating.
       - run: scripts/bench.sh
 
+  fuzz:
+    name: tier 3 - the fuzzers
+    runs-on: ubuntu-latest
+    # Nightly and on demand, alongside the FIPS build, because a fuzzer's value
+    # is in the hours it accumulates rather than in blocking a commit. Five
+    # minutes per target and three targets, so a scheduled run is a quarter of an
+    # hour.
+    #
+    # `pgprox-proto`'s own rules say a malformed frame must not take down a node
+    # serving 100k connections, and that this is fuzzed rather than assumed.
+    # Until `M10.2` nothing ran the fuzzer, so it was assumed.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/fuzz.sh 300
+      # The input that crashed it, kept. Without this a find is a red run and a
+      # log line, and the bytes that caused it are deleted with the runner. The
+      # artifact replays with `cargo +nightly fuzz run <target> <path>`.
+      - name: Keep what it found
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: warn
+
   milestone:
     name: milestone completion condition
     runs-on: ubuntu-latest

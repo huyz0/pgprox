@@ -2585,7 +2585,7 @@ the relay lands before the cacheability rule is finished.
   All eight passed, so wiring them added no failures and the gap was only ever
   that nothing would have said. The drift check was watched failing on all eight
   before the workflow was touched.
-- [ ] `M10.2` The codec is fuzzed by something other than memory.
+- [x] `M10.2` The codec is fuzzed by something other than memory.
   `pgprox-proto/AGENTS.md` says a malformed frame must not take down a node and
   that this is "fuzzed, not assumed". `scripts/fuzz.sh` exists and no scheduled
   job runs it, so the most exposed parser in the process is fuzzed exactly as
@@ -2595,8 +2595,15 @@ the relay lands before the cacheability rule is finished.
   minutes and not in executions. The corpus that finds something is committed, so
   the next run starts where the last one stopped rather than from nothing.
   Acceptance: the scheduled job runs `scripts/fuzz.sh` with a bounded duration,
-  the script takes that duration as an argument, and a crash leaves a committed
-  reproducer rather than a line in a log nobody reads.
+  the script takes that duration as an argument, and a crash leaves the input
+  that caused it rather than a line in a log nobody reads.
+  One criterion was wrong as written: it said a *committed* reproducer, and CI
+  cannot commit. What it can do is upload the artifact, which is what a human
+  then commits alongside the fix, so that is what the job does.
+  The script already took a duration and already seeded its corpus from the
+  committed generator, so the whole gap was scheduling. Run here at 20 seconds a
+  target before committing: all three clean, including the `Bind` parameter
+  reader `M9.19` added and the target `M9.19` extended to walk its output.
 - [ ] `M10.3` Mutation testing, which `standards/testing.md` says already runs.
   It says `cargo-mutants` runs nightly against the pure state machines and that
   surviving mutants are treated as missing tests. There is no script, no job, and
