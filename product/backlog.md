@@ -2604,7 +2604,7 @@ the relay lands before the cacheability rule is finished.
   committed generator, so the whole gap was scheduling. Run here at 20 seconds a
   target before committing: all three clean, including the `Bind` parameter
   reader `M9.19` added and the target `M9.19` extended to walk its output.
-- [ ] `M10.3` Mutation testing, which `standards/testing.md` says already runs.
+- [x] `M10.3` Mutation testing, which `standards/testing.md` says already runs.
   It says `cargo-mutants` runs nightly against the pure state machines and that
   surviving mutants are treated as missing tests. There is no script, no job, and
   the tool is not installed. Either the sentence goes or the thing exists.
@@ -2619,6 +2619,17 @@ the relay lands before the cacheability rule is finished.
   Acceptance: the script exists, runs, and records a baseline; the nightly job
   calls it; and `standards/testing.md` describes what runs rather than what was
   intended.
+  The first run: 950 mutants across the four crates, 720 caught, 137 unviable,
+  89 alive. An 89% kill rate against line coverage of 96% to 99%, which is the
+  gap the standard's sentence about coverage being a floor is about.
+  Two things the tool found about the harness rather than the code. Each job
+  copies the tree, and this repo's `target-coverage` is 6 GB, so on a machine
+  whose `/tmp` is a tmpfs the run dies with `ENOSPC` twenty minutes in: the
+  copies go on the real disk. And the stale-entry check compared the baseline's
+  every crate against whichever crate was measured, so running one crate warned
+  about all the others, which is a warning about nothing.
+  The gate was checked both ways: it passes with the baseline as recorded, and
+  removing one entry fails it by name.
 - [ ] `M10.4` The survivors worth killing. `M10.3` produces the list; this is the
   part that turns it into tests, and it is filed separately because the list is
   not knowable until the tool has run.

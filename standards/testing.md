@@ -42,8 +42,17 @@ threshold.
   every trait behind the `test-fakes` feature. A fake that behaves like the real
   thing catches integration mistakes that a mock asserting call counts cannot.
 - **Coverage is a floor, not a goal.** 95% with weak assertions is the standard
-  failure mode. `cargo-mutants` runs nightly against the pure state machines and
-  surviving mutants are treated as missing tests.
+  failure mode, and coverage cannot see it: a line that ran is not a line that
+  mattered. `scripts/mutants.sh` runs `cargo-mutants` against the four sans-I/O
+  crates, `pgprox-proto`, `pgprox-route`, `pgprox-cache` and `pgprox-session`,
+  in the nightly job. A surviving mutant is a missing test. One that is accepted
+  instead goes in `product/mutants-baseline.txt` with a reason, and one that is
+  in neither place fails the script.
+  This ran nowhere until `M10.3`, and the sentence claiming it did was three
+  milestones old. M9 is why it was worth building rather than deleting: three of
+  its defects survived every gate because a fake answered something Postgres
+  refuses, and a fourth was a fix that went in half-applied and green. Each is a
+  line whose removal changed nothing any test could see.
 
 ## Tier 2: pre-push and CI
 

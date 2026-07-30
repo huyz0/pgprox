@@ -1,0 +1,120 @@
+# Surviving mutants that are accepted, with the reason each is accepted.
+#
+# `scripts/mutants.sh` fails on any survivor that is not in this file. That is
+# the whole mechanism: the list may not grow without somebody writing down why.
+#
+# One entry per line, the key and the reason separated by a tab. The key is the
+# crate, the file, the function and the replacement text, with no line number,
+# so editing the lines above a mutant does not invalidate its entry.
+#
+# # Where this list came from
+#
+# `M10.3` ran the tool for the first time, three milestones after
+# `standards/testing.md` started claiming that it ran nightly. It found 89
+# survivors out of 950 mutants across the four sans-I/O crates: 720 caught, 137
+# unviable, 89 alive. That is an 89% kill rate against line coverage of 96% to
+# 99%, which is the gap the standard's own sentence about coverage being a floor
+# is about.
+#
+# Every entry below is marked `untriaged`, and that is not a reason. It is a
+# statement that the tool ran before anybody had read its output, which is the
+# honest order: the gate protects against new survivors from today, and `M10.4`
+# is the task that turns each of these into either a test or a real reason.
+# `untriaged` may not be used for anything added after `M10.4`.
+
+# --- pgprox-cache ---
+pgprox-cache|crates/pgprox-cache/src/store.rs|<impl QueryCache for Store>::put|*=	untriaged
+pgprox-cache|crates/pgprox-cache/src/store.rs|<impl QueryCache for Store>::put|-=	untriaged
+pgprox-cache|crates/pgprox-cache/src/store.rs|<impl QueryCache for Store>::put|>=	untriaged
+pgprox-cache|crates/pgprox-cache/src/store.rs|Inner::evict_to_fit|>=	untriaged
+pgprox-cache|crates/pgprox-cache/src/store.rs|Inner::remove|None	untriaged (timeout: the mutant made something not terminate)
+pgprox-cache|crates/pgprox-cache/src/store.rs|Inner::touch|*=	untriaged
+pgprox-cache|crates/pgprox-cache/src/store.rs|Inner::touch|-=	untriaged
+pgprox-cache|crates/pgprox-cache/src/store.rs|weigh|*	untriaged
+pgprox-cache|crates/pgprox-cache/src/store.rs|weigh|*	untriaged
+pgprox-cache|crates/pgprox-cache/src/store.rs|weigh|*	untriaged
+
+# --- pgprox-proto ---
+pgprox-proto|crates/pgprox-proto/src/backend.rs|conn_id_from_key|^	untriaged
+pgprox-proto|crates/pgprox-proto/src/encode.rs|row_description|	untriaged
+pgprox-proto|crates/pgprox-proto/src/encode.rs|row_description|	untriaged
+pgprox-proto|crates/pgprox-proto/src/encode_frontend.rs|untagged|+	untriaged
+pgprox-proto|crates/pgprox-proto/src/frame.rs|inspect_policy|+	untriaged
+pgprox-proto|crates/pgprox-proto/src/frame.rs|inspect_policy|+	untriaged
+pgprox-proto|crates/pgprox-proto/src/frame.rs|inspect_policy|+	untriaged
+pgprox-proto|crates/pgprox-proto/src/frame.rs|inspect_policy|/	untriaged
+pgprox-proto|crates/pgprox-proto/src/frame.rs|inspect_policy|/	untriaged
+pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::buffered|*	untriaged
+pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::buffered|-	untriaged
+pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::buffered|0	untriaged
+pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::buffered|1	untriaged
+pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::push_body|>=	untriaged
+pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::push_header|*	untriaged
+pgprox-proto|crates/pgprox-proto/src/relay.rs|FrameRelay::push_header|>	untriaged
+pgprox-proto|crates/pgprox-proto/src/session.rs|SessionState::on_frontend|	untriaged
+pgprox-proto|crates/pgprox-proto/src/startup.rs|Startup<'_>::options|&&	untriaged
+
+# --- pgprox-route ---
+pgprox-route|crates/pgprox-route/src/classify.rs|begins_read_only_transaction|||	untriaged
+pgprox-route|crates/pgprox-route/src/classify.rs|classify_one|(Default::default(), true)	untriaged (timeout: the mutant made something not terminate)
+pgprox-route|crates/pgprox-route/src/classify.rs|classify|	untriaged (timeout: the mutant made something not terminate)
+pgprox-route|crates/pgprox-route/src/hints.rs|split_block_comment|*=	untriaged (timeout: the mutant made something not terminate)
+pgprox-route|crates/pgprox-route/src/hints.rs|split_block_comment|-=	untriaged (timeout: the mutant made something not terminate)
+pgprox-route|crates/pgprox-route/src/hints.rs|split_block_comment|<=	untriaged
+pgprox-route|crates/pgprox-route/src/hints.rs|statement_hint|==	untriaged (timeout: the mutant made something not terminate)
+pgprox-route|crates/pgprox-route/src/poller.rs|ReplicaWatch::is_empty|true	untriaged
+
+# --- pgprox-session ---
+pgprox-session|crates/pgprox-session/src/auth.rs|<impl StaticCredentials for Arc<T>>::challenge|None	untriaged
+pgprox-session|crates/pgprox-session/src/auth.rs|<impl StaticCredentials for Arc<T>>::verify|None	untriaged
+pgprox-session|crates/pgprox-session/src/auth.rs|<impl StaticCredentials for Arc<T>>::verify|Some("xyzzy".into())	untriaged
+pgprox-session|crates/pgprox-session/src/auth.rs|<impl StaticCredentials for Arc<T>>::verify|Some(String::new())	untriaged
+pgprox-session|crates/pgprox-session/src/auth.rs|ScramAuth<C>::is_done|true	untriaged
+pgprox-session|crates/pgprox-session/src/auth.rs|TokenAuth::is_done|true	untriaged
+pgprox-session|crates/pgprox-session/src/cancel.rs|<impl fmt::Debug for Registry>::fmt|Ok(Default::default())	untriaged
+pgprox-session|crates/pgprox-session/src/cancel.rs|Registry::is_empty|false	untriaged
+pgprox-session|crates/pgprox-session/src/cancel.rs|Registry::is_empty|true	untriaged
+pgprox-session|crates/pgprox-session/src/cancel.rs|Registry::len|1	untriaged
+pgprox-session|crates/pgprox-session/src/cancel.rs|send|Ok(())	untriaged (timeout: the mutant made something not terminate)
+pgprox-session|crates/pgprox-session/src/connect.rs|<impl fmt::Debug for Upstreamed<S>>::fmt|Ok(Default::default())	untriaged
+pgprox-session|crates/pgprox-session/src/connect.rs|PgConnector<U>::known|1	untriaged
+pgprox-session|crates/pgprox-session/src/flush.rs|Outstanding::discharge|!=	untriaged
+pgprox-session|crates/pgprox-session/src/flush.rs|Outstanding::sent|	untriaged
+pgprox-session|crates/pgprox-session/src/flush.rs|Outstanding::sent|	untriaged
+pgprox-session|crates/pgprox-session/src/probe.rs|<impl fmt::Debug for SqlReplicaProbe<U>>::fmt|Ok(Default::default())	untriaged
+pgprox-session|crates/pgprox-session/src/probe.rs|ParameterCache::is_empty|true	untriaged
+pgprox-session|crates/pgprox-session/src/probe.rs|SqlReplicaProbe<U>::is_empty|false	untriaged
+pgprox-session|crates/pgprox-session/src/probe.rs|SqlReplicaProbe<U>::len|1	untriaged
+pgprox-session|crates/pgprox-session/src/probe.rs|run_replica_query|!=	untriaged (timeout: the mutant made something not terminate)
+pgprox-session|crates/pgprox-session/src/probe.rs|text_row|<=	untriaged
+pgprox-session|crates/pgprox-session/src/relay.rs|Relay::forward_without_routing|	untriaged
+pgprox-session|crates/pgprox-session/src/relay.rs|Relay::record_write|()	untriaged
+pgprox-session|crates/pgprox-session/src/relay.rs|Relay::released|()	untriaged
+pgprox-session|crates/pgprox-session/src/relay.rs|Relay::wrote|false	untriaged
+pgprox-session|crates/pgprox-session/src/relay.rs|Relay::wrote|true	untriaged
+pgprox-session|crates/pgprox-session/src/sequence.rs|<impl Iterator for Frames<'a>>::next|<=	untriaged
+pgprox-session|crates/pgprox-session/src/sequence.rs|?|+	untriaged
+pgprox-session|crates/pgprox-session/src/sequence.rs|HeldSequence::feed|*	untriaged
+pgprox-session|crates/pgprox-session/src/sequence.rs|HeldSequence::feed|-	untriaged
+pgprox-session|crates/pgprox-session/src/sequence.rs|HeldSequence::feed|>=	untriaged
+pgprox-session|crates/pgprox-session/src/sequence.rs|HeldSequence::is_empty|true	untriaged
+pgprox-session|crates/pgprox-session/src/sequence.rs|HeldSequence::may_hold|||	untriaged
+pgprox-session|crates/pgprox-session/src/sequence.rs|assemble_simple|Ok(())	untriaged
+pgprox-session|crates/pgprox-session/src/sequence.rs|begins|true	untriaged
+pgprox-session|crates/pgprox-session/src/sequence.rs|split|+	untriaged
+pgprox-session|crates/pgprox-session/src/shell.rs|?|+	untriaged
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::borrow|-	untriaged
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::borrow|<	untriaged
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::buffered|Vec::leak(Vec::new())	untriaged (timeout: the mutant made something not terminate)
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::buffered|Vec::leak(vec![0])	untriaged (timeout: the mutant made something not terminate)
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::buffered|Vec::leak(vec![1])	untriaged (timeout: the mutant made something not terminate)
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::compact|!=	untriaged
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::compact|()	untriaged
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::consume|()	untriaged (timeout: the mutant made something not terminate)
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::consume|*=	untriaged (timeout: the mutant made something not terminate)
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::fill_held|*	untriaged
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::fill_held|*	untriaged
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::fill_held|Ok(())	untriaged (timeout: the mutant made something not terminate)
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::fill|Ok(())	untriaged (timeout: the mutant made something not terminate)
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::is_buffered|>=	untriaged
+pgprox-session|crates/pgprox-session/src/shell.rs|Wire<S>::reclaim|>	untriaged (timeout: the mutant made something not terminate)

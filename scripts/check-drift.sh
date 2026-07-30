@@ -96,7 +96,8 @@ if [[ -f "$CI_WORKFLOW" ]]; then
   # The fuzzer is in this list for the same reason the gates are: `pgprox-proto`
   # says the codec is fuzzed rather than assumed, and a script nobody runs makes
   # that a claim rather than a fact.
-  for gate in scripts/m*-complete.sh scripts/release-check.sh scripts/fuzz.sh; do
+  for gate in scripts/m*-complete.sh scripts/release-check.sh scripts/fuzz.sh \
+              scripts/mutants.sh; do
     [[ -f "$gate" ]] || continue
     if ! grep -qF "$gate" "$CI_WORKFLOW"; then
       fail "$gate is not run by $CI_WORKFLOW: a gate nobody runs is a record, not a gate"

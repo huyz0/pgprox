@@ -160,6 +160,34 @@ jobs:
           path: fuzz/artifacts/
           if-no-files-found: warn
 
+  mutants:
+    name: tier 3 - mutation testing
+    runs-on: ubuntu-latest
+    # Nightly, because a mutant is a full build and test run and there are
+    # nine hundred of them across the four sans-I/O crates. Coverage says a
+    # line ran; this says the line mattered, and `standards/testing.md` has
+    # claimed it runs since M-1.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup show
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants,cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/mutants.sh
+      # The outcomes, kept, because the interesting part of a failing run is
+      # which mutant lived and where, and that is a file rather than a line of
+      # log output.
+      - name: Keep the outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-outcomes
+          path: target/mutants-*/outcomes.json
+          if-no-files-found: warn
+
   milestone:
     name: milestone completion condition
     runs-on: ubuntu-latest
