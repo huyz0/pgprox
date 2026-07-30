@@ -28,6 +28,8 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M9 | Query cache (post-MVP) | complete; it costs 7.8% of the median on the reference workload, which is the opposite of what `M9.10` measured and is a fact about `M7.58` |
 | M10 | The claims nothing enforces | complete; the three claims now fail when they stop holding, and the cache turns out to change sign with load rather than with workload |
 
+| M11 | The gaps the completed milestones name | open |
+
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
 ## M-1: AI development system (complete)
@@ -465,3 +467,27 @@ explanation survives the test built to break it. Serving 36% of statements costs
 hit rate, which is the mechanism's own signature. See
 `product/perf/run-2026-07-30-cached-workload.md` and
 `run-2026-07-31-saturation.md`.
+
+## M11: the gaps the completed milestones name
+
+Ten milestones are complete and each wrote down what its own numbers do not say.
+This one works that list. Nothing in it is a feature: every task is a claim some
+milestone made and then qualified in its own words.
+
+```bash
+scripts/m11-complete.sh
+```
+
+Four are measurable here: the throughput question `M10.9` declined to claim, the
+TLS 1.2 restriction `M8`'s cipher matrix never reached, a node lost from a fleet
+already at its connection cap, and the curve behind ADR 0001's open question
+about pinning.
+
+Three are not, and are recorded as blocked rather than filed. A complete 100k
+run needs three machines and a real network; ADR 0012's interactive half needs a
+second agent tool and a human's judgement; and the plan's three M0 open items
+each need an owner outside this repo.
+
+The gate for this milestone does not exist yet, which `M10.17` is the reason to
+mention: writing it is part of the milestone rather than a thing to discover at
+the end of it.

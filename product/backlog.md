@@ -3052,3 +3052,88 @@ the relay lands before the cacheability rule is finished.
   asserts. What it adds is the part drift cannot see: that the tier 3 jobs are
   on a schedule, that the baseline is reasons rather than names, and that a hung
   test is killed rather than read as a survivor.
+
+## M11: the gaps the completed milestones name
+
+Ten milestones are complete and each one wrote down what its own numbers do not
+say. This milestone works that list. Nothing here is a feature; every task is a
+claim some milestone made and then qualified in its own words.
+
+Three of the qualifications cannot be worked here at all, and they are recorded
+as blocked rather than filed, because a task nobody can start is not a plan:
+
+- **A complete 100k run** needs the load generators on their own machines, a
+  database that can absorb the offered load, and a real network between the
+  three. Every latency number in this repo is loopback and is therefore a floor.
+  M7 says so already.
+- **The interactive half of `M-1.17`**, in ADR 0012: running a real task under a
+  second agent tool and recording what changed. No second tool is installed and
+  the judgement is a human's.
+- **The plan's three open items for M0**: the sidecar `.proto` sign-off, the
+  upstream `max_connections` reserve per server class, and whether any tenant
+  needs `LISTEN`/`NOTIFY` at scale. All three need an owner outside this repo.
+
+- [x] `M11.0` Plan M11: read what each completed milestone says its numbers do
+  not cover, separate what can be measured here from what needs hardware or a
+  human, and file the first as tasks and the second as blocked.
+  Four filed, three blocked, and a fifth filed for the gate: `M10.17` found that
+  a milestone whose completion condition does not exist cannot be closed, so
+  `M11.5` writes `scripts/m11-complete.sh` rather than leaving it to be
+  discovered at the end.
+  The blocked three are worth naming rather than dropping. Each is a real gap
+  and none of them is work: they need three machines, a second agent tool, or an
+  owner outside this repo. Filing them as tasks would put entries in a backlog
+  that nobody could ever start, which reads as progress not made rather than as
+  progress not possible.
+- [ ] `M11.1` Settle the throughput question `M10.9` left open. That run found
+  the cache 4.2% ahead on transactions at saturation, with sets overlapping by
+  330 out of 136,000, and declined to claim it. It matters because `M9.24`'s
+  whole explanation rests on throughput being pinned by the database: if the
+  cache raises it, something else is pinning the fleet and the explanation is
+  wrong at its root.
+  Three pairs cannot separate 4% from noise. This needs enough pairs to say yes
+  or no, and the count should be argued from the spread the six existing runs
+  show rather than picked. Same workload, same connection count, same machine.
+  Acceptance: a number of pairs justified before running them, and a verdict
+  that says either "throughput rises and here is by how much" or "the difference
+  is inside the noise and here is the bound".
+- [ ] `M11.2` The TLS 1.2 restriction FIPS mode imposes, which `M8` never
+  reached. `scripts/cipher-matrix.sh` says it in its own comments: FIPS drops
+  ChaCha20-Poly1305 and restricts TLS 1.2 to ECDHE suites with extended master
+  secret, and a matrix with no TLS 1.2 row in it has not tested the restriction
+  it was written for. Every driver on the machine negotiated TLS 1.3, whose
+  suites are all approved, so the restriction was never exercised.
+  Pin at least one driver to TLS 1.2 and record what each build accepts. The
+  interesting cell is a suite the default build takes and the FIPS build
+  refuses; if there is no such cell the claim is wrong and that is the finding.
+  Acceptance: a matrix with TLS 1.2 rows for both builds, and either a
+  demonstrated difference or a written statement that there is none.
+- [ ] `M11.3` What happens when a fleet at its connection cap loses a third of
+  itself, which `M8` says its rehearsal does not cover. That rehearsal is three
+  nodes on one machine losing one node, and it lost 22 of 21,088 transactions.
+  What it does not say is what happens when the survivors are already at their
+  cap, which is where shedding has to work and where `M4`'s shed path has never
+  run under real pressure.
+  Acceptance: a run at the cap with a node killed outright, the shed path shown
+  to fire, and the transaction loss recorded next to the existing figure.
+- [ ] `M11.4` What pinning costs multiplexing, which ADR 0001 calls an open
+  question and hands to the plan. The question the plan asks needs a tenant
+  population nobody here has. The question that can be answered here is the one
+  underneath it: how the upstream connection count and the median move as the
+  share of sessions holding a pin rises.
+  A workload document with a `LISTEN` fraction, run at several values of it, so
+  the curve is measured rather than reasoned about. `pgprox_pin_total` is
+  already instrumented by reason, which is what makes this cheap.
+  Acceptance: a workload knob, a curve over at least three values, and a
+  statement of where multiplexing stops paying for itself.
+- [ ] `M11.5` Write `scripts/m11-complete.sh` before the milestone needs
+  closing rather than after. `M10.17` is the argument: M10's gate was named in
+  the roadmap from the day the milestone was filed and did not exist, and
+  nothing noticed until every task was done and the milestone could not be
+  closed.
+  What it checks follows from the four tasks: a recorded verdict on the
+  throughput question, a cipher matrix with TLS 1.2 rows, a shed-at-cap run, and
+  a pinning curve. Like `m10-complete.sh` it should assert what other checks
+  cannot see rather than restate them, and it goes in CI beside its siblings.
+  Acceptance: the script exists, fails when any of the four is missing, is named
+  in CI, and fails today because none of them is done yet.
