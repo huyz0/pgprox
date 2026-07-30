@@ -171,6 +171,7 @@ pub enum FrontendError {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct BindParameters<'a> {
     values: Vec<Option<&'a [u8]>>,
+    raw: &'a [u8],
 }
 
 impl<'a> BindParameters<'a> {
@@ -178,6 +179,23 @@ impl<'a> BindParameters<'a> {
     #[must_use]
     pub fn values(&self) -> &[Option<&'a [u8]>] {
         &self.values
+    }
+
+    /// The values as they arrived: length-prefixed, `-1` for null, contiguous.
+    ///
+    /// The bytes between the parameter count and the result format codes, which
+    /// the walk above has already proved well formed. It is what a cache key
+    /// holds, because a key needs one allocation and a comparison rather than a
+    /// vector of vectors: the wire form distinguishes a null from an empty
+    /// value by construction, and two `Bind`s carrying the same values carry the
+    /// same bytes here.
+    ///
+    /// Empty for a `Bind` with no parameters, which is the same key material as
+    /// a simple query of the same SQL. That is deliberate: it is the same
+    /// question, and one entry should answer it either way it is asked.
+    #[must_use]
+    pub const fn raw(&self) -> &'a [u8] {
+        self.raw
     }
 
     /// How many there are.
@@ -220,6 +238,10 @@ pub fn bind_parameters<'a>(frame: &Frame<'a>) -> Result<BindParameters<'a>, Fron
     }
 
     let count = r.i16("parameter_count")?;
+    // Where the values start, kept so the whole run can be handed out as one
+    // slice. Taken before the walk and measured against what is left after it,
+    // because the reader is what knows the run was well formed.
+    let from_the_count = r.remaining();
     // Not `with_capacity`. The count is the client's and the values have not
     // been read yet, so reserving on it is a nine-byte message asking for
     // thirty-two thousand pointers.
@@ -236,7 +258,11 @@ pub fn bind_parameters<'a>(frame: &Frame<'a>) -> Result<BindParameters<'a>, Fron
         values.push(Some(r.bytes(len, "parameter_value")?));
     }
 
-    Ok(BindParameters { values })
+    let read = from_the_count.len() - r.remaining().len();
+    Ok(BindParameters {
+        values,
+        raw: &from_the_count[..read],
+    })
 }
 
 /// Decodes a frontend frame.
@@ -335,6 +361,42 @@ mod tests {
         let params = bind_parameters(&frame(Tag::BIND, &out[5..])).unwrap();
         assert!(params.is_empty());
         assert_eq!(params.len(), 0);
+        assert!(
+            params.raw().is_empty(),
+            "a bind with nothing bound offered bytes to key on"
+        );
+    }
+
+    #[test]
+    fn the_raw_run_is_the_values_and_stops_at_them() {
+        // What a cache key holds. It starts after the parameter count and ends
+        // at the last value, so the result format codes that follow are not in
+        // it: two clients asking one question in text and in binary differ
+        // here, and two asking it the same way must not differ because of what
+        // they wanted back.
+        let mut out = Vec::new();
+        crate::encode_frontend::bind_with_parameters(&mut out, "", "s", &[Some(b"ab"), None]);
+        let params = bind_parameters(&frame(Tag::BIND, &out[5..])).unwrap();
+
+        assert_eq!(
+            params.raw(),
+            &[0, 0, 0, 2, b'a', b'b', 0xFF, 0xFF, 0xFF, 0xFF]
+        );
+
+        // And it separates what `values` separates, which is the property the
+        // key rests on.
+        let mut null = Vec::new();
+        crate::encode_frontend::bind_with_parameters(&mut null, "", "s", &[None]);
+        let mut empty = Vec::new();
+        crate::encode_frontend::bind_with_parameters(&mut empty, "", "s", &[Some(b"")]);
+        assert_ne!(
+            bind_parameters(&frame(Tag::BIND, &null[5..]))
+                .unwrap()
+                .raw(),
+            bind_parameters(&frame(Tag::BIND, &empty[5..]))
+                .unwrap()
+                .raw()
+        );
     }
 
     #[test]

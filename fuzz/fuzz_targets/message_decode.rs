@@ -23,7 +23,11 @@ fuzz_target!(|data: &[u8]| {
     // length-prefixed data the client controls. It is reached only from the
     // cache path, so `frontend::decode` above does not cover it, and a length
     // a decoder trusts is how a nine-byte message becomes an allocation.
-    let _ = frontend::bind_parameters(&frame);
+    if let Ok(params) = frontend::bind_parameters(&frame) {
+        // The run a cache key is built from, which is a subslice measured
+        // against what the reader had left rather than one taken on trust.
+        assert!(params.raw().len() <= frame.body().len());
+    }
 
     // The startup packet is the first thing an unauthenticated peer sends, so
     // it is the most exposed parser in the process.

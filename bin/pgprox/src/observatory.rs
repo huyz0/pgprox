@@ -668,7 +668,7 @@ mod tests {
             .get(&pgprox_core::cache::CacheKey {
                 tenant: TenantId::new("acme"),
                 normalized_sql: Arc::from("select 1"),
-                params: Vec::new(),
+                params: Arc::from(&[][..]),
                 search_path: Arc::from("public"),
             })
             .await;

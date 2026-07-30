@@ -916,7 +916,9 @@ fn cache_key(
         key: pgprox_core::cache::CacheKey {
             tenant: grant.tenant.clone(),
             normalized_sql: std::sync::Arc::from(pgprox_cache::normalize(sql)),
-            params: Vec::new(),
+            // Nothing bound: a simple query has no `Bind` behind it. `M9.23`
+            // is where an extended sequence puts its own bytes here.
+            params: std::sync::Arc::from(&[][..]),
             search_path: std::sync::Arc::from(search_path),
         },
         frames: Vec::new(),
@@ -2450,7 +2452,7 @@ mod tests {
         let key = pgprox_core::cache::CacheKey {
             tenant: pgprox_core::ids::TenantId::new("acme"),
             normalized_sql: Arc::from("select 1"),
-            params: Vec::new(),
+            params: Arc::from(&[][..]),
             search_path: Arc::from("public"),
         };
         let value = pgprox_core::cache::CachedResult {

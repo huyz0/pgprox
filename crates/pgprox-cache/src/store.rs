@@ -353,18 +353,12 @@ impl QueryCache for Store {
 /// must not do is ignore a field that a caller controls the size of, because
 /// then a caller controls how much memory the budget fails to bound.
 fn weigh(key: &CacheKey, value: &CachedResult) -> usize {
-    let params: usize = key
-        .params
-        .iter()
-        .map(|p| p.len() + size_of::<Vec<u8>>())
-        .sum();
-
     size_of::<CacheKey>()
         + size_of::<CachedResult>()
         + key.tenant.as_str().len()
         + key.normalized_sql.len()
         + key.search_path.len()
-        + params
+        + key.params.len()
         + value.frames.len()
 }
 
@@ -382,7 +376,7 @@ mod tests {
         CacheKey {
             tenant: TenantId::new(tenant),
             normalized_sql: Arc::from(sql),
-            params: Vec::new(),
+            params: Arc::from(&[][..]),
             search_path: Arc::from("public"),
         }
     }
@@ -797,9 +791,9 @@ mod tests {
     async fn different_parameters_are_different_entries() {
         let (cache, _clock) = store(64 * 1024);
         let mut bound = key("acme", "SELECT $1");
-        bound.params = vec![b"1".to_vec()];
+        bound.params = Arc::from(&b"\0\0\0\x011"[..]);
         let mut other = key("acme", "SELECT $1");
-        other.params = vec![b"2".to_vec()];
+        other.params = Arc::from(&b"\0\0\0\x012"[..]);
 
         cache.put(bound.clone(), result(16, 1000)).await;
         assert!(cache.get(&bound).await.is_some());
@@ -817,7 +811,7 @@ mod tests {
         let small = weigh(&key("acme", "a"), &result(16, 1000));
 
         let mut long_sql = key("acme", &"x".repeat(4096));
-        long_sql.params = vec![vec![0; 4096]];
+        long_sql.params = Arc::from(vec![0_u8; 4096].as_slice());
         long_sql.search_path = Arc::from("y".repeat(4096));
         let large = weigh(&long_sql, &result(4096, 1000));
 

@@ -82,6 +82,27 @@ A miss at the `Sync` replays. So does anything else at all: the machine names
 what it can withhold and everything else is a replay, rather than the other way
 round.
 
+### The key holds the parameters as the wire sent them
+
+`CacheKey::params` was `Vec<Vec<u8>>` and has been empty since `M9.7`, and it
+cannot hold what a `Bind` carries: a SQL `NULL` is not a zero-length value, and
+that shape cannot tell them apart. `WHERE name IS NULL` and `WHERE name = ''`
+would have shared an entry, which is a wrong answer rather than a small cache.
+
+It becomes `Arc<[u8]>` holding the parameter run exactly as it arrived,
+length-prefixed, with `-1` meaning null the way the wire already says it. One
+allocation per key rather than one per parameter, cheap to hash, and the
+distinction is drawn by the format rather than by a rule somebody has to
+remember. Empty means nothing was bound, so an extended statement with no
+parameters keys the same as the simple query of the same SQL, which is the same
+question and should hit the same entry.
+
+Format codes are not in it. Two clients encoding one value in text and in binary
+produce different bytes and therefore different entries, which costs an entry and
+cannot merge two questions into one. The result format codes that follow the
+values are excluded for the opposite reason: what a client wants back must not
+change which question it is asking.
+
 ## Consequences
 
 - A hit costs no pool operation, no upstream connection and no round trip,

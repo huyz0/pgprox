@@ -39,8 +39,22 @@ pub struct CacheKey {
     pub tenant: TenantId,
     /// The statement, normalized so parameter placeholders are stable.
     pub normalized_sql: Arc<str>,
-    /// Bound parameter values, in order.
-    pub params: Vec<Vec<u8>>,
+    /// Bound parameter values, as the `Bind` carried them.
+    ///
+    /// Length-prefixed with `-1` for a SQL `NULL`, contiguous, and empty when
+    /// nothing was bound. The wire form rather than a parsed one for two
+    /// reasons, and neither is about saving an allocation, although it does.
+    ///
+    /// A null is not a zero-length value. `WHERE name IS NULL` and `WHERE name
+    /// = ''` are different questions with different answers, and a
+    /// `Vec<Vec<u8>>` cannot tell them apart, so two bindings of one statement
+    /// would have shared an entry. The wire draws the distinction already.
+    ///
+    /// And empty means "nothing bound" rather than "no `Bind` involved", so an
+    /// extended-protocol statement with no parameters keys the same as the
+    /// simple query of the same SQL. That is the same question asked two ways
+    /// and one entry should answer both.
+    pub params: Arc<[u8]>,
     /// The session's `search_path`, which decides what the SQL actually names.
     pub search_path: Arc<str>,
 }
@@ -213,9 +227,22 @@ mod tests {
         CacheKey {
             tenant: TenantId::new(tenant),
             normalized_sql: Arc::from(sql),
-            params: vec![b"1".to_vec()],
+            params: Arc::from(&b"\0\0\0\x011"[..]),
             search_path: Arc::from(search_path),
         }
+    }
+
+    #[test]
+    fn a_null_parameter_and_an_empty_one_are_different_keys() {
+        // The reason the field holds the wire form. These two are different
+        // questions, and a shape that could not tell them apart would answer
+        // one with the other's rows.
+        let mut null = key("acme", "SELECT $1", "public");
+        null.params = Arc::from(&(-1_i32).to_be_bytes()[..]);
+        let mut empty = key("acme", "SELECT $1", "public");
+        empty.params = Arc::from(&0_i32.to_be_bytes()[..]);
+
+        assert_ne!(null, empty);
     }
 
     fn result() -> CachedResult {
@@ -273,7 +300,7 @@ mod tests {
     async fn parameters_are_part_of_the_key() {
         let cache = FakeQueryCache::new();
         let mut other = key("acme", "SELECT $1", "public");
-        other.params = vec![b"2".to_vec()];
+        other.params = Arc::from(&b"\0\0\0\x012"[..]);
 
         cache
             .put(key("acme", "SELECT $1", "public"), result())

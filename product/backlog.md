@@ -2345,7 +2345,7 @@ the relay lands before the cacheability rule is finished.
   is not needed, because a withheld sequence ends at the `Sync` that closes it
   and there is only ever one. Forgetting is what the machine does at the end of
   every sequence rather than a rule about named portals.
-- [ ] `M9.18` A cache hit inside a transaction reports the wrong transaction
+- [x] `M9.18` A cache hit inside a transaction reports the wrong transaction
   status. Found while designing `M9.17` rather than by running anything, which
   is why it is filed rather than folded in.
   `cache_key` asks the cacheability rule about the session, and `SessionFacts`
