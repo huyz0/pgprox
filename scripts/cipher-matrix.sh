@@ -18,7 +18,7 @@ cd "$REPO_ROOT"
 
 COMPOSE=(docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.fips.yml)
 OUT="${OUT:-product/release/cipher-matrix.md}"
-DRIVERS=(psql pgx asyncpg jdbc npgsql)
+DRIVERS=(psql pgx asyncpg jdbc npgsql psql-tls12-aes psql-tls12-chacha)
 
 # Named targets: a published port on the host, and the compose service whose
 # log carries the handshake line.
@@ -34,7 +34,11 @@ TOKEN="${TOKEN}.$(printf '%s' '{"sub":"acme"}' | base64 -w0 | tr '+/' '-_' | tr 
 
 driver_available() {
   case "$1" in
-    psql)    have psql ;;
+    # The two TLS 1.2 probes are psql with `OPENSSL_CONF` pinning the version
+    # and the suite. `M11.2`: every driver here negotiates TLS 1.3, whose suites
+    # are all FIPS-approved, so without these two the matrix never reaches the
+    # restriction FIPS mode actually imposes.
+    psql|psql-tls12-*) have psql ;;
     pgx)     have go ;;
     asyncpg) have python3 && have uv ;;
     jdbc)    have java && have mvn ;;
@@ -138,6 +142,38 @@ for driver in "${DRIVERS[@]}"; do
   done
 done
 
+# --- what the TLS 1.2 pair has to show ----------------------------------------
+#
+# Every other row here is a record: whatever the driver did is the answer. These
+# two are an experiment with a stated expectation, and without asserting it a
+# probe broken by its own OpenSSL config would produce "refused on both", which
+# reads as a difference and is not one.
+#
+# The AES probe is the control. FIPS mode approves ECDHE with AES-GCM, so a
+# refusal there means the FIPS build is broken rather than restrictive, and the
+# ChaCha row below it would mean nothing.
+if driver_available psql-tls12-aes; then
+  if [[ "${RESULT[psql-tls12-aes,default]}" == connected \
+     && "${RESULT[psql-tls12-aes,fips]}" == connected ]]; then
+    ok "TLS 1.2 with AES-GCM is taken by both builds"
+  else
+    fail "TLS 1.2 with AES-GCM was refused (default: ${RESULT[psql-tls12-aes,default]}, fips: ${RESULT[psql-tls12-aes,fips]}); the probe or the FIPS build is wrong, not the policy"
+  fi
+
+  # The test itself. Refused on both would mean the probe never reached the
+  # server's policy; taken by both would mean the restriction this matrix is
+  # written around does not exist.
+  d="${RESULT[psql-tls12-chacha,default]}"
+  f="${RESULT[psql-tls12-chacha,fips]}"
+  if [[ "$d" == connected && "$f" == refused ]]; then
+    ok "TLS 1.2 with ChaCha20-Poly1305 is taken by the default build and refused by FIPS"
+  elif [[ "$d" == refused ]]; then
+    fail "TLS 1.2 with ChaCha20-Poly1305 was refused by the default build too: the probe did not reach the server's policy"
+  else
+    fail "TLS 1.2 with ChaCha20-Poly1305 was taken by the FIPS build: the restriction this matrix is written around does not hold"
+  fi
+fi
+
 # --- the record ---------------------------------------------------------------
 mkdir -p "$(dirname "$OUT")"
 {
@@ -170,8 +206,20 @@ mkdir -p "$(dirname "$OUT")"
   echo
   echo "| Driver | Default build | FIPS build |"
   echo "| --- | --- | --- |"
+  # Refusals are marked here as well as in the table above. Version negotiation
+  # succeeds before suite negotiation fails, so a refused handshake still logs a
+  # protocol, and a cell reading `TLSv1_2` beside a `**refused**` suite would say
+  # the connection worked.
   for driver in "${DRIVERS[@]}"; do
-    echo "| $driver | ${PROTOCOL["$driver,default"]:-not run} | ${PROTOCOL["$driver,fips"]:-not run} |"
+    cells=()
+    for build in "${BUILDS[@]}"; do
+      if [[ "${RESULT["$driver,$build"]:-}" == refused ]]; then
+        cells+=("**refused**")
+      else
+        cells+=("${PROTOCOL["$driver,$build"]:-not run}")
+      fi
+    done
+    echo "| $driver | ${cells[0]} | ${cells[1]} |"
   done
   echo
   if (( ${#SKIPPED[@]} > 0 )); then

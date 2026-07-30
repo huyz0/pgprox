@@ -3119,7 +3119,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   proof, and a re-run should alternate which arm goes first.
   `M9.24`'s document is left as written. Recorded in
   `product/perf/run-2026-07-31-throughput.md`.
-- [ ] `M11.2` The TLS 1.2 restriction FIPS mode imposes, which `M8` never
+- [x] `M11.2` The TLS 1.2 restriction FIPS mode imposes, which `M8` never
   reached. `scripts/cipher-matrix.sh` says it in its own comments: FIPS drops
   ChaCha20-Poly1305 and restricts TLS 1.2 to ECDHE suites with extended master
   secret, and a matrix with no TLS 1.2 row in it has not tested the restriction
@@ -3130,6 +3130,26 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   refuses; if there is no such cell the claim is wrong and that is the finding.
   Acceptance: a matrix with TLS 1.2 rows for both builds, and either a
   demonstrated difference or a written statement that there is none.
+  **Demonstrated.** TLS 1.2 with ChaCha20-Poly1305 is taken by the default build
+  and refused by the FIPS build. That is the restriction, exercised for the
+  first time, and every other row in the matrix is still TLS 1.3.
+  Pinned on the client rather than on the proxy. Giving the proxy a maximum
+  version knob would be adding a production surface so a test could reach a
+  state, and the state is reachable from outside: libpq uses OpenSSL and OpenSSL
+  reads `OPENSSL_CONF`. Two probes, `psql-tls12-aes` and `psql-tls12-chacha`,
+  differing only in the suite they ask for.
+  The AES probe is the control and it is the reason this is an experiment rather
+  than a row. FIPS approves ECDHE with AES-GCM, so it has to be taken by both
+  builds; if it were refused, the FIPS build would be broken rather than
+  restrictive and the ChaCha row would mean nothing. The script asserts both
+  outcomes rather than recording them, because a probe broken by its own
+  OpenSSL config would produce "refused on both", which reads as a difference
+  and is not one.
+  One defect found in the harness while reading its output: the protocol table
+  showed `TLSv1_2` for the refused handshake, because version negotiation
+  succeeds before suite negotiation fails, so a refusal still logs a protocol.
+  A cell reading `TLSv1_2` beside a `**refused**` suite says the connection
+  worked. Both tables mark refusals now.
 - [ ] `M11.3` What happens when a fleet at its connection cap loses a third of
   itself, which `M8` says its rehearsal does not cover. That rehearsal is three
   nodes on one machine losing one node, and it lost 22 of 21,088 transactions.

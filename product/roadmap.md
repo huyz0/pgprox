@@ -270,7 +270,9 @@ killed outright lost 22 of 21,088.
 **Two things the numbers do not say.** Every driver on the machine that
 generated the cipher matrix negotiated TLS 1.3, whose suites are all
 FIPS-approved, so the restriction FIPS mode actually imposes on TLS 1.2 was
-never reached. And the rehearsal is three nodes on one machine: it does not say
+never reached. *`M11.2` has since reached it: a client pinned to TLS 1.2 and
+ChaCha20-Poly1305 is taken by the default build and refused by the FIPS build,
+with an AES-GCM probe beside it as the control.* And the rehearsal is three nodes on one machine: it does not say
 what happens when a fleet at its connection cap loses a third of itself, which
 is where shedding has to work.
 
