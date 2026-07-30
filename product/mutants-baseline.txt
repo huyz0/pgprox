@@ -16,23 +16,19 @@
 # 99%, which is the gap the standard's own sentence about coverage being a floor
 # is about.
 #
-# Every entry below is marked `untriaged`, and that is not a reason. It is a
-# statement that the tool ran before anybody had read its output, which is the
-# honest order: the gate protects against new survivors from today, and `M10.4`
-# is the task that turns each of these into either a test or a real reason.
-# `untriaged` may not be used for anything added after `M10.4`.
+# Every entry started as `untriaged`, which is not a reason. It is a statement
+# that the tool ran before anybody had read its output, which is the honest
+# order: the gate protects against new survivors from today, and `M10.4` through
+# `M10.8` are the tasks that turn each of these into either a test or a real
+# reason. `untriaged` may not be used for anything added after those.
+#
+# `M10.4` did `pgprox-cache`: ten survivors became one. Six fell to four tests
+# about the byte accounting, three more to two tests about the recency index and
+# the expiry guard, and the last is a timeout with a reason below. That is what
+# this file is for: the count only goes down, and every line that stays says why.
 
 # --- pgprox-cache ---
-pgprox-cache|crates/pgprox-cache/src/store.rs|<impl QueryCache for Store>::put|*=	untriaged
-pgprox-cache|crates/pgprox-cache/src/store.rs|<impl QueryCache for Store>::put|-=	untriaged
-pgprox-cache|crates/pgprox-cache/src/store.rs|<impl QueryCache for Store>::put|>=	untriaged
-pgprox-cache|crates/pgprox-cache/src/store.rs|Inner::evict_to_fit|>=	untriaged
-pgprox-cache|crates/pgprox-cache/src/store.rs|Inner::remove|None	untriaged (timeout: the mutant made something not terminate)
-pgprox-cache|crates/pgprox-cache/src/store.rs|Inner::touch|*=	untriaged
-pgprox-cache|crates/pgprox-cache/src/store.rs|Inner::touch|-=	untriaged
-pgprox-cache|crates/pgprox-cache/src/store.rs|weigh|*	untriaged
-pgprox-cache|crates/pgprox-cache/src/store.rs|weigh|*	untriaged
-pgprox-cache|crates/pgprox-cache/src/store.rs|weigh|*	untriaged
+pgprox-cache|crates/pgprox-cache/src/store.rs|Inner::remove|None	the body becomes `None`, so nothing is removed and `evict_to_fit` never terminates. The suite does detect it, by hanging, which the tool reports as a timeout rather than a kill. There is no assertion that improves on a hang, and `evict_to_fit` already returns rather than loops when the index and the map disagree, which is the real hazard this shape points at.
 
 # --- pgprox-proto ---
 pgprox-proto|crates/pgprox-proto/src/backend.rs|conn_id_from_key|^	untriaged

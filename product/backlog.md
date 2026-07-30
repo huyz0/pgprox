@@ -2630,16 +2630,42 @@ the relay lands before the cacheability rule is finished.
   about all the others, which is a warning about nothing.
   The gate was checked both ways: it passes with the baseline as recorded, and
   removing one entry fails it by name.
-- [ ] `M10.4` The survivors worth killing. `M10.3` produces the list; this is the
-  part that turns it into tests, and it is filed separately because the list is
-  not knowable until the tool has run.
-  The rule for triage, so it does not become a scoreboard: a survivor in
-  `pgprox-session`, `pgprox-proto`, `pgprox-route` or `pgprox-cache` earns a test
-  if the mutation it survived would be a wrong answer to a client. A survivor
-  that only changes a log line or an error's wording goes in the baseline with
-  that as its reason.
-  Acceptance: every survivor is either killed by a test or in the baseline with a
-  reason, and the crates' coverage gates still hold.
+- [x] `M10.4` The survivors worth killing, in `pgprox-cache`. `M10.3` produced
+  the list of 89; this is one crate's ten, and the split is per crate because
+  eighty-nine triages is not one commit and because each crate's survivors are
+  about a different property.
+  The rule for triage, so it does not become a scoreboard: a survivor earns a
+  test if the mutation it survived would be a wrong answer to a client or a
+  bound the code claims to hold and does not. A survivor that only changes a log
+  line or an error's wording goes in the baseline with that as its reason.
+  All ten here are the byte accounting, which this crate's own rules call the
+  thing that makes it bounded: `weigh` survives having a `+` replaced by a `*`
+  three times over, because the only assertion on it is that a big entry weighs
+  more than a small one. That is the shape of a property tested by inequality
+  when it is arithmetic.
+  Acceptance: every `pgprox-cache` survivor is killed by a test or in the
+  baseline with a reason that is not `untriaged`, the crate's coverage gate still
+  holds, and the mutation run for it is clean.
+  Ten became one. Six fell to four tests that assert the byte accounting as
+  arithmetic rather than as an inequality, which is what let a `+` become a `*`
+  three times over. Three more fell to two tests written after reading the exact
+  line each mutant replaced: one asserts the recency index holds one place per
+  entry, which is the invariant a no-op `next_seq *= 1` breaks, and one asserts
+  that a TTL which overflows the clock is refused, which is a guard nothing had
+  ever reached.
+  The last is `Inner::remove -> None`, a timeout: the suite detects it by
+  hanging, which the tool reports as a survivor, and there is no assertion that
+  improves on a hang. That is its reason in the baseline.
+  Coverage went from 98.9% to 99.06%, which is the smaller half of what the six
+  tests were worth.
+- [ ] `M10.6` The survivors in `pgprox-route`, eight of them, five of which are
+  timeouts. Same rule as `M10.4`.
+- [ ] `M10.7` The survivors in `pgprox-proto`, eighteen. Same rule. This is the
+  crate whose own rules say a malformed frame must not take down a node, so a
+  survivor in a length or a bound is the highest-value kind in the repo.
+- [ ] `M10.8` The survivors in `pgprox-session`, fifty-three, ten of them
+  timeouts. Same rule, and the largest list, which is consistent with it being
+  the most correctness-critical crate and the one M9 kept finding defects in.
 - [ ] `M10.5` What the cache is worth on a workload it is for. `M9.24` measured
   the reference workload and named this as the cheapest thing left, because that
   workload answers a different question: 30% of its statements are writes, two

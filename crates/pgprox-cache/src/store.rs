@@ -821,6 +821,181 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_byte_total_is_the_sum_of_the_parts() {
+        // The inequality above says the accounting notices a field. It does not
+        // say it adds them up, and `M10.3` proved it: replacing a `+` in `weigh`
+        // with a `*` survived every test in this file three times over. A
+        // property that is arithmetic has to be asserted as arithmetic.
+        let mut counted = key("acme", "select 1");
+        counted.params = Arc::from(&b"\0\0\0\x011"[..]);
+        counted.search_path = Arc::from("public");
+        let value = result(64, 1000);
+
+        assert_eq!(
+            weigh(&counted, &value),
+            size_of::<CacheKey>()
+                + size_of::<CachedResult>()
+                + counted.tenant.as_str().len()
+                + counted.normalized_sql.len()
+                + counted.search_path.len()
+                + counted.params.len()
+                + value.frames.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_that_exactly_fills_the_budget_is_stored() {
+        // The boundary in `put`. Refusing at the budget rather than past it
+        // makes the largest storable entry one byte smaller than the budget,
+        // which is not what "bigger than the whole budget" means, and nothing
+        // said so until `M10.3` replaced the `>` with `>=` and no test noticed.
+        let exact = key("acme", "select 1");
+        let value = result(64, 1000);
+        let clock = Arc::new(FakeClock::new());
+        let cache = Store::new(clock);
+        cache.reconfigure(&config(weigh(&exact, &value), &["acme"]));
+
+        cache.put(exact.clone(), value).await;
+        assert!(
+            cache.get(&exact).await.is_some(),
+            "an entry the size of the budget was refused"
+        );
+        assert_eq!(cache.stats().rejected, 0);
+    }
+
+    #[tokio::test]
+    async fn the_held_total_is_the_sum_of_what_is_held() {
+        // `put` adds an entry's weight to the total. `M10.3` replaced that `+=`
+        // with `-=` and with `*=` and both survived, because every test here
+        // asserted the total was over or under something rather than what it
+        // was.
+        let (cache, _clock) = store(64 * 1024);
+        let first = key("acme", "select 1");
+        let second = key("acme", "select 2");
+        let value = result(64, 1000);
+
+        cache.put(first.clone(), value.clone()).await;
+        cache.put(second.clone(), value.clone()).await;
+
+        assert_eq!(
+            cache.stats().bytes,
+            (weigh(&first, &value) + weigh(&second, &value)) as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn filling_the_budget_exactly_evicts_nothing() {
+        // The other side of the same boundary, in `evict_to_fit`: evicting while
+        // the total is *at* the budget throws out an entry that fits.
+        let value = result(64, 1000);
+        let first = key("acme", "select 1");
+        let second = key("acme", "select 2");
+        let budget = weigh(&first, &value) + weigh(&second, &value);
+
+        let clock = Arc::new(FakeClock::new());
+        let cache = Store::new(clock);
+        cache.reconfigure(&config(budget, &["acme"]));
+
+        cache.put(first.clone(), value.clone()).await;
+        cache.put(second.clone(), value).await;
+
+        assert_eq!(cache.stats().entries, 2, "an entry that fitted was evicted");
+        assert_eq!(cache.stats().evicted, 0);
+    }
+
+    #[tokio::test]
+    async fn a_hit_makes_an_entry_the_last_one_evicted() {
+        // What the recency counter is for. `M10.3` replaced `next_seq += 1` in
+        // `touch` with `-=` and with `*=`, and both survived: nothing asserted
+        // that a hit changes which entry eviction takes next, which is the only
+        // thing the counter exists to decide.
+        let value = result(64, 1000);
+        let old = key("acme", "select 1");
+        let new = key("acme", "select 2");
+        let third = key("acme", "select 3");
+        let budget = weigh(&old, &value) + weigh(&new, &value);
+
+        let clock = Arc::new(FakeClock::new());
+        let cache = Store::new(clock);
+        cache.reconfigure(&config(budget, &["acme"]));
+
+        cache.put(old.clone(), value.clone()).await;
+        cache.put(new.clone(), value.clone()).await;
+        // A hit on the older one, which makes the newer one the oldest.
+        assert!(cache.get(&old).await.is_some());
+
+        cache.put(third.clone(), value).await;
+
+        assert!(
+            cache.get(&old).await.is_some(),
+            "the entry that was just read is the one eviction took"
+        );
+        assert!(cache.get(&new).await.is_none());
+        assert!(cache.get(&third).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn the_recency_index_holds_one_place_per_entry() {
+        // The index is a `BTreeMap` keyed by a sequence number, so two entries
+        // that share one lose a place between them and the byte total starts
+        // drifting from the map. `M10.3` found that `next_seq *= 1` in `touch`
+        // is a no-op, which hands the next insert a sequence a live entry
+        // already has, and no test noticed because eviction order happened to
+        // come out the same. This is the invariant that mistake breaks.
+        let (cache, _clock) = store(64 * 1024);
+        let first = key("acme", "select 1");
+        cache.put(first.clone(), result(16, 1000)).await;
+        cache.put(key("acme", "select 2"), result(16, 1000)).await;
+        cache.get(&first).await;
+        cache.put(key("acme", "select 3"), result(16, 1000)).await;
+
+        let inner = cache.lock();
+        assert_eq!(
+            inner.lru.len(),
+            inner.entries.len(),
+            "an entry has no place in the recency order, or two share one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ttl_that_overflows_the_clock_is_refused_rather_than_stored() {
+        // Not reachable through a document, because `parse_duration` refuses a
+        // TTL this long, and reachable through `reconfigure`, which takes a
+        // config and does not get to assume where it came from. That is what the
+        // guard is for and `M10.3` showed nothing exercised it.
+        let clock = Arc::new(FakeClock::new());
+        let cache = Store::new(clock);
+        cache.reconfigure(&QueryCacheConfig {
+            max_bytes: 64 * 1024,
+            ttl_cap: Duration::MAX,
+            tenants: [(TenantId::new("acme"), TenantCache { ttl: Duration::MAX })]
+                .into_iter()
+                .collect(),
+        });
+
+        // The relay asks for the longest TTL there is, which is how a caller with
+        // no opinion about staleness says so, and the cache takes the smaller of
+        // that and the configured one. With both at the maximum there is no
+        // instant to expire at.
+        let doomed = key("acme", "select 1");
+        cache
+            .put(
+                doomed.clone(),
+                CachedResult {
+                    frames: Arc::from(vec![0_u8; 16].as_slice()),
+                    ttl: Duration::MAX,
+                },
+            )
+            .await;
+
+        assert!(
+            cache.get(&doomed).await.is_none(),
+            "an unexpirable entry was stored"
+        );
+        assert_eq!(cache.stats().rejected, 1);
+    }
+
     #[tokio::test]
     async fn stats_report_what_is_held_rather_than_what_was_ever_stored() {
         let (cache, _clock) = store(64 * 1024);
