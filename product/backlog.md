@@ -2475,6 +2475,30 @@ the relay lands before the cacheability rule is finished.
   then force a miss. That the two protocols can share an entry is `M9.22`.
   Acceptance: a `Bind`, `Execute`, `Sync` with no `Parse` in it is replayed
   rather than refused, with a test that fails on the half-applied fix.
+- [x] `M9.27` A simple query could be served rows with nothing describing them.
+  Found while reading `M9.24`'s first clean numbers: the hit rate had fallen from
+  `M9.10`'s 39% to 25%, and looking for why turned up something worse than a
+  lower hit rate.
+  `M9.22` made both protocols store "the statement's answer" and called it one
+  shape. It is not. Whether a payload holds a `RowDescription` is the server's
+  choice, not the proxy's: one comes back for every simple query with rows, and
+  for an `Execute` only when a `Describe` asked. The reference workload asks the
+  same SQL both ways with no parameters, so the keys collide, and an entry stored
+  by a sequence that sent no `Describe` was served to a simple query which is
+  always owed one. The client got `DataRow`s with nothing describing them, which
+  no driver can read.
+  `assemble_simple` is the simple protocol's half of `M9.21`'s assembler: it
+  refuses a payload with no description rather than trimming or inventing one.
+  Sharing now runs one way, which ADR 0022 records.
+  Nothing caught it because both fake servers answered a `SELECT` with a
+  completion and no description, which is a shape no Postgres produces. That is
+  the third time in this milestone that a fake being kinder than the real thing
+  hid a defect, and this one had been storing the wrong payload shape since
+  `M9.7`. The fakes now send a description for anything that returns rows, six
+  tests that counted frames now read to the terminator instead, and one of them
+  asserts the description is there.
+  Acceptance: a simple query is not served a sequence's description-less
+  payload, with a test that fails before the fix.
 - [ ] `M9.24` What it was worth. A matched pair of scale runs with the cache on,
   the way `M9.10` did it, recorded in `product/perf/` and reflected in the
   roadmap's M9 section.

@@ -820,15 +820,16 @@ where
     // ceiling has none to spare.
     let served = match cache.get(&recording.key).await {
         Some(hit) => {
+            // Assembled rather than replayed, and refused rather than trimmed:
+            // a simple query is owed a description for the rows it is about to
+            // be sent, and an entry stored by a sequence that asked for none
+            // cannot give it one. The terminator is generated here because no
+            // payload holds one. See `M9.27`.
+            let mut assembled = Ok(());
             wire.queue(|out| {
-                out.extend_from_slice(&hit.frames);
-                // The payload carries none, by ADR 0022, so the terminator is
-                // generated here. `'I'` because `M9.18` refuses to serve a
-                // session with a transaction open, which is what makes it true
-                // rather than the relay's guess.
-                encode::ready_for_query(out, TxStatus::Idle);
+                assembled = pgprox_session::sequence::assemble_simple(&hit.frames, out);
             });
-            true
+            assembled.is_ok()
         }
         None => false,
     };
@@ -2318,7 +2319,13 @@ mod tests {
         let mut query = Vec::new();
         pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
         client.write_all(&query).await.unwrap();
-        assert_eq!(expect(&mut client).await.0, Tag::COMMAND_COMPLETE);
+        let answer = expect_answer(&mut client).await;
+        assert_eq!(
+            answer.first().map(|frame| frame.0),
+            Some(Tag::ROW_DESCRIPTION),
+            "a query with rows was answered without a description"
+        );
+        assert_eq!(answer[answer.len() - 2].0, Tag::COMMAND_COMPLETE);
 
         drop(client);
         let _ = served.await;
@@ -2367,7 +2374,13 @@ mod tests {
         let mut query = Vec::new();
         pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
         client.write_all(&query).await.unwrap();
-        assert_eq!(expect(&mut client).await.0, Tag::COMMAND_COMPLETE);
+        let answer = expect_answer(&mut client).await;
+        assert_eq!(
+            answer.first().map(|frame| frame.0),
+            Some(Tag::ROW_DESCRIPTION),
+            "a query with rows was answered without a description"
+        );
+        assert_eq!(answer[answer.len() - 2].0, Tag::COMMAND_COMPLETE);
 
         drop(client);
         let _ = served.await;
@@ -2627,6 +2640,14 @@ mod tests {
                             in_transaction = false;
                         }
 
+                        // A row description, for anything that returns rows.
+                        // Postgres sends one for every simple query with a
+                        // result, and a fake that did not send it stored a
+                        // payload shape no server produces: `M9.27` is what
+                        // that hid.
+                        if sql.to_uppercase().starts_with("SELECT") {
+                            out.extend_from_slice(&row_description());
+                        }
                         out.push(Tag::COMMAND_COMPLETE.get());
                         let text = b"SELECT 1\0";
                         out.extend_from_slice(
@@ -2687,6 +2708,27 @@ mod tests {
         done.extend_from_slice(text);
         encode::ready_for_query(&mut done, TxStatus::Idle);
         socket.write_all(&done).await
+    }
+
+    /// A `RowDescription` for one text column.
+    ///
+    /// What a real server sends before the rows of any query that returns them.
+    /// It is in the payload the cache stores, and whether it is there decides
+    /// whether an entry can answer a given client: a simple query is always owed
+    /// one, and an extended sequence only if it asked. See ADR 0022.
+    fn row_description() -> Vec<u8> {
+        let mut body = 1_i16.to_be_bytes().to_vec();
+        body.extend_from_slice(b"abalance\0");
+        body.extend_from_slice(&0_i32.to_be_bytes()); // table oid
+        body.extend_from_slice(&0_i16.to_be_bytes()); // column
+        body.extend_from_slice(&23_i32.to_be_bytes()); // int4
+        body.extend_from_slice(&4_i16.to_be_bytes()); // width
+        body.extend_from_slice(&(-1_i32).to_be_bytes()); // type modifier
+        body.extend_from_slice(&0_i16.to_be_bytes()); // text format
+        let mut out = vec![Tag::ROW_DESCRIPTION.get()];
+        out.extend_from_slice(&u32::try_from(body.len() + 4).unwrap().to_be_bytes());
+        out.extend_from_slice(&body);
+        out
     }
 
     /// One `DataRow` carrying text values.
@@ -2883,12 +2925,26 @@ mod tests {
         let _ = served.await;
     }
 
+    /// Reads one query's whole answer, up to and including its `ReadyForQuery`.
+    ///
+    /// By terminator rather than by a frame count, because how many frames a
+    /// query's answer has is the server's business: a `SELECT` carries a row
+    /// description and an `UPDATE` does not, and a test that counted them was
+    /// asserting the shape of the fake rather than the behaviour under test.
+    async fn expect_answer<S: AsyncRead + Unpin>(io: &mut S) -> Vec<(Tag, Vec<u8>)> {
+        let mut frames = Vec::new();
+        loop {
+            let frame = expect(io).await;
+            let last = frame.0 == Tag::READY_FOR_QUERY;
+            frames.push(frame);
+            if last {
+                return frames;
+            }
+        }
+    }
+
     /// Runs `sql` through a session and returns what the client was sent back.
-    async fn query_and_collect(
-        context: Arc<Context>,
-        sql: &str,
-        frames: usize,
-    ) -> Vec<(Tag, Vec<u8>)> {
+    async fn query_and_collect(context: Arc<Context>, sql: &str) -> Vec<(Tag, Vec<u8>)> {
         let gate = Arc::new(Gate::new(10));
         let admitted = gate.admit().unwrap();
         let (ours, mut client) = tokio::io::duplex(8192);
@@ -2906,10 +2962,7 @@ mod tests {
         pgprox_proto::encode_frontend::query(&mut out, sql);
         client.write_all(&out).await.unwrap();
 
-        let mut got = Vec::new();
-        for _ in 0..frames {
-            got.push(expect(&mut client).await);
-        }
+        let got = expect_answer(&mut client).await;
 
         drop(client);
         let _ = served.await;
@@ -2926,17 +2979,17 @@ mod tests {
         let (context, cache) = context_with_cache(addr);
         let context = Arc::new(context);
 
-        // First time through, from the server. The fake answers a query with
-        // CommandComplete and ReadyForQuery.
-        let first = query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
-        assert_eq!(first[0].0, Tag::COMMAND_COMPLETE);
+        // First time through, from the server: a description, a completion and
+        // a ReadyForQuery, which is what a real server answers a `SELECT` with.
+        let first = query_and_collect(Arc::clone(&context), "SELECT 1").await;
+        assert_eq!(first[0].0, Tag::ROW_DESCRIPTION);
         assert_eq!(cache.len(), 1, "the answer was not stored");
 
         let before = statements_seen(addr).len();
 
         // Second time, from the cache: the same bytes, and the fake server
         // never hears about it.
-        let second = query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        let second = query_and_collect(Arc::clone(&context), "SELECT 1").await;
         assert_eq!(
             second, first,
             "the cached answer differed from the stored one"
@@ -2972,7 +3025,7 @@ mod tests {
         let addr = fake_postgres().await;
         let (context, cache) = context_with_cache(addr);
         let context = Arc::new(context);
-        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        query_and_collect(Arc::clone(&context), "SELECT 1").await;
 
         let key = pgprox_core::cache::CacheKey {
             tenant: pgprox_core::ids::TenantId::new("acme"),
@@ -2984,9 +3037,11 @@ mod tests {
         };
         let stored = futures_lite_block_on(cache.get(&key)).expect("nothing was stored");
 
-        // What the fake answers a query with, and nothing else.
+        // What the fake answers a query with, and nothing else: the description
+        // and the completion, and no `ReadyForQuery`.
         let text = b"SELECT 1\0";
-        let mut want = vec![Tag::COMMAND_COMPLETE.get()];
+        let mut want = row_description();
+        want.push(Tag::COMMAND_COMPLETE.get());
         want.extend_from_slice(&u32::try_from(text.len() + 4).unwrap().to_be_bytes());
         want.extend_from_slice(text);
 
@@ -3043,10 +3098,10 @@ mod tests {
         let mut out = Vec::new();
         pgprox_proto::encode_frontend::query(&mut out, "SELECT 1");
         client.write_all(&out).await.unwrap();
-        expect(&mut client).await;
+        let answer = expect_answer(&mut client).await;
         assert_eq!(
-            expect(&mut client).await.1,
-            vec![b'T'],
+            answer.last().map(|frame| frame.1.clone()),
+            Some(vec![b'T']),
             "a hit told the client its transaction had ended"
         );
         assert!(
@@ -3075,9 +3130,9 @@ mod tests {
         let (context, store, _clock) = context_with_store(addr, &[], Duration::from_secs(5));
         let context = Arc::new(context);
 
-        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        query_and_collect(Arc::clone(&context), "SELECT 1").await;
         let after_first = statements_seen(addr).len();
-        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        query_and_collect(Arc::clone(&context), "SELECT 1").await;
 
         assert_eq!(store.stats().entries, 0, "a result was stored for nobody");
         assert!(
@@ -3095,19 +3150,19 @@ mod tests {
         let (context, store, clock) = context_with_store(addr, &["acme"], Duration::from_secs(5));
         let context = Arc::new(context);
 
-        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        query_and_collect(Arc::clone(&context), "SELECT 1").await;
         assert_eq!(store.stats().entries, 1, "the answer was not stored");
         let after_first = statements_seen(addr).len();
 
         // Inside the TTL, the server hears nothing.
-        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        query_and_collect(Arc::clone(&context), "SELECT 1").await;
         assert_eq!(statements_seen(addr).len(), after_first);
         assert_eq!(store.stats().hits, 1);
 
         // Past it, the statement goes upstream again. Whatever the grant said,
         // this is the number the document chose.
         clock.advance(Duration::from_secs(5));
-        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        query_and_collect(Arc::clone(&context), "SELECT 1").await;
         assert!(
             statements_seen(addr).len() > after_first,
             "an entry outlived the configured TTL"
@@ -3123,9 +3178,9 @@ mod tests {
         let (context, _cache) = context_with_cache(addr);
         let context = Arc::new(context);
 
-        query_and_collect(Arc::clone(&context), "SELECT 1", 2).await;
+        query_and_collect(Arc::clone(&context), "SELECT 1").await;
         let before = statements_seen(addr).len();
-        query_and_collect(Arc::clone(&context), "select   1", 2).await;
+        query_and_collect(Arc::clone(&context), "select   1").await;
 
         assert_eq!(
             statements_seen(addr).len(),
@@ -3142,7 +3197,7 @@ mod tests {
         let addr = fake_postgres().await;
         let (context, cache) = context_with_cache(addr);
 
-        query_and_collect(Arc::new(context), "SELECT random()", 2).await;
+        query_and_collect(Arc::new(context), "SELECT random()").await;
 
         assert_eq!(cache.len(), 0, "a volatile statement was cached");
     }
@@ -3259,6 +3314,9 @@ mod tests {
         pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
         client.write_all(&query).await.unwrap();
 
+        // A row description first, as a real server sends for a query with
+        // rows.
+        assert_eq!(expect(&mut client).await.0, Tag::ROW_DESCRIPTION);
         assert_eq!(expect(&mut client).await.0, Tag::COMMAND_COMPLETE);
         assert_eq!(expect(&mut client).await.0, Tag::READY_FOR_QUERY);
 
@@ -3540,7 +3598,16 @@ mod tests {
             // Flush. Postgres pushes out what it has and says nothing else,
             // which is what an empty buffer does here.
             b'H' => {}
+            // A simple query, which a real server answers with a description
+            // for anything that returns rows.
             _ => {
+                if String::from_utf8_lossy(body)
+                    .trim_start()
+                    .to_uppercase()
+                    .starts_with("SELECT")
+                {
+                    out.extend_from_slice(&row_description());
+                }
                 completion(&mut out);
                 encode::ready_for_query(&mut out, TxStatus::Idle);
             }
@@ -3850,9 +3917,7 @@ mod tests {
         let mut simple = Vec::new();
         pgprox_proto::encode_frontend::query(&mut simple, "SELECT 1");
         client.write_all(&simple).await.unwrap();
-        for _ in 0..2 {
-            expect(&mut client).await;
-        }
+        expect_answer(&mut client).await;
         assert_eq!(cache.len(), 1, "the simple query stored nothing");
 
         // The extended sequence for the same statement: a hit, so nothing is
@@ -3906,6 +3971,54 @@ mod tests {
             context.routes.cache(),
             1,
             "the replayed sequence was answered from the cache after a write"
+        );
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_simple_query_is_not_served_a_sequences_payload_without_a_description() {
+        // `M9.27`. ADR 0022 says one payload serves both protocols, and `M9.22`
+        // built it, but the two do not store the same thing: a server sends a
+        // `RowDescription` for every simple query with rows, and for an
+        // `Execute` only if the client sent a `Describe`. So a sequence that
+        // asked for none stores a payload with none, and a simple query served
+        // that entry would get its rows with nothing describing them, which no
+        // driver can read.
+        //
+        // The extended sequence goes first, so the entry in the cache is the
+        // one without a description.
+        let addr = fake_postgres_extended().await;
+        let (context, cache) = context_with_cache(addr);
+        let context = Arc::new(context);
+        let (mut client, served) = extended_client(&context).await;
+
+        let mut prepared = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut prepared, "s1", "SELECT 1");
+        pgprox_proto::encode_frontend::bind(&mut prepared, "", "s1");
+        pgprox_proto::encode_frontend::execute(&mut prepared, "");
+        pgprox_proto::encode_frontend::sync(&mut prepared);
+        client.write_all(&prepared).await.unwrap();
+        four_answers(&mut client).await;
+        assert_eq!(cache.len(), 1, "the sequence stored nothing");
+
+        // The same statement, asked the simple way. It is owed a description
+        // and the entry has none, so this has to reach the server.
+        let mut simple = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut simple, "SELECT 1");
+        client.write_all(&simple).await.unwrap();
+        let answer = expect_answer(&mut client).await;
+
+        assert_eq!(
+            answer.first().map(|frame| frame.0),
+            Some(Tag::ROW_DESCRIPTION),
+            "a simple query was served a payload with nothing describing its rows"
+        );
+        assert_eq!(
+            context.routes.cache(),
+            0,
+            "a simple query was answered from an entry it could not use"
         );
 
         drop(client);
@@ -4161,7 +4274,7 @@ mod tests {
         let (tag, _) = tokio::time::timeout(Duration::from_secs(5), expect(&mut client))
             .await
             .expect("a lone Flush wedged the session");
-        assert_eq!(tag, Tag::COMMAND_COMPLETE);
+        assert_eq!(tag, Tag::ROW_DESCRIPTION);
 
         drop(client);
         let _ = served.await;
@@ -4780,6 +4893,7 @@ mod tests {
         let mut query = Vec::new();
         pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
         tls.write_all(&query).await.unwrap();
+        assert_eq!(expect(&mut tls).await.0, Tag::ROW_DESCRIPTION);
         assert_eq!(expect(&mut tls).await.0, Tag::COMMAND_COMPLETE);
     }
 
@@ -5144,6 +5258,12 @@ mod tests {
         let mut query = Vec::new();
         pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
         first.write_all(&query).await.unwrap();
-        assert_eq!(expect(&mut first).await.0, Tag::COMMAND_COMPLETE);
+        let answer = expect_answer(&mut first).await;
+        assert_eq!(
+            answer.first().map(|frame| frame.0),
+            Some(Tag::ROW_DESCRIPTION),
+            "a query with rows was answered without a description"
+        );
+        assert_eq!(answer[answer.len() - 2].0, Tag::COMMAND_COMPLETE);
     }
 }

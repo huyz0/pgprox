@@ -343,6 +343,35 @@ impl HeldSequence {
     }
 }
 
+/// Writes a simple query's answer out of a stored payload.
+///
+/// The simple protocol's half of [`HeldSequence::assemble`], and it exists for
+/// the same reason: what a client is owed depends on how it asked. A simple
+/// query is always owed a description for rows it is about to be sent, because
+/// the server always sends one; an `Execute` is owed one only if a `Describe`
+/// asked. So the payload of a sequence that asked for none cannot answer a
+/// simple query, and this is what refuses it rather than sending rows nothing
+/// describes.
+///
+/// The `ReadyForQuery('I')` is generated here for the reason the assembled one
+/// is: a payload holds no terminator, and `'I'` is true because a session with a
+/// transaction open is never served. See `M9.18` and ADR 0022.
+///
+/// # Errors
+///
+/// [`Unservable`] when the payload cannot answer a simple query, which the
+/// caller treats as a miss. Nothing is written in that case.
+pub fn assemble_simple(payload: &[u8], out: &mut Vec<u8>) -> Result<(), Unservable> {
+    let (description, rows) = split(payload)?;
+    let Some(description) = description else {
+        return Err(Unservable::NoRowDescription);
+    };
+    out.extend_from_slice(description);
+    out.extend_from_slice(rows);
+    pgprox_proto::encode::ready_for_query(out, pgprox_proto::backend::TxStatus::Idle);
+    Ok(())
+}
+
 /// `ParseComplete`, which the client is owed for a `Parse` nothing ran.
 const PARSE_COMPLETE: [u8; 5] = [b'1', 0, 0, 0, 4];
 

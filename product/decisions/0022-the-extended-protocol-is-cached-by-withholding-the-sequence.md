@@ -61,9 +61,18 @@ This is what makes the last rule sound.
 `RowDescription` when the server sent one, the `DataRow`s, and the
 `CommandComplete`. Never a `ParseComplete`, a `BindComplete` or a
 `ReadyForQuery`, because those are answers to the client's framing rather than
-to its question. One payload therefore serves both protocols: an entry a `psql`
-session filled answers a JDBC client asking the same thing, and the simple path
-synthesises its own `ReadyForQuery` for the same reason the extended path does.
+to its question. Both protocols read the same shape and both synthesise their
+own `ReadyForQuery`.
+
+**And an entry is shared only where it can be.** "One payload for both
+protocols" is what this said first, and it is not quite true, which `M9.27`
+found the hard way. Whether a payload holds a description is not a choice: the
+server sends one for every simple query with rows, and for an `Execute` only if
+a `Describe` asked. So a sequence that asked for none stores an answer a simple
+query cannot use, and each hit path refuses what it cannot serve rather than
+sending rows with nothing describing them. Sharing therefore runs one way: an
+entry filled by a simple query answers either protocol, and an entry filled by a
+sequence that skipped its `Describe` answers only another sequence like it.
 
 **A hit is assembled frame by frame from what the client sent.** A
 `ParseComplete` for its `Parse`, a `BindComplete` for its `Bind`, the cached
