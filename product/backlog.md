@@ -2666,7 +2666,7 @@ the relay lands before the cacheability rule is finished.
 - [ ] `M10.8` The survivors in `pgprox-session`, fifty-three, ten of them
   timeouts. Same rule, and the largest list, which is consistent with it being
   the most correctness-critical crate and the one M9 kept finding defects in.
-- [ ] `M10.5` What the cache is worth on a workload it is for. `M9.24` measured
+- [x] `M10.5` What the cache is worth on a workload it is for. `M9.24` measured
   the reference workload and named this as the cheapest thing left, because that
   workload answers a different question: 30% of its statements are writes, two
   thirds are inside a `BEGIN`, and only 27% reach a lookup at all.
@@ -2681,3 +2681,27 @@ the relay lands before the cacheability rule is finished.
   improvement.
   Acceptance: a committed workload document, a matched pair against it whose sets
   do not overlap, and the prediction recorded before the numbers.
+  A quarter off the median, 794us to 600us, sets not overlapping; the hop at
+  matched load down from 430us to 25us; CPU per statement 16% better rather than
+  5% worse. 27% of statements served at a 57% hit rate.
+  Two of the three predictions were right and the first was optimistic: the
+  addressable share went to 64% rather than 80%, because a tenth of transactions
+  being four statements inside a `BEGIN` eats a third of all statements, none of
+  them cacheable.
+  What it does not settle is `M9.24`'s queueing explanation, and the reason is
+  worth its own task. This workload does not saturate anything: its median is
+  three orders of magnitude below the reference workload's and its throughput is
+  three times higher. A run with no queue cannot confirm a claim about queues.
+  `M10.9` is that test.
+- [ ] `M10.9` Test the queueing explanation directly. `M9.24` said the cache
+  regressed the median because the database was saturated, throughput was pinned
+  by it, and a statement answered instantly returned its client to the queue
+  sooner. `M10.5` improved the median on a workload that saturates nothing, which
+  is consistent with that and is not a test of it.
+  The test is `workload-cached.yaml` at a connection count high enough to
+  saturate, found by walking the count up until the median stops tracking the
+  direct baseline. If the cache still helps there, the explanation is wrong and
+  the reference workload's regression has another cause, which matters more than
+  either number.
+  Acceptance: a connection count at which the read-heavy workload saturates,
+  recorded with how it was found, and a matched pair at that count.

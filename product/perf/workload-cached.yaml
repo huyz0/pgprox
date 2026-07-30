@@ -1,0 +1,98 @@
+# A workload the query cache is for.
+#
+# `M9.24` measured the cache against `workload.yaml` and found it 7.8% worse on
+# the median. That workload answers a different question: 30% of its statements
+# are writes, each dropping its tenant's entries, and two thirds are inside a
+# `BEGIN`, which `M9.18` refuses to serve or store. Only 27% of statements reach
+# a lookup at all. It is the right document for measuring a proxy and the wrong
+# one for measuring a cache.
+#
+# This is the shape of a tenant who would opt in: a read-mostly application
+# whose reads are single statements. It is chosen once, here, before any run,
+# and it is not to be adjusted until a number improves. `M10.5` is the run.
+#
+# Everything not named below is deliberately identical to `workload.yaml`, so a
+# difference between the two runs is the difference between the two documents
+# rather than between two sets of tuning.
+#
+# Derived from workload.yaml. If that file changes, this one is re-derived
+# rather than edited, or the pair stops being comparable.
+
+# The schema version, which is the loader's and is shared by every document
+# here. It is not a revision number for this file.
+version: 3
+
+# The same tenant mix. The cache is per tenant and the busy few are who would
+# turn it on, which is what `workload.yaml` already describes.
+tenants:
+  - name: hot
+    count: 4
+    share: 0.80
+  - name: tail
+    count: 200
+    share: 0.20
+
+# Ninety-five percent reads against five percent writes, against the reference
+# workload's seventy and thirty.
+#
+# The write rate is the number that matters most and it is not zero, because a
+# cache measured against a workload that never invalidates is a cache measured
+# against a hash map. Five percent is a reporting-heavy application that still
+# takes writes, which is the case the feature exists for; zero would be a
+# measurement nobody could deploy behind.
+#
+# The same SQL as `workload.yaml`, so the two documents differ in their mix and
+# not in what the database is asked to do.
+statements:
+  - name: point_select
+    weight: 75
+    kind: read
+    sql: "SELECT abalance FROM pgbench_accounts WHERE aid = 1"
+  - name: range_scan
+    weight: 20
+    kind: read
+    sql: "SELECT sum(abalance) FROM pgbench_accounts WHERE bid = 1"
+  - name: update_account
+    weight: 4
+    kind: write
+    sql: "UPDATE pgbench_accounts SET abalance = abalance + 1 WHERE aid = 1"
+  - name: insert_history
+    weight: 1
+    kind: write
+    sql: "INSERT INTO pgbench_history (tid, bid, aid, delta) VALUES (1, 1, 1, 1)"
+
+# Single-statement transactions, which is the other half of what makes a
+# statement cacheable at all: `M9.18` refuses to serve or store inside a `BEGIN`,
+# because a stored answer carries a transaction status and an answer produced
+# inside a transaction can see rows no other session can.
+#
+# Not all of them, because a proxy that only ever saw single statements would
+# not be pooling. One in ten transactions is a short multi-statement one, which
+# is enough to keep the release rule under load and small enough that the
+# addressable share is about the cache rather than about `BEGIN`.
+transactions:
+  - statements: 1
+    weight: 90
+  - statements: 4
+    weight: 10
+
+# Unchanged from `workload.yaml`. Both protocols reach the cache since `M9.23`,
+# and half and half is what a fleet of mixed drivers looks like.
+prepared_fraction: 0.5
+
+# Unchanged, and load-bearing for the question this document asks. `M9.24` found
+# that at five hundred connections against sixty upstream ones the database is
+# saturated, and that a cache in front of a saturated resource moves work from
+# the front of the queue to the back of it. The think time is what decides
+# whether a given connection count saturates, so changing it here would answer a
+# different question with the same numbers.
+think:
+  min_ms: 50
+  max_ms: 500
+
+churn:
+  transactions_per_connection: 500
+
+replica_read_fraction: 0.50
+
+cluster_size: 3
