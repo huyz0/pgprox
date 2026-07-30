@@ -2325,6 +2325,125 @@ the relay lands before the cacheability rule is finished.
   separately, a `Sync` after a served `Execute` is answered correctly, a portal
   is forgotten when the protocol says it is, a session that never binds
   allocates nothing new, and the session future stays under 5 KiB.
+  **Scope narrowed to the decision, which is what the entry itself said had to
+  come first.** ADR 0022 records it and `M9.18` through `M9.23` are the work.
+  Two of the three problems named above turned out to be the smaller two.
+  A hit at the `Execute` has already taken a connection, because a `Parse` or a
+  `Bind` is forwarded as it arrives and forwarding acquires. So the obvious
+  shape saves the database's execution and none of the pool work that `M7.56`
+  measured, which is the reason this milestone was moved up at all. And the
+  answer to a sequence is not a function of the SQL and the parameters: a
+  `RowDescription` appears only if the client asked for one, so bytes recorded
+  from one driver's framing desynchronise another's.
+  What is decided: an opted-in tenant's sequence is withheld from the upstream
+  until the client ends it, what is cached is the statement's answer with
+  nothing of the sequence in it, and a hit is assembled from the frames the
+  client actually sent. Withholding starts only from an idle session, which is
+  what makes a locally generated `ReadyForQuery('I')` true rather than hopeful.
+  Anything not covered replays the withheld frames upstream and carries on.
+  The acceptance criteria above are superseded in one place: a map of portals
+  is not needed, because a withheld sequence ends at the `Sync` that closes it
+  and there is only ever one. Forgetting is what the machine does at the end of
+  every sequence rather than a rule about named portals.
+- [ ] `M9.18` A cache hit inside a transaction reports the wrong transaction
+  status. Found while designing `M9.17` rather than by running anything, which
+  is why it is filed rather than folded in.
+  `cache_key` asks the cacheability rule about the session, and `SessionFacts`
+  carries whether it wrote and whether it is pinned. It does not carry whether
+  a transaction is open. So `BEGIN; SELECT 1;` on an opted-in tenant can be
+  served an entry another session stored while idle, and that entry ends in a
+  `ReadyForQuery('I')`. The client is told its transaction ended while the proxy
+  goes on holding a connection with an open one on it.
+  Storing has the same hole from the other side: a read inside a transaction can
+  see rows only that transaction can see, and its answer ends in `'T'` rather
+  than `'I'`, so it is neither safe to publish nor the right shape to store.
+  `SessionFacts` gains `in_transaction` and `NotCacheable` gains the variant to
+  refuse it with. The constructor is `#[non_exhaustive]` on purpose so a field
+  added here is a compile error at every call site, which is the whole reason it
+  is a constructor.
+  Acceptance: a `SELECT` inside a transaction is neither served from the cache
+  nor stored in it, with a test that fails before the fix. `M9.23` depends on
+  this: withholding a sequence is only sound from a session with no transaction
+  open, and the invariant has to exist before anything rests on it.
+- [ ] `M9.19` The key can carry what a `Bind` carries. `CacheKey::params` is
+  `Vec<Vec<u8>>` and has been empty since M9.7, and it cannot hold what the
+  extended protocol needs: a SQL `NULL` is not a zero-length value, and
+  `Vec<Vec<u8>>` cannot tell them apart. Two bindings of `SELECT $1`, one with
+  `NULL` and one with the empty string, would share an entry.
+  It becomes `Arc<[u8]>` holding the parameter section of the `Bind` exactly as
+  it arrived, length-prefixed, with `-1` meaning null the way the wire already
+  says it. One allocation per key rather than one per parameter, cheap to hash,
+  and it distinguishes null by construction rather than by a rule somebody has
+  to remember. `pgprox-proto` grows the accessor that hands out that slice,
+  since `bind_parameters` already walks it and proves it well formed.
+  A `pgprox-core` DTO change, so the trait, the fake, `pgprox-cache`, its
+  accounting of key bytes and every construction site move in one commit.
+  Acceptance: a key built from a `Bind` with a null and one built from a `Bind`
+  with an empty value are not equal, the store's byte accounting counts the new
+  shape, and nothing in the workspace still names the old one.
+- [ ] `M9.20` The withheld sequence, as a state machine with no I/O in it. A new
+  module in `pgprox-session`, which is where a per-session protocol machine
+  belongs and which already depends on everything it needs.
+  It is fed the frames the relay decodes and answers what to do with each:
+  withhold it, replay everything withheld and carry on, or that the sequence is
+  now complete and here is the key material. It holds the frames as they will go
+  upstream, which is after the statement-name rewrite, because a replay has to
+  send what would have been sent.
+  The cacheability verdict arrives as an argument rather than being reached for,
+  the way `SessionFacts` does: this crate may not depend on `pgprox-cache`.
+  What it withholds is a `Parse`, a `Bind`, a `Describe` of a portal and an
+  `Execute` with no row limit. What replays is everything else, named the safe
+  way round: the machine lists what it can hold and anything unlisted is a
+  replay, so a message nobody has thought about does not get swallowed.
+  Acceptance: unit tests for each frame it withholds and each of `Flush`, a row
+  limit, a statement `Describe`, a second `Execute`, a simple `Query` and a
+  `Terminate` mid-sequence; the SQL comes from the `Parse` in the sequence or
+  from what the session prepared earlier; the parameters come from the `Bind`;
+  and the machine is empty again after the `Sync`. Nothing uses it yet.
+- [ ] `M9.21` A hit, assembled from the frames the client sent. The other half
+  of `M9.20` and the same module: given a withheld sequence and a stored
+  payload, produce the bytes the client is owed.
+  A `ParseComplete` for the `Parse`, a `BindComplete` for the `Bind`, the
+  payload's `RowDescription` for the `Describe`, the rows and the
+  `CommandComplete` for the `Execute`, a `ReadyForQuery('I')` for the `Sync`.
+  The payload is split rather than replayed whole, because a client that sent no
+  `Describe` must not be handed a `RowDescription` it never asked for.
+  Acceptance: byte-for-byte assertions on the assembled output for a sequence
+  with a `Describe` and one without, a payload whose `RowDescription` is absent
+  is refused rather than assembled around, and a malformed payload cannot make
+  the assembler read past its end.
+- [ ] `M9.22` One payload shape for both protocols. `M9.7` stores the whole
+  answer to a simple `Query`, `ReadyForQuery` and all, and ADR 0022 makes the
+  stored payload the statement's answer instead: the `RowDescription`, the rows,
+  the `CommandComplete`. So the recording filters what it keeps, and the simple
+  protocol's hit path grows the `ReadyForQuery('I')` it now has to generate.
+  This is what lets one entry serve both protocols, which matters because the
+  reference workload asks the same questions both ways.
+  Depends on `M9.18`: generating that `ReadyForQuery` is only true for a session
+  with no transaction open.
+  Acceptance: a simple query is still served correctly from its own entry after
+  the change, the stored bytes no longer contain a `ReadyForQuery`, and a hit
+  inside a transaction is still refused rather than answered with `'I'`.
+- [ ] `M9.23` The relay withholds, serves and records. The wiring, and the last
+  of the code: the machine from `M9.20` behind an `Option<Box<..>>` in the
+  session, the assembler from `M9.21` on the hit path, the recording from
+  `M9.22` on the miss path, and the hit counted the way `M9.16` counts one.
+  Acceptance: two bindings of `SELECT $1` are served separately and neither is
+  served the other's answer, a hit takes nothing from the pool and the session
+  ends holding no connection, a `Flush` mid-sequence is answered exactly as it
+  is today, a session that never binds allocates nothing new, and the session
+  future stays under 5 KiB.
+- [ ] `M9.24` What it was worth. A matched pair of scale runs with the cache on,
+  the way `M9.10` did it, recorded in `product/perf/` and reflected in the
+  roadmap's M9 section.
+  The number to watch is not the hit rate. `M9.10` served 11% of statements at a
+  39% hit rate and moved the median 7%, and said the pool and its wakeups were
+  flat at about half the profile either way. Half the workload is extended, so
+  the question this run answers is whether serving that half without acquiring a
+  connection changes that share or only the total again.
+  Acceptance: two runs whose sets do not overlap, the hit rate and the share of
+  statements served recorded, and an honest sentence about the pool's share of
+  the profile whichever way it went.
 - [x] `M9.13` Configuration, the half the node obeys. `M9.8` gives an operator
   a way to say it; this is what makes saying it change anything, and it is
   where the hot-reload acceptance lives.

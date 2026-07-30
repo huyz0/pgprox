@@ -332,6 +332,19 @@ tenant's entries, so the cache is emptied roughly every other lookup. A 39% hit
 rate under that is better than it sounds, and a more read-heavy tenant is the
 one this feature is for.
 
+**What the extended half turned out to need.** `M9.12` read a `Bind`'s
+parameters and `M9.17` was to carry them into the key, which is a paragraph of
+work until you ask where the hit happens. By the time an `Execute` is decoded
+the session is already holding a pooled connection, because the `Parse` or the
+`Bind` before it was forwarded and forwarding acquires. So the obvious shape
+would move the query off the database and leave every bit of the pool work
+`M7.56` measured exactly where it is. And the answer to a sequence is not a
+function of the SQL and the parameters: whether a `RowDescription` belongs in it
+depends on the client's framing, so one driver's recorded bytes desynchronise
+another driver. ADR 0022 is the decision, `M9.18` through `M9.24` are the work,
+and `scripts/m9-complete.sh` passes either way because none of this changes what
+the cache promises.
+
 **What building it found.** `Flush` was not the only thing the relay got wrong
 about statements it answered itself: a cache hit returned before
 `record_statement`, so `pgprox_route_total` missed every one and the first
