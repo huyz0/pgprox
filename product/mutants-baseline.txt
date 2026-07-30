@@ -60,16 +60,8 @@ pgprox-route|crates/pgprox-route/src/hints.rs|statement_hint|==	as above
 
 # --- pgprox-session ---
 pgprox-session|crates/pgprox-session/src/cancel.rs|send|Ok(())	untriaged (timeout: the mutant made something not terminate)
-pgprox-session|crates/pgprox-session/src/flush.rs|Outstanding::discharge|!=	untriaged
-pgprox-session|crates/pgprox-session/src/flush.rs|Outstanding::sent|	untriaged
-pgprox-session|crates/pgprox-session/src/flush.rs|Outstanding::sent|	untriaged
 pgprox-session|crates/pgprox-session/src/probe.rs|run_replica_query|!=	untriaged (timeout: the mutant made something not terminate)
 pgprox-session|crates/pgprox-session/src/probe.rs|text_row|<=	untriaged
-pgprox-session|crates/pgprox-session/src/relay.rs|Relay::forward_without_routing|	untriaged
-pgprox-session|crates/pgprox-session/src/relay.rs|Relay::record_write|()	untriaged
-pgprox-session|crates/pgprox-session/src/relay.rs|Relay::released|()	untriaged
-pgprox-session|crates/pgprox-session/src/relay.rs|Relay::wrote|false	untriaged
-pgprox-session|crates/pgprox-session/src/relay.rs|Relay::wrote|true	untriaged
 pgprox-session|crates/pgprox-session/src/sequence.rs|<impl Iterator for Frames<'a>>::next|<=	untriaged
 pgprox-session|crates/pgprox-session/src/sequence.rs|?|+	untriaged
 pgprox-session|crates/pgprox-session/src/sequence.rs|HeldSequence::feed|*	untriaged

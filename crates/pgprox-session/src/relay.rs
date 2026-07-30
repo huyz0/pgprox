@@ -254,6 +254,11 @@ mod tests {
         BackendMessage::ReadyForQuery(status)
     }
 
+    /// A frame that carries no SQL, so it routes by what came before it.
+    fn sync() -> FrontendMessage<'static> {
+        FrontendMessage::Sync
+    }
+
     /// Runs a statement to its `ReadyForQuery`, returning whether it released.
     fn round_trip(relay: &mut Relay, sql: &str, ends_at: TxStatus) -> bool {
         let outcome = relay.on_client(&query(sql), &replicas(), Instant::now());
@@ -281,6 +286,75 @@ mod tests {
         );
         relay.acquired();
         assert!(relay.on_server(&ready(TxStatus::Idle)).release);
+    }
+
+    #[test]
+    fn a_write_stays_outstanding_until_its_position_comes_back() {
+        // What `wrote` is for. The shell reads it to decide whether to ask the
+        // primary where the write landed, and until the answer arrives the
+        // session's reads stay on the primary. Nothing asserted either end of
+        // it here, so a `wrote` stuck at true would have pinned every session
+        // to the primary for good and one stuck at false would have sent the
+        // next read to a replica that has not caught up.
+        let mut relay = Relay::new();
+        assert!(!relay.wrote());
+
+        round_trip(&mut relay, "SELECT 1", TxStatus::Idle);
+        assert!(!relay.wrote(), "a read is not a write");
+
+        round_trip(&mut relay, "UPDATE t SET a = 1", TxStatus::Idle);
+        assert!(relay.wrote());
+
+        relay.record_write("16/B374D848".parse().unwrap());
+        assert!(!relay.wrote());
+    }
+
+    #[test]
+    fn a_released_connection_is_acquired_again_for_the_next_statement() {
+        // `released` is half of a pair and only `acquired` was ever checked.
+        // A release the relay does not record leaves it believing it still
+        // holds a connection, so the next statement is sent with no acquire
+        // and lands on nothing.
+        let mut relay = Relay::new();
+        assert!(round_trip(&mut relay, "SELECT 1", TxStatus::Idle));
+        assert!(!relay.is_holding());
+
+        let outcome = relay.on_client(&query("SELECT 2"), &replicas(), Instant::now());
+        assert_eq!(
+            outcome.action,
+            ClientAction::Send {
+                target: RouteTarget::Primary,
+                acquire: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_frame_with_no_sql_acquires_only_when_nothing_is_held() {
+        // Bind, Execute, Sync and the rest carry nothing to classify, so they
+        // follow the statement before them. That still leaves the acquire
+        // decision, and it is the opposite of what is held: a session with no
+        // connection needs one, and one that has a connection must not take a
+        // second.
+        let mut relay = Relay::new();
+        let outcome = relay.on_client(&sync(), &replicas(), Instant::now());
+        assert_eq!(
+            outcome.action,
+            ClientAction::Send {
+                target: RouteTarget::Primary,
+                acquire: true,
+            }
+        );
+
+        relay.acquired();
+        let outcome = relay.on_client(&sync(), &replicas(), Instant::now());
+        assert_eq!(
+            outcome.action,
+            ClientAction::Send {
+                target: RouteTarget::Primary,
+                acquire: false,
+            }
+        );
     }
 
     #[test]

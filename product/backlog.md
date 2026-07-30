@@ -2773,13 +2773,33 @@ the relay lands before the cacheability rule is finished.
   suite does detect it, by not terminating. Which of these appear in a given run
   depends on how loaded the machine is, which is the effect already recorded for
   `Reader::cstr`.
-- [ ] `M10.11` The `relay.rs` and `flush.rs` survivors, eight: `Relay::wrote`
+- [x] `M10.11` The `relay.rs` and `flush.rs` survivors, eight: `Relay::wrote`
   both ways, `record_write`, `released`, `forward_without_routing`,
   `Outstanding::sent` twice and `discharge`. One property rather than eight
   functions: whether a connection is safe to hand back. `wrote` is what decides
   a pool release, and `Outstanding` is what decides when a pipelined sequence is
   over. `M9.26` already found one defect here by way of a fake server that was
   too polite, so these are the ones to read closely rather than to rubber-stamp.
+  Acceptance: all eight killed, or a written reason for any that cannot be.
+  All eight, by five tests, and none of them equivalent. The pattern in every
+  one is a value that other tests set up and none of them read:
+  `wrote` had no assertion at either end. Stuck at true it pins a session to
+  the primary for good; stuck at false it sends the next read to a replica that
+  has not replayed the write yet, which is the one wrong answer this project's
+  routing exists to avoid. `record_write` clearing it had nothing checking that
+  either, so the flag could have been write-only in both directions.
+  `released` is half of a pair whose other half, `acquired`, was checked
+  everywhere. A release the relay does not record leaves it believing it still
+  holds a connection, so the next statement goes out with no acquire.
+  `forward_without_routing` decides `acquire` as the negation of what is held,
+  and dropping the negation is invisible unless a test sends a frame with no
+  SQL in it, which none did: every test here started with a `Query`.
+  The two `Outstanding::sent` arms were the same shape as the proto findings.
+  `Bind` appeared only as the thing before an `Execute`, and an `Execute`'s own
+  completion settles that sequence whether the `Bind` was counted or not, so
+  dropping the `Bind` arm changed nothing any test could see. `Close` was never
+  sent by any test at all. Both now have a test that sends one on its own and
+  requires its own completion tag to settle it.
 - [ ] `M10.12` The `sequence.rs` survivors, ten. The M9 machine, and the newest
   code in the crate: `feed`'s size ceiling three ways, `may_hold`, `begins`,
   `split`, `is_empty`, `assemble_simple` and the `Frames` iterator bound. The

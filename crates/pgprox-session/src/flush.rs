@@ -216,6 +216,45 @@ mod tests {
         assert!(owed.settled());
     }
 
+    fn close() -> FrontendMessage<'static> {
+        FrontendMessage::Close {
+            target: pgprox_proto::frontend::Target::Statement,
+            name: "s1",
+        }
+    }
+
+    #[test]
+    fn a_bind_is_owed_until_its_own_completion() {
+        // The Bind is covered elsewhere only as the thing before an Execute,
+        // and an Execute's own completion settles that sequence whether the
+        // Bind was ever counted or not. On its own it has to be counted, and
+        // it has to be a BindComplete that discharges it: a Flush after a Bind
+        // alone is what a driver preparing a portal sends.
+        let mut owed = Outstanding::new();
+        owed.sent(&bind());
+        assert!(!owed.settled(), "a Bind owes a completion");
+
+        owed.received(Tag(b'D'));
+        assert!(!owed.settled(), "a DataRow discharged a Bind");
+        owed.received(Tag(b'2'));
+        assert!(owed.settled());
+    }
+
+    #[test]
+    fn a_close_is_owed_until_its_own_completion() {
+        // Close is the one no other test sends. A Close the proxy forwards and
+        // does not count leaves a Flush settled early, and the client reads
+        // the CloseComplete as the answer to whatever it sends next.
+        let mut owed = Outstanding::new();
+        owed.sent(&close());
+        assert!(!owed.settled(), "a Close owes a completion");
+
+        owed.received(Tag(b'2'));
+        assert!(!owed.settled(), "a BindComplete discharged a Close");
+        owed.received(Tag(b'3'));
+        assert!(owed.settled());
+    }
+
     #[test]
     fn rows_do_not_discharge_the_execute_they_belong_to() {
         let mut owed = Outstanding::new();
