@@ -3018,7 +3018,7 @@ the relay lands before the cacheability rule is finished.
   and 17.5% worse at two thousand. ADR 0021 says opt-in per tenant; this says an
   operator also has to know where their fleet sits against its database.
   Recorded in `product/perf/run-2026-07-31-saturation.md`.
-- [ ] `M10.17` Write `scripts/m10-complete.sh`, which the roadmap has named as
+- [x] `M10.17` Write `scripts/m10-complete.sh`, which the roadmap has named as
   this milestone's completion condition since the milestone was filed and which
   does not exist. Every other task in M10 is done and the milestone cannot be
   called complete, which is precisely the failure mode M10 is about: a claim
@@ -3035,3 +3035,20 @@ the relay lands before the cacheability rule is finished.
   restate it, and should say where the overlap is.
   Acceptance: the script exists, runs without Docker, fails if any of the four
   claims stops holding, is named in CI like its siblings, and passes.
+  Eleven checks, and it found two things on its first run rather than passing
+  the way a gate written to fit its subject would.
+  `m10-complete.sh` was not named in CI, because the check that every milestone
+  gate is named there counts the gates it finds on disk and this one had just
+  appeared. So the gate's own first act was to notice its own absence, which is
+  the behaviour worth having.
+  And the `untriaged` check failed against the baseline's header, which explains
+  what `untriaged` was and why it is no longer allowed. A check that reads its
+  own documentation as a violation cannot be fixed without deleting the
+  explanation, so it reads entries rather than comments now.
+  Verified by breaking it rather than by running it once: an `untriaged` line
+  added to the baseline and `--test-tool=nextest` removed from `mutants.sh` both
+  fail it, and both were put back.
+  It deliberately does not re-check what `scripts/check-drift.sh` already
+  asserts. What it adds is the part drift cannot see: that the tier 3 jobs are
+  on a schedule, that the baseline is reasons rather than names, and that a hung
+  test is killed rather than read as a survivor.

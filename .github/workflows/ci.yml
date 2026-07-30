@@ -233,3 +233,8 @@ jobs:
         run: scripts/release-check.sh
       - name: M9
         run: scripts/m9-complete.sh
+      # The gate for the milestone that exists because gates were not running.
+      # It checks that the other twelve are named here, so this line is the one
+      # that keeps the check from being able to pass by describing nothing.
+      - name: M10
+        run: scripts/m10-complete.sh

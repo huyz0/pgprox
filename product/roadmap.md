@@ -26,7 +26,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M7 | Scale and performance | complete; 100k connections held at 546 MB against a 500 MB target, and `M7.58` later took CPU per statement from 687us to 43.7us |
 | M8 | FIPS and release | complete |
 | M9 | Query cache (post-MVP) | complete; it costs 7.8% of the median on the reference workload, which is the opposite of what `M9.10` measured and is a fact about `M7.58` |
-| M10 | The claims nothing enforces | open; every task is done and `scripts/m10-complete.sh`, which this file names as the condition, does not exist |
+| M10 | The claims nothing enforces | complete; the three claims now fail when they stop holding, and the cache turns out to change sign with load rather than with workload |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
