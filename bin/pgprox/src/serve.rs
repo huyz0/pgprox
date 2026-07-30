@@ -895,7 +895,15 @@ fn cache_key(
         return None;
     };
 
-    let facts = pgprox_cache::SessionFacts::new(relay.wrote(), relay.pin_reason().is_some());
+    // The transaction status the server last sent, not the SQL. A `COMMIT`
+    // inside a failed transaction does not commit, which is the same reason the
+    // release rule reads the status byte.
+    let in_transaction = !matches!(relay.session().tx_status(), TxStatus::Idle);
+    let facts = pgprox_cache::SessionFacts::new(
+        relay.wrote(),
+        relay.pin_reason().is_some(),
+        in_transaction,
+    );
     pgprox_cache::cacheable(sql, pgprox_route::classify(sql), facts).ok()?;
 
     // `search_path` decides what the SQL names, so it is part of the key. A
@@ -2569,6 +2577,75 @@ mod tests {
             1,
             "the miss that filled the cache was not counted as a primary statement"
         );
+    }
+
+    #[tokio::test]
+    async fn a_read_inside_a_transaction_is_neither_served_nor_stored() {
+        // Two sessions rather than one, because a `BEGIN` drops the tenant's
+        // entries on its way past: the entry this session could be wrongly
+        // served has to be stored by somebody else after that.
+        //
+        // What the bug looked like. A cached answer ends in the transaction
+        // status the server sent when it was recorded, which for an entry
+        // stored by an idle session is `I`. Served to a session with a
+        // transaction open, that tells the client its transaction ended while
+        // the proxy goes on holding a connection with an open one on it.
+        let addr = fake_postgres().await;
+        let (context, cache) = context_with_cache(addr);
+        let context = Arc::new(context);
+        let gate = Arc::new(Gate::new(10));
+
+        let admitted = gate.admit().unwrap();
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut out = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut out, "BEGIN");
+        client.write_all(&out).await.unwrap();
+        expect(&mut client).await;
+        assert_eq!(
+            expect(&mut client).await.1,
+            vec![b'T'],
+            "the fake did not open a transaction"
+        );
+
+        // Somebody else fills the cache while that transaction is open.
+        query_through_a_session(Arc::clone(&context), "SELECT 1").await;
+        assert_eq!(cache.len(), 1, "the other session stored nothing");
+
+        let before = statements_seen(addr).len();
+        let mut out = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut out, "SELECT 1");
+        client.write_all(&out).await.unwrap();
+        expect(&mut client).await;
+        assert_eq!(
+            expect(&mut client).await.1,
+            vec![b'T'],
+            "a hit told the client its transaction had ended"
+        );
+        assert!(
+            statements_seen(addr).len() > before,
+            "a read inside a transaction was answered from the cache"
+        );
+
+        // And nothing new was stored: its answer is visible only to this
+        // transaction, and it ends in `T` rather than `I`.
+        assert_eq!(
+            cache.len(),
+            1,
+            "a read inside a transaction was stored for everyone else"
+        );
+
+        drop(client);
+        let _ = served.await;
     }
 
     #[tokio::test]

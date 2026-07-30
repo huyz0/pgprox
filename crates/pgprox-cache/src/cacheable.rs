@@ -51,6 +51,22 @@ pub enum NotCacheable {
     /// 0021 says that where the cache and read routing disagree, routing wins:
     /// a session with a watermark is one that has written.
     SessionWrote,
+    /// The session has a transaction open.
+    ///
+    /// Both directions are wrong, and the reasons are different. An answer
+    /// produced inside a transaction can see rows no other session can, even
+    /// when the transaction has not written, because a `SET TRANSACTION
+    /// ISOLATION LEVEL` or a read of an uncommitted sibling's work is visible
+    /// where the entry would not be. And a stored answer carries the
+    /// transaction status the server sent with it: served to a session mid
+    /// transaction, an entry recorded while idle says `ReadyForQuery('I')` and
+    /// tells the client its transaction ended.
+    ///
+    /// The second half is why this is refused rather than merely not stored.
+    /// See ADR 0022, which rests on it: a sequence is only ever withheld from
+    /// a session with nothing open, so the `ReadyForQuery` the relay generates
+    /// for a hit is `'I'` by construction.
+    InTransaction,
     /// The session is pinned, so it holds state the cache cannot see.
     ///
     /// A temporary table is the case that matters. `SELECT * FROM scratch`
@@ -87,6 +103,12 @@ pub struct SessionFacts {
     pub wrote_in_transaction: bool,
     /// Whether the session is pinned to one upstream connection.
     pub pinned: bool,
+    /// Whether the session has a transaction open, written in or not.
+    ///
+    /// Read from the transaction status the server last sent rather than from
+    /// the SQL, for the reason the release rule is: a `COMMIT` inside a failed
+    /// transaction does not commit, and a text scan cannot tell.
+    pub in_transaction: bool,
 }
 
 impl SessionFacts {
@@ -96,6 +118,7 @@ impl SessionFacts {
         Self {
             wrote_in_transaction: false,
             pinned: false,
+            in_transaction: false,
         }
     }
 
@@ -106,10 +129,11 @@ impl SessionFacts {
     /// every call site, since a caller that quietly kept the old default would
     /// be asserting something about a session it never looked at.
     #[must_use]
-    pub const fn new(wrote_in_transaction: bool, pinned: bool) -> Self {
+    pub const fn new(wrote_in_transaction: bool, pinned: bool, in_transaction: bool) -> Self {
         Self {
             wrote_in_transaction,
             pinned,
+            in_transaction,
         }
     }
 }
@@ -213,6 +237,9 @@ pub fn cacheable(sql: &str, class: StmtClass, session: SessionFacts) -> Result<(
     if session.wrote_in_transaction {
         return Err(NotCacheable::SessionWrote);
     }
+    if session.in_transaction {
+        return Err(NotCacheable::InTransaction);
+    }
     if session.pinned {
         return Err(NotCacheable::Pinned);
     }
@@ -279,6 +306,23 @@ mod tests {
         assert_eq!(
             cacheable("SELECT * FROM t", StmtClass::ReadOnly, facts),
             Err(NotCacheable::SessionWrote)
+        );
+    }
+
+    #[test]
+    fn a_session_with_a_transaction_open_is_refused() {
+        // Refused even though it has not written, and the reason the writing
+        // case does not cover it is the transaction status. A stored answer
+        // carries the one the server sent with it, so an entry recorded while
+        // idle ends in `ReadyForQuery('I')` and tells this session its
+        // transaction ended. ADR 0022 rests on this being refused.
+        let facts = SessionFacts {
+            in_transaction: true,
+            ..SessionFacts::clean()
+        };
+        assert_eq!(
+            cacheable("SELECT * FROM t", StmtClass::ReadOnly, facts),
+            Err(NotCacheable::InTransaction)
         );
     }
 
