@@ -48,6 +48,14 @@ threshold.
   in the nightly job. A surviving mutant is a missing test. One that is accepted
   instead goes in `product/mutants-baseline.txt` with a reason, and one that is
   in neither place fails the script.
+  The suite runs under nextest there, with a per-test timeout, and that is not
+  a detail. `cargo mutants` budgets the whole suite and calls the mutant a
+  timeout when the budget runs out; under `cargo test` one hung test costs the
+  run its verdict, so a mutant is reported as surviving even when another test
+  failed it. `M10.13` found that by writing assertions that fail six mutants
+  and watching all six come back as timeouts. Twenty-three baseline entries
+  turned out to be saying something about the runner rather than about the
+  tests. **A timeout is a run nobody read, not a mutant the suite caught.**
   This ran nowhere until `M10.3`, and the sentence claiming it did was three
   milestones old. M9 is why it was worth building rather than deleting: three of
   its defects survived every gate because a fake answered something Postgres

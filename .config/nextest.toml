@@ -1,0 +1,29 @@
+# cargo-nextest profiles.
+#
+# The default profile is deliberately empty of timeouts. Ordinary runs and the
+# coverage gate should not be in the business of killing tests, and a test that
+# hangs during development is a thing a person notices.
+
+# The profile the mutation run uses, and the only reason this file exists.
+#
+# `cargo mutants` gives the whole suite one budget, `MUTANTS_TIMEOUT`, and calls
+# the mutant a timeout when that budget runs out. Under `cargo test` there is no
+# per-test timeout, so one test that never returns costs the run its verdict:
+# the mutant is reported as a timeout whether or not some other test failed it.
+#
+# `M10.13` found that by writing assertions that fail six mutants and watching
+# the run report all six as timeouts anyway, because another test hung first.
+# A timeout then means the run was abandoned, not that the suite detected
+# anything, which is the opposite of what the baseline entries beside those
+# mutants claimed.
+#
+# With a per-test cap a hung test is killed and reported as a failure, which
+# nextest counts like any other, so the mutant is caught and the failing test
+# names which method was wrong.
+#
+# Ten seconds, against a suite whose slowest test is 0.207s and whose whole run
+# is 0.321s across the four mutated crates. That is forty-eight times the
+# slowest honest test, so nothing legitimate is at risk, and it sits well inside
+# the sixty seconds the whole per-mutant run gets.
+[profile.mutants]
+slow-timeout = { period = "5s", terminate-after = 2 }

@@ -43,6 +43,17 @@ JOBS="${MUTANTS_JOBS:-6}"
 TIMEOUT="${MUTANTS_TIMEOUT:-60}"
 
 require_tool cargo-mutants "cargo install cargo-mutants --locked" || finish
+require_tool cargo-nextest "cargo install cargo-nextest --locked" || finish
+
+# The suite runs under nextest so that a hung test is a failed test.
+#
+# `cargo mutants` gives the whole suite one budget and reports a timeout when it
+# runs out. Under `cargo test` there is no per-test timeout, so one test that
+# never returns costs the run its verdict and the mutant is reported as a
+# timeout whether or not another test failed it. `M10.13` found that by writing
+# assertions that fail six mutants and watching all six come back as timeouts.
+# The per-test cap lives in `.config/nextest.toml`, which explains the number.
+export NEXTEST_PROFILE=mutants
 
 # Each job gets its own copy of the tree, and the copy includes this repo's
 # other build directories: `target-coverage` alone is 6 GB. On a machine whose
@@ -86,7 +97,7 @@ for crate in "${CRATES[@]}"; do
   # The exit code is deliberately ignored: a survivor is not a failure until it
   # has been compared against the baseline, which is the next step.
   cargo mutants -p "$crate" --output "$out" --jobs "$JOBS" --timeout "$TIMEOUT" \
-    >"$out.log" 2>&1 || true
+    --test-tool=nextest >"$out.log" 2>&1 || true
   if [[ ! -f "$out/mutants.out/outcomes.json" ]]; then
     fail "$crate produced no outcomes; see $out.log"
     measured=0

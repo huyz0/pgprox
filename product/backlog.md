@@ -2868,27 +2868,30 @@ the relay lands before the cacheability rule is finished.
   baseline, and in `pgprox-route`'s and `pgprox-cache`'s, is a verdict nobody
   has actually seen. `M10.16` is the fix, and it is a change to the runner
   rather than to any test.
-- [ ] `M10.14` The `shell.rs` read path, six: `fill` and `fill_held` replaced
-  wholesale, `fill_held`'s two `start + n` arithmetic mutants, and `borrow`'s
-  deadline both ways. The deadline pair is the interesting one and the reason
-  this is a task rather than a line: `Instant::now() + BUFFER_WAIT` becoming a
-  minus, and `now >= deadline` becoming `<`, both only change behaviour when
-  the slab is exhausted. The test fixture sizes its slab small so that state is
-  reachable, and nothing reaches it, so the retry loop that absorbs a burst as
-  latency has never run in a test. That is `ADR 0008`'s claim untested.
-- [ ] `M10.15` The last twelve, which have nothing in common but being left.
-  Six are the `shell.rs` hangs `M10.8` put in the baseline: `queue`, `flush`
-  three ways, `accept` and `authenticate_scram`. Six more are the cursor
-  mutants `M10.13` wrote assertions for that never got to run.
-  Both sets wait on `M10.16`, and after it they may need nothing at all: if a
-  hung test becomes a failed test, the assertions already written report. What
-  is left over after that re-run is the real list, and it is not worth guessing
-  at now.
-  Also the three loose ends that are not `shell.rs` at all:
-  `probe::text_row`'s `at + 4` bound, which is the same shape as
-  `sequence::split`'s and worth the same kind of truncated input;
-  `probe::run_replica_query`; and `cancel::send`.
-- [ ] `M10.16` Make a hung test a failed test, so a mutation timeout means what
+- [ ] `M10.14` The last three real gaps, and the last task in M10's mutation
+  work. `M10.16` took this from six to four and then `M10.15`'s one loose end
+  joined it, so the list is `borrow`'s deadline both ways, `fill_held`'s two
+  `start + n` arithmetic mutants, and `probe::text_row`'s bound.
+  The deadline pair is the interesting one and the reason this is a task rather
+  than a line: `Instant::now() + BUFFER_WAIT` becoming a minus, and
+  `now >= deadline` becoming `<`, both change behaviour only when the slab is
+  exhausted. The test fixture sizes its slab small so that state is reachable,
+  and nothing reaches it, so the retry loop that absorbs a burst as latency has
+  never run in a test. That is `ADR 0008`'s claim untested.
+  `probe::text_row`'s `at + 4` is the same shape as `sequence::split`'s bound,
+  which `M10.12` found needs input truncated *before* the frame that would stop
+  the walk for another reason. Worth writing with that in hand.
+  After this the baseline is equivalents only, every one with an argument.
+- [x] `M10.15` The last twelve, which had nothing in common but being left:
+  six `shell.rs` hangs `M10.8` baselined, six cursor mutants `M10.13` had
+  written assertions for, and three loose ends elsewhere. Filed as waiting on
+  `M10.16`, on the grounds that a list of mutants nobody can see a verdict for
+  is not a list worth working.
+  `M10.16` emptied it. Eleven of the twelve are caught by tests that already
+  existed, and the twelfth, `probe::text_row`, moves to `M10.14`. Nothing was
+  written for this task and nothing needed to be, which is the outcome it was
+  filed to find out about.
+- [x] `M10.16` Make a hung test a failed test, so a mutation timeout means what
   the standard says it means. `cargo mutants` runs the suite under `cargo test`,
   which has no per-test timeout, so one test that never returns costs the whole
   per-mutant run its verdict. `M10.13` found this the hard way: it wrote
@@ -2909,6 +2912,27 @@ the relay lands before the cacheability rule is finished.
   Acceptance: a mutation run in which no outcome is a timeout for a reason
   other than a genuinely slow test, and a baseline whose remaining entries say
   what they mean.
+  Thirty-seven baseline entries became fourteen, and not one test was written.
+  `pgprox-cache` is clean outright, `pgprox-route` is down to its one
+  equivalent, `pgprox-proto` to six and `pgprox-session` from twenty-four to
+  seven. No outcome in any of the four crates is a timeout any more.
+  The per-test cap is ten seconds, against a suite whose slowest test is 0.207s
+  and whose whole run across the four crates is 0.321s. Both numbers were
+  measured rather than picked, and forty-eight times the slowest honest test
+  leaves nothing legitimate at risk while sitting well inside the sixty seconds
+  the whole per-mutant run gets. Only the mutation run uses the profile: an
+  ordinary run and the coverage gate should not be killing tests, and a test
+  that hangs while somebody is working on it is a thing they notice.
+  Sixteen of the twenty-three that fell were in `shell.rs`, including all six
+  `M10.13` had already written assertions for. Those assertions were correct
+  the whole time and had never once been allowed to report.
+  What is left is the honest list: eleven equivalents with arguments, and three
+  real gaps that `M10.14` owns. `M10.15` closes empty, its one
+  remainder moving to `M10.14`.
+  Worth keeping from this: a category the tool reports is not a finding until
+  you have read what it is a category of. Every one of those entries had a
+  reason written beside it, several of them by me, and the reasons were fluent
+  and wrong.
 - [x] `M10.5` What the cache is worth on a workload it is for. `M9.24` measured
   the reference workload and named this as the cheapest thing left, because that
   workload answers a different question: 30% of its statements are writes, two
