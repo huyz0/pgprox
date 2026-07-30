@@ -2834,7 +2834,7 @@ the relay lands before the cacheability rule is finished.
   to `may_hold`, which with an empty buffer accepts a `Parse` or a `Bind` and
   nothing else. Both arguments are in the baseline where a reader can disagree
   with them.
-- [ ] `M10.13` The `shell.rs` survivors, eighteen, ten of them timeouts. The
+- [x] `M10.13` The `shell.rs` survivors, eighteen, ten of them timeouts. The
   wire buffer: `fill`, `fill_held`, `consume`, `compact`, `borrow`, `reclaim`,
   `queue`, `flush` and `is_buffered`. Ten hangs in one file is itself the
   finding to explain before writing anything, because a mutant that hangs is
@@ -2844,6 +2844,71 @@ the relay lands before the cacheability rule is finished.
   part of the task.
   Also the three loose ends that are not the wire buffer: `probe::text_row`'s
   `at + 4` bound, `run_replica_query` and `cancel::send`.
+  Split again on reading it. Ten of the eighteen are the read cursor, and one
+  test covers all ten by driving `consume`, `compact`, `buffered`,
+  `is_buffered` and `reclaim` directly rather than through a socket. The
+  interesting states are the ones `reclaim` exists to make unreachable from
+  outside, so a test that drives the wire only through its public reads can
+  never reach them; driven directly they are ordinary assertions about four
+  bytes. `HELD_READ` is in here too, for `M10.7`'s reason: `16 * 1024` becoming
+  `16 + 1024` changes a documented per-connection cost and nothing measured
+  relative to it notices, so both read sizes are asserted as numbers now.
+  Four of the ten became kills and six did not, which answers the question this
+  task was filed to ask and not in the direction it expected. The four that
+  died are the ones whose mutants leave the read loop working: `compact` twice,
+  `is_buffered`, and the constant. The six that live are `buffered` three ways,
+  `consume` twice and `reclaim`, and the new test does fail every one of them.
+  It never gets to say so. Those mutants stop the read loop making progress, so
+  some other test in the suite hangs, and `cargo mutants` runs the suite under
+  `cargo test`, which has no per-test timeout. One hung test is one hung run,
+  and the run reports a timeout with no verdict at all.
+  So a timeout here does not mean "detected by hanging". It means the run was
+  abandoned before the assertion that would have named the defect could be
+  read. That is worth more than the six mutants: every timeout in this file's
+  baseline, and in `pgprox-route`'s and `pgprox-cache`'s, is a verdict nobody
+  has actually seen. `M10.16` is the fix, and it is a change to the runner
+  rather than to any test.
+- [ ] `M10.14` The `shell.rs` read path, six: `fill` and `fill_held` replaced
+  wholesale, `fill_held`'s two `start + n` arithmetic mutants, and `borrow`'s
+  deadline both ways. The deadline pair is the interesting one and the reason
+  this is a task rather than a line: `Instant::now() + BUFFER_WAIT` becoming a
+  minus, and `now >= deadline` becoming `<`, both only change behaviour when
+  the slab is exhausted. The test fixture sizes its slab small so that state is
+  reachable, and nothing reaches it, so the retry loop that absorbs a burst as
+  latency has never run in a test. That is `ADR 0008`'s claim untested.
+- [ ] `M10.15` The last twelve, which have nothing in common but being left.
+  Six are the `shell.rs` hangs `M10.8` put in the baseline: `queue`, `flush`
+  three ways, `accept` and `authenticate_scram`. Six more are the cursor
+  mutants `M10.13` wrote assertions for that never got to run.
+  Both sets wait on `M10.16`, and after it they may need nothing at all: if a
+  hung test becomes a failed test, the assertions already written report. What
+  is left over after that re-run is the real list, and it is not worth guessing
+  at now.
+  Also the three loose ends that are not `shell.rs` at all:
+  `probe::text_row`'s `at + 4` bound, which is the same shape as
+  `sequence::split`'s and worth the same kind of truncated input;
+  `probe::run_replica_query`; and `cancel::send`.
+- [ ] `M10.16` Make a hung test a failed test, so a mutation timeout means what
+  the standard says it means. `cargo mutants` runs the suite under `cargo test`,
+  which has no per-test timeout, so one test that never returns costs the whole
+  per-mutant run its verdict. `M10.13` found this the hard way: it wrote
+  assertions that fail six mutants and the run reported all six as timeouts
+  anyway, because another test hung first.
+  The change is `--test-tool=nextest` in `scripts/mutants.sh` and a
+  `slow-timeout` with a `terminate-after` in a nextest profile, so a hung test
+  is killed and reported as a failure. The workspace already runs nextest under
+  `cargo llvm-cov`, so this adds no tool.
+  The terminate-after has to sit well under `MUTANTS_TIMEOUT`, which is sixty
+  seconds for the whole suite, and well above the slowest honest test. Both
+  numbers want measuring rather than picking.
+  Then re-triage every timeout in `product/mutants-baseline.txt`, across all
+  four crates and not just this one. `pgprox-cache`'s one, `pgprox-route`'s
+  five and `pgprox-session`'s twelve are all verdicts nobody has seen, and the
+  reasons written beside them say "detected by hanging", which is now known to
+  be a claim about the runner rather than about the suite.
+  Acceptance: a mutation run in which no outcome is a timeout for a reason
+  other than a genuinely slow test, and a baseline whose remaining entries say
+  what they mean.
 - [x] `M10.5` What the cache is worth on a workload it is for. `M9.24` measured
   the reference workload and named this as the cheapest thing left, because that
   workload answers a different question: 30% of its statements are writes, two

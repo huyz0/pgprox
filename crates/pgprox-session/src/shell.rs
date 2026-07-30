@@ -806,6 +806,65 @@ mod tests {
         drop(held);
     }
 
+    #[tokio::test]
+    async fn the_cursor_and_the_buffer_agree_about_what_is_left() {
+        // Four private methods that every read goes through and that no test
+        // reads back: the cursor advances, the consumed prefix is dropped, an
+        // exhausted buffer reports nothing, and the buffer goes back to the
+        // slab exactly when it is empty. They are driven here directly rather
+        // than through a socket because the interesting states are the ones
+        // `reclaim` exists to make unreachable from outside.
+        let (mut wire, _client) = pair();
+        let mut buf = Wire::<DuplexStream>::borrow(&wire.slab).await.unwrap();
+        buf.extend_from_slice(b"gonestay");
+        wire.read = Some(buf);
+
+        // The cursor is what `consume` moves, and it moves by the frame.
+        wire.consume(4);
+        assert_eq!(wire.read_at, 4);
+        assert_eq!(wire.buffered(), b"stay");
+        assert!(wire.is_buffered());
+
+        // Four bytes still unread, so the buffer is not the slab's yet.
+        assert!(
+            wire.read.is_some(),
+            "a buffer with unread bytes went back to the slab"
+        );
+
+        // The memmove this type exists to avoid, done deliberately: the tail
+        // moves to the front and the cursor starts again.
+        wire.compact();
+        assert_eq!(wire.read_at, 0, "the consumed prefix was not dropped");
+        assert_eq!(wire.buffered(), b"stay");
+        assert_eq!(wire.read.as_ref().unwrap().as_slice(), b"stay");
+
+        // Everything consumed, with the buffer still held. `consume` would
+        // reclaim it on the way past, so the cursor is moved directly: this is
+        // the state the two comparisons disagree about, and it is the one
+        // `reclaim` exists to make unreachable.
+        wire.read_at = 4;
+        assert!(!wire.is_buffered(), "an exhausted buffer reported bytes");
+        assert!(wire.read.is_some());
+
+        wire.reclaim();
+        assert!(
+            wire.read.is_none(),
+            "an empty buffer was not returned to the slab"
+        );
+        assert_eq!(wire.read_at, 0);
+    }
+
+    #[test]
+    fn the_read_sizes_are_the_sizes_they_say() {
+        // Both are per-connection costs stated in the comments above them, and
+        // both are written as products, so an operator multiplied by a byte
+        // count is one edit away from being an operator added to one. 512 is
+        // the array that lives in every idle session's future; 16 KiB is what
+        // a mid-frame read asks for once a buffer is already held.
+        assert_eq!(FIRST_READ, 512);
+        assert_eq!(HELD_READ, 16_384);
+    }
+
     fn pair() -> (Wire<DuplexStream>, Client) {
         let (server, client) = duplex(4096);
         (Wire::new(server, test_slab()), Client(client))
