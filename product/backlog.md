@@ -4979,5 +4979,23 @@ milestone said it would do and which found three more.
   clean run agrees.
   **The clean run agrees: 359 mutants, 6 surviving, every one of them in the
   baseline with an argument.**
+- [ ] `M15.13` A capacity reserved from a number a peer sent.
+  `probe::text_row` starts with `Vec::with_capacity(count)` where `count` is the
+  column count read from the `DataRow` it is about to parse. A three-byte
+  message claiming 32767 columns reserves 32767 `Option<String>`, which is
+  about 786 KB.
+  `frontend::bind_parameters` has the same shape and refuses it in a comment
+  that says why: "Not `with_capacity`. The count is the client's and the values
+  have not been read yet, so reserving on it is a nine-byte message asking for
+  thirty-two thousand pointers." One crate wrote that down and another did the
+  thing it warns about.
+  Smaller than it sounds and worth fixing anyway. The peer is an upstream
+  Postgres the sidecar named rather than a client, `i16` caps the reservation,
+  and a probe runs per connection attempt rather than per statement. What makes
+  it worth two lines is that this is the only `DataRow` the project parses, its
+  answer has two columns, and the rule it breaks is one the workspace already
+  states.
+  Acceptance: no reservation from an unread count, and a test that a large
+  declared count with no columns behind it is refused rather than reserved.
 - [ ] `M15.8` Close M15. Filed before the commit that does it, and after the
-  second reading the milestone promised, which found four more.
+  readings the milestone promised, which between them found five more.
