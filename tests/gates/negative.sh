@@ -79,12 +79,63 @@ case_commit_msg() {
     scripts/check-commit-msg.sh "$(msg 'Revert "M12.1: something"')"
 }
 
+# --- m7-complete.sh, the scale run, M12.2 ------------------------------------
+#
+# The gate reads `$PGPROX_PERF_DIR`, so these cases hand it a directory built
+# for the purpose instead of moving the real documents aside. A test that
+# mutates the tree it is testing leaves the tree broken when it is interrupted,
+# and this suite runs in CI.
+scale_doc() {
+  local dir="$1" name="$2" title="$3" count="$4"
+  # The `|| true` is load-bearing under `set -euo pipefail`: without it the
+  # `[[ ]] &&` is the group's last command and returns 1 for a document with no
+  # connection count, which kills the suite rather than writing the file.
+  { printf '# %s\n\n| | |\n| --- | --- |\n' "$title"
+    if [[ -n "$count" ]]; then printf '| Connections | %s |\n' "$count"; fi
+  } > "$dir/$name" || true
+}
+
+case_m7_scale() {
+  echo
+  echo "  m7-complete.sh, the scale run"
+
+  local dir="$WORK/perf"
+
+  # Nothing recorded at all.
+  rm -rf "$dir"; mkdir -p "$dir"
+  expect_fail "refuses an empty perf directory" \
+    env PGPROX_PERF_DIR="$dir" scripts/m7-complete.sh
+
+  # The regression. Documents that match `run-*.md` and are not scale runs, which
+  # is what eleven of the sixteen in `product/perf` are. The old check reported
+  # them as scale runs and counted them.
+  rm -rf "$dir"; mkdir -p "$dir"
+  scale_doc "$dir" run-2026-01-01-cache.md "The cache helps by about seven percent" ""
+  scale_doc "$dir" run-2026-01-02-pinning.md "What pinning costs multiplexing" ""
+  expect_fail "refuses run documents that are not scale runs" \
+    env PGPROX_PERF_DIR="$dir" scripts/m7-complete.sh
+
+  # A scale run, but at a connection count that proves nothing. The old check
+  # could not see the number at all.
+  rm -rf "$dir"; mkdir -p "$dir"
+  scale_doc "$dir" run-2026-01-03-tiny.md "Scale run: 8 connections" 8
+  expect_fail "refuses a scale run below the connection count M7 asks for" \
+    env PGPROX_PERF_DIR="$dir" scripts/m7-complete.sh
+
+  # And the shape that must pass, so the check is not merely strict.
+  rm -rf "$dir"; mkdir -p "$dir"
+  scale_doc "$dir" run-2026-01-04-1000.md "Scale run: 1000 connections, compose stack" 1000
+  expect_pass "accepts a scale run at the stated connection count" \
+    env PGPROX_PERF_DIR="$dir" scripts/m7-complete.sh
+}
+
 # -----------------------------------------------------------------------------
 
 echo "gates: proof that they can fail"
 
 ran=0
 if [[ -z "$WANTED" || "$WANTED" == commit-msg ]]; then case_commit_msg; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == m7-scale ]]; then case_m7_scale; ran=1; fi
 
 if (( ! ran )); then
   fail "no such case: $WANTED"

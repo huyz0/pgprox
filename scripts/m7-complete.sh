@@ -48,10 +48,43 @@ fi
 # A recorded run, and not an empty directory. The roadmap's 100k target is not
 # this check: a recorded 1000-connection run is what M7 asks for, and the file
 # is what makes the next count comparable to it.
-if compgen -G 'product/perf/run-*.md' >/dev/null; then
-  ok "a scale run is recorded ($(compgen -G 'product/perf/run-*.md' | wc -l) file(s))"
+#
+# This used to glob `product/perf/run-*.md` and report the match count. On this
+# tree it said "a scale run is recorded (16 file(s))", of which five were scale
+# runs and eleven were cache, admission, throughput, saturation and pinning
+# documents that the pattern cannot tell apart. It would have passed with none
+# of the five present, which makes it a check that the directory is non-empty
+# wearing the words of a check about scale. `M12.2`.
+#
+# So read the documents. A scale run says so in its title and records the
+# connection count it ran at, which is also the number the comment above has
+# always named as the requirement.
+PERF_DIR="${PGPROX_PERF_DIR:-product/perf}"
+SCALE_MINIMUM="${PGPROX_SCALE_MINIMUM:-1000}"
+scale_runs=0
+largest=0
+for run in "$PERF_DIR"/run-*.md; do
+  [[ -f "$run" ]] || continue
+  head -1 "$run" | grep -qiE '^#[[:space:]]*scale run' || continue
+  scale_runs=$(( scale_runs + 1 ))
+  # The count lives in the run's own summary table, as `| Connections | 1000 |`
+  # or, for the run that aimed at the headline number, `| Target | 100,000 ... |`.
+  # Digits only, so "100,000 client connections" reads as 100000.
+  count="$(awk -F'|' '
+    /^[[:space:]]*\|[[:space:]]*(Connections|Target)[[:space:]]*\|/ {
+      v = $3; gsub(/[^0-9]/, "", v)
+      if (v + 0 > m) m = v + 0
+    }
+    END { print m + 0 }' "$run")"
+  (( count > largest )) && largest="$count"
+done
+
+if (( scale_runs == 0 )); then
+  fail "no scale run recorded in $PERF_DIR: the numbers exist only in a terminal"
+elif (( largest < SCALE_MINIMUM )); then
+  fail "$scale_runs scale run(s) recorded, the largest at $largest connections; M7 asks for $SCALE_MINIMUM"
 else
-  fail "no run recorded in product/perf/: the numbers exist only in a terminal"
+  ok "a scale run is recorded: $scale_runs run(s), the largest at $largest connections"
 fi
 
 # --- allocation budgets -------------------------------------------------------

@@ -558,9 +558,12 @@ than a suspicion:
   the recorded counts, require the control arm below the cap, require the axis
   to have moved.
 - `m7-complete.sh` reports "a scale run is recorded (16 file(s))" from
-  `product/perf/run-*.md`. Five of those sixteen are scale runs. The rest are
-  cache, admission and pinning documents that the glob cannot tell apart, and
-  the check would pass with none of the five present.
+  `product/perf/run-*.md`. Three of those sixteen declare themselves scale runs.
+  The rest are cache, admission, throughput, saturation and pinning documents
+  that the glob cannot tell apart, and the check would pass with none of the
+  three present. (`M12.0` first wrote five here, by eye. The replacement check
+  counts three, and where a number and the check that measures it disagree, the
+  number is the one that is wrong.)
 - `check-commit-msg.sh` says a subject "references the backlog task so history
   stays traceable to the plan", and checks only that the ID is well formed.
   `M11.11` was committed with no such task in the backlog and the hook passed.

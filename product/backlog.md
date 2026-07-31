@@ -3664,7 +3664,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   It is wired into CI ahead of the twelve gates, and into `check-drift.sh`'s
   wired-into-CI list, so dropping it fails the pre-commit hook. `M12.7` extends
   it to the rest of the gates.
-- [ ] `M12.2` `m7-complete.sh` counts every run document in the repo and calls
+- [x] `M12.2` `m7-complete.sh` counts every run document in the repo and calls
   the total scale runs. It reports "a scale run is recorded (16 file(s))" from
   `product/perf/run-*.md`, of which five are scale runs and eleven are cache,
   admission, throughput, saturation and pinning documents. The check passes with
@@ -3673,6 +3673,28 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   1000-connection run is what M7 asks for". So assert that, not a file count.
   Acceptance: the check identifies a run at a stated connection count, and a
   negative test shows it failing when only unrelated run documents exist.
+  Done. The check reads each `run-*.md`, keeps the ones whose title declares a
+  scale run, pulls the connection count out of the run's own summary table, and
+  requires the largest to reach `M7`'s thousand. It reports "3 run(s), the
+  largest at 100000 connections" where it used to report sixteen files.
+  **The count in `M12.0` was wrong and the check is what corrected it.** That
+  entry said five of the sixteen were scale runs, by eye. Three declare
+  themselves so. The two others, `run-2026-07-28-100k-hold.md` and
+  `run-2026-07-28-2000-cpu.md`, measure at a connection count without being
+  scale runs, which is a real distinction and not one an eye reading filenames
+  makes reliably. The roadmap is corrected rather than left, because a number
+  and the check that measures it cannot both stand.
+  The gate takes `PGPROX_PERF_DIR` so the four negative cases hand it a
+  purpose-built directory rather than moving the real documents aside. A test
+  that mutates the tree it tests leaves the tree broken when interrupted, and
+  this suite runs in CI. The cases: an empty directory, a directory of run
+  documents that are not scale runs, which is the actual regression, a scale run
+  below the required count, and the shape that must still pass.
+  One bug in the test itself, worth recording because it is the same class the
+  milestone is about: `set -euo pipefail` turned a document written without a
+  connection count into a silent abort, since the `[[ ]] &&` was the writing
+  group's last command and returned 1. The suite stopped after one case and
+  reported nothing wrong about the rest.
 - [ ] `M12.3` `m9-complete.sh` globs `product/perf/run-*cache*.md` and reports a
   recorded run. Three files match. The same shape as `M12.2` and it needs the
   same treatment, with the difference that M9's claim is a number with a sign:
