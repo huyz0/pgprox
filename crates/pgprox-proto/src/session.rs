@@ -147,6 +147,24 @@ impl SessionState {
                 // one after an error too, which is how a failed sequence
                 // recovers rather than holding the connection forever.
                 self.in_sequence = false;
+                // And the end of COPY, for the same reason. The server does not
+                // send this until it is back in normal command processing, so
+                // copy mode cannot outlive it.
+                //
+                // Without this line a failed COPY held the connection for the
+                // life of the session: the server answers bad COPY data with
+                // ErrorResponse and then ReadyForQuery, and a client that has
+                // been told its COPY failed has no reason to send CopyDone.
+                // Nothing else cleared `copy`.
+                //
+                // Cleared here rather than at the ErrorResponse, which is where
+                // pgbouncer clears its own copy_mode. pgbouncer can afford to
+                // because it tracks readiness separately; here the release test
+                // runs on every server frame, so clearing at the error would
+                // release while the ReadyForQuery answering it is still in
+                // flight. That is the mistake `a_sync_alone_does_not_permit_
+                // release` exists to prevent, in the other direction.
+                self.copy = None;
             }
             BackendMessage::CopyInResponse => self.copy = Some(CopyDirection::In),
             BackendMessage::CopyOutResponse => self.copy = Some(CopyDirection::Out),
@@ -352,6 +370,54 @@ mod tests {
 
         assert!(!s.is_releasable(), "COPY OUT ended by the client");
         assert_eq!(s.hold_reason(), Some(HoldReason::Copy(CopyDirection::Out)));
+    }
+
+    #[test]
+    fn a_failed_copy_gives_the_connection_back() {
+        // The leak this fixes. The server rejects the data, answers with
+        // ErrorResponse and then ReadyForQuery, and the client that has just
+        // been told its COPY failed sends no CopyDone. Before this, nothing
+        // cleared `copy` and the connection was pinned for the life of the
+        // session.
+        for start in [
+            BackendMessage::CopyInResponse,
+            BackendMessage::CopyOutResponse,
+            BackendMessage::CopyBothResponse,
+        ] {
+            let mut s = ready();
+            s.on_backend(&start);
+            assert!(!s.is_releasable(), "{start:?} should hold while it runs");
+
+            s.on_backend(&BackendMessage::ErrorResponse(
+                crate::backend::ErrorFields::default(),
+            ));
+            assert!(
+                !s.is_releasable(),
+                "{start:?} released at the error, before the ReadyForQuery answering it"
+            );
+
+            s.on_backend(&BackendMessage::ReadyForQuery(TxStatus::Idle));
+            assert!(
+                s.is_releasable(),
+                "{start:?} leaked the connection: {:?}",
+                s.hold_reason()
+            );
+            assert_eq!(s.copy(), None);
+        }
+    }
+
+    #[test]
+    fn a_copy_that_fails_inside_a_transaction_still_holds_for_the_transaction() {
+        // Clearing COPY at ReadyForQuery must not clear anything else. The
+        // transaction outlives the COPY and is the reason to keep holding.
+        let mut s = ready();
+        s.on_backend(&BackendMessage::ReadyForQuery(TxStatus::InTransaction));
+        s.on_backend(&BackendMessage::CopyInResponse);
+        s.on_backend(&BackendMessage::ReadyForQuery(TxStatus::Failed));
+
+        assert_eq!(s.copy(), None, "the COPY should be over");
+        assert_eq!(s.hold_reason(), Some(HoldReason::FailedTransaction));
+        assert!(!s.is_releasable());
     }
 
     #[test]

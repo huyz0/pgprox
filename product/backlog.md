@@ -4807,7 +4807,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   releases anything above `RETAINED_INSPECT`, 8 KiB, once the message that
   needed it is over, and keeps everything below it so the ordinary path still
   allocates nothing. Both halves have a test, including the cost side.
-- [ ] `M15.2` A failed COPY holds the connection for the session's life.
+- [x] `M15.2` A failed COPY holds the connection for the session's life.
   `SessionState` clears `copy` on a frontend `CopyDone`/`CopyFail` and on a
   backend `CopyDone`, and on nothing else. When the server rejects a COPY it
   sends `ErrorResponse` and then `ReadyForQuery`, and a client that has been
@@ -4818,6 +4818,13 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   failed COPY IN sequence and asserts the connection comes back.
   pgbouncer clears `copy_mode` on both `ErrorResponse` and `CommandComplete`
   (`src/server.c`, "ErrorResponse and CommandComplete show end of copy mode").
+  **Not copied literally, and the reason is worth keeping.** Clearing at the
+  `ErrorResponse` would release while the `ReadyForQuery` answering it is
+  still in flight, because the release test here runs on every server frame and
+  `tx_status` is still whatever the last `ReadyForQuery` said. pgbouncer can
+  clear there because it tracks readiness in a separate flag. That is
+  `a_sync_alone_does_not_permit_release` in the other direction, and the new
+  test asserts the intermediate state as well as the final one.
 - [ ] `M15.3` `DISCARD ALL` deallocates the server's prepared statements and
   nothing tells the maps. `ParamCache::observe_statement` handles `DISCARD ALL`
   and `RESET ALL` by clearing the parameter cache. The statement maps have the
