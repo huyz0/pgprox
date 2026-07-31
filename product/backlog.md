@@ -4863,7 +4863,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   UTF-8 validation that follows. Both shapes are benched separately for exactly
   that reason, and three unchanged benches are the control.
   See [run-2026-08-01-cstr-scan.md](perf/run-2026-08-01-cstr-scan.md).
-- [ ] `M15.5` The header copy on every frame. `FrameRelay::push_header` copies
+- [x] `M15.5` The header copy on every frame. `FrameRelay::push_header` copies
   the five header bytes into `header_buf` and clears it again, on every message,
   including the overwhelmingly common case where all five are already contiguous
   in the caller's slice. The partial-header path is what the buffer exists for
@@ -4871,6 +4871,11 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Acceptance: the contiguous case decodes in place, the split case still works
   byte for byte (`a_message_split_at_every_boundary_relays_identically` is the
   test that says so), and the instruction count moves in the direction claimed.
+  **Measured: 197 to 169 instructions, -14.2%**, on the path every byte of every
+  result set takes. The first version of the pinning test was wrong rather than
+  the code: it pushed the tail of a split header once and expected the body to
+  be consumed too, which is not what `push` promises. Driven through `drive` it
+  passes, and the contract is the one that was already documented.
 - [ ] `M15.6` The crate says it never allocates and it does. `lib.rs`: "Nothing
   here allocates at all: frames borrow from the caller's buffer." Untrue of
   `bind_parameters`, of `startup::decode`, of everything in `rewrite`, of

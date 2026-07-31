@@ -186,20 +186,41 @@ impl FrameRelay {
     }
 
     fn push_header(&mut self, input: &[u8]) -> Result<RelayOutcome, DecodeError> {
-        let need = 1 + LEN_PREFIX - self.header_buf.len();
-        let take = need.min(input.len());
-        self.header_buf.extend_from_slice(&input[..take]);
+        const HEADER: usize = 1 + LEN_PREFIX;
 
-        // Still short of a header. The bytes are consumed and must be
-        // forwarded even though nothing is known about them yet.
-        if self.header_buf.len() < 1 + LEN_PREFIX {
-            return Ok(RelayOutcome {
-                consumed: take,
-                completed: None,
-            });
-        }
+        // A header is five bytes and a read is thousands, so the overwhelmingly
+        // common case is that a whole header is already contiguous in the
+        // caller's slice and there is nothing to reassemble. `header_buf` is
+        // for the boundary case, and it was being paid for on every message.
+        let take = if self.header_buf.is_empty() && input.len() >= HEADER {
+            HEADER
+        } else {
+            let need = HEADER - self.header_buf.len();
+            let take = need.min(input.len());
+            self.header_buf.extend_from_slice(&input[..take]);
 
-        let Some(header) = decode_header(&self.header_buf, self.max_frame)? else {
+            // Still short of a header. The bytes are consumed and must be
+            // forwarded even though nothing is known about them yet.
+            if self.header_buf.len() < HEADER {
+                return Ok(RelayOutcome {
+                    consumed: take,
+                    completed: None,
+                });
+            }
+            take
+        };
+
+        // Whichever branch ran, a full header is now in exactly one of two
+        // places, and which one is decidable: the fast path leaves `header_buf`
+        // untouched and therefore empty, and the slow path only reaches here
+        // having filled it.
+        let source: &[u8] = if self.header_buf.is_empty() {
+            input
+        } else {
+            &self.header_buf
+        };
+
+        let Some(header) = decode_header(source, self.max_frame)? else {
             return Ok(RelayOutcome {
                 consumed: take,
                 completed: None,
@@ -401,6 +422,37 @@ mod tests {
         // held has been handed over.
         relay.push(&bytes[3..]).unwrap();
         assert_eq!(relay.buffered(), 0);
+    }
+
+    #[test]
+    fn a_contiguous_header_is_read_where_it_lies() {
+        // The property the fast path is. `header_buf` exists for a header split
+        // across two reads, and a read is thousands of bytes while a header is
+        // five, so the split is the rare case and it was being paid for on
+        // every message. Asserted rather than described, because nothing else
+        // here can tell the two paths apart: they produce identical output.
+        let mut relay = FrameRelay::new(Direction::Backend);
+        let bytes = wire(Tag::READY_FOR_QUERY, b"I");
+
+        relay.push(&bytes).unwrap();
+        assert!(
+            relay.header_buf.capacity() == 0,
+            "a contiguous header was copied into the reassembly buffer"
+        );
+
+        // And the buffer is still there for the case it exists for. Driven in
+        // two-byte chunks so the header genuinely straddles a read, and through
+        // `drive` because one push consumes at most one message's worth of
+        // header or body, which is the contract `push` documents.
+        let mut split = FrameRelay::new(Direction::Backend);
+        split.push(&bytes[..2]).unwrap();
+        assert_eq!(split.header_buf.len(), 2, "the split path was not taken");
+
+        let mut split = FrameRelay::new(Direction::Backend);
+        let (done, forwarded) = drive(&mut split, &bytes, 2);
+        assert_eq!(forwarded, bytes.len());
+        assert_eq!(done.len(), 1);
+        assert_eq!(split.inspected(), b"I");
     }
 
     #[test]

@@ -60,3 +60,24 @@ Default features, meaning `std`. That is deliberate: without `std`, memchr falls
 back to SSE2 alone, because choosing AVX2 needs the runtime feature detection
 that lives in `std`. This crate is `std` already, so there was nothing to buy by
 turning it off.
+
+## Addendum: the header copy (`M15.5`)
+
+Same bench file, different line. `FrameRelay::push_header` copied the five
+header bytes into a reassembly buffer and cleared it again on every message,
+including the case where all five were already contiguous in the caller's
+slice. A read is thousands of bytes and a header is five, so the split header
+the buffer exists for is the rare one, and it was being paid for by every
+frame.
+
+| | before | after | change |
+| --- | --- | --- | --- |
+| `relay_frame` | 197 | 169 | **-14.2%** |
+
+This is the path every byte of every result set takes, once per frame, so it is
+worth more per instruction than the numbers above. The split case still works
+byte for byte: `a_message_split_at_every_boundary_relays_identically` drives the
+same message at every chunk size from one upward, and
+`a_contiguous_header_is_read_where_it_lies` asserts the reassembly buffer is
+never allocated in the fast case, because nothing else can tell the two paths
+apart from the outside.
