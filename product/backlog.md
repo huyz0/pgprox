@@ -4222,7 +4222,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Ordered by what a surviving mutant would mean rather than by size.
   `pgprox-cluster` first: it holds the quota invariant that is M3's completion
   condition and the roadmap's headline safety claim.
-- [~] `M14.1` Mutation testing for `pgprox-cluster`, 280 mutants.
+- [x] `M14.1` Mutation testing for `pgprox-cluster`, 280 mutants.
   The quota invariant, guaranteed plus leased never exceeding the cap, is the
   strongest claim this project makes and 156 tests assert around it. Whether any
   of them would notice the invariant breaking is untested.
@@ -4246,6 +4246,18 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   | 13 | `coordinator.rs` | 3 | `heartbeat`, `has_quorum`, `home_draining` |
   | 14 | `digest.rs` | 3 | `is_empty` and two `view_hash` arms |
   | 15 | `sim.rs` | 6 | the deterministic simulator's RNG and network |
+  Closed by the full-crate run: **281 mutants, 2 surviving, both in the
+  baseline with an argument**, and `scripts/mutants.sh pgprox-cluster` passes.
+  Nineteen of the twenty-two survivors were killed by 14 tests. Two are
+  equivalent with a stated expiry. The twenty-second, `home_draining`, turned
+  out to be reachable only through an inconsistency in `gossip`, which is now
+  `M14.16`.
+  What the crate holding this project's headline safety claim did not have,
+  before this: any test that would notice the quota ledger treating a grant as
+  live one instant past its expiry, any test that went through the coordinator's
+  own façade rather than around it, any test that would notice a node's second
+  heartbeat being discarded, and any test that would notice its simulator
+  degenerating to a single schedule.
 - [x] `M14.11` The lease ledger's four survivors, which are the quota invariant.
   Three of the four are one shape: **expiry is exclusive**. A grant is live
   while `expires_at > now`, so at exactly `expires_at` it is gone. Every reader
