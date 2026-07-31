@@ -3720,10 +3720,25 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   running each gate whole, several times each, will not stay in that budget.
   `M12.7` has to either run each gate once per broken artefact with the
   expensive checks skipped, or accept a tier-3 runtime and say so.
-- [ ] `M12.4` `m11-complete.sh` globs `product/perf/*admission*.md`. One file
+- [x] `M12.4` `m11-complete.sh` globs `product/perf/*admission*.md`. One file
   matches and the check reports what a full fleet tells displaced clients, which
   is a claim about `53300` that the filename cannot carry.
   Acceptance: assert the SQLSTATE the run recorded, with a negative test.
+  Done. The check requires a run that names both `53300` and `57014`, because
+  `M11.6`'s entire result is which of the two refusals the pool distinguishes a
+  displaced client sees. A run naming one has answered half the question and a
+  run naming neither has answered none of it, whatever the filename says.
+  Three negative cases: no admission run, a run naming no SQLSTATE, which is the
+  regression, and a run naming only `53300`. Only the admission check reads
+  `PGPROX_PERF_DIR`, so the gate's other checks keep reading the real artefacts
+  and a failure in these cases is this check and nothing else.
+  **It caught a wrong claim on its first reading, in prose written one task
+  earlier.** `M11.11`'s roadmap summary said `M11.6` "measured what actually
+  happens to displaced clients, which is `53300`". The run's own headline is the
+  opposite: the answer is nothing, they are served in about a seventh of a
+  second, and neither `53300` nor `57014` reaches a client at any point. The
+  roadmap is corrected and says where the error came from, rather than being
+  quietly rewritten.
 - [ ] `M12.5` `m1f-complete.sh` globs `product/decisions/*protocol-3-2*` and
   `product/decisions/*replication*` and reports that scope is "a recorded
   decision rather than an omission". An ADR that decided the opposite, or an

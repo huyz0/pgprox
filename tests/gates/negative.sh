@@ -165,6 +165,37 @@ case_m9_cache() {
     env PGPROX_PERF_DIR="$dir" PGPROX_ROADMAP="$road" scripts/m9-complete.sh
 }
 
+# --- m11-complete.sh, the admission run, M12.4 -------------------------------
+#
+# M11.6's result is which of two SQLSTATEs a displaced client sees, and the
+# answer is neither. A run that does not name both has not addressed it.
+case_m11_admission() {
+  echo
+  echo "  m11-complete.sh, the admission run"
+
+  local dir="$WORK/perf11"
+  # Only the admission check reads `$PGPROX_PERF_DIR`; the gate's other checks
+  # keep reading the real committed artefacts and keep passing. So a failure
+  # here is the admission check and nothing else.
+  rm -rf "$dir"; mkdir -p "$dir"
+
+  # No admission run at all.
+  expect_fail "refuses a perf directory with no admission run" \
+    env PGPROX_PERF_DIR="$dir" scripts/m11-complete.sh
+
+  # The regression: a file whose name matches and whose content does not
+  # address the question. The old check reported the claim from the filename.
+  printf '# Admission\n\nThe fleet was fine.\n' > "$dir/run-2026-01-01-admission.md"
+  expect_fail "refuses an admission run that names no SQLSTATE" \
+    env PGPROX_PERF_DIR="$dir" scripts/m11-complete.sh
+
+  # Half the question. 53300 without 57014 does not distinguish the two
+  # refusals the pool is careful to keep apart.
+  printf '# Admission\n\nNo client saw 53300.\n' > "$dir/run-2026-01-01-admission.md"
+  expect_fail "refuses an admission run that names only one of the two codes" \
+    env PGPROX_PERF_DIR="$dir" scripts/m11-complete.sh
+}
+
 # -----------------------------------------------------------------------------
 
 echo "gates: proof that they can fail"
@@ -173,6 +204,7 @@ ran=0
 if [[ -z "$WANTED" || "$WANTED" == commit-msg ]]; then case_commit_msg; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m7-scale ]]; then case_m7_scale; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m9-cache ]]; then case_m9_cache; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == m11-admission ]]; then case_m11_admission; ran=1; fi
 
 if (( ! ran )); then
   fail "no such case: $WANTED"

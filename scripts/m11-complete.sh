@@ -133,8 +133,28 @@ else
 fi
 
 # --- M11.6: admission when every survivor is full -----------------------------
-if compgen -G 'product/perf/*admission*.md' >/dev/null; then
-  ok "what a full fleet tells displaced clients is recorded"
+#
+# This globbed `product/perf/*admission*.md` and reported what a full fleet
+# tells displaced clients, which a filename cannot say. `M12.4`.
+#
+# The claim is about two specific SQLSTATEs. The pool distinguishes `53300`,
+# no connection available, from `57014`, the wait cancelled, and M11.6's whole
+# result is which of them a displaced client sees: neither. A run that does not
+# name both has not addressed the question, whatever its filename says.
+ADMISSION_DIR="${PGPROX_PERF_DIR:-product/perf}"
+admission=""
+for run in "$ADMISSION_DIR"/*admission*.md; do
+  [[ -f "$run" ]] || continue
+  grep -qF '53300' "$run" || continue
+  grep -qF '57014' "$run" || continue
+  admission="$(basename "$run")"
+  break
+done
+
+if [[ -n "$admission" ]]; then
+  ok "what a full fleet tells displaced clients is recorded, by SQLSTATE ($admission)"
+elif compgen -G "$ADMISSION_DIR/*admission*.md" >/dev/null; then
+  fail "the admission run does not name both 53300 and 57014, so it does not say what a displaced client is told (M11.6)"
 else
   fail "no admission run: what the survivors tell displaced clients is unmeasured (M11.6)"
 fi

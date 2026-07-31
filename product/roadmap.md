@@ -523,7 +523,13 @@ What the four found, none of which was the expected answer:
   running anything. Shedding cannot fire at the connection cap: it refuses with
   `NoHeadroomAtHome`. The cap is where shedding is designed *not* to work, and
   the roadmap sentence claiming otherwise is gone. `M11.6` then measured what
-  actually happens to displaced clients, which is `53300`.
+  actually happens to displaced clients, which is nothing: they are served, in
+  about a seventh of a second, at every point across the kill, and neither
+  `53300` nor `57014` reaches a client at any moment of the run.
+  (`M11.11` first summarised that as "which is `53300`", the opposite of the
+  run's own headline. Found by `M12.4` while writing the check that reads the
+  run instead of its filename, which is the milestone working as intended one
+  task after the summary was written.)
 - `M11.7` Pinning costs `0.650` upstream connections per pinned session,
   linearly, with no knee and no safe fraction. Zero free parameters, R^2 =
   0.994. With every session pinned the fleet held one connection per client,
