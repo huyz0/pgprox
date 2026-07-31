@@ -31,7 +31,12 @@ cd "$REPO_ROOT"
 # The sans-I/O crates. `pgprox-session` is here because its own `AGENTS.md`
 # names mutation testing, and it is the most correctness-critical code in the
 # project; the other three hold rules a wrong answer would come out of.
-CRATES=(pgprox-proto pgprox-route pgprox-cache pgprox-session)
+# `M14` is adding the crates this list never had. `pgprox-cluster` landed in
+# `M14.1`; the header above says "the crates whose logic is a pure state
+# machine", and `M13.4` proved every crate under `crates/` is sans-I/O, so the
+# criterion selects all of them and this array selects a few. `M14.4` settles
+# which stay out and writes down why.
+CRATES=(pgprox-proto pgprox-route pgprox-cache pgprox-session pgprox-cluster)
 if (( $# > 0 )); then
   CRATES=("$@")
 fi

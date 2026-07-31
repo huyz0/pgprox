@@ -171,9 +171,25 @@ drivers. Between them that covers every message the codec claims to handle.
   outstanding; a `Sync` missing mid-sequence keeps the session held.
 - [x] `M1.8` COPY mode, both directions.
   Acceptance: a session in COPY is never released until the stream ends.
-- [~] `M1.9` Fuzz targets for the decoder, with a committed corpus.
+- [x] `M1.9` Fuzz targets for the decoder, with a committed corpus.
   Acceptance: `cargo fuzz` runs both targets; any crash found becomes a unit
   test.
+  Left at `[~]` long after it was done, and reviewed in `M14` while listing what
+  remained. Three targets exist rather than two, `frame_decode`,
+  `message_decode` and `classify`; `scripts/fuzz.sh` runs them; CI runs that for
+  300 seconds a target; and a crash uploads the bytes that caused it as an
+  artifact, which is what makes "becomes a unit test" possible rather than a
+  wish.
+  **"A committed corpus" was answered by committing the generator instead**, and
+  the substitution is better than the original. `crates/pgprox-proto/examples/
+  seed_corpus.rs` is 312 lines that seed the corpus before every run, and
+  libFuzzer grows it from there. Committing the grown version would be several
+  thousand small files no human reads, replaced by the next run. The acceptance
+  wanted reproducible starting inputs, and a generator gives that in a form a
+  reviewer can actually read.
+  Recorded because the checkbox was wrong in the direction that matters least
+  and misleads most: work that is finished but reads as outstanding makes every
+  other `[~]` in this file less believable.
 - [x] `M1.10` `pgprox-tls`: rustls server and client config, FIPS feature gate,
   certificate loading.
   Acceptance: a FIPS build asserts `fips()` on both configs and refuses to start
