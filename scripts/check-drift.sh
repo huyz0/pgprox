@@ -82,6 +82,23 @@ else
   fail ".agents/skills/ missing"
 fi
 
+# --- the delegated-check skip never reaches CI --------------------------------
+#
+# `PGPROX_SKIP_DELEGATED_CHECKS` makes `check-crate.sh` and `check-coverage.sh`
+# exit 0 without running, so that `tests/gates/negative.sh` can invoke a gate
+# once per broken artefact without paying for cargo each time. In CI it would
+# turn off clippy and the 95% coverage gate while every milestone still reported
+# green, which is this repo's worst failure mode wearing a helpful name. `M12.11`.
+skip_leaked=0
+for f in .github/workflows/ci.yml .pre-commit-config.yaml; do
+  [[ -f "$f" ]] || continue
+  if grep -q 'PGPROX_SKIP_DELEGATED_CHECKS' "$f"; then
+    fail "$f sets PGPROX_SKIP_DELEGATED_CHECKS: clippy and the coverage gate would report green without running"
+    skip_leaked=1
+  fi
+done
+(( skip_leaked == 0 )) && ok "the delegated-check skip is not set in CI or pre-commit"
+
 # --- every milestone gate is wired into CI -----------------------------------
 #
 # A gate nobody runs is worse than no gate, because the roadmap cites it as

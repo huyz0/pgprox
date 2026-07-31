@@ -3794,3 +3794,31 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Acceptance: both entries filed, marked done, each saying that it was written
   after the fact and how it was found. Not backdated and not disguised, because
   a backlog that hides its own gaps is worth less than one that records them.
+- [x] `M12.11` The negative suite cannot afford to run the gates. Found by
+  `M12.5`, which needed four invocations of `m1f-complete.sh` at 84 seconds
+  each because that gate runs the whole workspace coverage gate.
+  `M12.3` already recorded the shape of this and put it against `M12.7`. It
+  arrived two tasks earlier, which is the usual reason to deal with it now
+  rather than at the end.
+  Nine gates delegate to `check-crate.sh` and `check-coverage.sh`, so the fix
+  has one change point rather than nine: those two scripts honour a skip flag
+  and the suite sets it. What the negative cases exercise is a gate's own
+  logic, and re-running `cargo` once per case adds nothing to that. CI runs
+  both scripts in tier 1 regardless, so nothing goes unchecked.
+  Acceptance: the suite runs in seconds, the flag is loud when it fires, and
+  `check-drift.sh` fails if CI or the pre-commit config ever sets it, because a
+  knob that turns off the coverage gate is exactly the kind of thing this
+  milestone exists to be suspicious of.
+  Done. `PGPROX_SKIP_DELEGATED_CHECKS` makes both scripts exit 0 before doing
+  anything, announcing itself on stderr, and `tests/gates/negative.sh` exports
+  it. The suite went from over five minutes to 57 seconds, and the remaining
+  time is the gates' own work rather than cargo.
+  The guard is the part that matters and it is verified, not asserted: adding
+  the variable to `ci.yml` makes `check-drift.sh` exit 1 with the reason, and
+  removing it makes it exit 0 again. Both were run.
+  The honest risk is stated rather than hidden. This is a switch that turns off
+  clippy and the 95% coverage gate. It is safe because CI runs both in tier 1
+  independently of any milestone gate, so the milestone gates re-running them
+  was duplicated work rather than the only coverage of them, and because the
+  drift check refuses to let the variable appear in `ci.yml` or the pre-commit
+  config at all.

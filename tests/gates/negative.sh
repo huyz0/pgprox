@@ -21,6 +21,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../scripts/lib.sh"
 
 cd "$REPO_ROOT"
 
+# The gates delegate fmt, clippy and coverage to `check-crate.sh` and
+# `check-coverage.sh`. This suite runs a gate once per broken artefact, and
+# those delegated checks return the same answer every time while costing 84
+# seconds an invocation. Skipping them is what makes the suite affordable; CI
+# runs both in tier 1 anyway, and `check-drift.sh` fails if this ever appears
+# in `ci.yml` or the pre-commit config. `M12.11`.
+export PGPROX_SKIP_DELEGATED_CHECKS=1
+
 WANTED="${1:-}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

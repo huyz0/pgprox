@@ -8,6 +8,20 @@
 # Usage: check-crate.sh [crate-name]
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# Skipped only by `tests/gates/negative.sh`, which invokes a gate once per
+# broken artefact to prove the gate fails. Those cases exercise a gate's own
+# logic; re-running cargo for each of them adds nothing and costs 84 seconds an
+# invocation, which put the suite past any budget CI would accept. `M12.11`.
+#
+# CI runs this script in tier 1 regardless, so nothing goes unchecked, and
+# `check-drift.sh` fails if `ci.yml` or the pre-commit config ever sets the
+# variable. It announces itself on stderr because a knob that turns off the
+# coverage gate should never fire quietly.
+if [[ -n "${PGPROX_SKIP_DELEGATED_CHECKS:-}" ]]; then
+  printf 'PGPROX_SKIP_DELEGATED_CHECKS is set: %s did not run\n' "$(basename "${BASH_SOURCE[0]}")" >&2
+  exit 0
+fi
+
 CRATE="${1:-}"
 
 if ! has_rust; then
