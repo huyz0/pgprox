@@ -4473,7 +4473,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   rendering, so `LivePool` would have printed as nothing in every diagnostic
   that ever formatted it. The test asserts the rendering changes with the
   contents, not just that it contains the right words.
-- [~] `M14.3` Mutation testing for `pgprox-core`, 536 mutants. Every contract
+- [x] `M14.3` Mutation testing for `pgprox-core`, 536 mutants. Every contract
   and every fake. `mutants.sh` opens by arguing that M9 hid three defects behind
   a fake that answered something Postgres refuses, which makes the fakes the
   most valuable thing in this milestone to point a mutant at.
@@ -4487,6 +4487,14 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   | 32 | `cluster.rs` | 10 |
   | 33 | `admin.rs`, `cache.rs` | 7 |
   | 34 | `config.rs`, `ids.rs`, `buf.rs`, `error.rs` | 10 |
+  Closed: **537 mutants, 4 surviving**, all four in the baseline with an
+  argument. Fifty-four killed by twenty-six tests.
+  A process note worth keeping, because it cost a run. `cargo-mutants` copies
+  the tree once per worker, so editing any file while a run is in flight
+  produces copies that do not build: a verification of `sql.rs` came back
+  "1 missed, 27 caught, 103 unviable" because `cluster.rs` and `admin.rs` were
+  being edited underneath it. The number was meaningless and was thrown away
+  rather than read. Finish the edits, then verify once.
 - [x] `M14.31` The SQL lexer, 18 survivors and the largest group in the
   milestone. `trim_leading_space`, `is_string_introducer`, `word_end`,
   `block_comment_end`, `single_quoted_end`, `double_quoted_end` and
