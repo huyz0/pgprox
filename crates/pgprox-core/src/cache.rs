@@ -232,6 +232,55 @@ mod tests {
         }
     }
 
+    /// `M14.33`. Two mutants survived here, one in the trait's default body and
+    /// one in the fake, which is the pairing `scripts/mutants.sh` opens by
+    /// warning about: M9 hid three defects behind a fake that answered
+    /// something the real thing would refuse.
+    #[test]
+    fn a_cache_that_does_not_say_otherwise_serves_every_tenant() {
+        // `QueryCache::serves` defaults to `true`, and could be flipped to
+        // `false`. Every implementation in this tree overrides it, so the
+        // default is what an implementation written elsewhere gets, and `false`
+        // would silently turn caching off for every tenant behind it while
+        // every test here still passed.
+        #[derive(Debug)]
+        struct MinimalCache;
+
+        #[async_trait::async_trait]
+        impl QueryCache for MinimalCache {
+            async fn get(&self, _key: &CacheKey) -> Option<CachedResult> {
+                None
+            }
+            async fn put(&self, _key: CacheKey, _value: CachedResult) {}
+            async fn invalidate_tenant(&self, _tenant: &TenantId) {}
+        }
+
+        assert!(
+            MinimalCache.serves(&TenantId::new("acme")),
+            "the default must serve: a cache with no opinion has not opted out"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_fake_reports_emptiness_from_its_contents() {
+        // `FakeQueryCache::is_empty` could return `true` unconditionally, which
+        // would make every assertion of the form "nothing was cached" pass
+        // whether or not anything was.
+        let cache = FakeQueryCache::new();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+
+        cache.put(key("acme", "SELECT 1", "public"), result()).await;
+        assert!(
+            !cache.is_empty(),
+            "a cache holding an entry called itself empty"
+        );
+        assert_eq!(cache.len(), 1);
+
+        cache.invalidate_tenant(&TenantId::new("acme")).await;
+        assert!(cache.is_empty());
+    }
+
     #[test]
     fn a_null_parameter_and_an_empty_one_are_different_keys() {
         // The reason the field holds the wire form. These two are different

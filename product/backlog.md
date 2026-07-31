@@ -4532,11 +4532,33 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   test asked `home_node` directly. The new one asks from the owning node and
   from two that do not own it, and asserts the two methods agree, which is the
   invariant that makes it safe for a caller to use either.
-- [ ] `M14.33` `admin.rs` and `cache.rs`, 7 survivors in trait defaults and in
+- [x] `M14.33` `admin.rs` and `cache.rs`, 7 survivors in trait defaults and in
   the fakes themselves, including `FakeObservatory::stats`, `FakeQueryCache::
   is_empty` and `Observatory::config_is_current`.
   These are what `mutants.sh`'s own header is about: a fake that answers
   something the real thing would not is how `M9` hid three defects.
+  Six killed, one accepted.
+  **`Observatory::cache`'s mutant is textually equivalent**: the default body is
+  `CacheView::default()` and the mutant is `Default::default()`, which in a
+  position returning `CacheView` resolves to the same call. The two programs
+  differ in spelling and not at all, so it goes to the baseline with that said
+  plainly rather than a test written trying.
+  `config_is_current` defaulting to `false` is the sharpest of the rest.
+  Nothing overrides it, so the default is what every caller gets, and
+  `bin/pgprox/src/metrics.rs` exports `u32::from(!observatory.config_is_current())`
+  as a staleness gauge: the mutant makes every healthy node report its
+  configuration as stale for ever, which is an alert that fires on a good fleet.
+  **`MAX_TTL`'s existing clamp test compares the result against the constant
+  that produced it.** `assert_eq!(applied, FakeObservatory::MAX_TTL)` passes for
+  any value of `MAX_TTL` at all, so `4 * 60 * 60` becoming `4 * 60 + 60` was
+  invisible. Naming the duration is what makes the assertion mean something.
+  The `tenants` filter's `==` becoming `!=` returns exactly the complement:
+  local scope would list the tenants this node does *not* home, which in a
+  two-node fleet is the same length as the right answer. The test asserts both
+  scopes so the filter is what is under test rather than an empty list.
+  The `Stats` builder uses `..Stats::default()`, so deleting the `waiting` field
+  leaves it at zero and still compiles. Waiting clients are the queue behind a
+  full pool, which is the first number an operator reads when latency climbs.
 - [ ] `M14.34` `config.rs`, `ids.rs`, `buf.rs` and `error.rs`, 10 survivors.
   `ConfigSource::is_healthy` survived being replaced by both `true` and `false`,
   which means nothing calls it through the trait at all. `ConnId::counter` and

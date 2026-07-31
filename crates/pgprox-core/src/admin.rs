@@ -731,6 +731,117 @@ mod tests {
     use crate::cluster::NodeMode;
     use crate::ids::ConnId;
 
+    /// `M14.33`. `FakeObservatory` does not override `config_is_current`, so
+    /// the trait's default body is what every caller of it gets, and the
+    /// default could be flipped to `false` with nothing noticing.
+    ///
+    /// `bin/pgprox/src/metrics.rs` is the caller: it exports
+    /// `u32::from(!observatory.config_is_current())` as a staleness gauge. A
+    /// default of `false` makes every node report its configuration as stale
+    /// for ever, which is an alert that fires on a healthy fleet.
+    #[test]
+    fn a_source_that_cannot_go_stale_reports_that_it_has_not() {
+        let observatory = FakeObservatory::new(node(1));
+        assert!(
+            observatory.config_is_current(),
+            "the default must be true: a source that cannot go stale has not"
+        );
+    }
+
+    #[test]
+    fn the_drain_clamp_is_four_hours_rather_than_whatever_the_constant_says() {
+        // `MAX_TTL` is `4 * 60 * 60`, and `*` could become `+`, making it 300
+        // seconds. The existing clamp test asserts `applied == MAX_TTL`, which
+        // compares the result against the same constant that produced it and
+        // therefore passes for any value at all. Naming the duration is what
+        // makes the assertion mean something.
+        assert_eq!(
+            FakeObservatory::MAX_TTL,
+            Duration::from_secs(14_400),
+            "four hours"
+        );
+    }
+
+    #[test]
+    fn a_locally_scoped_tenant_list_keeps_what_this_node_homes() {
+        // The filter is `tenant.home == Some(self.node)`, and `!=` survived:
+        // local scope would return exactly the tenants this node does *not*
+        // home, which is the complement of the right answer and the same length
+        // in a two-node fleet.
+        let observatory = FakeObservatory::new(node(1));
+        let mine = TenantId::new("mine");
+        let theirs = TenantId::new("theirs");
+        observatory.set_tenants(vec![
+            TenantView {
+                tenant: mine.clone(),
+                home: Some(node(1)),
+                client_conns: 1,
+                upstream_conns: 1,
+            },
+            TenantView {
+                tenant: theirs.clone(),
+                home: Some(node(99)),
+                client_conns: 1,
+                upstream_conns: 1,
+            },
+        ]);
+
+        let node_scoped: Vec<TenantId> = observatory
+            .tenants(Scope::Local)
+            .into_iter()
+            .map(|t| t.tenant)
+            .collect();
+        assert_eq!(
+            node_scoped,
+            vec![mine.clone()],
+            "local scope kept the wrong half"
+        );
+
+        // Cluster scope keeps both, so the filter is what is being tested
+        // rather than the list being empty for another reason.
+        let cluster_scoped: Vec<TenantId> = observatory
+            .tenants(Scope::Cluster)
+            .into_iter()
+            .map(|t| t.tenant)
+            .collect();
+        assert_eq!(cluster_scoped, vec![mine, theirs]);
+    }
+
+    #[test]
+    fn the_stats_a_fake_reports_include_waiters() {
+        // `stats` builds a `Stats` with `..Stats::default()`, so deleting the
+        // `waiting` field leaves it at zero and still compiles. Waiting clients
+        // are the queue behind a full pool, which is the number an operator
+        // looks at first when latency climbs, and the fake is what every admin
+        // test reads it through.
+        let observatory = FakeObservatory::new(node(1));
+        observatory.set_pools(vec![
+            PoolView {
+                key: PoolKey::new(ServerId::new("db-1", 5432), "tenant_acme", "acme_app"),
+                stats: PoolStats {
+                    idle: 1,
+                    active: 2,
+                    waiting: 3,
+                    ..PoolStats::default()
+                },
+                node: node(1),
+            },
+            PoolView {
+                key: PoolKey::new(ServerId::new("db-2", 5432), "tenant_acme", "acme_app"),
+                stats: PoolStats {
+                    idle: 0,
+                    active: 1,
+                    waiting: 4,
+                    ..PoolStats::default()
+                },
+                node: node(1),
+            },
+        ]);
+
+        let stats = observatory.stats(Scope::Cluster);
+        assert_eq!(stats.waiting, 7, "waiters were not summed across pools");
+    }
+
     fn node(n: u16) -> NodeId {
         NodeId::new(n)
     }
