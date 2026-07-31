@@ -3739,12 +3739,26 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   second, and neither `53300` nor `57014` reaches a client at any point. The
   roadmap is corrected and says where the error came from, rather than being
   quietly rewritten.
-- [ ] `M12.5` `m1f-complete.sh` globs `product/decisions/*protocol-3-2*` and
+- [x] `M12.5` `m1f-complete.sh` globs `product/decisions/*protocol-3-2*` and
   `product/decisions/*replication*` and reports that scope is "a recorded
   decision rather than an omission". An ADR that decided the opposite, or an
   empty file with the right name, passes both.
   Acceptance: each check reads the ADR's status and decision, with a negative
   test for each.
+  Done. Both go through one `adr_decided` helper that finds the ADR, reads its
+  `Status:` line, and requires it to be accepted. It reports which file and what
+  status, so the evidence is in the output rather than implied by a green tick.
+  The convention it relies on was checked rather than assumed: all twenty-two
+  ADRs in `product/decisions` carry a `Status:` line and all twenty-two are
+  accepted, so requiring it adds no new burden. `0012` reads "accepted, with one
+  item outstanding", which is why the test is a prefix match rather than
+  equality.
+  Four negative cases: neither ADR present, empty files with the right names,
+  which is the regression, an ADR still marked proposed, and both decided.
+  This is the task that found `M12.11`. Proving the check fails needs four
+  invocations of `m1f-complete.sh`, and each was 84 seconds because the gate
+  runs the whole workspace coverage gate, so the suite timed out before it
+  could report. `M12.11` was split out and done first.
 - [ ] `M12.6` A lint for `fail` reachable inside a pipeline subshell, so the
   near miss in `M11.7` cannot come back. The counter `fail` increments lives in
   the parent, the right-hand side of a pipeline is a subshell, so such a gate

@@ -56,11 +56,43 @@ fi
 # ADR 0016 decided to negotiate 3.2 down rather than implement it, so this gate
 # asserts that decision holds rather than assuming the opposite. A gate encoding
 # a presumed answer quietly forces it.
-if compgen -G 'product/decisions/*protocol-3-2*' >/dev/null; then
-  ok "protocol 3.2 handling is a recorded decision"
-else
-  fail "no ADR deciding what to do about protocol 3.2"
-fi
+# An ADR that decided, rather than a filename that matches. `M12.5`.
+#
+# Both of these used to be `compgen -G` on a name pattern reporting "a recorded
+# decision", which passes on an empty file with the right name and on an ADR
+# still marked proposed. "Recorded decision rather than an omission" is a claim
+# about the ADR's status, so read it.
+#
+# Every ADR in `product/decisions` carries a `Status:` line and all twenty-two
+# are accepted, checked rather than assumed, so requiring it is a rule the tree
+# already keeps rather than a new burden.
+DECISIONS="${PGPROX_DECISIONS:-product/decisions}"
+
+adr_decided() {
+  local pattern="$1" subject="$2" missing="$3"
+  local adr found=""
+  for adr in "$DECISIONS"/$pattern; do
+    [[ -f "$adr" ]] || continue
+    found="$adr"
+    break
+  done
+  if [[ -z "$found" ]]; then
+    fail "$missing"
+    return
+  fi
+  local status
+  status="$(grep -m1 -iE '^Status:' "$found" | sed -E 's/^[Ss]tatus:[[:space:]]*//' || true)"
+  if [[ -z "$status" ]]; then
+    fail "$(basename "$found") has no Status line, so it records no decision about $subject"
+  elif [[ "$status" == accepted* ]]; then
+    ok "$subject is a recorded decision ($(basename "$found"), $status)"
+  else
+    fail "$(basename "$found") is '$status', so $subject is still open"
+  fi
+}
+
+adr_decided '*protocol-3-2*' "protocol 3.2 handling" \
+  "no ADR deciding what to do about protocol 3.2"
 # The behaviour the ADR commits to: 3.2 in, 3.0 offered back.
 if grep -qsE 'fn version_3_2_is_negotiated_down_to_3_0' "$PROTO/startup.rs"; then
   ok "3.2 down-negotiation is tested"
@@ -76,11 +108,8 @@ else
 fi
 
 # --- Group D: replication scope decision -------------------------------------
-if compgen -G 'product/decisions/*replication*' >/dev/null; then
-  ok "replication scope recorded as an ADR"
-else
-  fail "no ADR deciding replication scope (M1F.17 gates the rest of group D)"
-fi
+adr_decided '*replication*' "replication scope" \
+  "no ADR deciding replication scope (M1F.17 gates the rest of group D)"
 
 # --- Group E: startup and session --------------------------------------------
 # The function, not the word, which appears throughout the module's prose.

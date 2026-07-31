@@ -204,6 +204,40 @@ case_m11_admission() {
     env PGPROX_PERF_DIR="$dir" scripts/m11-complete.sh
 }
 
+# --- m1f-complete.sh, the scope ADRs, M12.5 ----------------------------------
+#
+# "A recorded decision rather than an omission" is a claim about an ADR's
+# status. The old checks matched a filename, which an empty file satisfies.
+case_m1f_adr() {
+  echo
+  echo "  m1f-complete.sh, the scope ADRs"
+
+  local dir="$WORK/decisions"
+  rm -rf "$dir"; mkdir -p "$dir"
+
+  # No ADR at all.
+  expect_fail "refuses a decisions directory with neither scope ADR" \
+    env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
+
+  # The regression: files with the right names and nothing in them.
+  : > "$dir/0016-protocol-3-2-deferred.md"
+  : > "$dir/0015-replication-is-out-of-scope.md"
+  expect_fail "refuses an empty file with the right name" \
+    env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
+
+  # An ADR that has not decided yet. A gate that reports a recorded decision
+  # here is reporting the filename.
+  printf '# 0016. Protocol 3.2\n\nStatus: proposed\n' > "$dir/0016-protocol-3-2-deferred.md"
+  printf '# 0015. Replication\n\nStatus: accepted\n' > "$dir/0015-replication-is-out-of-scope.md"
+  expect_fail "refuses an ADR still marked proposed" \
+    env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
+
+  # And both decided, which must pass.
+  printf '# 0016. Protocol 3.2\n\nStatus: accepted\n' > "$dir/0016-protocol-3-2-deferred.md"
+  expect_pass "accepts two ADRs that decided" \
+    env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
+}
+
 # -----------------------------------------------------------------------------
 
 echo "gates: proof that they can fail"
@@ -213,6 +247,7 @@ if [[ -z "$WANTED" || "$WANTED" == commit-msg ]]; then case_commit_msg; ran=1; f
 if [[ -z "$WANTED" || "$WANTED" == m7-scale ]]; then case_m7_scale; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m9-cache ]]; then case_m9_cache; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m11-admission ]]; then case_m11_admission; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == m1f-adr ]]; then case_m1f_adr; ran=1; fi
 
 if (( ! ran )); then
   fail "no such case: $WANTED"
