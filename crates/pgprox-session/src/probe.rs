@@ -375,7 +375,15 @@ where
 fn text_row(body: &[u8]) -> Option<Vec<Option<String>>> {
     let count = i16::from_be_bytes(body.get(..2)?.try_into().ok()?);
     let mut at = 2;
-    let mut fields = Vec::with_capacity(usize::try_from(count.max(0)).ok()?);
+    // Not `with_capacity(count)`. The count comes from the message being
+    // parsed and the columns behind it have not been read, so reserving on it
+    // lets a three-byte body ask for thirty-two thousand `Option<String>`.
+    // `pgprox_proto::frontend::bind_parameters` refuses the same shape for the
+    // same reason and says so; this is the other half of that rule.
+    //
+    // Nothing is lost by growing instead: this is the only `DataRow` the
+    // project parses and its answer has two columns.
+    let mut fields = Vec::new();
 
     for _ in 0..count.max(0) {
         let len = i32::from_be_bytes(body.get(at..at + 4)?.try_into().ok()?);
@@ -894,6 +902,37 @@ mod tests {
     #[test]
     fn a_row_with_no_fields_reads_as_no_fields() {
         assert_eq!(text_row(&[0, 0]), Some(Vec::new()));
+    }
+
+    #[test]
+    fn a_count_with_nothing_behind_it_is_refused_rather_than_reserved() {
+        // The rule `pgprox_proto::frontend::bind_parameters` states and this
+        // function used to break: a count is a number the peer sent, and the
+        // columns it counts have not been read yet. Reserving on it let these
+        // three bytes ask for thirty-two thousand `Option<String>`.
+        //
+        // The observable half is that it is refused. That it is refused without
+        // reserving first is the reason, and it is why there is no
+        // `with_capacity` above.
+        let mut body = i16::MAX.to_be_bytes().to_vec();
+        assert_eq!(
+            text_row(&body),
+            None,
+            "a count with no columns was accepted"
+        );
+
+        // One column short of what it claims, so the walk has to notice at the
+        // end rather than at the start.
+        body.extend_from_slice(&4_i32.to_be_bytes());
+        body.extend_from_slice(b"16/B");
+        assert_eq!(text_row(&body), None);
+
+        // And an honest row of the shape a probe actually gets still reads.
+        let row = data_row(&[Some("16/B374D848"), Some("t")]);
+        assert_eq!(
+            text_row(&row[5..]),
+            Some(vec![Some("16/B374D848".to_owned()), Some("t".to_owned())])
+        );
     }
 
     /// Answers one query with the given frames, as a server would.

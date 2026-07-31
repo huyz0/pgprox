@@ -4979,7 +4979,7 @@ milestone said it would do and which found three more.
   clean run agrees.
   **The clean run agrees: 359 mutants, 6 surviving, every one of them in the
   baseline with an argument.**
-- [ ] `M15.13` A capacity reserved from a number a peer sent.
+- [x] `M15.13` A capacity reserved from a number a peer sent.
   `probe::text_row` starts with `Vec::with_capacity(count)` where `count` is the
   column count read from the `DataRow` it is about to parse. A three-byte
   message claiming 32767 columns reserves 32767 `Option<String>`, which is
