@@ -4024,7 +4024,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   `commit-msg` stage, so it is a local hook and CI cannot run it: CI has no
   commit message to read. A PR-level equivalent would have to walk the commits
   on the branch. Not done here, and not pretended to be done.
-- [ ] `M13.3` Rule 7, credentials never reach a log, is a repo-wide claim held
+- [x] `M13.3` Rule 7, credentials never reach a log, is a repo-wide claim held
   up by one unit test in one crate.
   Acceptance: a check that covers the claim's actual scope. What that means has
   to be settled first and written down: candidates are a lint against passing
@@ -4032,6 +4032,31 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   a run of the e2e stack grepping its logs for the token it authenticated with.
   The last is the only one that tests the claim end to end and it is the
   slowest, so the decision is which of the three the rule actually needs.
+  Settled by reading the design rather than by preference. `SecretString`
+  carries every credential and cannot be printed: `Debug` and `Display` both
+  render `[redacted]`, and it has no `PartialEq`, `Deref`, `AsRef<str>` or
+  `From` back to `String`, each left out on purpose. So there is exactly one
+  route to a real value, `expose()`, named that way because it greps.
+  That makes the leak path one shape, and `expose`'s own documentation already
+  states the rule: never pass it to a formatter that reaches a log, a span
+  attribute, a metric label, or an error variant. Nothing enforced that
+  sentence. `scripts/check-secrets.sh` does, over the whole workspace, in 0.24
+  seconds, so it runs on every commit and in CI rather than per crate.
+  A field-type rule was considered and rejected: requiring every field named
+  `token` or `password` to be a `SecretString` false-positives on the generated
+  gRPC request type, whose `token` field is a plain `String` by construction.
+  **The first version of the lint caught nothing and reported the workspace
+  clean.** It used `` in the macro pattern, which is a GNU extension this awk
+  does not have, so `opens` was false on every line. It printed
+  `ok no exposed credential reaches a formatter (133 file(s))` and exited 0.
+  That is `M12`'s defect written by the person who spent a milestone on it, in
+  the commit that adds a security check. It was found by planting a leak and
+  watching nothing happen, which is the only reason this task is not a lie.
+  Three negative cases: a single-line leak, a multi-line `tracing::info!` leak,
+  which is how tracing is usually written and which a line-based rule misses,
+  and the safe uses that must not be flagged.
+  The end-to-end half is `M13.8`, split out on inspection: this lint cannot see
+  a value exposed into a local and formatted three functions later.
 - [ ] `M13.4` Rule 5 says business logic is sans-I/O and `check-layering.sh`
   checks the crate dependency rule, which is a different property.
   Acceptance: either a check for the stated property, or `AGENTS.md` reworded so
@@ -4055,3 +4080,14 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   closing, as `M10.17`, `M11.5` and `M12.8` all establish.
   Under `M12.8`'s constraint as well: no check may match a filename or a word
   where it can run something and read an exit code.
+- [ ] `M13.8` The end-to-end half of non-negotiable 7: run the stack and grep
+  its own logs for the token it authenticated with. Split out of `M13.3` on
+  inspection, before starting, once the difference between the two became clear.
+  `M13.3`'s lint proves the one route `SecretString` leaves open is not taken
+  through a formatting macro. It cannot prove a credential never reaches a log:
+  a value exposed into a local and formatted three functions later is invisible
+  to it, and so is anything a dependency prints.
+  Acceptance: `scripts/e2e.sh` authenticates with a known token, and afterwards
+  every proxy node's log is searched for it and for the backend password the
+  sidecar handed back. Needs Docker, so it is tier 3 and cannot join the
+  pre-commit path.

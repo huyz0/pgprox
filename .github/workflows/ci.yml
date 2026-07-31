@@ -43,6 +43,8 @@ jobs:
 
       - run: scripts/check-fmt.sh
       - run: scripts/check-drift.sh
+      # Non-negotiable 7, enforced rather than held up by one unit test. M13.3.
+      - run: scripts/check-secrets.sh
       - run: scripts/check-layering.sh
       - run: scripts/check-crate.sh
       - run: scripts/check-coverage.sh

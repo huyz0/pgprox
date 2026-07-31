@@ -417,6 +417,38 @@ case_tests_kept() {
     bash "$repo/scripts/check-tests-kept.sh" "$repo/msg"
 }
 
+# --- check-secrets.sh, M13.3 -------------------------------------------------
+#
+# Non-negotiable 7. SecretString cannot be printed, so the one route to a
+# credential is expose(), and its own documentation says never pass the result
+# to a formatter. These cases are why the check exists in a working form: the
+# first version used `\b` in an awk without it, matched nothing, and reported
+# the whole workspace clean.
+case_secrets() {
+  echo
+  echo "  check-secrets.sh"
+
+  local dir="$WORK/secrets"
+  rm -rf "$dir"; mkdir -p "$dir"
+
+  printf 'fn f() {\n    warn!("token was {}", s.expose());\n}\n' > "$dir/leak.rs"
+  expect_fail "flags an exposed credential in a log macro" \
+    env PGPROX_RUST_ROOTS="$dir/leak.rs" scripts/check-secrets.sh
+
+  # The multi-line form, which is how tracing is usually written and which a
+  # single-line rule would miss entirely.
+  printf 'fn f() {\n    tracing::info!(\n        user = %%%%user,\n        token = %%%%s.expose(),\n        "authenticated"\n    );\n}\n' > "$dir/leak.rs"
+  expect_fail "flags an exposed credential in a multi-line log macro" \
+    env PGPROX_RUST_ROOTS="$dir/leak.rs" scripts/check-secrets.sh
+
+  # What must not be flagged. Comparing an exposed value is how secret.rs tests
+  # that expose works, passing bytes to a hash is the point of having the value
+  # at all, and a rule that failed on either would be deleted rather than obeyed.
+  printf 'fn f() {\n    assert_eq!(s.expose(), "hunter2");\n    let b = s.expose().as_bytes();\n    info!(len = s.len(), "authed");\n    // warn!("t {}", s.expose());\n}\n' > "$dir/ok.rs"
+  expect_pass "leaves assertions, byte access and a comment alone" \
+    env PGPROX_RUST_ROOTS="$dir/ok.rs" scripts/check-secrets.sh
+}
+
 # -----------------------------------------------------------------------------
 
 echo "gates: proof that they can fail"
@@ -431,6 +463,7 @@ if [[ -z "$WANTED" || "$WANTED" == drift-subshell ]]; then case_drift_subshell; 
 if [[ -z "$WANTED" || "$WANTED" == every-gate ]]; then case_every_gate; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == thresholds ]]; then case_thresholds; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == tests-kept ]]; then case_tests_kept; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == secrets ]]; then case_secrets; ran=1; fi
 
 if (( ! ran )); then
   fail "no such case: $WANTED"
