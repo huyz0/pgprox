@@ -3613,3 +3613,82 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   beat running the experiment.
   The status table also had a blank line between the `M10` and `M11` rows,
   which splits it into two tables in any renderer.
+
+## M12: the gates that count files
+
+- [x] `M12.0` Plan M12: audit what every gate actually asserts.
+  The audit rather than the suspicion, because `M11` was a milestone of
+  suspicions that turned out to be half wrong and the half that was right was
+  only visible after reading. Every `compgen -G` in a gate was run against the
+  working tree and the match count compared with what the check then claims.
+  Nine result globs across four gates. Two are honest, `m9-complete.sh`'s ADR
+  glob and `m7-complete.sh`'s benches glob, where the pattern and the claim are
+  the same thing. The rest report a conclusion the pattern cannot support.
+  Also audited: every `fail` reachable from a pipeline's right-hand side, which
+  is the shape that made `M11.7`'s first replacement print `FAIL` and exit 0.
+  Zero sites today. That is worth a lint rather than a shrug, because the reason
+  it is zero is that it was found by accident once.
+  The milestone is those findings and nothing else. No task here is a feature.
+- [ ] `M12.1` `check-commit-msg.sh` accepts a task ID with no task behind it.
+  Its own comment says the subject "references the backlog task so history stays
+  traceable to the plan", and it checks only that the ID is well formed.
+  Found by committing `M11.11:` when no `M11.11` existed. The hook passed. The
+  entry was filed afterwards, which is backwards, and `M11.11` says so.
+  Acceptance: the hook resolves the ID against `product/backlog.md` and fails
+  when it is absent, with a negative test that proves it fails. The pattern
+  check stays, because an ID that is absent and an ID that is malformed are
+  different errors and should read differently.
+  Care needed on two cases the pattern currently carries for free: the
+  mechanical subjects `Merge`, `Revert`, `fixup!` and `squash!` must stay
+  exempt, and a task's own filing commit necessarily adds the entry it
+  references, so the check has to read the backlog as staged rather than as
+  committed.
+- [ ] `M12.2` `m7-complete.sh` counts every run document in the repo and calls
+  the total scale runs. It reports "a scale run is recorded (16 file(s))" from
+  `product/perf/run-*.md`, of which five are scale runs and eleven are cache,
+  admission, throughput, saturation and pinning documents. The check passes with
+  none of the five present.
+  Its own comment already names the right assertion: "a recorded
+  1000-connection run is what M7 asks for". So assert that, not a file count.
+  Acceptance: the check identifies a run at a stated connection count, and a
+  negative test shows it failing when only unrelated run documents exist.
+- [ ] `M12.3` `m9-complete.sh` globs `product/perf/run-*cache*.md` and reports a
+  recorded run. Three files match. The same shape as `M12.2` and it needs the
+  same treatment, with the difference that M9's claim is a number with a sign:
+  the cache costs 7.8% of the median and, by `M11.1`, raises fleet throughput
+  4.11%. A check that reads the file can check the numbers are still there.
+  Acceptance: the recorded figure is read rather than the filename matched, and
+  a negative test proves the check fails without it.
+- [ ] `M12.4` `m11-complete.sh` globs `product/perf/*admission*.md`. One file
+  matches and the check reports what a full fleet tells displaced clients, which
+  is a claim about `53300` that the filename cannot carry.
+  Acceptance: assert the SQLSTATE the run recorded, with a negative test.
+- [ ] `M12.5` `m1f-complete.sh` globs `product/decisions/*protocol-3-2*` and
+  `product/decisions/*replication*` and reports that scope is "a recorded
+  decision rather than an omission". An ADR that decided the opposite, or an
+  empty file with the right name, passes both.
+  Acceptance: each check reads the ADR's status and decision, with a negative
+  test for each.
+- [ ] `M12.6` A lint for `fail` reachable inside a pipeline subshell, so the
+  near miss in `M11.7` cannot come back. The counter `fail` increments lives in
+  the parent, the right-hand side of a pipeline is a subshell, so such a gate
+  prints `FAIL` and exits 0. A gate that cannot fail is worse than no gate.
+  Zero sites today, which is the reason to write it now rather than a reason
+  not to: nothing found the one that existed except luck.
+  Acceptance: the lint is wired into `check-drift.sh` alongside the other
+  repo-wide rules, it flags a deliberately planted site, and it does not flag
+  `|| { fail ...; }`, which is a brace group in the current shell and is the
+  dominant idiom in `scripts/`.
+- [ ] `M12.7` Prove each gate can fail. Every `mN-complete.sh` is trusted to
+  report a milestone's completion and not one of them has ever been observed
+  failing on this tree.
+  The method is the one that found `M11.7`'s subshell bug: break the artefact,
+  run the gate, assert a non-zero exit. Not the output, the exit code, because
+  the bug that motivates this printed the right output.
+  Sized on inspection rather than guessed: twelve gates, so this is a harness
+  plus a table of one broken artefact per gate, and it is a commit only if the
+  harness is small. If it is not, it splits by gate and this entry says so.
+- [ ] `M12.8` Write `scripts/m12-complete.sh` before the milestone needs
+  closing, which `M10.17` and `M11.5` both establish as the order. It has to
+  avoid being an instance of its own subject: no check in it may glob for a
+  filename and report a conclusion.

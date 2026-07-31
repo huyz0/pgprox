@@ -532,3 +532,50 @@ What the four found, none of which was the expected answer:
 
 Two of the four corrected a claim rather than confirming one, and in both cases
 reading the code beat running the experiment.
+
+## M12: the gates that count files
+
+Eleven milestones are gated by a script, and the scripts are why this repo
+trusts its own history. `M11` then spent its whole length finding that recorded
+claims do not always say what the milestone thinks they say. This one turns the
+same question on the gates themselves.
+
+```bash
+scripts/m12-complete.sh
+```
+
+The defect has one shape. A check asks whether a file exists whose name matches
+a pattern, and reports the claim that the file was supposed to establish. It
+passes on an empty file, on a file about something else, and on a file that
+says the opposite.
+
+Found before the milestone was written, which is why it is a milestone rather
+than a suspicion:
+
+- `m11-complete.sh` globbed `product/perf/*pinning*.md` and reported "the
+  pinning curve is recorded". It passed for a day on a document titled *why this
+  run does not answer it*. Fixed in `M11.7`, and the fix is the template: read
+  the recorded counts, require the control arm below the cap, require the axis
+  to have moved.
+- `m7-complete.sh` reports "a scale run is recorded (16 file(s))" from
+  `product/perf/run-*.md`. Five of those sixteen are scale runs. The rest are
+  cache, admission and pinning documents that the glob cannot tell apart, and
+  the check would pass with none of the five present.
+- `check-commit-msg.sh` says a subject "references the backlog task so history
+  stays traceable to the plan", and checks only that the ID is well formed.
+  `M11.11` was committed with no such task in the backlog and the hook passed.
+  The task was filed afterwards, which is the wrong order and is recorded in
+  the entry rather than tidied away.
+- `m1f-complete.sh` and `m9-complete.sh` carry the same glob-for-a-filename
+  shape against ADRs and cache runs.
+
+And one near miss worth keeping: the replacement check in `M11.7` first piped
+`awk` into a block that called `fail`. It printed `FAIL` and exited 0, because
+the right-hand side of a pipeline is a subshell and the failure counter never
+reached the parent. A gate that cannot fail is worse than no gate. No other
+site in `scripts/` has that shape today, and nothing stops one appearing.
+
+So the milestone has two halves. Replace the file-counting checks with checks
+that read what the file says. Then prove the gates can fail at all, by feeding
+each one a broken artefact and asserting a non-zero exit, because the only way
+that near miss became visible was checking the exit code instead of the output.
