@@ -5002,7 +5002,7 @@ milestone said it would do and which found three more.
 
 ## M16: the streaming relay nothing streams through
 
-- [ ] `M16.1` Measure what the data path actually holds. `FrameRelay` exists to
+- [x] `M16.1` Measure what the data path actually holds. `FrameRelay` exists to
   read a five-byte header, ask `inspect_policy` how much of the body is needed,
   and forward the rest as it arrives. Its module header says why: "`decode`
   needs a whole message before it returns one, so a relay built on it must
@@ -5025,6 +5025,11 @@ milestone said it would do and which found three more.
   Filed before the fix, because the fix is a rewrite of the most
   correctness-critical loop in the project and it should be justified by a
   measurement rather than by a module header.
+  **Measured: 16,777,216 bytes against 0.** One 16 MiB `DataRow`, the same
+  bytes down both paths. Zero rather than five because a `DataRow` is
+  `Inspect::None`, so the relay reads the header, learns it has nothing to
+  inspect, and forwards every byte without copying one.
+  See [run-2026-08-01-streaming.md](perf/run-2026-08-01-streaming.md).
 - [ ] `M16.2` Stream the server-to-client direction. Blocked on `M16.1`'s
   number, and scoped from it.
   The pump does four things with each frame besides forwarding it: it decodes
