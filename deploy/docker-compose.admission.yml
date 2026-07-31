@@ -1,0 +1,66 @@
+# What the admission run changes about the e2e stack, and nothing else.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.admission.yml up
+#
+# `M11.6` asks what a fleet with no upstream capacity left tells the clients a
+# dead node displaces. Answering that needs one thing the e2e stack does not
+# have: an address that means "the fleet" rather than "this node". A displaced
+# client in production reconnects through a Kubernetes Service and lands on a
+# survivor; a client pointed at `pgprox-3:6432` reconnects to a socket that is
+# no longer there and measures nothing but its own retry loop.
+#
+# So all three nodes answer to the alias `pgprox`. Docker's embedded DNS
+# returns every running container holding an alias and drops the ones that are
+# not, which is a Service in the one respect this run needs.
+#
+# Two other differences, both so the run measures the thing it is named after:
+#
+#   1. `scale.yaml` rather than the shipped document, for its client cap of
+#      150,000. The shipped 200 per node would make the *client* gate the
+#      binding constraint, and the question here is about the upstream quota.
+#      The upstream cap stays at sixty in both documents, which is the number
+#      being saturated.
+#   2. A load generator inside the network, because the load has to reach the
+#      alias and an alias is a fact about the compose network.
+#
+# TLS stays required, unlike the scale override which drops it on one node to
+# match a direct baseline. There is no direct baseline here and the deployed
+# posture is the one worth killing a node in.
+
+services:
+  loadgen:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      pgprox-1:
+        condition: service_healthy
+    entrypoint: ["sleep", "infinity"]
+    volumes:
+      - ../product/perf:/workload:ro
+      - ../target/admission:/out
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    sysctls:
+      # The default ephemeral range is 28,231 ports, and this run churns every
+      # connection the killed node was holding. See the scale override, which
+      # found this the hard way.
+      net.ipv4.ip_local_port_range: "1024 65000"
+      net.ipv4.tcp_tw_reuse: "1"
+
+  pgprox-1: &node
+    environment:
+      PGPROX_CONFIG: /etc/pgprox/scale.yaml
+      RUST_LOG: "${ADMISSION_LOG:-info}"
+    networks:
+      default:
+        aliases:
+          - pgprox
+
+  pgprox-2:
+    <<: *node
+
+  pgprox-3:
+    <<: *node

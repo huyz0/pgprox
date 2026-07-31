@@ -3255,7 +3255,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   In CI as `continue-on-error` while the milestone is open, so the job stays
   green and the gate stays visible. A gate nobody runs until the end is exactly
   what `M10.17` was about.
-- [ ] `M11.6` What happens to the clients a dead node displaces when every
+- [x] `M11.6` What happens to the clients a dead node displaces when every
   survivor is full. `M11.3` was filed as a question about shedding and is not
   one: shedding is refused at the cap by design, so the mechanism actually under
   test is admission.
@@ -3292,28 +3292,65 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   `prove_drain_check_catches_losses`. That is the harness to extend rather than
   a new one to write; what it lacks is the saturation before the kill and the
   SQLSTATE after it.
-  **Two corrections to the note above, both found by reading before running,
-  and both change what the run is looking for.**
-  The first sentence of it is wrong. There *is* a client connection cap:
-  `max_client_conns`, defaulting to 10,000 and set to 200 in the e2e stack's
-  document, enforced by `serve::Gate` and refused after the handshake with
-  53300. What appears in this repo only as a misspelled key to be rejected is
-  `max_client_connections`, which is the wrong name for the real knob rather
-  than evidence that no knob exists.
-  So a displaced client has three outcomes, not two, and two of them are 53300.
-  The gate's refusal carries `ServerId::new("this node", 0)`, so it renders as
-  "upstream this node:0 is at its connection cap of 200"; the pool's carries the
-  real server, "upstream primary:5432 is at its connection cap of 60". The
-  message is what separates a node that is full of clients from a fleet that is
-  full of upstream connections, and both arrive at the client as the same
-  SQLSTATE. A run that recorded only codes would merge them.
-  The second correction is about what the run can record at all, and it is why
-  this task is now blocked on `M11.8`. `pgprox_load::Report` carries `errors`,
-  `relocations` and `first_error`, and nothing that says how the errors divide.
-  `first_error` is one string from whichever client failed first, which cannot
-  answer "which of those two do they get" when the answer is a mixture. That is
-  a crate change with a coverage gate on it, so it is a commit of its own, the
-  same way `M11.4`'s knob was.
+  Done, in `scripts/admission.sh` and `deploy/docker-compose.admission.yml`,
+  recorded in `product/perf/run-2026-07-31-admission.md`.
+  A new script rather than an extension of `scripts/e2e.sh`, against what the
+  note above says. Two reasons, both found once the shape was visible. The e2e
+  run is `M6`'s gate and its assertions are about the shipped configuration;
+  this run needs a different client cap and a DNS alias, so putting it there
+  would change what the gate measures for the sake of a measurement that is not
+  the gate's. And it takes four minutes across two arms, which is not a thing to
+  add to a check people run before committing.
+  **What a full fleet tells the clients a dead node displaces is nothing. They
+  are served, in 0.13 seconds.** One `psql` through the alias at +2s, +5s, +10s,
+  +20s and +29s from the kill, with a control at -1s, and all six are served in
+  0.12 to 0.16 seconds. Neither `53300` nor `57014` reaches a client at any
+  point. There is no admission decision to make: the client cap is not binding,
+  so the survivor accepts, and the statement's wait behind 400 queued callers is
+  milliseconds because the transactions are milliseconds. The 30-second acquire
+  deadline is two orders of magnitude from being reached.
+  So the question this task inherited from `M11.3` has the same shape as the
+  answer `M11.3` gave: the mechanism it was reaching for is not the one under
+  pressure. Neither shedding nor admission is what a fleet at its cap tests.
+  What the run found instead is two things about capacity and about what an
+  operator sees.
+  **A three-node fleet that loses one runs the database at 50 of its 60 cap, for
+  as long as the node stays dead.** Not measured as a limit, derived as
+  arithmetic and then confirmed by `pg_stat_activity`: three nodes times ten
+  guaranteed is thirty reserved, thirty leasable, and the survivors take all
+  thirty. The dead node's guaranteed ten is held for a node that no longer
+  exists. That is the design working, and the fleet cannot report it, because
+  `/v1/servers` says headroom is zero, which is true of the leasable pool and
+  not of the cap.
+  **And `/v1/servers` reports 89 connections against a cap of 60.** The cluster
+  view sums what every node last gossiped and a killed node never gossips again,
+  so its last reading stays in the sum. Eight seconds after the kill the
+  survivors' new numbers arrive and the corpse's 39 are still being added to
+  them. No cap is breached: the database holds 50 and never exceeds 60 in any
+  sample of any run. It is a reporting defect rather than a quota defect, and
+  that distinction only exists because the run asks the database. `M11.9` files
+  the defect.
+  Transaction loss, next to `M8`'s 22 of 21,088 (0.10%): **454 of 47,743
+  (0.95%)**, with the control at 1 of 43,298. Nine times the share and not
+  because admission behaves worse, but because a node at the cap is carrying
+  in-flight work when it dies: 363 of the 454 went down with the node.
+  Two methodological mistakes, both the same mistake, both worth naming.
+  The load client's default connect timeout is 30s and the proxy's
+  `ACQUIRE_TIMEOUT` is 30s, so the first run recorded 112 clients saying
+  "startup did not finish within 30s" and not one SQLSTATE. A client that gives
+  up when the server does measures its own patience. And even at twice the
+  server's deadline, a thousand clients reconnecting at once describe the queue
+  behind them rather than the node in front, which is why the single-client
+  probe exists and why it is the row that answers the task.
+- [ ] `M11.7` The pinning curve itself, once `M11.4` has given the load
+  generator a statement kind that pins. At least three values of the pinned
+  share, each a matched run, reading `pgprox_pin_total` by reason and the
+  upstream connection count against the median.
+  The question is where multiplexing stops paying for itself: ADR 0001 says a
+  fleet whose tenants all use `LISTEN`/`NOTIFY` collapses back to session
+  pooling, and the curve is what says at what share that starts to bite.
+  Acceptance: three or more values, matched runs, and a stated crossing point
+  or a statement that there is none inside the range measured.
 - [x] `M11.8` The load client records what clients were told, by SQLSTATE.
   Split out of `M11.6` on inspection, before starting, which is what `M11.4`
   did once the size of its own scope note became visible.
@@ -3353,12 +3390,49 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Relocations are recorded here beside errors rather than left out. `57P01` is
   something a client was told, and a document that says what clients saw with
   the drain code missing from it would have a hole exactly where a drain is.
-- [ ] `M11.7` The pinning curve itself, once `M11.4` has given the load
-  generator a statement kind that pins. At least three values of the pinned
-  share, each a matched run, reading `pgprox_pin_total` by reason and the
-  upstream connection count against the median.
-  The question is where multiplexing stops paying for itself: ADR 0001 says a
-  fleet whose tenants all use `LISTEN`/`NOTIFY` collapses back to session
-  pooling, and the curve is what says at what share that starts to bite.
-  Acceptance: three or more values, matched runs, and a stated crossing point
-  or a statement that there is none inside the range measured.
+- [ ] `M11.9` The cluster view keeps counting a node that is gone. Found by
+  `M11.6` rather than by review.
+  `/v1/servers` reports `in_use` as the sum of what every node last gossiped.
+  A node killed outright never gossips again, so its last reading stays in that
+  sum with nothing to expire it. Eight seconds after a kill the survivors have
+  leased up, their new numbers arrive, and the corpse's are still underneath:
+  89 against a cap of 60, and it stays there. `/v1/stats` has the same shape,
+  reporting 1,326 clients where there were 1,000.
+  Nothing is over-subscribed. `pg_stat_activity` says 50 and never above 60 in
+  any sample of any run, so the quota accounting is right and the view is
+  wrong. That is the reason this is worth fixing rather than urgent: what it
+  costs is an operator's trust in the number, at exactly the moment they are
+  looking at it because something died.
+  The fix is a liveness question rather than an arithmetic one, and the
+  liveness machinery already exists: `pgprox-cluster` has membership with a
+  heartbeat, and `M11.6`'s logs show `some peers did not answer the gossip
+  round` firing 54 times during the window. So a peer that has not been heard
+  from for longer than its lease is already knowable, and the view is summing
+  without asking.
+  Acceptance: a node that has been silent past some stated threshold stops
+  contributing to `in_use` and to the client count, a test that pins the
+  threshold's behaviour on both sides of it, and the arithmetic in
+  `product/perf/run-2026-07-31-admission.md` re-checked against the fixed
+  view.
+  **Two corrections to the note above, both found by reading before running,
+  and both change what the run is looking for.**
+  The first sentence of it is wrong. There *is* a client connection cap:
+  `max_client_conns`, defaulting to 10,000 and set to 200 in the e2e stack's
+  document, enforced by `serve::Gate` and refused after the handshake with
+  53300. What appears in this repo only as a misspelled key to be rejected is
+  `max_client_connections`, which is the wrong name for the real knob rather
+  than evidence that no knob exists.
+  So a displaced client has three outcomes, not two, and two of them are 53300.
+  The gate's refusal carries `ServerId::new("this node", 0)`, so it renders as
+  "upstream this node:0 is at its connection cap of 200"; the pool's carries the
+  real server, "upstream primary:5432 is at its connection cap of 60". The
+  message is what separates a node that is full of clients from a fleet that is
+  full of upstream connections, and both arrive at the client as the same
+  SQLSTATE. A run that recorded only codes would merge them.
+  The second correction is about what the run can record at all, and it is why
+  this task is now blocked on `M11.8`. `pgprox_load::Report` carries `errors`,
+  `relocations` and `first_error`, and nothing that says how the errors divide.
+  `first_error` is one string from whichever client failed first, which cannot
+  answer "which of those two do they get" when the answer is a mixture. That is
+  a crate change with a coverage gate on it, so it is a commit of its own, the
+  same way `M11.4`'s knob was.
