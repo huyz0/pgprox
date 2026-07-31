@@ -320,6 +320,36 @@ case_every_gate() {
   done
 }
 
+# --- m15-complete.sh, a test that is not there, M15.8 ------------------------
+#
+# `m15-complete.sh` decides every one of its checks by running a named test and
+# reading whether it passed. That makes one failure mode worth its own case: a
+# check that reports `ok` for a test that never ran.
+#
+# It did exactly that on the first attempt. The runner was
+# `cargo test ... | grep -q`, and with `set -o pipefail` in `lib.sh`, `grep -q`
+# exits at its first match, closes the pipe and kills `cargo test` with SIGPIPE,
+# so the pipeline reports 141 for a test that passed. That failed loudly. The
+# same shape with the sense reversed would not have, which is why this case
+# renames a test the gate names and requires the gate to object.
+case_m15_missing_test() {
+  echo
+  echo "  m15-complete.sh, a test it names that is not there"
+
+  local root="$WORK/m15"
+  rm -rf "$root"; mkdir -p "$root"
+  cp scripts/m15-complete.sh "$root/gate.sh"
+
+  # One name mangled, everything else left alone, so a failure here is about
+  # that name rather than about the tree.
+  sed -i 's/a_failed_copy_gives_the_connection_back/a_test_by_no_such_name/' "$root/gate.sh"
+
+  # Run from the real repo so every other check still has its artefacts: the
+  # gate must fail on the one missing test, not on the absence of a workspace.
+  expect_fail "objects to a test it names that does not exist" \
+    env PGPROX_MUTANTS_BASELINE=product/mutants-baseline.txt bash "$root/gate.sh"
+}
+
 # --- the thresholds, M13.1 ---------------------------------------------------
 #
 # Non-negotiable 2 is that a threshold is never lowered to make a check pass. A
@@ -581,6 +611,7 @@ if [[ -z "$WANTED" || "$WANTED" == m11-admission ]]; then case_m11_admission; ra
 if [[ -z "$WANTED" || "$WANTED" == m1f-adr ]]; then case_m1f_adr; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == drift-subshell ]]; then case_drift_subshell; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == every-gate ]]; then case_every_gate; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == m15-missing-test ]]; then case_m15_missing_test; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == thresholds ]]; then case_thresholds; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == tests-kept ]]; then case_tests_kept; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == secrets ]]; then case_secrets; ran=1; fi

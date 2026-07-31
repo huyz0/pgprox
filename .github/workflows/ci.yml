@@ -269,3 +269,9 @@ jobs:
         run: scripts/m13-complete.sh
       - name: M14
         run: scripts/m14-complete.sh
+      # Every check in this one runs a named test and reads its exit status,
+      # which is `M12.8`'s rule taken literally: a finding is fixed when a test
+      # would fail if it came back, so the gate runs the test rather than
+      # looking for the file it lives in.
+      - name: M15
+        run: scripts/m15-complete.sh

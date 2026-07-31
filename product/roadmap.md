@@ -31,7 +31,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M12 | The gates that count files | complete; five gate checks now read what a file says instead of matching its name, and every gate is proven able to fail |
 | M13 | The non-negotiables that nothing enforces | complete; six of the seven rules have a script and the seventh is marked as having none, which is the honest half of the answer |
 | M14 | The crates mutation testing never reached | complete; 2,926 mutants across all fourteen crates, 155 survivors, 137 killed and 18 argued |
-| M15 | The protocol crate under a second reading | in progress |
+| M15 | The protocol crate under a second reading | complete; thirteen findings, of which three are memory bounds a peer controlled, two are connection state that never came back, and one is a mutant in a test this milestone wrote after writing about that exact mistake |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -795,3 +795,43 @@ clearing functions, and calls neither from anything but a test.
 Completion condition: every finding above either fixed with a test that fails
 without the fix, or recorded with an argument for why it stands. The
 performance items carry a measurement rather than a claim.
+
+**What it came to.** Thirteen findings across three readings. The first was the
+crate against its own header, the second was a second pass plus a mutation
+sweep, the third was a fuzz run and a sweep for the two patterns the first two
+kept turning up.
+
+Three were memory bounds a peer chose. `DEFAULT_MAX_INSPECT` documented itself
+as the ceiling on what one message may buffer and had no caller, so a `Sync`
+declaring 8 MiB held 8 MiB, from a client that had not authenticated. The cap
+alone was half a fix, because `Vec::clear` keeps its allocation and one frame
+per connection would then have bought a permanent megabyte. And the handshake
+itself was read against the 1 GiB relay cap, where Postgres allows 10000 bytes.
+
+Two were connection state that never came back. A failed COPY held its upstream
+connection for the life of the session, because `ReadyForQuery` ended an
+extended sequence and did not end COPY. `DISCARD ALL` deallocated the server's
+prepared statements while both maps went on believing in them, and both
+clearing functions had existed since M5 with no caller outside their own tests.
+
+The rest were smaller: a scalar scan on the hottest loop in the crate, a
+five-byte copy on every frame, a count that could disagree with its list, a
+capacity reserved from an unread number, a parameter that pinned where it could
+replay, and a header sentence that claimed the crate never allocates in five
+places where it does.
+
+**Two things are worth saying plainly.**
+
+`pgbouncer` was worth more than reading our own code again. Two of the three
+correctness bugs came from comparing against it, and neither was visible from
+inside: the COPY leak is a line pgbouncer has and we did not, and the
+prepared-statement desync is a rule it applies that we had written down and
+never called. Reading a mature implementation of the same protocol found what
+re-reading ours did not.
+
+`M15.12` is the one to keep. A mutation run found a survivor in a test this
+milestone wrote: an assertion compared against the constant that produced it,
+which is the first of the four shapes M14 catalogued, and which `M15.6` quoted
+while fixing a different instance of it. Knowing the failure mode, and having
+just written about it, did not stop me committing it. That is the argument for
+running the check rather than for knowing the rule.

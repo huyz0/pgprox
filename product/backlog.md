@@ -4997,5 +4997,5 @@ milestone said it would do and which found three more.
   states.
   Acceptance: no reservation from an unread count, and a test that a large
   declared count with no columns behind it is refused rather than reserved.
-- [ ] `M15.8` Close M15. Filed before the commit that does it, and after the
+- [x] `M15.8` Close M15. Filed before the commit that does it, and after the
   readings the milestone promised, which between them found five more.
