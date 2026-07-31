@@ -3189,6 +3189,15 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   already instrumented by reason, which is what makes this cheap.
   Acceptance: a workload knob, a curve over at least three values, and a
   statement of where multiplexing stops paying for itself.
+  Split on inspection, before starting, the way `M10.8` and `M10.13` were split
+  once their size was visible. The knob is not a knob: `pgprox_load::workload`
+  has `Kind` as `Read | Write`, and a pinning workload needs a third variant, a
+  client that issues `LISTEN` and holds the session, a schema version bump on
+  every workload document, and every match on `Kind` updated, with the crate's
+  95% gate on top. That is a commit. The curve is a separate commit and a
+  separate hour of runs.
+  This task keeps the knob. `M11.7` takes the curve, and cannot start until this
+  one lands.
 - [x] `M11.5` Write `scripts/m11-complete.sh` before the milestone needs
   closing rather than after. `M10.17` is the argument: M10's gate was named in
   the roadmap from the day the milestone was filed and did not exist, and
@@ -3229,3 +3238,12 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   `kind`, with the fleet at its upstream quota and one node killed outright;
   what the displaced clients are told, recorded; and the transaction loss
   recorded next to `M8`'s 22 of 21,088.
+- [ ] `M11.7` The pinning curve itself, once `M11.4` has given the load
+  generator a statement kind that pins. At least three values of the pinned
+  share, each a matched run, reading `pgprox_pin_total` by reason and the
+  upstream connection count against the median.
+  The question is where multiplexing stops paying for itself: ADR 0001 says a
+  fleet whose tenants all use `LISTEN`/`NOTIFY` collapses back to session
+  pooling, and the curve is what says at what share that starts to bite.
+  Acceptance: three or more values, matched runs, and a stated crossing point
+  or a statement that there is none inside the range measured.

@@ -95,7 +95,7 @@ fi
 if compgen -G 'product/perf/*pinning*.md' >/dev/null; then
   ok "the pinning curve is recorded"
 else
-  fail "no pinning curve: ADR 0001's open question has no measured half yet (M11.4)"
+  fail "no pinning curve: ADR 0001's open question has no measured half yet (M11.4 then M11.7)"
 fi
 
 # --- M11.6: admission when every survivor is full -----------------------------
