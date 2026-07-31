@@ -27,4 +27,5 @@ pub use reap::{ReapConfig, Reaping, is_expired, reap};
 
 pub use statements::{
     ConnectionStatements, GlobalName, Preparation, SessionStatements, StatementConfig,
+    deallocates_everything,
 };

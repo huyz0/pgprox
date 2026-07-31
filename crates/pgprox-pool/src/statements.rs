@@ -141,6 +141,54 @@ pub struct PreparedStatement {
     pub global: GlobalName,
 }
 
+/// Whether a statement deallocates every prepared statement on the connection.
+///
+/// `DISCARD ALL` and `DEALLOCATE ALL` both do, and they are the only two forms
+/// that matter here. The narrower ones cannot: `DISCARD PLANS` releases cached
+/// plans and leaves the statements, and `DEALLOCATE name` names a statement the
+/// client prepared with SQL `PREPARE`, which is not a name this proxy ever
+/// hands out.
+///
+/// # Why the maps have to be told
+///
+/// The two sides share one namespace in Postgres, so `DISCARD ALL` drops the
+/// statements this proxy prepared with a protocol `Parse` as surely as the
+/// ones the client prepared with SQL. A map that did not hear about it would go
+/// on believing a connection holds statements the server has dropped, and the
+/// next `Bind` would name one of them.
+///
+/// # Read from the client's SQL rather than from the server's answer
+///
+/// pgbouncer does this on the `CommandComplete` tag, which is the server
+/// reporting what it did rather than the client saying what it asked for. The
+/// difference shows up when a `DEALLOCATE ALL` is rolled back: the tag came
+/// back, the statements are still there, and both approaches over-clear. That
+/// is the safe direction. Under-clearing is the one that produces "prepared
+/// statement does not exist" on a connection the proxy thought was warm, and
+/// reading the client's SQL cannot under-clear, because the statement either
+/// ran or errored and an error leaves the maps clearable but correct.
+#[must_use]
+pub fn deallocates_everything(sql: &str) -> bool {
+    let mut lexer = pgprox_core::sql::Lexer::new(sql);
+    lexer.skip_trivia();
+    let mut words = lexer.rest().split_whitespace();
+
+    let Some(verb) = words.next() else {
+        return false;
+    };
+    if !verb.eq_ignore_ascii_case("discard") && !verb.eq_ignore_ascii_case("deallocate") {
+        return false;
+    }
+
+    // `DEALLOCATE PREPARE ALL` is legal and means the same thing; the keyword
+    // is noise the grammar allows.
+    let mut what = words.next().unwrap_or("");
+    if what.eq_ignore_ascii_case("prepare") {
+        what = words.next().unwrap_or("");
+    }
+    what.trim_end_matches(';').eq_ignore_ascii_case("all")
+}
+
 impl SessionStatements {
     /// A session that has prepared nothing.
     #[must_use]
@@ -428,6 +476,47 @@ mod tests {
 
         held.forget_all();
         assert!(held.is_empty());
+    }
+
+    #[test]
+    fn the_two_forms_that_deallocate_everything_are_recognised() {
+        for sql in [
+            "DISCARD ALL",
+            "discard all",
+            "DEALLOCATE ALL",
+            "deallocate all;",
+            "DEALLOCATE PREPARE ALL",
+            "  DISCARD   ALL  ",
+            "/* pgx */ DISCARD ALL",
+            "-- reset the session\nDISCARD ALL",
+        ] {
+            assert!(deallocates_everything(sql), "{sql:?} was not recognised");
+        }
+    }
+
+    #[test]
+    fn the_narrower_forms_leave_the_statements_alone() {
+        // `DISCARD PLANS` releases cached plans and keeps the statements, and
+        // `DEALLOCATE name` names one the client prepared with SQL `PREPARE`,
+        // which is never a name this proxy handed out. Clearing on either would
+        // throw away a warm connection's whole map for nothing.
+        for sql in [
+            "DISCARD PLANS",
+            "DISCARD SEQUENCES",
+            "DISCARD TEMP",
+            "DEALLOCATE my_statement",
+            "DEALLOCATE PREPARE my_statement",
+            "SELECT 1",
+            "",
+            "DISCARD",
+            "DEALLOCATE",
+            "discarding_is_not_a_verb ALL",
+        ] {
+            assert!(
+                !deallocates_everything(sql),
+                "{sql:?} cleared the statement maps"
+            );
+        }
     }
 
     fn config(cap: usize) -> StatementConfig {

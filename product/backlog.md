@@ -4825,7 +4825,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   clear there because it tracks readiness in a separate flag. That is
   `a_sync_alone_does_not_permit_release` in the other direction, and the new
   test asserts the intermediate state as well as the final one.
-- [ ] `M15.3` `DISCARD ALL` deallocates the server's prepared statements and
+- [x] `M15.3` `DISCARD ALL` deallocates the server's prepared statements and
   nothing tells the maps. `ParamCache::observe_statement` handles `DISCARD ALL`
   and `RESET ALL` by clearing the parameter cache. The statement maps have the
   matching operations, `ClientStatements::close_all` and
@@ -4837,6 +4837,16 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   statement maps, and a test runs `DISCARD ALL` and then binds.
   pgbouncer does this on the `CommandComplete` tag, checking for `DEALLOCATE
   ALL` and `DISCARD ALL` by name (`src/server.c`).
+  **Both maps, not one.** Clearing only the session map would leave the
+  connection claiming to hold the global name, and since the global name is
+  derived from the SQL, a client that re-parses the same statement gets the same
+  name back and the connection would skip the `Parse`. There is a test for
+  exactly that sequence.
+  Read from the client's SQL rather than the server's `CommandComplete` tag,
+  which is where pgbouncer reads it. The two differ only when a `DEALLOCATE
+  ALL` is rolled back, where both over-clear, and over-clearing costs a
+  re-prepare while under-clearing produces "prepared statement does not exist"
+  on a connection the proxy thought was warm.
 - [ ] `M15.4` `cstr` scans one byte at a time. `Reader::cstr` finds its
   terminator with `iter().position(|b| *b == 0)`, which is a scalar loop, and
   it is on every hot path this crate has: the SQL in `Query` and `Parse` up to

@@ -29,6 +29,7 @@ use pgprox_core::error::ClientError;
 use pgprox_pool::params::SessionParams;
 use pgprox_pool::statements::{
     ConnectionStatements, GlobalName, Preparation, SessionStatements, StatementConfig,
+    deallocates_everything,
 };
 
 /// One thing to send before the client's own frame.
@@ -113,6 +114,43 @@ pub fn replayed(session: &SessionMemory, connection: &mut ConnectionMemory) {
     for (name, value) in session.params.iter() {
         connection.params.record(name, value);
     }
+}
+
+/// Records what a client statement did to state neither side can see alone.
+///
+/// Call it for every statement the client sends upstream, before the answer
+/// comes back. Returns whether anything was forgotten, which is a metric worth
+/// having: a client running `DISCARD ALL` between statements is re-preparing
+/// its whole cache each time, and that is a workload nobody would guess at from
+/// the outside.
+///
+/// # What this closes
+///
+/// `DISCARD ALL` deallocates every prepared statement on the connection, and
+/// both maps went on believing otherwise. `SessionStatements::close_all` and
+/// `ConnectionStatements::forget_all` have existed since M5 and neither had a
+/// caller outside its own tests, so the first `Bind` after a `DISCARD ALL`
+/// named a global the server had just dropped.
+///
+/// The parameter half was already handled: `SessionParams::observe_statement`
+/// treats `DISCARD ALL` as `RESET ALL`. Only the statements were missed, which
+/// is what made this hard to see. Half the state was being tracked correctly.
+pub fn observe_statement(
+    session: &mut SessionMemory,
+    connection: &mut ConnectionMemory,
+    sql: &str,
+) -> bool {
+    if !deallocates_everything(sql) {
+        return false;
+    }
+
+    // Both sides, and both for the same reason. The session map is the client's
+    // names, and the client knows it ran a DISCARD ALL, so it will re-parse.
+    // The connection map is what the server holds, and the server has just
+    // dropped it.
+    session.statements.close_all();
+    connection.statements.forget_all();
+    true
 }
 
 /// Makes sure the target connection holds the statement a `Bind` names.
@@ -395,5 +433,74 @@ mod tests {
             on_acquire(&session, &ConnectionMemory::default()).is_empty(),
             "a parameter outside the replayable allowlist was replayed"
         );
+    }
+
+    #[test]
+    fn discard_all_makes_both_maps_forget() {
+        // The desync this closes. `DISCARD ALL` deallocates every prepared
+        // statement on the connection, and until this existed both maps went on
+        // believing otherwise, so the next `Bind` named a global the server had
+        // just dropped.
+        let mut session = SessionMemory::default();
+        let mut connection = capped(10);
+
+        session.statements.parse("S_1", "SELECT $1");
+        let steps = before_bind(&session, &mut connection, "S_1").unwrap();
+        assert!(!steps.is_empty(), "the setup did not prepare anything");
+        assert!(!connection.statements.is_empty());
+
+        assert!(observe_statement(
+            &mut session,
+            &mut connection,
+            "DISCARD ALL"
+        ));
+
+        assert!(
+            connection.statements.is_empty(),
+            "the connection still believes it holds statements the server dropped"
+        );
+        assert!(
+            before_bind(&session, &mut connection, "S_1").is_err(),
+            "a name the client must re-parse was still bindable"
+        );
+    }
+
+    #[test]
+    fn a_re_parse_after_discard_all_prepares_again_rather_than_assuming() {
+        // The half that would still be wrong if only the session map were
+        // cleared: the client re-parses, gets the same global name back because
+        // the name is derived from the SQL, and the connection must not claim to
+        // hold it already.
+        let mut session = SessionMemory::default();
+        let mut connection = capped(10);
+
+        session.statements.parse("S_1", "SELECT $1");
+        before_bind(&session, &mut connection, "S_1").unwrap();
+        observe_statement(&mut session, &mut connection, "DISCARD ALL");
+
+        session.statements.parse("S_1", "SELECT $1");
+        let steps = before_bind(&session, &mut connection, "S_1").unwrap();
+        assert!(
+            steps
+                .iter()
+                .any(|step| matches!(step, Step::Prepare { .. })),
+            "the connection skipped the Parse for a statement the server no longer has: {steps:?}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_statement_forgets_nothing() {
+        let mut session = SessionMemory::default();
+        let mut connection = capped(10);
+        session.statements.parse("S_1", "SELECT $1");
+        before_bind(&session, &mut connection, "S_1").unwrap();
+
+        for sql in ["SELECT 1", "DISCARD PLANS", "SET search_path = a"] {
+            assert!(
+                !observe_statement(&mut session, &mut connection, sql),
+                "{sql:?} reported a deallocation"
+            );
+        }
+        assert!(before_bind(&session, &mut connection, "S_1").is_ok());
     }
 }
