@@ -3189,7 +3189,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   already instrumented by reason, which is what makes this cheap.
   Acceptance: a workload knob, a curve over at least three values, and a
   statement of where multiplexing stops paying for itself.
-- [ ] `M11.5` Write `scripts/m11-complete.sh` before the milestone needs
+- [x] `M11.5` Write `scripts/m11-complete.sh` before the milestone needs
   closing rather than after. `M10.17` is the argument: M10's gate was named in
   the roadmap from the day the milestone was filed and did not exist, and
   nothing noticed until every task was done and the milestone could not be
@@ -3200,6 +3200,20 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   cannot see rather than restate them, and it goes in CI beside its siblings.
   Acceptance: the script exists, fails when any of the four is missing, is named
   in CI, and fails today because none of them is done yet.
+  Taken out of backlog order, ahead of `M11.4`, which is what its own text asked
+  for: written before the milestone needs closing rather than after. `M11.4`
+  had also grown a code change across `pgprox-load` by the time it came up, and
+  a gate is the better thing to have in hand first.
+  Nine checks. Seven pass and two fail, on `M11.4`'s pinning curve and
+  `M11.6`'s admission run, which is the gate doing its job while the milestone
+  is open rather than a gate that only exists at the end.
+  Two of the nine check behaviour rather than artefacts, which is worth more
+  than a file test: that `shed::decide` still refuses on headroom, since
+  `M11.3`'s finding and `M11.6`'s premise both rest on it, and that the roadmap
+  has not regrown the clause `M11.3` corrected.
+  In CI as `continue-on-error` while the milestone is open, so the job stays
+  green and the gate stays visible. A gate nobody runs until the end is exactly
+  what `M10.17` was about.
 - [ ] `M11.6` What happens to the clients a dead node displaces when every
   survivor is full. `M11.3` was filed as a question about shedding and is not
   one: shedding is refused at the cap by design, so the mechanism actually under
