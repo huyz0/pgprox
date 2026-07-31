@@ -285,6 +285,41 @@ PLANT
     env PGPROX_SHELL_ROOTS="$dir/*.sh" scripts/check-drift.sh
 }
 
+# --- every gate, M12.7 -------------------------------------------------------
+#
+# The cases above each break one artefact and prove one check objects. This one
+# is the floor under all of them: every gate, run against a tree that has none
+# of what it looks for, must exit non-zero.
+#
+# The method is to copy `scripts/` into an empty directory. `lib.sh` derives
+# `REPO_ROOT` from its own location, so the copy looks out at a tree with no
+# crates, no product/, no deploy/, and every check has something to object to.
+# Nothing in the real tree is touched.
+#
+# A warning about writing this loop, because the first version of it reported
+# all thirteen gates exiting 0 and they were all exiting 1:
+#
+#     printf '%s exit=%s\n' "$(basename "$g")" "$?"    # wrong
+#
+# The command substitution runs before `$?` is expanded and replaces it with
+# basename's status. The exit code has to be captured into a variable before
+# anything else runs. That is the same mistake as M11.7's, one level up: a
+# harness that reported success for a failure it had measured correctly.
+case_every_gate() {
+  echo
+  echo "  every gate, against a tree holding none of its artefacts"
+
+  local root="$WORK/bare"
+  rm -rf "$root"; mkdir -p "$root/scripts"
+  cp scripts/*.sh "$root/scripts/"
+
+  local g
+  for g in "$root"/scripts/m*-complete.sh "$root"/scripts/release-check.sh; do
+    [[ -f "$g" ]] || continue
+    expect_fail "$(basename "$g") fails when its artefacts are absent" bash "$g"
+  done
+}
+
 # -----------------------------------------------------------------------------
 
 echo "gates: proof that they can fail"
@@ -296,6 +331,7 @@ if [[ -z "$WANTED" || "$WANTED" == m9-cache ]]; then case_m9_cache; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m11-admission ]]; then case_m11_admission; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m1f-adr ]]; then case_m1f_adr; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == drift-subshell ]]; then case_drift_subshell; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == every-gate ]]; then case_every_gate; ran=1; fi
 
 if (( ! ran )); then
   fail "no such case: $WANTED"

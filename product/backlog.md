@@ -3817,7 +3817,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   the one file most likely to contain the shape it looks for. Re-verified after
   the change by replanting the real bug, which it still catches, all five
   lines.
-- [ ] `M12.7` Prove each gate can fail. Every `mN-complete.sh` is trusted to
+- [x] `M12.7` Prove each gate can fail. Every `mN-complete.sh` is trusted to
   report a milestone's completion and not one of them has ever been observed
   failing on this tree.
   The method is the one that found `M11.7`'s subshell bug: break the artefact,
@@ -3826,6 +3826,26 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Sized on inspection rather than guessed: twelve gates, so this is a harness
   plus a table of one broken artefact per gate, and it is a commit only if the
   harness is small. If it is not, it splits by gate and this entry says so.
+  It did not need to split. The harness is one loop, because there is a method
+  that breaks every gate's artefacts at once: copy `scripts/` into an empty
+  directory. `lib.sh` derives `REPO_ROOT` from its own location, so the copy
+  looks out at a tree with no crates, no `product/`, no `deploy/`, and every
+  check has something to object to. Nothing in the real tree is touched.
+  Thirteen gates covered, the twelve `mN-complete.sh` plus `release-check.sh`,
+  which is M8's. The loop globs, so a gate added later is covered without anyone
+  remembering to add it.
+  What this proves and what it does not, stated plainly. It is a floor: every
+  gate exits non-zero when the thing it checks is absent. It is not a proof that
+  each individual check inside a gate can fail. The targeted cases for `M12.2`
+  through `M12.6` do that for the five checks this milestone rewrote, and the
+  rest of the checks in those gates have the floor and nothing more.
+  The loop had a bug worth keeping, because it is this milestone's own subject
+  one level up. Its first version reported all thirteen gates exiting 0 while
+  all thirteen were exiting 1, because it read `$?` in the same `printf` as
+  `$(basename ...)`, and the command substitution runs first and replaces it.
+  A harness reporting success for a failure it had measured correctly is
+  `M11.7`'s bug wearing different clothes. The comment in the file says so, so
+  the loop does not get rewritten that way.
 - [ ] `M12.8` Write `scripts/m12-complete.sh` before the milestone needs
   closing, which `M10.17` and `M11.5` both establish as the order. It has to
   avoid being an instance of its own subject: no check in it may glob for a
