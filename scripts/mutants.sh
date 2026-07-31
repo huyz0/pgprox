@@ -120,6 +120,27 @@ for crate in "${CRATES[@]}"; do
     measured=0
     continue
   fi
+
+  # The unmutated baseline is its own outcome, and it has to have succeeded
+  # before any survivor count means anything. `M14.4` found this the way it is
+  # always found: `pgprox-config` reported "1 mutants, 0 surviving" and
+  # "all checks passed" while its baseline had failed to build, so the run
+  # tested nothing at all and said so in a way that read like success.
+  #
+  # A run that tested nothing is not a clean run. It is the same defect `M12`
+  # spent a milestone on, living inside the tool that checks for defects.
+  baseline="$(python3 -c "
+import json
+outcomes = json.load(open('$out/mutants.out/outcomes.json'))['outcomes']
+first = next((o for o in outcomes if o.get('scenario') == 'Baseline'), None)
+print('missing' if first is None else first.get('summary', 'unknown'))
+")"
+  if [[ "$baseline" != "Success" ]]; then
+    fail "$crate: the unmutated baseline is '$baseline', so nothing was mutated; see $out.log"
+    measured=0
+    continue
+  fi
+
   survivors_of "$out" >> "$found"
   total="$(python3 -c "
 import json

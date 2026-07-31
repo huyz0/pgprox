@@ -435,6 +435,43 @@ mod tests {
     /// detail lives in the admin API instead, which is pull-based and costs
     /// nothing when nobody is looking.
     #[test]
+    fn the_worst_case_series_count_is_the_product_of_every_label() {
+        // `max_series` could return `0` or `1`. The existing check asserts
+        // `max_series() <= CEILING`, which both constants satisfy: an upper
+        // bound is exactly the shape of assertion a small constant passes.
+        // That check is the cardinality budget for the whole metric surface,
+        // so a constant makes the budget unfalsifiable.
+        for metric in ALL {
+            let expected: u64 = metric
+                .all_labels()
+                .iter()
+                .map(|label| u64::from(label.cardinality))
+                .product();
+            assert_eq!(
+                metric.max_series(),
+                expected,
+                "{metric}: max_series is not the product of its labels"
+            );
+
+            // Never zero: every metric carries at least `node`, and a zero
+            // would mean a label with no possible values.
+            assert!(metric.max_series() > 0, "{metric}: zero possible series");
+        }
+
+        // And it genuinely multiplies rather than counting or returning one:
+        // some metric in the set has more than one label, so its worst case is
+        // larger than `node` alone.
+        let multi = ALL.iter().find(|metric| metric.all_labels().len() > 1);
+        assert!(multi.is_some(), "no metric has more than one label");
+        if let Some(metric) = multi {
+            assert!(
+                metric.max_series() > u64::from(NODE.cardinality),
+                "a metric with two labels did not multiply them"
+            );
+        }
+    }
+
+    #[test]
     fn no_metric_has_an_unbounded_label() {
         for metric in ALL {
             for label in metric.all_labels() {

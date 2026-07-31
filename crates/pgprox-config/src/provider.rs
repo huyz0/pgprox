@@ -278,6 +278,84 @@ mod tests {
         (dir, config)
     }
 
+    /// `M14.42`. `is_healthy` survived being replaced by `true` *and* by
+    /// `false`, which is only possible if nothing asks it. `M14.34` found the
+    /// same of the `Arc` forwarding impl in `pgprox-core`, so between them the
+    /// config staleness signal had no test anywhere: not on the trait default,
+    /// not on the forwarding, and not on the one implementation that overrides
+    /// it because it can actually go stale.
+    ///
+    /// What it is for, from its own doc: a node serving a stale document looks
+    /// exactly like one serving the current one, which is when an operator most
+    /// needs to be told which they have.
+    #[tokio::test(start_paused = true)]
+    async fn the_trait_loop_polls_the_file() {
+        // `run_loop` could be replaced with `()`. It is the override that makes
+        // the composition root able to start the watch without knowing which
+        // source it holds, and its own doc records what happened when nothing
+        // started it: a ConfigMap edit never reached a running node.
+        //
+        // A no-op body is indistinguishable from a running loop unless the test
+        // waits for the loop to do something, which is what this does.
+        let (dir, mut config) = mounted(MINIMAL);
+        config.poll_interval = Duration::from_millis(10);
+        let source = FileSource::new(config).unwrap();
+        let mut watcher = ConfigSource::watch(&*source);
+
+        let running = tokio::spawn(ConfigSource::run_loop(source.clone()));
+
+        fs::write(dir.path().join("pgprox.yaml"), "max_client_conns: 250\n").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), watcher.changed())
+            .await
+            .expect("the trait loop never published a change, so it never polled")
+            .unwrap();
+        assert_eq!(watcher.borrow_and_update().max_client_conns, 250);
+
+        running.abort();
+    }
+
+    #[test]
+    fn health_follows_the_last_poll_rather_than_a_constant() {
+        let (dir, config) = mounted(MINIMAL);
+        let source = FileSource::new(config).unwrap();
+
+        // Called three ways on purpose, because they are three different
+        // functions and the obvious one is not the one you would expect.
+        //
+        // `FileSource::new` returns `Arc<Self>`, and `pgprox-core` implements
+        // `ConfigSource for Arc<T>`, so `source.is_healthy()` resolves to the
+        // trait method on the `Arc` with no deref rather than to the inherent
+        // method on `FileSource` with one. The first version of this test
+        // asserted only the first two and both mutants of the inherent method
+        // survived: it was never called.
+        assert!(source.is_healthy(), "a good load left the source unhealthy");
+        assert!(ConfigSource::is_healthy(&*source));
+        assert!(FileSource::is_healthy(&source), "the inherent method");
+        assert!(source.last_error().is_none());
+
+        // Replace it with something unparseable and poll again.
+        fs::write(
+            dir.path().join("pgprox.yaml"),
+            "max_client_conns: not-a-number\n",
+        )
+        .unwrap();
+        assert!(source.poll().is_err());
+        assert!(
+            !source.is_healthy(),
+            "a source that failed its last poll still reported itself healthy"
+        );
+        assert!(!ConfigSource::is_healthy(&*source));
+        assert!(!FileSource::is_healthy(&source));
+        assert!(source.last_error().is_some());
+
+        // And it recovers, so health tracks the latest poll rather than
+        // latching once it has been either value.
+        fs::write(dir.path().join("pgprox.yaml"), MINIMAL).unwrap();
+        assert!(source.poll().is_ok());
+        assert!(source.is_healthy(), "a recovered source stayed unhealthy");
+        assert!(FileSource::is_healthy(&source));
+    }
+
     /// Lays out a directory the way Kubernetes lays out a `ConfigMap`:
     /// the data in a timestamped directory, `..data` pointing at it, and the
     /// visible file pointing through that.

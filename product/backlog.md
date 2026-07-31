@@ -4572,12 +4572,33 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   which means nothing calls it through the trait at all. `ConnId::counter` and
   the `Lsn` parser are identity handling, and `ClientError::client_message`
   being replaceable by a literal means no test reads what a client is told.
-- [ ] `M14.4` The remaining seven crates, or a written decision about which stay
+- [~] `M14.4` The remaining seven crates, or a written decision about which stay
   out and why. `pgprox-testkit` at 296 lines and `pgprox-tls` at 968 are small;
   `pgprox-admin`, `pgprox-auth`, `pgprox-config` and `pgprox-observe` are not.
   Acceptance: `mutants.sh`'s list matches its stated criterion, or the criterion
   is reworded to match the list with a reason. What must not survive is the
   present state, where the header says one thing and the array says another.
+  Counted first: 662 mutants across the seven. Run in two batches, the four
+  small ones together and then the three large.
+  **First batch done: `tls` 16, `testkit` 13, `observe` 63, `config` 80.**
+  Eleven survivors, nine killed by six tests, two argued.
+  `testkit` was clean without any work, which is worth recording as the one
+  crate in this milestone that needed nothing.
+  `FileSource::is_healthy` survived both `true` and `false` even after a test
+  was written for it, because the test never called it. `FileSource::new`
+  returns `Arc<Self>` and `pgprox-core` implements `ConfigSource for Arc<T>`,
+  so `source.is_healthy()` resolves to the trait method on the `Arc` with no
+  deref rather than the inherent method with one. That inherent method has no
+  caller anywhere in the workspace: it is public API shadowed into
+  unreachability by a blanket impl in another crate. It is now called
+  explicitly, with the reason in the test, because someone reading
+  `source.is_healthy()` would reasonably believe they were calling it.
+  With `M14.34`, that makes three separate places the config staleness signal
+  was untested: the trait default, the `Arc` forwarding, and the implementation.
+  `max_series` could return `0` or `1` because the check on it is an upper
+  bound, `max_series() <= CEILING`, which any small constant satisfies. That
+  check is the cardinality budget for the whole metric surface, so a constant
+  made the budget unfalsifiable.
 - [x] `M14.5` `product/plan.md`'s M0 open items are stale. Item 1 says the
   sidecar `.proto` "needs sign-off from whoever owns the sidecar"; ADR 0017
   decided this repository owns it and the file is marked `STATUS: FROZEN`. Item

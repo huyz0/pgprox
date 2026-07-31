@@ -215,6 +215,36 @@ impl Health {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    /// `M14.41`. Six mutants survived in this crate and all six are accessors
+    /// nobody asked in more than one state. `is_pass`, `as_str`, `max_series`,
+    /// `is_empty` and `cardinality` could each return a constant.
+    #[test]
+    fn a_probe_reports_passing_only_when_it_passed() {
+        // `is_pass` could return `false` for everything, which is what decides
+        // whether Kubernetes sends this node traffic.
+        assert!(Probe::Pass.is_pass());
+        assert!(!Probe::Fail(Reason::Draining).is_pass());
+        assert!(!Probe::Fail(Reason::Starting).is_pass());
+        assert!(!Probe::Fail(Reason::Stuck).is_pass());
+    }
+
+    #[test]
+    fn every_reason_has_its_own_text() {
+        // `as_str` could return one literal for every variant. The body of a
+        // failing probe is how an operator learns whether a pod is starting,
+        // draining or stuck, and those call for three different responses.
+        assert_eq!(Reason::Draining.as_str(), "draining");
+        assert_eq!(Reason::Starting.as_str(), "starting");
+        assert_eq!(Reason::Stuck.as_str(), "stuck");
+
+        let all = [
+            Reason::Draining.as_str(),
+            Reason::Starting.as_str(),
+            Reason::Stuck.as_str(),
+        ];
+        let unique: std::collections::HashSet<&str> = all.iter().copied().collect();
+        assert_eq!(unique.len(), all.len(), "two reasons share a body");
+    }
 
     fn started() -> (Health, Instant) {
         let mut health = Health::new(HealthConfig::default());

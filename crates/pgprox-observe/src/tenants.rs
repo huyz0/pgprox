@@ -192,6 +192,33 @@ impl TenantAllowlist {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_allowlist_reports_its_own_size_and_cardinality() {
+        // `is_empty` could return `true` and `cardinality` could return `1`,
+        // which are each other's answer for the empty case: every test that
+        // used an empty list passed under both mutants.
+        //
+        // `cardinality` is the bound on a `tenant` label's distinct values, and
+        // it is the number that stops metric cardinality exploding, so a
+        // constant here makes the bound meaningless.
+        let empty = TenantAllowlist::new();
+        assert!(empty.is_empty());
+        assert_eq!(empty.cardinality(), 1, "just OTHER");
+
+        let one = TenantAllowlist::from_configured([tenant("acme")]).unwrap();
+        assert!(
+            !one.is_empty(),
+            "a list holding a tenant called itself empty"
+        );
+        assert_eq!(one.cardinality(), 2, "acme and OTHER");
+
+        let three =
+            TenantAllowlist::from_configured([tenant("acme"), tenant("globex"), tenant("initech")])
+                .unwrap();
+        assert!(!three.is_empty());
+        assert_eq!(three.cardinality(), 4, "three tenants and OTHER");
+    }
+
     use crate::metrics::MAX_LABEL_VALUES;
 
     fn tenant(name: &str) -> TenantId {
