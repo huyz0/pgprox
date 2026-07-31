@@ -4206,3 +4206,54 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   which stopped being true in `M13.8` one commit earlier. A list that names its
   own gaps has to stop naming the ones it has closed, or it decays into the
   thing this milestone was about from the other direction.
+
+## M14: the crates mutation testing never reached
+
+- [x] `M14.0` Plan M14: audit which crates mutation testing covers against the
+  criterion the script states.
+  Measured rather than assumed. `mutants.sh` targets "the crates whose logic is
+  a pure state machine" and lists four; `M13.4` proved every crate under
+  `crates/` is sans-I/O and now enforces it, so the criterion selects all
+  fourteen and the list selects four.
+  49,725 lines and 857 tests across ten crates have never had a mutant run at
+  them, against 37,536 lines and 576 tests that have. Counted, not estimated:
+  `cargo mutants --list` gives 280 mutants for `pgprox-cluster`, 273 for
+  `pgprox-pool` and 536 for `pgprox-core`.
+  Ordered by what a surviving mutant would mean rather than by size.
+  `pgprox-cluster` first: it holds the quota invariant that is M3's completion
+  condition and the roadmap's headline safety claim.
+- [ ] `M14.1` Mutation testing for `pgprox-cluster`, 280 mutants.
+  The quota invariant, guaranteed plus leased never exceeding the cap, is the
+  strongest claim this project makes and 156 tests assert around it. Whether any
+  of them would notice the invariant breaking is untested.
+  Acceptance: the run completes, every survivor is either killed by a new test
+  or carries a written equivalence argument in the baseline, and `mutants.sh`
+  passes for the crate.
+  Expect this to split if the survivor count is large. One commit per group of
+  survivors that share a cause is better than one commit that rewrites a crate's
+  test module, and `M10` set that precedent.
+- [ ] `M14.2` Mutation testing for `pgprox-pool`, 273 mutants. The pool state
+  machine, whose refusal and pinning behaviour `M11` spent four tasks measuring
+  from the outside without ever asking whether its tests would notice a change.
+- [ ] `M14.3` Mutation testing for `pgprox-core`, 536 mutants. Every contract
+  and every fake. `mutants.sh` opens by arguing that M9 hid three defects behind
+  a fake that answered something Postgres refuses, which makes the fakes the
+  most valuable thing in this milestone to point a mutant at.
+- [ ] `M14.4` The remaining seven crates, or a written decision about which stay
+  out and why. `pgprox-testkit` at 296 lines and `pgprox-tls` at 968 are small;
+  `pgprox-admin`, `pgprox-auth`, `pgprox-config` and `pgprox-observe` are not.
+  Acceptance: `mutants.sh`'s list matches its stated criterion, or the criterion
+  is reworded to match the list with a reason. What must not survive is the
+  present state, where the header says one thing and the array says another.
+- [ ] `M14.5` `product/plan.md`'s M0 open items are stale. Item 1 says the
+  sidecar `.proto` "needs sign-off from whoever owns the sidecar"; ADR 0017
+  decided this repository owns it and the file is marked `STATUS: FROZEN`. Item
+  3 asks what happens if a large fraction of tenants use `LISTEN`/`NOTIFY`, and
+  `M11.7` measured it: 0.650 upstream connections per pinned session, linear,
+  no threshold.
+  Acceptance: each item says what has since been decided or measured and points
+  at it, and the ones that genuinely need an owner outside this repo stay open
+  and say so. Item 2, upstream `max_connections` per server class, is one of
+  those and must not be dressed up as resolved.
+- [ ] `M14.6` Write `scripts/m14-complete.sh`, before the milestone needs
+  closing. Under `M12.8`'s constraint: run things, do not match filenames.

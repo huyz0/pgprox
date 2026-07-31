@@ -684,3 +684,43 @@ machine does not have, so it matched no line and reported
 planting a leak and watching nothing happen. Everything after it plants a
 violation and requires the rule to object, and `M13.8`'s end-to-end check carries
 a positive control for the same reason.
+
+## M14: the crates mutation testing never reached
+
+```bash
+scripts/m14-complete.sh
+```
+
+`scripts/mutants.sh` says in its own header that it runs "against the crates
+whose logic is a pure state machine", and lists four: `pgprox-proto`,
+`pgprox-route`, `pgprox-cache`, `pgprox-session`. `M13.4` then proved that
+*every* crate under `crates/` is sans-I/O, because that is now enforced. The
+criterion and the list disagree, and they have since `M10.3` wrote the script.
+
+Measured before planning:
+
+| | lines | tests | mutation tested |
+| --- | --- | --- | --- |
+| covered | 37,536 | 576 | 4 crates |
+| **not covered** | **49,725** | **857** | **10 crates** |
+
+More than half the codebase, by line and by test, has never had a mutant run at
+it. The three that matter most:
+
+- **`pgprox-cluster`**, 11,078 lines, 280 mutants. It holds the quota invariant,
+  guaranteed plus leased never exceeds the cap, which is M3's entire completion
+  condition and the roadmap's headline safety claim.
+- **`pgprox-pool`**, 8,544 lines, 273 mutants. The pool state machine, whose
+  `53300` and pinning behaviour `M11` spent four tasks measuring.
+- **`pgprox-core`**, 13,362 lines, 536 mutants. Every contract and every fake.
+  A fake that answers something the real thing would refuse is exactly how `M9`
+  hid three defects, which is the argument `mutants.sh` opens with.
+
+The milestone is those runs and their triage, in that order, plus making the
+script's list match its stated criterion so the gap cannot silently reopen.
+
+A surviving mutant is a missing test. It is killed by writing one, or it goes in
+`product/mutants-baseline.txt` with an argument for why no test can tell the
+difference. `M10` established that an entry there is an argument, never an
+assertion, and that "detected by hanging" was a claim about the runner rather
+than about the code.
