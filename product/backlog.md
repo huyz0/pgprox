@@ -3179,7 +3179,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   function and its tests, in a few minutes, after `kind` turned out not to be
   installed and the run looked expensive. The expensive experiment would have
   produced a shed count of zero and no explanation for it.
-- [ ] `M11.4` What pinning costs multiplexing, which ADR 0001 calls an open
+- [x] `M11.4` What pinning costs multiplexing, which ADR 0001 calls an open
   question and hands to the plan. The question the plan asks needs a tenant
   population nobody here has. The question that can be answered here is the one
   underneath it: how the upstream connection count and the median move as the
@@ -3210,6 +3210,24 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   needs a decision written down, and `sampler.rs:143`, which decides replica
   eligibility, is the one that matters: a pinned session belongs on the
   primary.
+  Done, and smaller than either scope note. `Kind::Listen` with the reasoning
+  for why it is neither a read nor a write: calling it a write would move a
+  watermark that has not moved, and calling it a read would make it eligible for
+  a replica the notifications never reach. No version bump, so the three
+  committed workload documents stay at 3 and every run recorded against them
+  stays comparable.
+  `bin/pgload` needed no change at all. It never branched on `Kind`; the only
+  mention of it there is a test helper. A `LISTEN` statement is a statement with
+  that SQL, which is why this turned out to be a crate change and not a client
+  one.
+  Two tests, and the second is the one worth having. The sampler already had an
+  invariant that no write is marked replica-eligible; extending it to `Listen`
+  looked like the work and is vacuous, because no fixture holds a `Listen`
+  statement. The tests that matter parse one and assert it is neither of the
+  other two, and refuse a document of nothing but `LISTEN`, which would
+  otherwise slip past the rule requiring a read that `replica_read_fraction`
+  rests on.
+  `M11.7` has what it needs.
   This task keeps the knob. `M11.7` takes the curve, and cannot start until this
   one lands.
 - [x] `M11.5` Write `scripts/m11-complete.sh` before the milestone needs

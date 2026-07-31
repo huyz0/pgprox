@@ -363,6 +363,14 @@ mod tests {
                 !(statement.kind == Kind::Write && statement.replica_eligible),
                 "a write was marked replica-eligible: {statement:?}"
             );
+            // And a `LISTEN`, for a different reason: it modifies nothing, so
+            // the answer would not be wrong, but the session is pinned to
+            // whichever connection the notifications arrive on and a replica is
+            // the one place they will not.
+            assert!(
+                !(statement.kind == Kind::Listen && statement.replica_eligible),
+                "a listen was marked replica-eligible: {statement:?}"
+            );
         }
     }
 

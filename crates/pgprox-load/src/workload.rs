@@ -70,6 +70,23 @@ pub enum Kind {
     Read,
     /// Modifies data, so it goes to the primary and moves the watermark.
     Write,
+    /// Pins the session to its upstream connection for the rest of its life.
+    ///
+    /// `LISTEN` is the case ADR 0001 names: a session that has issued one is
+    /// bound to the connection the notifications will arrive on, so the proxy
+    /// stops multiplexing it and the pool loses that connection until the
+    /// client disconnects. The ADR calls the tenant population that decides how
+    /// much this matters an open question and hands it to the plan; `M11.7`
+    /// measures the half of it that does not need a population, which is the
+    /// shape of the curve as the pinned share rises.
+    ///
+    /// Not a read and not a write, deliberately. It modifies nothing, so
+    /// calling it a write would move a watermark that has not moved; and it
+    /// must not be sent to a replica, so calling it a read would make it
+    /// eligible for one. Every comparison in this crate is against `Read` or
+    /// `Write` by name, so a third variant is excluded from both by
+    /// construction rather than by a branch somebody has to remember.
+    Listen,
 }
 
 /// One group of tenants that behave alike.
@@ -368,6 +385,40 @@ mod tests {
             WorkloadError::Field { field, .. } => field,
             WorkloadError::Unreadable(text) => panic!("unreadable: {text}"),
         }
+    }
+
+    #[test]
+    fn a_listen_statement_parses_and_is_neither_a_read_nor_a_write() {
+        // The third kind exists so a workload can hold a session open, which is
+        // what ADR 0001's open question is about. It must not be readable as
+        // either of the other two: a write moves a watermark it did not move,
+        // and a read is eligible for a replica the notifications never reach.
+        let text = document().replace(
+            "  - { name: write, weight: 1, kind: write, sql: 'UPDATE t SET a = 1' }",
+            "  - { name: write, weight: 1, kind: write, sql: 'UPDATE t SET a = 1' }\n\
+             \x20 - { name: watch, weight: 1, kind: listen, sql: 'LISTEN chan' }",
+        );
+        let workload = Workload::parse(&text).unwrap();
+
+        let Some(watch) = workload.statements.iter().find(|s| s.name == "watch") else {
+            panic!("the listen statement was dropped");
+        };
+        assert_eq!(watch.kind, Kind::Listen);
+        assert_ne!(watch.kind, Kind::Read);
+        assert_ne!(watch.kind, Kind::Write);
+    }
+
+    #[test]
+    fn a_document_of_nothing_but_listens_is_refused() {
+        // The read requirement is what `replica_read_fraction` rests on, and a
+        // `LISTEN` does not satisfy it. Without this the third kind would open
+        // a way to write a document whose replica fraction could never apply,
+        // which is the case the existing rule was added to catch.
+        let text = document()
+            .replace("kind: read", "kind: listen")
+            .replace("kind: write", "kind: listen");
+        let err = Workload::parse(&text).unwrap_err();
+        assert_eq!(field_of(&err), "statements.kind");
     }
 
     #[test]
