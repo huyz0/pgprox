@@ -270,6 +270,12 @@ impl GossipCoordinator {
         self.with(|c| c.digests().cluster_clients())
     }
 
+    /// How many tenants this node is tracking. Test-only; see `M14.12`.
+    #[cfg(test)]
+    fn tracked_tenant_count(&self) -> usize {
+        self.with(|c| c.tracked_tenant_count())
+    }
+
     /// What this node may open for a server right now.
     #[must_use]
     pub fn allowance(&self, server: &ServerId) -> NodeAllowance {
@@ -569,6 +575,150 @@ mod tests {
 
         clock.advance(CoordinatorConfig::default().lease.ttl + Duration::from_millis(1));
         assert_eq!(coordinator.allowance(&server()).leased, 0);
+    }
+
+    /// `M14.12`. Six mutants survived in this file and all six are the same
+    /// gap: every one of these methods is a one-line delegation to the inner
+    /// coordinator, the inner coordinator is thoroughly tested, and nothing
+    /// went through the façade. So `track_tenant` and `forget_tenant` could
+    /// become `()`, `view_hash` could return `1`, and `cluster_usage` and
+    /// `cluster_clients` could return `0`, with 156 tests passing.
+    ///
+    /// That matters more here than the line count suggests. `/v1/servers` and
+    /// `/v1/stats` are built on these three readers, and `M11.9` was a bug in
+    /// exactly this accounting: a dead node's last reading stayed in the total
+    /// forever. A mutant that makes them answer zero is the same class of
+    /// defect, and nothing would have caught it.
+    #[test]
+    fn the_cluster_wide_readers_report_what_the_fleet_gossiped() {
+        let (coordinator, _clock) = serving();
+
+        // Three nodes, each holding a different number of connections, so a
+        // constant answer cannot pass for the sum.
+        for (n, clients, upstream) in [(1_u16, 10_u32, 3_u32), (2, 20, 5), (3, 30, 7)] {
+            coordinator.gossip(VersionedDigest {
+                digest: ClusterDigest {
+                    node: node(n),
+                    mode: NodeMode::Active,
+                    client_conns: clients,
+                    upstream_conns: vec![(server(), upstream)],
+                    tenant_usage: Vec::new(),
+                },
+                version: 100 + u64::from(n),
+            });
+        }
+
+        assert_eq!(coordinator.cluster_clients(), 60, "10 + 20 + 30");
+        assert_eq!(coordinator.cluster_usage(&server()), 15, "3 + 5 + 7");
+
+        // And a server nobody reports is zero rather than a sum of everything.
+        assert_eq!(coordinator.cluster_usage(&ServerId::new("db-2", 5432)), 0);
+    }
+
+    #[test]
+    fn the_view_hash_changes_when_the_view_does_and_not_otherwise() {
+        // Two pods reporting different hashes is split brain, which is only a
+        // usable signal if the hash actually depends on the view. A constant
+        // makes every node agree forever, including through a partition.
+        let (coordinator, _clock) = serving();
+
+        let before = coordinator.view_hash();
+
+        // Re-gossiping the same thing must not move it, or the hash is noise
+        // and two healthy pods disagree on every round.
+        coordinator.gossip(digest_for(2, 200));
+        assert_eq!(coordinator.view_hash(), before);
+
+        // A node going into drain is a different view.
+        coordinator.gossip(VersionedDigest {
+            digest: ClusterDigest {
+                node: node(3),
+                mode: NodeMode::Draining,
+                client_conns: 0,
+                upstream_conns: Vec::new(),
+                tenant_usage: Vec::new(),
+            },
+            version: 300,
+        });
+        assert_ne!(
+            coordinator.view_hash(),
+            before,
+            "a node entering drain did not change the view hash"
+        );
+    }
+
+    #[test]
+    fn tracking_a_tenant_through_the_facade_reaches_the_coordinator() {
+        // `track_tenant` and `forget_tenant` are the two writers here with no
+        // return value, which is why both could become `()`.
+        //
+        // The first version of this test asserted through `report_tenants` and
+        // was wrong: that setter replaces the reported usage outright and does
+        // not consult the tracked set, so forgetting a tenant does not stop it
+        // being reported. What tracking decides is whether `observe` walks the
+        // tenant each round and lets its reservation decay, which is several
+        // rounds away from anything the façade returns. Hence the observer.
+        let (coordinator, _clock) = serving();
+        let acme = TenantId::new("acme");
+        let globex = TenantId::new("globex");
+
+        assert_eq!(coordinator.tracked_tenant_count(), 0);
+
+        coordinator.track_tenant(acme.clone());
+        coordinator.track_tenant(globex.clone());
+        assert_eq!(coordinator.tracked_tenant_count(), 2);
+
+        // Tracking the same tenant twice is not two tenants.
+        coordinator.track_tenant(acme.clone());
+        assert_eq!(coordinator.tracked_tenant_count(), 2);
+
+        coordinator.forget_tenant(&acme);
+        assert_eq!(coordinator.tracked_tenant_count(), 1);
+
+        // Forgetting one that was never tracked is not an error and not a
+        // change, so a mutant cannot pass by making forget a no-op either way.
+        coordinator.forget_tenant(&TenantId::new("never-seen"));
+        assert_eq!(coordinator.tracked_tenant_count(), 1);
+
+        coordinator.forget_tenant(&globex);
+        assert_eq!(coordinator.tracked_tenant_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_exhausted_pool_is_the_leaders_answer_and_is_not_asked_twice() {
+        // The match guard. `!matches!(err, QuotaError::NoLeader)` returning the
+        // error is what stops a local exhaustion being forwarded to the leader,
+        // and the comment beside it says why: asking again is asking for
+        // capacity that does not exist. Replacing the guard with `false` sends
+        // every error down the forwarding path instead, and no test noticed.
+        let (coordinator, _clock) = serving();
+
+        // Another node takes everything leasable, through the leader path this
+        // node is serving. It has to be another node: a holder's renewal
+        // replaces its own grant rather than adding to it, so this node asking
+        // twice can never exhaust anything, which is the second thing the first
+        // version of this test got wrong.
+        //
+        // And "everything" is half the cap, not the cap. `guaranteed_fraction`
+        // is 0.5, so half the 100 is held back as guaranteed shares and only
+        // the rest is ever leased. That was the first thing it got wrong.
+        let held = coordinator.serve_request(&server(), node(2), 100).unwrap();
+        assert_eq!(
+            held.nominal_count(),
+            50,
+            "the leasable half of a cap of 100"
+        );
+
+        // This node is the leader and has nothing left. The answer must be
+        // Exhausted, not NoLeader: with the guard mutated it falls through to
+        // the leader lookup and comes back with the wrong error, because there
+        // is no transport configured in this fixture.
+        let err = coordinator.request_quota(&server(), 10).await.unwrap_err();
+        assert_eq!(
+            err,
+            QuotaError::Exhausted { server: server() },
+            "exhaustion was forwarded rather than returned"
+        );
     }
 
     #[test]

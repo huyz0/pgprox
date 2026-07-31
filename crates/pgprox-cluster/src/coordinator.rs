@@ -526,6 +526,20 @@ impl NodeCoordinator {
         self.tracked_tenants.remove(tenant);
         self.reservations.forget(tenant);
     }
+
+    /// How many tenants this node is tracking.
+    ///
+    /// Test-only. `track_tenant` and `forget_tenant` are the two writers here
+    /// with no return value, and their effect reaches the outside world only
+    /// through reservation decay several gossip rounds later, so both could be
+    /// replaced by `()` with every test passing. `M14.12` gave the property an
+    /// observer rather than accepting that as equivalence: whether a tenant is
+    /// tracked decides whether its reservation ever decays, and a reservation
+    /// that never decays strands capacity.
+    #[cfg(test)]
+    pub(crate) fn tracked_tenant_count(&self) -> usize {
+        self.tracked_tenants.len()
+    }
 }
 
 #[cfg(test)]

@@ -4271,13 +4271,37 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   tmpfs against a tree of about 29 GB, so six workers exhausted it and the run
   died partway with `No space left on device` after paying for the build. The
   copies go to the repo disk now.
-- [ ] `M14.12` The gossip coordinator's six survivors in `service.rs`:
+- [x] `M14.12` The gossip coordinator's six survivors in `service.rs`:
   `track_tenant` and `forget_tenant` replaced by `()`, `view_hash` by `1`,
   `cluster_usage` and `cluster_clients` by `0`, and the `!matches!(err,
   QuotaError::NoLeader)` match guard by `false`.
   The accessors are what `/v1/servers` and `/v1/stats` are built on, and
   `M11.9` was a bug in exactly that accounting, so a mutant that makes them
   return zero unnoticed is worth more than its size suggests.
+  All six are one gap. Every method here is a one-line delegation to
+  `NodeCoordinator`, that type is thoroughly tested, and nothing went through
+  the façade. So the crate had 156 tests and no test that would notice
+  `cluster_clients` returning zero.
+  Four tests. `service.rs` now has 32 mutants, 24 caught and 8 unviable, none
+  missed. The crate holds 163 tests and its coverage gate.
+  `track_tenant` and `forget_tenant` needed the same treatment `reap` did in
+  `M14.11`: a `#[cfg(test)]` observer of the tracked set. Their effect reaches
+  the outside only through reservation decay several gossip rounds later, which
+  is too far to pin without a fragile test, and whether a tenant is tracked
+  decides whether its reservation ever decays. A reservation that never decays
+  strands capacity, so the property is real and deserved an observer.
+  Three wrong assumptions, all caught by running the tests rather than by
+  reading them back:
+  The tenant test first asserted through `report_tenants`, which replaces the
+  reported usage outright and never consults the tracked set, so forgetting a
+  tenant does not stop it being reported.
+  The exhaustion test asked for the whole cap and got half: `guaranteed_fraction`
+  is 0.5, so half is held back as guaranteed shares and only the rest is leased.
+  Then it tried to exhaust the pool by asking twice from the same node, which
+  cannot work, because a holder's renewal replaces its own grant rather than
+  adding to it. That is a documented property of `grant` and it took a failing
+  test to remember it. The fix is to have another node hold the leasable half
+  through `serve_request`.
 - [ ] `M14.13` `coordinator.rs`: `heartbeat`'s `+=` to `*=`, `has_quorum`'s `>`
   to `>=`, and `home_draining` to `false`.
   `has_quorum` decides whether this node may act as leader at all, and its
