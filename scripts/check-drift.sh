@@ -82,6 +82,69 @@ else
   fail ".agents/skills/ missing"
 fi
 
+# --- a gate that cannot fail --------------------------------------------------
+#
+# `fail` increments `_fail_count` in the shell that runs it. The right-hand side
+# of a pipeline is a subshell, so a check written as
+#
+#     something | { read -r verdict; case ... fail "..." ... }
+#
+# prints FAIL in red, with the right message, and exits 0. `M11.7` shipped
+# exactly that for one commit and it was caught by checking an exit code rather
+# than reading output. A gate that cannot fail is worse than no gate, because
+# the roadmap cites it as evidence. `M12.6`.
+#
+# The rule arms on a pipeline whose right-hand side opens a block and disarms on
+# the line that closes it. `|| { fail ...; }` is a brace group in the current
+# shell, not a subshell, and is the dominant idiom in scripts/, so the pattern
+# deliberately does not match a `|` preceded by another `|`.
+#
+# The alternative fix, `shopt -s lastpipe`, is not used here: it needs job
+# control off and applies to the last stage only, so it would trade a visible
+# rule for an invisible one.
+# The scan roots are a variable so `tests/gates/negative.sh` can point the rule
+# at planted files instead of writing them into `scripts/`. A test that plants a
+# deliberately broken script in the tree it is testing leaves it there when it
+# is interrupted, and this runs in pre-commit.
+SHELL_ROOTS="${PGPROX_SHELL_ROOTS:-scripts/*.sh tests/gates/*.sh}"
+
+subshell_fail=0
+while read -r hit; do
+  [[ -n "$hit" ]] || continue
+  fail "$hit"
+  subshell_fail=1
+done < <(
+  for f in $SHELL_ROOTS; do
+    [[ -f "$f" ]] || continue
+    awk -v file="$f" '
+      # A heredoc body is data, not code. Without this the rule flags the
+      # deliberately broken fixtures inside tests/gates/negative.sh, which are
+      # examples of the bug rather than the bug. `<<<` is a here-string and
+      # opens nothing.
+      hd != "" {
+        if ($0 ~ ("^[[:space:]]*" hd "[[:space:]]*$")) hd = ""
+        next
+      }
+      $0 !~ /<<</ && match($0, /<<-?[[:space:]]*[\047"]?[A-Za-z_][A-Za-z0-9_]*/) {
+        w = substr($0, RSTART, RLENGTH)
+        sub(/^<<-?[[:space:]]*[\047"]?/, "", w)
+        hd = w
+        next
+      }
+      # A pipe that is not "||" and not "|&", followed by a block opener.
+      /(^|[^|&>])\|[[:space:]]*(while|\{|\()[[:space:]]*$/ ||
+      /(^|[^|&>])\|[[:space:]]*(while|read)[[:space:]]/ {
+        armed = 1; opened = NR; next
+      }
+      armed && /^[[:space:]]*(done|\}|\))/ { armed = 0; next }
+      armed && /(^|[^[:alnum:]_])fail[[:space:]]+"/ {
+        printf "%s:%d calls fail inside a pipeline subshell (opened at line %d); it would print FAIL and exit 0\n", file, NR, opened
+      }
+    ' "$f"
+  done
+)
+(( subshell_fail == 0 )) && ok "no check calls fail from inside a pipeline subshell"
+
 # --- the delegated-check skip never reaches CI --------------------------------
 #
 # `PGPROX_SKIP_DELEGATED_CHECKS` makes `check-crate.sh` and `check-coverage.sh`

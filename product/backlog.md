@@ -3759,7 +3759,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   invocations of `m1f-complete.sh`, and each was 84 seconds because the gate
   runs the whole workspace coverage gate, so the suite timed out before it
   could report. `M12.11` was split out and done first.
-- [ ] `M12.6` A lint for `fail` reachable inside a pipeline subshell, so the
+- [x] `M12.6` A lint for `fail` reachable inside a pipeline subshell, so the
   near miss in `M11.7` cannot come back. The counter `fail` increments lives in
   the parent, the right-hand side of a pipeline is a subshell, so such a gate
   prints `FAIL` and exits 0. A gate that cannot fail is worse than no gate.
@@ -3769,6 +3769,32 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   repo-wide rules, it flags a deliberately planted site, and it does not flag
   `|| { fail ...; }`, which is a brace group in the current shell and is the
   dominant idiom in `scripts/`.
+  Done, and proven against the real bug rather than a lookalike. `M11.7`'s
+  broken version was reconstructed in `m11-complete.sh` and the lint flagged all
+  five of its `fail` calls with the line the pipeline opened at, and the tree
+  went back to green when it was reverted.
+  The rule arms on a pipe that is not `||` or `|&` followed by a block opener,
+  and disarms on the line that closes the block. That is a heuristic and is
+  written down as one: it is the rule that catches the shape this repo actually
+  produced, not a shell parser. It scans `scripts/*.sh` and `tests/gates/*.sh`
+  through `PGPROX_SHELL_ROOTS`, so the negative cases plant files in a temp
+  directory instead of writing a deliberately broken script into `scripts/`.
+  Three cases: the exact `| { read; case; fail }` shape, a `| while read` loop
+  with a `fail` in its body, and the `|| { fail ...; }` idiom, which must keep
+  passing. That last one is not a formality. It is how most of `scripts/`
+  reports failure, and a lint that flagged it would be switched off within a
+  day, so the whole rule turns on the distinction between a pipe and an or.
+  `shopt -s lastpipe` was considered and rejected in the comment: it needs job
+  control off and covers the last stage only, so it would replace a visible
+  rule with an invisible one.
+  The lint's first version flagged its own fixtures, which is a true positive on
+  text that is an example of the bug rather than the bug. The fix is that a
+  heredoc body is data and not code, so the rule now tracks heredoc terminators
+  and skips their contents. Moving the fixtures somewhere unscanned would have
+  worked too and would have been worse: it would leave the lint unable to read
+  the one file most likely to contain the shape it looks for. Re-verified after
+  the change by replanting the real bug, which it still catches, all five
+  lines.
 - [ ] `M12.7` Prove each gate can fail. Every `mN-complete.sh` is trusted to
   report a milestone's completion and not one of them has ever been observed
   failing on this tree.

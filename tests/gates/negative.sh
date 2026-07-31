@@ -238,6 +238,53 @@ case_m1f_adr() {
     env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
 }
 
+# --- check-drift.sh, the gate that cannot fail, M12.6 ------------------------
+#
+# `fail` counts into the parent shell, so calling it from a pipeline's
+# right-hand side prints FAIL and exits 0. These cases plant the shape in a
+# temp directory rather than in `scripts/`, via `PGPROX_SHELL_ROOTS`.
+case_drift_subshell() {
+  echo
+  echo "  check-drift.sh, the gate that cannot fail"
+
+  local dir="$WORK/shell"
+  rm -rf "$dir"; mkdir -p "$dir"
+
+  # The exact shape M11.7 shipped for one commit.
+  cat > "$dir/planted.sh" <<'PLANT'
+#!/usr/bin/env bash
+printf 'a\tb\n' | {
+  IFS=$'\t' read -r verdict rest
+  case "$verdict" in
+    a) fail "this prints FAIL and exits 0" ;;
+  esac
+}
+PLANT
+  expect_fail "flags fail called from a pipeline subshell" \
+    env PGPROX_SHELL_ROOTS="$dir/*.sh" scripts/check-drift.sh
+
+  # A `while read` loop on the right of a pipe: same subshell, same problem.
+  cat > "$dir/planted.sh" <<'PLANT'
+#!/usr/bin/env bash
+find . -name '*.rs' | while read -r f; do
+  fail "no test for $f"
+done
+PLANT
+  expect_fail "flags fail inside a piped while-read loop" \
+    env PGPROX_SHELL_ROOTS="$dir/*.sh" scripts/check-drift.sh
+
+  # And the idiom that must not be flagged. `|| { ...; }` is a brace group in
+  # the current shell, and it is how most of scripts/ reports failure. A lint
+  # that flags this would be turned off within a day.
+  cat > "$dir/planted.sh" <<'PLANT'
+#!/usr/bin/env bash
+command -v cargo >/dev/null || { fail "no cargo"; return 1; }
+grep -q x file || { fail "missing x"; exit 1; }
+PLANT
+  expect_pass "does not flag the || { fail ...; } idiom" \
+    env PGPROX_SHELL_ROOTS="$dir/*.sh" scripts/check-drift.sh
+}
+
 # -----------------------------------------------------------------------------
 
 echo "gates: proof that they can fail"
@@ -248,6 +295,7 @@ if [[ -z "$WANTED" || "$WANTED" == m7-scale ]]; then case_m7_scale; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m9-cache ]]; then case_m9_cache; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m11-admission ]]; then case_m11_admission; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m1f-adr ]]; then case_m1f_adr; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == drift-subshell ]]; then case_drift_subshell; ran=1; fi
 
 if (( ! ran )); then
   fail "no such case: $WANTED"
