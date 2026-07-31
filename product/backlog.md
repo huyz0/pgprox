@@ -3351,6 +3351,23 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   pooling, and the curve is what says at what share that starts to bite.
   Acceptance: three or more values, matched runs, and a stated crossing point
   or a statement that there is none inside the range measured.
+  Split on inspection, before starting, the same way `M11.4` was once its size
+  became visible. The curve needs workload documents that do not exist, and a
+  committed workload document is a measurement baseline: three of them, with
+  the reasoning for the weights, plus the test that keeps them parsing, is a
+  commit. The runs are another.
+  What the knob has to be is not obvious and is worth writing down before
+  either commit. A `LISTEN` pins a session for the rest of its life, so any
+  weight large enough to notice pins nearly every long-lived connection and the
+  share of sessions that *ever* pin saturates almost immediately. What varies
+  continuously is the share of a session's life spent pinned, which is set by
+  how far into that life the first `LISTEN` falls. A connection here lives
+  about 670 statements, so a per-statement probability q puts the first pin
+  around statement 1/q and the time-averaged pinned share is what the curve is
+  in. That makes the useful range of q roughly 0.0002 to 0.02, which needs the
+  other weights scaled up so an integer weight can express it.
+  `M11.10` takes the documents, `M11.7` keeps the curve and cannot start until
+  they land.
 - [x] `M11.8` The load client records what clients were told, by SQLSTATE.
   Split out of `M11.6` on inspection, before starting, which is what `M11.4`
   did once the size of its own scope note became visible.
@@ -3436,3 +3453,18 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   answer "which of those two do they get" when the answer is a mixture. That is
   a crate change with a coverage gate on it, so it is a commit of its own, the
   same way `M11.4`'s knob was.
+- [ ] `M11.10` The pinning workload documents, so `M11.7` has something to run.
+  Three variants of the reference workload differing only in the weight of one
+  `LISTEN` statement, chosen so the share of a session's life spent pinned
+  spans roughly a tenth to nearly all of it. The reference document itself is
+  the zero point, so the curve has four values.
+  Weights scaled by ten so the small end is expressible: 600/100/250/50 against
+  a `LISTEN` weight of 1, 2 and 20. That is the same mix as the reference, since
+  scaling every weight by the same factor changes no proportion, plus a
+  per-statement `LISTEN` probability of about 0.1%, 0.2% and 2%.
+  No schema version bump, for the reason `M11.4` established: a version 3
+  document that never says `kind: listen` means exactly what it meant before,
+  and the bump is for changes that reinterpret existing files.
+  Acceptance: three documents that parse, the crate's committed-document test
+  extended to cover them rather than left naming only the reference, and
+  `pgprox-load` still at 95%.
