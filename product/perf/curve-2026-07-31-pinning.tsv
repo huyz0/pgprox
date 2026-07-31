@@ -1,0 +1,5 @@
+# M11.7, 40 clients, 120s per arm, seed 7. label peak mean pins samples.
+none	14	12	0	32
+low	30	23	24	33
+mid	39	33	36	33
+high	40	40	40	32

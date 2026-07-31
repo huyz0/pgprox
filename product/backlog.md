@@ -3342,7 +3342,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   server's deadline, a thousand clients reconnecting at once describe the queue
   behind them rather than the node in front, which is why the single-client
   probe exists and why it is the row that answers the task.
-- [ ] `M11.7` The pinning curve itself, once `M11.4` has given the load
+- [x] `M11.7` The pinning curve itself, once `M11.4` has given the load
   generator a statement kind that pins. At least three values of the pinned
   share, each a matched run, reading `pgprox_pin_total` by reason and the
   upstream connection count against the median.
@@ -3409,6 +3409,38 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   other weights scaled up so an integer weight can express it.
   `M11.10` takes the documents, `M11.7` keeps the curve and cannot start until
   they land.
+  Second run, at forty clients, and it is the curve. Recorded in
+  `product/perf/run-2026-07-31-pinning-curve.md` with the counts in
+  `product/perf/curve-2026-07-31-pinning.tsv`.
+  Upstream 14, 30, 39, 40 against pins 0, 24, 36, 40, and no arm saw an error.
+  **There is no crossing point, because the cost is linear.** A pinned session
+  takes an upstream connection for good and gives back the share it was already
+  consuming, which at the control's 2.857 clients per connection is
+  `upstream = 14 + 0.650 * pins`. Both constants come from the control arm, so
+  the model has zero free parameters against the three pinned arms, and it fits
+  to R^2 = 0.9937. No knee, no threshold, no safe pinned share.
+  The `high` arm is the degenerate case exactly: 40 clients, 40 pins, 40
+  upstream, peak equal to mean equal to the client count, one connection per
+  client. ADR 0001's "collapses back to session pooling" is not an analogy.
+  It also corrects what the first run concluded. That run said pinning is paid
+  for in refused work, which is true at saturation and is a statement about a
+  pool with no headroom. With headroom, **throughput is flat**: 17,041, 17,111,
+  17,170, 16,894 transactions, a 1.6% spread with no ordering, while upstream
+  nearly tripled. The two compose: pinning consumes connections at 0.65 each,
+  and the first run's `53300`s are what follows once that reaches the cap.
+  The latency columns are not a result and the document says so. One run per
+  arm and they do not order, p50 1,455, 2,260, 2,181, 1,806 and p99 36,099,
+  30,499, 23,799, 87,199, so the fully pinned arm reads better than the mixed
+  ones on the median and two pinned arms beat the control on the tail. The
+  connection columns are the measurement.
+  Two guards came out of it, both for failures the first run walked past. The
+  script now fails a control arm that peaks at the cap, since from there no arm
+  can rise and the curve is flat by construction. And `scripts/m11-complete.sh`
+  no longer globs for `product/perf/*pinning*.md`, which passed on a document
+  whose own title says it is not the curve; it reads the recorded counts and
+  requires three arms, a control below the cap, a control that pinned nothing,
+  and a y-axis that moved. All four negative cases were checked by feeding it a
+  bad file, not by assuming.
 - [x] `M11.8` The load client records what clients were told, by SQLSTATE.
   Split out of `M11.6` on inspection, before starting, which is what `M11.4`
   did once the size of its own scope note became visible.

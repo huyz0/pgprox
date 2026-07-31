@@ -57,8 +57,21 @@ from `Replayable::DEFAULT`, `Replayable::NONE`, or `from_names`.
 - A rising `pgprox_pin_total` is an early warning that multiplexing is degrading.
   It is instrumented by reason so the cause is visible.
 - Clients relying heavily on `LISTEN`/`NOTIFY` get little benefit. If a large
-  fraction of tenants do, the pool sizing model needs revisiting. This is an
-  open question in the plan.
+  fraction of tenants do, the pool sizing model needs revisiting.
+  Measured by `M11.7`, on one node's worth of clients rather than the tenant
+  population the plan describes, and the sizing answer is simpler than "needs
+  revisiting" suggested. The cost is linear with no threshold:
+  `upstream = c0 + (1 - 1/r0) * pins`, where `c0` and `r0` are the unpinned
+  arm's connection count and its clients per connection. At 40 clients that is
+  `14 + 0.650 * pins`, fitting the three measured shares to R^2 = 0.994 with no
+  free parameters. So a pinned session costs about two thirds of a connection
+  from the very first one, there is no safe fraction below which sizing is
+  unaffected, and sizing can simply carry the term.
+  The collapse this ADR names is exact rather than figurative: with every
+  session pinned the fleet held one upstream connection per client. What it does
+  *not* cost, while the pool has headroom, is throughput, which stayed flat
+  within 1.6% across the curve.
+  See [run-2026-07-31-pinning-curve.md](../perf/run-2026-07-31-pinning-curve.md).
 
 ## Alternatives rejected
 

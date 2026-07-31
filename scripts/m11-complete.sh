@@ -87,15 +87,49 @@ else
   ok "the roadmap no longer claims the cap is where shedding works"
 fi
 
-# --- M11.4: what pinning costs multiplexing -----------------------------------
+# --- M11.4 and M11.7: what pinning costs multiplexing -------------------------
 #
 # ADR 0001 calls this an open question and hands it to the plan. The half that
-# can be answered here is the curve: how the upstream connection count and the
-# median move as the share of pinned sessions rises.
-if compgen -G 'product/perf/*pinning*.md' >/dev/null; then
-  ok "the pinning curve is recorded"
-else
+# can be answered here is the curve: how the upstream connection count moves as
+# the share of pinned sessions rises.
+#
+# This used to glob for `product/perf/*pinning*.md` and pass. It passed on
+# `run-2026-07-31-pinning.md`, a document whose own title says it is not the
+# curve, which is the exact failure this repo keeps rediscovering: a check that
+# tests whether somebody wrote a file, not whether the file answers anything.
+#
+# So it checks the recorded counts instead. A curve needs a y-axis that moved,
+# and it needs to have moved for the right reason, which means the control arm
+# has to have been below the cap where it had somewhere to move from.
+CURVE=product/perf/curve-*-pinning.tsv
+if ! compgen -G "$CURVE" >/dev/null; then
   fail "no pinning curve: ADR 0001's open question has no measured half yet (M11.4 then M11.7)"
+else
+  verdict_line="$(awk -F'\t' '
+    /^#/ || NF < 4 { next }
+    { peak[$1] = $2 + 0; pins[$1] = $4 + 0; n++ }
+    END {
+      if (n < 3) { print "few\t" n; exit }
+      if (peak["none"] >= 60) { print "capped\t" peak["none"]; exit }
+      if (pins["none"] != 0) { print "pinned\t" pins["none"]; exit }
+      span = peak["high"] - peak["none"]
+      if (span <= 0) { print "flat\t" span; exit }
+      print "ok\t" peak["none"] "\t" peak["high"] "\t" span
+    }' $CURVE)"
+  # Read from a here-string rather than a pipe. `fail` counts into `_fail_count`,
+  # and the right-hand side of a pipeline is a subshell, so a piped version of
+  # this printed FAIL and then exited 0 with "all checks passed". Found by
+  # checking the exit code of a deliberately bad curve rather than its output,
+  # which is the only way this kind of bug is visible.
+  IFS=$'\t' read -r verdict a b span <<<"$verdict_line"
+  case "$verdict" in
+    ok)   ok "the pinning curve moved: upstream $a to $b as the pinned share rose" ;;
+    flat) fail "the pinning curve's upstream axis moved by $a connections; this is not a curve" ;;
+    capped) fail "the pinning control arm peaked at $a, at the cap, so no arm could rise above it" ;;
+    pinned) fail "the pinning control arm pinned $a sessions; its workload has no LISTEN, so the x-axis is not what it claims" ;;
+    few)  fail "the pinning curve has $a arms; the task asks for three or more" ;;
+    *)    fail "the pinning curve could not be read" ;;
+  esac
 fi
 
 # --- M11.6: admission when every survivor is full -----------------------------

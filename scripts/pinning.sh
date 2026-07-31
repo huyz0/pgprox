@@ -23,6 +23,11 @@
 # reaches the cap and clients begin to queue for a connection that a pinned
 # session is never going to give back.
 #
+# That paragraph used to be a claim the run did not check, and the run that did
+# not check it violated it. The control arm's peak is now a guard: if it reaches
+# the cap the run fails and says to lower the connection count, because from
+# there every arm reports the cap and the curve is flat by construction.
+#
 # ## The four points
 #
 # `workload.yaml` is the zero, then the three `workload-pin-*` documents, which
@@ -48,12 +53,31 @@ done
 # unpinned workload, so the pool size is set by demand and the curve has room
 # to move.
 #
-# Found by running rather than reasoned: forty clients hold twelve of the sixty
-# and four hundred hold all sixty, so the first attempt at this curve had every
-# arm pinned at the cap and a clients-per-connection column that could not move.
-# A hundred and fifty leaves the unpinned arm short of the cap, which is what
-# lets the pinned arms be seen reaching it.
-CONNECTIONS="${PINNING_CONNECTIONS:-150}"
+# A hundred and fifty was tried and does not meet that, which is the whole
+# finding of the first run: the control arm peaked at the cap on a workload
+# with no `LISTEN` in it. What made it look acceptable was reading the mean, 37
+# of 60, and not the peak. The mean being under the cap is not the condition
+# this curve needs. A pinned session takes a connection out of circulation for
+# good, so what the pinned arms have to be able to do is *rise*, and they can
+# only rise from a peak that is already below sixty.
+#
+# Forty, from the same calibration the old note quoted and then argued past:
+# forty clients hold twelve of the sixty, four hundred hold all sixty. Twelve
+# leaves the whole cap above it. It also keeps the x-axis honest, because at
+# most forty sessions can pin and forty is under the cap too, where at a
+# hundred and fifty the pin count saturated at the pool size and three
+# different documents produced 60, 60 and 71.
+#
+# The corollary is that a clean run here should show no `53300` at all. The
+# first run's errors were the pool refusing a queue it could not serve; with
+# the cap above every arm's demand there is nothing to refuse, and any error
+# that does appear is a finding rather than the arm's cost of pinning.
+CONNECTIONS="${PINNING_CONNECTIONS:-40}"
+# The fleet's own upstream cap, which is what "below saturation" is below. It
+# lives in the compose file; it is repeated here because the guards and the
+# table both have to compare against it, and a number two checks disagree about
+# is worse than a number that is stated once.
+CAP="${PINNING_CAP:-60}"
 DURATION="${PINNING_DURATION:-120}"
 SEED="${PINNING_SEED:-7}"
 SETTLE="${PINNING_SETTLE:-20}"
@@ -212,6 +236,16 @@ arm() {
   # other way round.
   if [[ "$label" == none ]]; then
     (( pinned == 0 )) || { fail "none: $pinned sessions pinned by a workload with no LISTEN"; return 1; }
+    # And the control has to leave the pinned arms somewhere to rise to. A
+    # control already at the cap makes every other arm's upstream count a
+    # reading of the cap, and the curve is flat for a reason that has nothing
+    # to do with pinning. The first run of this script passed every other check
+    # with a control at 60 of 60 and produced a table whose y-axis was constant.
+    if (( peak >= CAP )); then
+      fail "none: peak $peak of a $CAP cap, so the pinned arms cannot rise and this is not a curve"
+      echo "    lower PINNING_CONNECTIONS (now $CONNECTIONS) until the control sits well under $CAP"
+      return 1
+    fi
   elif (( pinned == 0 )); then
     fail "$label: no session pinned, so this document's LISTEN never ran"
     tail -10 "$OUT_DIR/$label.log" | sed 's/^/  /'
@@ -227,10 +261,10 @@ arm() {
 # ---------------------------------------------------------------------------
 
 report_curve() {
-  python3 - "$OUT_DIR" "$CONNECTIONS" <<'PY'
+  python3 - "$OUT_DIR" "$CONNECTIONS" "$CAP" <<'PY'
 import json, os, sys
 
-out_dir, connections = sys.argv[1], int(sys.argv[2])
+out_dir, connections, cap = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 held = {}
 for line in open(os.path.join(out_dir, "held.tsv")):
     label, peak, mean, pins, samples = line.rstrip("\n").split("\t")
@@ -288,12 +322,12 @@ if max(losses) > 0 and min(losses) != max(losses):
 
 # The cap is the fleet's, and the database is the only thing that can say
 # whether it held.
-over = [(label, peak) for label, _, peak, _, _ in rows if peak > 60]
+over = [(label, peak) for label, _, peak, _, _ in rows if peak > cap]
 if over:
     print()
     print("  ** the database held more connections than the cap allows **")
     for label, peak in over:
-        print(f"    {label}: {peak} against a cap of 60")
+        print(f"    {label}: {peak} against a cap of {cap}")
 
 errors = {label: r["errors"] for label, r, _, _, _ in rows}
 if any(errors.values()):
