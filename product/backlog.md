@@ -4907,4 +4907,51 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   add from an unchecked one on this target, and also asserts the cursor did not
   move: a failed read that consumed bytes would desynchronise every field after
   it.
-- [ ] `M15.8` Close M15. Filed before the commit that does it.
+
+
+### M15 round two
+
+The first pass fixed what it found. This is the second reading, which the
+milestone said it would do and which found three more.
+
+- [ ] `M15.9` The pre-authentication path is bounded by the relay cap. A client
+  sends a startup packet before it has proved anything, and
+  `shell::negotiate` reads it with `read_untagged(.., DEFAULT_MAX_FRAME)`, which
+  is 1 GiB. `Wire::fill` grows its buffer 16 KiB at a time until the declared
+  length arrives, so an unauthenticated client can make the proxy hold whatever
+  it is willing to send, at one byte for one byte, on as many connections as it
+  can open. The password message is the same: `authenticate_token` reads it
+  with `read_tagged(.., DEFAULT_MAX_FRAME)`, and that also runs before the
+  client has authenticated.
+  Postgres itself does not allow this. `MAX_STARTUP_PACKET_LENGTH` is 10000
+  bytes, and pgbouncer refuses anything over `cf_max_packet_size` at the header.
+  Neither number is 1 GiB, and 1 GiB is not a startup packet.
+  Acceptance: a cap for the handshake, sized from what a startup packet and a
+  JWT actually are rather than from what a `DataRow` may be, with a test that
+  drives an oversized declared length and asserts the client is refused rather
+  than served.
+  `M15.1` was the same mistake one layer down: a documented bound with no
+  caller. This is a bound that was never written.
+- [ ] `M15.10` A count and the list it counts can disagree.
+  `encode::row_description` writes `i16::try_from(columns.len())` saturated to
+  `i16::MAX` and then writes every column. `encode::data_row` and
+  `encode::negotiate_protocol_version` have the same shape. Past the saturation
+  point the count says one thing and the bytes say another, and a client reads
+  the following message from the middle of this one.
+  Unreachable from the current callers, which is why it is worth two lines
+  rather than an argument: `encode_frontend::bind_with_parameters`, in the same
+  workspace and written for the same reason, already does it correctly with
+  `values.iter().take(count)`. Three of the four got it wrong and one got it
+  right, so the fix is to apply the pattern that is already here.
+- [ ] `M15.11` `standard_conforming_strings` pins a session that could be
+  replayed. It is one of the five parameters pgbouncer tracks by default, it is
+  an ordinary GUC reproducible by re-issuing the `SET`, and it is absent from
+  `REPLAYABLE_NAMES`, so a session that sets it is pinned for its lifetime.
+  The list's own comment says additions are a promise and should be rare, and
+  that is the right instinct. It does not apply here: the criterion the list
+  actually uses is "can this be reproduced by re-issuing the `SET`", and
+  `bytea_output` and `intervalstyle` are already on it and are exactly as rare.
+  Its absence is an omission rather than a decision.
+  Acceptance: on the list, with the replay test that covers the others.
+- [ ] `M15.8` Close M15. Filed before the commit that does it, and after the
+  second reading the milestone promised, which found three more.
