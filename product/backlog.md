@@ -58,6 +58,15 @@ early produces tasks that are wrong by the time they are reached.
   under Codex CLI or Cursor and record the result as an ADR. Acceptance: the ADR
   states what worked, what did not, and what was changed as a result.
 
+- [x] `M-1.18` Close M-1 and unblock M0.
+  Filed by `M12.10`, long after the commit that did it, for the same reason as
+  `M1F.0`: the hook checked that the ID was well formed and not that it referred
+  to anything. `scripts/m-1-complete.sh` exits zero and M0 was cleared to start.
+  The caveat it carried forward is still the right one and is still open:
+  `M-1.17` is structurally complete and interactively outstanding, which ADR
+  0012 records. A milestone closed with a known outstanding item is closed
+  honestly only if the item stays visible, and it is, in `M-1.17`'s `[~]`.
+
 ## M0: contracts and quality gates
 
 `pgprox-core` holds the traits and types every other crate depends on, plus a
@@ -243,6 +252,19 @@ nothing. They are not gaps.
 
 ### Group A: message surface
 
+- [x] `M1F.0` Plan M1F: derive the task list by diffing three reference proxies
+  rather than guessing it.
+  Filed by `M12.10`, long after the commit that did it. The work is real and its
+  result is the section header above: pgdog, pgbouncer and odyssey cloned into
+  `reference/`, their protocol surface diffed against this one, and the gaps
+  below written from that diff. Two findings that shaped the rest of the
+  milestone are recorded there too, that this codec already streams where
+  pgdog's `read_buf` reserves and reads whole with `unsafe set_len`, and that
+  seven message types need no decoder in a proxy and are not gaps.
+  What was missing was the entry, not the work. `check-commit-msg.sh` accepted
+  `M1F.0:` because it checked the shape of the ID and not whether anything
+  answered to it, which `M12.1` fixed and which is how this was found: by
+  running the tightened hook over all 321 commits.
 - [x] `M1F.1` `EmptyQueryResponse` (`I`). No `Tag` constant exists at all. An
   empty statement yields this instead of `CommandComplete`, so anything counting
   completions is wrong today.
@@ -3825,7 +3847,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   No other step in `ci.yml` carries `continue-on-error`, checked rather than
   assumed. The `M11` gate reads committed artefacts and greps `shed.rs`, with
   no Docker or network, so enforcing it does not make CI depend on a stack.
-- [ ] `M12.10` Two commits in history reference tasks the backlog never had:
+- [x] `M12.10` Two commits in history reference tasks the backlog never had:
   `M1F.0` and `M-1.18`. Found by `M12.1`, by running the tightened hook over all
   321 commits rather than by review.
   Both are the shape `M11.11` was: a milestone's planning or closing commit
@@ -3834,6 +3856,18 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Acceptance: both entries filed, marked done, each saying that it was written
   after the fact and how it was found. Not backdated and not disguised, because
   a backlog that hides its own gaps is worth less than one that records them.
+  Done. Both entries are filed in their own milestone's section, in position,
+  each saying that `M12.10` wrote it and that the hook accepted the original
+  commit because it checked the shape of the ID rather than whether anything
+  answered to it.
+  `M1F.0`'s work is visible without the entry, because its result is the M1F
+  section header: the three references, the diff, and the two findings that
+  shaped the milestone. `M-1.18` closed M-1 with one item outstanding, and that
+  item is still outstanding and still marked `[~]` on `M-1.17`, so the closure
+  reads honestly now as it did then.
+  With these two filed, every task ID in all 321 commits resolves. That is
+  checked by the hook rather than claimed: running it over the full history
+  rejects nothing.
 - [x] `M12.11` The negative suite cannot afford to run the gates. Found by
   `M12.5`, which needed four invocations of `m1f-complete.sh` at 84 seconds
   each because that gate runs the whole workspace coverage gate.
