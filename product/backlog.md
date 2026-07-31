@@ -4513,13 +4513,25 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   compute, and the `< len` bound that slices with a range rather than an index.
   The `true` form of that guard is *not* equivalent and is killed by a
   non-breaking space, which is why the entry says so.
-- [ ] `M14.32` `cluster.rs`, 10 survivors, including three in `stable_hash` and
+- [x] `M14.32` `cluster.rs`, 10 survivors, including three in `stable_hash` and
   `MembershipView::is_home_for` to `false`.
   `stable_hash` is rendezvous hashing. Its own comment says `DefaultHasher` was
   rejected because it is not stable across Rust releases, since two nodes on
   different compilers would disagree about which node owns a tenant. Three
   mutants of the mixing function survived, so nothing pins the value it produces
   and the property that comment is about is unchecked.
+  Nine of the ten, in fact: every `^` in the SplitMix64 finalizer could become
+  `&` or `|`, and every `>>` could become `<<`.
+  A golden vector, for the same reason `pgprox-auth` uses published vectors for
+  SCRAM and `M14.15` used one for the simulator's generator. Every property a
+  test might assert instead, that different inputs differ or that the output
+  looks spread, holds for almost any mixing function including all nine
+  mutants. The only thing that pins a value is the value.
+  The tenth is `is_home_for` to `false`, which is how a node decides whether it
+  owns a tenant and therefore drives reservations and shedding. Every existing
+  test asked `home_node` directly. The new one asks from the owning node and
+  from two that do not own it, and asserts the two methods agree, which is the
+  invariant that makes it safe for a caller to use either.
 - [ ] `M14.33` `admin.rs` and `cache.rs`, 7 survivors in trait defaults and in
   the fakes themselves, including `FakeObservatory::stats`, `FakeQueryCache::
   is_empty` and `Observatory::config_is_current`.

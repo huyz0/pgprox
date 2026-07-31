@@ -429,6 +429,58 @@ mod tests {
         )
     }
 
+    /// `M14.32`. Nine of the ten mutants in this file are in `stable_hash`'s
+    /// `SplitMix64` finalizer: every `^` could become `&` or `|`, and every `>>`
+    /// could become `<<`, with nothing noticing.
+    ///
+    /// The function's own doc comment is the reason that matters.
+    /// `DefaultHasher` was rejected here because it is explicitly not stable
+    /// across Rust releases, and two nodes on different compiler versions would
+    /// then disagree about which node owns a tenant. Stability of the *value*
+    /// is the contract, and the only thing that pins a value is the value.
+    ///
+    /// So: a golden vector, for the same reason `pgprox-auth` uses published
+    /// vectors for SCRAM and `M14.15` used one for the simulator's generator.
+    /// Properties like "different inputs differ" hold for almost any mixing
+    /// function, including every mutant here.
+    #[test]
+    fn the_stable_hash_produces_its_documented_values() {
+        assert_eq!(stable_hash(b"", 0), 0xc381_7c01_6ba4_ff30);
+        assert_eq!(stable_hash(b"", 1), 0xadd5_9ec7_95ad_7f61);
+        assert_eq!(stable_hash(b"tenant-acme", 0), 0x7f73_da9c_38d8_5a7f);
+        assert_eq!(stable_hash(b"tenant-acme", 1), 0x8063_8787_7db3_ae63);
+        assert_eq!(stable_hash(b"tenant-acme", 7), 0xbe1e_2cf2_b1a4_4e56);
+        assert_eq!(stable_hash(b"a", 0), 0x5f29_c2aa_dd9b_8527);
+        assert_eq!(stable_hash(b"b", 0), 0x56f6_a47e_3092_3664);
+    }
+
+    #[test]
+    fn a_node_knows_whether_it_is_a_tenants_home() {
+        // `is_home_for` could return `false` unconditionally. It is how a node
+        // decides whether it owns a tenant, which drives reservations and
+        // shedding, and every existing test asked `home_node` directly instead.
+        let members = [1_u16, 2, 3];
+        let tenant = (0..1_000)
+            .map(|i| TenantId::new(format!("tenant-{i}")))
+            .find(|t| view(1, &members).home_node(t) == Some(NodeId::new(2)))
+            .unwrap();
+
+        // Seen from the node that owns it, and from one that does not.
+        assert!(view(2, &members).is_home_for(&tenant));
+        assert!(!view(1, &members).is_home_for(&tenant));
+        assert!(!view(3, &members).is_home_for(&tenant));
+
+        // And it agrees with `home_node`, which is the invariant that makes it
+        // safe for callers to use either.
+        for local in members {
+            let v = view(local, &members);
+            assert_eq!(
+                v.is_home_for(&tenant),
+                v.home_node(&tenant) == Some(NodeId::new(local))
+            );
+        }
+    }
+
     #[test]
     fn the_leader_is_the_lowest_active_node() {
         let v = view(3, &[5, 1, 3]);
