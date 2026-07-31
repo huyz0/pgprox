@@ -352,6 +352,79 @@ direct() {
 
 # ---------------------------------------------------------------------------
 
+# --- non-negotiable 7, end to end --------------------------------------------
+#
+# `M13.3` proved the one route `SecretString` leaves open is not taken through a
+# formatting macro. That is static, and it cannot see a value exposed into a
+# local and formatted three functions later, or anything a dependency prints.
+#
+# This is the claim itself: the fleet has just authenticated a real client with
+# a real token and opened backend connections with a real password. Neither may
+# appear in any node log. `M13.8`.
+assert_no_credential_in_any_log() {
+  local leaked=0 service line
+
+  # The backend password the mock sidecar hands back, from the compose file, so
+  # this does not drift if that value changes.
+  local backend_password
+  backend_password="$(grep -m1 'PGPROX_MOCK_PASSWORD' deploy/docker-compose.yml |
+                        sed 's/.*PGPROX_MOCK_PASSWORD:[[:space:]]*//' | tr -d '"\r')"
+  if [[ -z "$backend_password" ]]; then
+    fail "could not read PGPROX_MOCK_PASSWORD from the compose file, so there is nothing to search for"
+    return 1
+  fi
+
+  # A positive control, first. A search that finds nothing is worth nothing
+  # until the search is known to find something, and this repo produced exactly
+  # that failure one task earlier: M13.3's first lint reported the whole
+  # workspace clean while its pattern matched no line at all.
+  #
+  # So: the same three greps, against a line that does contain each secret. If
+  # any of them comes back clean here, the run below cannot be believed.
+  local control="prefix $TOKEN and $backend_password suffix"
+  if ! grep -qF -- "$TOKEN" <<< "$control" ||
+     ! grep -qF -- 'not-a-signature' <<< "$control" ||
+     ! grep -qF -- "$backend_password" <<< "$control"; then
+    fail "the credential search does not find a credential it is given; a clean result would mean nothing"
+    return 1
+  fi
+
+  # Every service the compose file defines, asked of compose rather than
+  # listed here, so a node added later is searched without anyone remembering.
+  local services
+  services="$("${COMPOSE[@]}" config --services 2>/dev/null || true)"
+  [[ -n "$services" ]] || { fail "could not list the stack services"; return 1; }
+
+  for service in $services; do
+    local logs
+    logs="$("${COMPOSE[@]}" logs --no-color "$service" 2>&1 || true)"
+    [[ -n "$logs" ]] || continue
+
+    # The whole token, and its signature segment on its own. A log that prints a
+    # truncated JWT still leaks the part that identifies the session.
+    if grep -qF -- "$TOKEN" <<< "$logs"; then
+      fail "$service logged the client token"
+      leaked=1
+    fi
+    if grep -qF -- 'not-a-signature' <<< "$logs"; then
+      fail "$service logged part of the client token"
+      leaked=1
+    fi
+    if grep -qF -- "$backend_password" <<< "$logs"; then
+      fail "$service logged the backend password"
+      leaked=1
+    fi
+  done
+
+  if (( leaked )); then
+    printf '       AGENTS.md non-negotiable 7. The static half is\n'
+    printf '       scripts/check-secrets.sh; this is the claim itself.\n'
+    return 1
+  fi
+
+  ok "no node logged the client token or the backend password"
+}
+
 case "${1:-all}" in
   down)
     tear_down
@@ -381,6 +454,9 @@ if bring_up; then
     assert_pgbench_is_clean || true
     assert_drain_loses_no_transactions || true
     assert_no_read_behind_the_watermark || true
+    # Last, so it searches the logs of a fleet that has done all the work above
+    # rather than of one that only just started.
+    assert_no_credential_in_any_log || true
   fi
 fi
 

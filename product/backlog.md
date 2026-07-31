@@ -4170,7 +4170,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   real tree has one.
   Covered by `M12.7`'s floor with nothing added, because that loop globs.
   Fifteen gates now, up from fourteen.
-- [ ] `M13.8` The end-to-end half of non-negotiable 7: run the stack and grep
+- [x] `M13.8` The end-to-end half of non-negotiable 7: run the stack and grep
   its own logs for the token it authenticated with. Split out of `M13.3` on
   inspection, before starting, once the difference between the two became clear.
   `M13.3`'s lint proves the one route `SecretString` leaves open is not taken
@@ -4181,3 +4181,22 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   every proxy node's log is searched for it and for the backend password the
   sidecar handed back. Needs Docker, so it is tier 3 and cannot join the
   pre-commit path.
+  Done, and it passes: no service logged the client token, the token's signature
+  segment, or the backend password, after a run that served every node, ran
+  pgbench clean at 160 tps both ways, drained a node with zero failed
+  transactions and did 25 write-then-read rounds.
+  Three strings rather than one. The whole token, its signature segment alone
+  because a log that truncates a JWT still leaks the part identifying the
+  session, and the backend password read out of `deploy/docker-compose.yml` so
+  it cannot drift from the value the stack actually uses. The service list comes
+  from `docker compose config --services`, so a node added later is searched
+  without anyone remembering to add it.
+  **The check has a positive control, and it is the reason to believe the
+  result.** The same three greps run first against a line that does contain each
+  secret, and the assertion fails outright if any of them comes back clean,
+  because then a clean result on the real logs would mean nothing. That guard
+  exists because `M13.3` shipped a lint one task earlier that reported the whole
+  workspace clean while matching no line at all.
+  Both were run: the first pass without the control, then the control added and
+  the whole thing re-run, so the recorded result comes from a search known to
+  work rather than from one that had never found anything.
