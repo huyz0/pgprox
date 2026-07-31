@@ -3629,7 +3629,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Zero sites today. That is worth a lint rather than a shrug, because the reason
   it is zero is that it was found by accident once.
   The milestone is those findings and nothing else. No task here is a feature.
-- [ ] `M12.1` `check-commit-msg.sh` accepts a task ID with no task behind it.
+- [x] `M12.1` `check-commit-msg.sh` accepts a task ID with no task behind it.
   Its own comment says the subject "references the backlog task so history stays
   traceable to the plan", and it checks only that the ID is well formed.
   Found by committing `M11.11:` when no `M11.11` existed. The hook passed. The
@@ -3643,6 +3643,27 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   exempt, and a task's own filing commit necessarily adds the entry it
   references, so the check has to read the backlog as staged rather than as
   committed.
+  Done. The hook resolves the ID against `product/backlog.md` read from the
+  index, `git show :product/backlog.md`, so a task's own filing commit resolves
+  and an entry left unstaged does not. Verified both ways directly: the same
+  subject fails against the working tree alone and passes once the entry is
+  staged. The fallback to the working tree says which source it used, because a
+  check that silently degrades to a weaker check is this milestone's subject.
+  **`M11.11` was the third instance, not a one-off.** Running the tightened hook
+  over all 321 commits rejects two more: `M1F.0: plan full protocol coverage
+  against three reference proxies` and `M-1.18: close M-1, unblock M0`. Neither
+  task is in the backlog. Both are the same shape as `M11.11`, a milestone's
+  planning or closing commit inventing an ID for work the backlog never listed,
+  which is why the check now exists. `M12.10` reconciles the two entries.
+  The negative test is `tests/gates/negative.sh`, which is the more important
+  half. Six cases: three that must fail, including the well-formed-but-absent
+  ID that motivated the task, and three that must keep passing, a real task and
+  the mechanical `Merge` and `Revert` subjects git writes itself. It asserts
+  exit codes, never output, for the reason in its header: `M11.7`'s bug printed
+  the right message in red and exited 0.
+  It is wired into CI ahead of the twelve gates, and into `check-drift.sh`'s
+  wired-into-CI list, so dropping it fails the pre-commit hook. `M12.7` extends
+  it to the rest of the gates.
 - [ ] `M12.2` `m7-complete.sh` counts every run document in the repo and calls
   the total scale runs. It reports "a scale run is recorded (16 file(s))" from
   `product/perf/run-*.md`, of which five are scale runs and eleven are cache,
@@ -3692,3 +3713,19 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   closing, which `M10.17` and `M11.5` both establish as the order. It has to
   avoid being an instance of its own subject: no check in it may glob for a
   filename and report a conclusion.
+- [ ] `M12.9` CI runs the `M11` gate with `continue-on-error: true`, so it
+  cannot fail the build. That was right while the milestone was open, which is
+  what the comment beside it says, and `M11` closed in `M11.11`.
+  A gate that cannot fail is this milestone's subject, so leaving it is not an
+  oversight to fix quietly but an instance of the thing being fixed.
+  Acceptance: the step enforces, and the comment explaining why it did not is
+  replaced rather than left to confuse the next reader.
+- [ ] `M12.10` Two commits in history reference tasks the backlog never had:
+  `M1F.0` and `M-1.18`. Found by `M12.1`, by running the tightened hook over all
+  321 commits rather than by review.
+  Both are the shape `M11.11` was: a milestone's planning or closing commit
+  inventing an ID for work that was real and never listed. The work exists and
+  is described in the commits themselves.
+  Acceptance: both entries filed, marked done, each saying that it was written
+  after the fact and how it was found. Not backdated and not disguised, because
+  a backlog that hides its own gaps is worth less than one that records them.

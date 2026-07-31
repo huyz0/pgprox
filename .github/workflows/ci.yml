@@ -211,6 +211,12 @@ jobs:
       # The parts that need Docker or a driver toolchain are in the scripts these
       # call out to and are not run here: e2e.sh, scale.sh, conformance.sh and
       # rolling-upgrade.sh all want a stack.
+      # Before the gates, because it is the one that decides whether the rest of
+      # this job means anything. Each case breaks an artefact and asserts a
+      # non-zero exit, so a gate that reports FAIL and returns 0 is caught here
+      # rather than by whoever eventually reads the log. M12.1.
+      - name: the gates can fail
+        run: tests/gates/negative.sh
       - name: M-1
         run: scripts/m-1-complete.sh
       - name: M0
