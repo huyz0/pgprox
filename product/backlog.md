@@ -3993,13 +3993,37 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   `tests/gates/negative.sh` caught it, which is the first time the suite has
   failed on a regression rather than on a deliberately broken artefact, and is
   the clearest argument for `M12` that this milestone could have produced.
-- [ ] `M13.2` Nothing detects a deleted test. Rule 2's second half.
+- [x] `M13.2` Nothing detects a deleted test. Rule 2's second half.
   Sized on inspection before starting: a count is the obvious thing and is the
   wrong thing, because a commit that deletes one test and adds another passes it
   while doing exactly what the rule forbids.
   Acceptance: a check that names what disappeared, not one that compares totals.
   If that turns out to need a committed inventory of test names, this splits:
   the inventory and its drift check are one commit, the enforcement another.
+  It did not need an inventory and so did not split. `git` already holds the
+  previous state: the check reads test names out of `HEAD:<file>` and out of
+  `:<file>`, the staged version, and reports the set difference by name. A
+  committed inventory would have been a second copy of something git already
+  stores, and a file that has to be updated by hand is a file that gets updated
+  by hand until someone updates it wrongly.
+  A rename reads as one removal and one addition, which is what it is, and is
+  the case a count passes while the rule is being broken. Tested.
+  The escape hatch is a line in the commit message, `Removes-test: <name>`.
+  Deleting a test is ordinary work when what it covered is gone; what the rule
+  forbids is deleting one to make a check pass, and no script reads intent. What
+  a script can do is refuse to let it happen silently, and a commit message is
+  the one place a declaration travels with the change forever. Deliberately not
+  an environment variable and not a flag, for `M13.1`'s reason: a switch is
+  something a later run sets by accident, a message is written once by hand.
+  The extractor was checked against the tree rather than trusted: 1,666 test
+  attributes in the workspace and 1,666 names extracted, so it loses none.
+  Five negative cases, each in a throwaway git repository so the real tree is
+  never staged against: an undeclared removal, a declared one, a rename, a
+  deleted file that held tests, and added tests, which must not be objected to.
+  One limitation, stated rather than left to be discovered. This runs at the
+  `commit-msg` stage, so it is a local hook and CI cannot run it: CI has no
+  commit message to read. A PR-level equivalent would have to walk the commits
+  on the branch. Not done here, and not pretended to be done.
 - [ ] `M13.3` Rule 7, credentials never reach a log, is a repo-wide claim held
   up by one unit test in one crate.
   Acceptance: a check that covers the claim's actual scope. What that means has

@@ -112,6 +112,14 @@ repos:
         language: script
         stages: [commit-msg]
 
+      # commit-msg rather than pre-commit, because the escape hatch is a line in
+      # the message and the check has to read it. M13.2.
+      - id: tests-kept
+        name: a removed test is declared
+        entry: scripts/check-tests-kept.sh
+        language: script
+        stages: [commit-msg]
+
       - id: coverage-full
         name: coverage gate, whole workspace
         entry: scripts/check-coverage.sh

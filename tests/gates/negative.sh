@@ -353,6 +353,70 @@ case_thresholds() {
     env PGPROX_SHELL_ROOTS="$dir/*.sh" scripts/check-drift.sh
 }
 
+# --- check-tests-kept.sh, M13.2 ----------------------------------------------
+#
+# The other half of non-negotiable 2. The coverage gate does not notice a
+# deleted test, because the tests that remain still cover the lines.
+#
+# Each case builds a throwaway git repository with `scripts/` copied in, so the
+# script's own REPO_ROOT points at it and the real tree is never staged against.
+tests_kept_repo() {
+  local repo="$WORK/kept"
+  rm -rf "$repo"; mkdir -p "$repo/scripts" "$repo/s"
+  cp scripts/*.sh "$repo/scripts/"
+  git -C "$repo" init -q .
+  git -C "$repo" config user.email t@example.com
+  git -C "$repo" config user.name t
+  printf '#[test]\nfn a_first_test() {}\n#[tokio::test]\nasync fn a_second_test() {}\n' > "$repo/s/a.rs"
+  git -C "$repo" add -A
+  git -C "$repo" commit -qm "M0.1: seed"
+  printf '%s' "$repo"
+}
+
+case_tests_kept() {
+  echo
+  echo "  check-tests-kept.sh"
+
+  local repo; repo="$(tests_kept_repo)"
+
+  # A test deleted and not declared.
+  printf '#[test]\nfn a_first_test() {}\n' > "$repo/s/a.rs"
+  git -C "$repo" add -A
+  printf 'M0.2: drop a test\n' > "$repo/msg"
+  expect_fail "refuses a removed test that is not declared" \
+    bash "$repo/scripts/check-tests-kept.sh" "$repo/msg"
+
+  # Declared, which must pass. Deleting a test is ordinary work; deleting it
+  # silently is what the rule is against.
+  printf 'M0.2: drop a test\n\nRemoves-test: a_second_test\n' > "$repo/msg"
+  expect_pass "accepts a removed test that is declared" \
+    bash "$repo/scripts/check-tests-kept.sh" "$repo/msg"
+
+  # A rename is a removal and an addition, and the count does not move. This is
+  # the case a "test count did not go down" check passes and should not.
+  repo="$(tests_kept_repo)"
+  printf '#[test]\nfn a_renamed_test() {}\n#[tokio::test]\nasync fn a_second_test() {}\n' > "$repo/s/a.rs"
+  git -C "$repo" add -A
+  printf 'M0.2: rename a test\n' > "$repo/msg"
+  expect_fail "refuses a rename, which a count would not see" \
+    bash "$repo/scripts/check-tests-kept.sh" "$repo/msg"
+
+  # A deleted file takes every test in it.
+  repo="$(tests_kept_repo)"
+  git -C "$repo" rm -q s/a.rs
+  printf 'M0.2: drop the file\n' > "$repo/msg"
+  expect_fail "refuses a deleted file that held tests" \
+    bash "$repo/scripts/check-tests-kept.sh" "$repo/msg"
+
+  # Adding tests changes nothing, and must not be objected to.
+  repo="$(tests_kept_repo)"
+  printf '#[test]\nfn a_first_test() {}\n#[tokio::test]\nasync fn a_second_test() {}\n#[test]\nfn a_third_test() {}\n' > "$repo/s/a.rs"
+  git -C "$repo" add -A
+  printf 'M0.2: add a test\n' > "$repo/msg"
+  expect_pass "accepts added tests" \
+    bash "$repo/scripts/check-tests-kept.sh" "$repo/msg"
+}
+
 # -----------------------------------------------------------------------------
 
 echo "gates: proof that they can fail"
@@ -366,6 +430,7 @@ if [[ -z "$WANTED" || "$WANTED" == m1f-adr ]]; then case_m1f_adr; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == drift-subshell ]]; then case_drift_subshell; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == every-gate ]]; then case_every_gate; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == thresholds ]]; then case_thresholds; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == tests-kept ]]; then case_tests_kept; ran=1; fi
 
 if (( ! ran )); then
   fail "no such case: $WANTED"
