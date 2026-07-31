@@ -31,6 +31,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M12 | The gates that count files | complete; five gate checks now read what a file says instead of matching its name, and every gate is proven able to fail |
 | M13 | The non-negotiables that nothing enforces | complete; six of the seven rules have a script and the seventh is marked as having none, which is the honest half of the answer |
 | M14 | The crates mutation testing never reached | complete; 2,926 mutants across all fourteen crates, 155 survivors, 137 killed and 18 argued |
+| M15 | The protocol crate under a second reading | in progress |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -757,3 +758,40 @@ The lesson the milestone kept teaching, in four different costumes, is that
 running is not constraining. A test can execute a line without pinning it, a
 flag can be passed without matching anything, an assertion can compare a value
 against itself, and a harness can report success for a run that tested nothing.
+
+## M15: the protocol crate under a second reading
+
+```bash
+scripts/m15-complete.sh
+```
+
+`pgprox-proto` is the only crate in the workspace that parses bytes chosen by
+whoever can reach the listener, and it is the one crate whose rules are written
+down at the top of its own `lib.rs`. This milestone reads it against those
+rules, against `pgbouncer`, and against a profiler, in that order.
+
+Two of its rules do not hold.
+
+**"Validate length before allocating."** The length is validated. What is not
+bounded is what the validated length is then allowed to buffer.
+`DEFAULT_MAX_INSPECT` exists to be that bound, says so in its own doc comment,
+and has no caller anywhere in the workspace. `FrameRelay` sets
+`want_inspect = header.body_len` for any `Inspect::Whole` tag, and four of those
+are frontend tags an unauthenticated client can send. A `Sync` declaring 8 MiB
+makes the relay hold 8 MiB, measured, not argued.
+
+**"Nothing here allocates at all."** Five separate places do. Four of them have
+a reason and the sentence is what is wrong; one of them, `select_sasl_mechanism`,
+builds a vector in order to search it and does not need to.
+
+The comparison against `pgbouncer` was worth more than expected. It found the
+COPY leak (`M15.2`) because pgbouncer's `server.c` carries the comment
+"ErrorResponse and CommandComplete show end of copy mode" against code that has
+no counterpart here, and the prepared-statement gap (`M15.3`) because pgbouncer
+matches `DEALLOCATE ALL` and `DISCARD ALL` against the `CommandComplete` tag and
+frees both the client and the server maps. `pgprox` has both maps and both
+clearing functions, and calls neither from anything but a test.
+
+Completion condition: every finding above either fixed with a test that fails
+without the fix, or recorded with an argument for why it stands. The
+performance items carry a measurement rather than a claim.

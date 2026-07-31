@@ -4780,3 +4780,82 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   order `M12.1` enforces.
   The status table and the section say the milestone is complete, and the
   section says what the runs found rather than that they ran.
+
+## M15: the protocol crate under a second reading
+
+- [ ] `M15.1` The inspect cap that bounds nothing. `DEFAULT_MAX_INSPECT` is
+  documented as "largest message body the proxy will buffer in order to read
+  it", with the reason stated: bytes parsed are held per connection, so at 100k
+  connections their limit must be small. `FrameRelay` never reads it. For
+  `Inspect::Whole` it sets `want_inspect = header.body_len`, which is bounded
+  only by `max_frame`, and that is 1 GiB.
+  Client-reachable without authenticating: `Sync`, `Flush`, `Terminate` and
+  `CopyDone` are all `Inspect::Whole` on the frontend side, and the relay takes
+  the declared length on trust. A `Sync` claiming 8 MiB makes the relay hold
+  8 MiB; the same frame claiming 1 GiB makes it hold 1 GiB.
+  Acceptance: a relay carries an inspect cap, the cap defaults to
+  `DEFAULT_MAX_INSPECT`, and a test drives a `Whole`-policy tag past it and
+  asserts what is held. The existing `complete` flag already reports a
+  truncated inspection, so the parser side needs no new signal.
+  Found because `DEFAULT_MAX_INSPECT` has no caller anywhere in the workspace.
+- [ ] `M15.2` A failed COPY holds the connection for the session's life.
+  `SessionState` clears `copy` on a frontend `CopyDone`/`CopyFail` and on a
+  backend `CopyDone`, and on nothing else. When the server rejects a COPY it
+  sends `ErrorResponse` and then `ReadyForQuery`, and a client that has been
+  told its COPY failed has no reason to send `CopyDone`. The hold never lifts.
+  Acceptance: `ReadyForQuery` ends COPY mode, for the same reason it already
+  ends an extended sequence: the server does not send one until it is back in
+  normal command processing, so copy mode cannot outlive it. A test drives the
+  failed COPY IN sequence and asserts the connection comes back.
+  pgbouncer clears `copy_mode` on both `ErrorResponse` and `CommandComplete`
+  (`src/server.c`, "ErrorResponse and CommandComplete show end of copy mode").
+- [ ] `M15.3` `DISCARD ALL` deallocates the server's prepared statements and
+  nothing tells the maps. `ParamCache::observe_statement` handles `DISCARD ALL`
+  and `RESET ALL` by clearing the parameter cache. The statement maps have the
+  matching operations, `ClientStatements::close_all` and
+  `ConnectionStatements::forget_all`, and neither has a caller outside its own
+  tests. After a client runs `DISCARD ALL` the proxy still believes every
+  mapped statement is prepared on that connection, so the next `Bind` sends a
+  global name the server has just dropped.
+  Acceptance: the same observation point that clears parameters clears the
+  statement maps, and a test runs `DISCARD ALL` and then binds.
+  pgbouncer does this on the `CommandComplete` tag, checking for `DEALLOCATE
+  ALL` and `DISCARD ALL` by name (`src/server.c`).
+- [ ] `M15.4` `cstr` scans one byte at a time. `Reader::cstr` finds its
+  terminator with `iter().position(|b| *b == 0)`, which is a scalar loop, and
+  it is on every hot path this crate has: the SQL in `Query` and `Parse` up to
+  the 64 KiB prefix, every `CommandComplete` tag, both strings of every
+  `ParameterStatus`, and every field of every error. `rewrite.rs` does the same
+  scan twice more.
+  Acceptance: `memchr` on those scans, already in the lock file and MIT so the
+  supply-chain gate has nothing to say, plus a microbenchmark in
+  `benches/hot_paths.rs` that measures the scan and a before/after instruction
+  count recorded in `product/perf/`.
+- [ ] `M15.5` The header copy on every frame. `FrameRelay::push_header` copies
+  the five header bytes into `header_buf` and clears it again, on every message,
+  including the overwhelmingly common case where all five are already contiguous
+  in the caller's slice. The partial-header path is what the buffer exists for
+  and it is the rare one.
+  Acceptance: the contiguous case decodes in place, the split case still works
+  byte for byte (`a_message_split_at_every_boundary_relays_identically` is the
+  test that says so), and the instruction count moves in the direction claimed.
+- [ ] `M15.6` The crate says it never allocates and it does. `lib.rs`: "Nothing
+  here allocates at all: frames borrow from the caller's buffer." Untrue of
+  `bind_parameters`, of `startup::decode`, of everything in `rewrite`, of
+  `FrameRelay`, and of `select_sasl_mechanism`, which builds a `Vec<&str>` of
+  the offered mechanisms in order to search it. Of those, only the last is
+  gratuitous, and `Startup::option` re-parses and re-allocates the whole option
+  list on every lookup.
+  Acceptance: `select_sasl_mechanism` allocates nothing, `option` does not
+  build a list to throw it away, and the sentence in `lib.rs` says what is
+  actually true. The rule it is trying to state is real; it is the scope that
+  is wrong.
+- [ ] `M15.7` `Reader` adds client-controlled lengths without checking. `i32`,
+  `i16` and `bytes` all compute `self.pos + n` and rely on the slice index to
+  refuse the result. `bytes` takes its `n` from the wire: a `Bind` parameter
+  length and a `ParameterDescription` count both reach it. On a 64-bit target
+  the sum cannot wrap, so this is hardening rather than a live bug, and it is
+  worth the two lines because the fuzz target cannot reach a 32-bit overflow on
+  the machine it runs on.
+  Acceptance: `checked_add`, and the truncation error rather than a panic.
+- [ ] `M15.8` Close M15. Filed before the commit that does it.
