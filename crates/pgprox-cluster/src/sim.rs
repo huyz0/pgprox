@@ -254,6 +254,210 @@ mod tests {
         NodeId::new(n)
     }
 
+    /// `M14.15`. Six mutants survived in this file and none of them is a
+    /// missing assertion about the cluster. They are all the same thing: the
+    /// simulator itself could be broken and every test would still pass.
+    ///
+    /// That is worse than it sounds rather than better. This crate's headline
+    /// claim, that the quota invariant holds across a randomized schedule set
+    /// including partitions, rests entirely on this file actually randomizing
+    /// and actually partitioning. Degrade the generator to a constant and every
+    /// property test still passes while exploring one schedule. Nothing fails,
+    /// and the evidence quietly stops being evidence.
+    ///
+    /// So the simulator is pinned as the contract it is, rather than written
+    /// into the baseline as "a weaker search is not a defect".
+    #[test]
+    fn the_generator_produces_its_documented_sequence() {
+        // A golden vector, for the reason `pgprox-auth` uses published vectors
+        // for SCRAM: the only property that pins an algorithm is its output.
+        //
+        // The first attempt at this asserted that draws were distinct and that
+        // `below` covered its range. Both passed under every mutation, because
+        // only one of the four operations is mutated at a time and a
+        // three-quarters-intact xorshift still looks random. Distinctness is a
+        // property of almost any generator; being *this* generator is not.
+        //
+        // It matters because a simulator is only evidence if it is
+        // reproducible. Two runs of the suite on different machines must
+        // explore the same schedules, or a failure cannot be re-run and a pass
+        // means less than it appears to.
+        let mut rng = Rng::new(1);
+        let drawn: Vec<u64> = (0..6).map(|_| rng.next_u64()).collect();
+        assert_eq!(
+            drawn,
+            vec![
+                1_082_269_761,
+                1_152_992_998_833_853_505,
+                11_177_516_664_432_764_457,
+                17_678_023_832_001_937_445,
+                9_659_130_143_999_365_733,
+                17_775_799_001_133_815_809,
+            ],
+            "the generator is no longer the xorshift this file documents"
+        );
+
+        // A different seed is a different stream, so the seed is doing work.
+        let mut other = Rng::new(7);
+        let seven: Vec<u64> = (0..4).map(|_| other.next_u64()).collect();
+        assert_eq!(
+            seven,
+            vec![
+                7_575_888_327,
+                8_070_950_887_952_051_652,
+                13_931_920_357_059_763_743,
+                8_698_583_309_276_795_107,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_generator_covers_the_range_it_is_asked_for() {
+        // `below` is what picks delays and drop decisions, so a generator that
+        // technically varies but lands in one place still collapses the search.
+        let mut rng = Rng::new(7);
+        let mut buckets = [0_u32; 10];
+        for _ in 0..10_000 {
+            buckets[usize::try_from(rng.below(10)).unwrap()] += 1;
+        }
+        assert!(
+            buckets.iter().all(|c| *c > 500),
+            "some value in 0..10 was drawn fewer than 500 times in 10,000: {buckets:?}"
+        );
+    }
+
+    #[test]
+    fn reachability_blocks_exactly_the_pairs_that_were_partitioned() {
+        // `==` could become `!=` in `reachable`, which inverts the match and
+        // makes the answer meaningless in both directions at once. The existing
+        // tests assert that a partition drops messages, which the mutant also
+        // satisfies, because it makes almost everything unreachable.
+        let mut net: Network<u8> = Network::new(1, NetworkFaults::default());
+        assert!(
+            net.reachable(node(1), node(2)),
+            "an unpartitioned pair was unreachable"
+        );
+
+        net.partition(&[node(1)], &[node(2)]);
+        assert!(!net.reachable(node(1), node(2)));
+        assert!(
+            !net.reachable(node(2), node(1)),
+            "a partition must be symmetric"
+        );
+
+        // The pairs that were not named stay reachable. This is the half the
+        // mutant breaks and the existing tests never asked.
+        assert!(net.reachable(node(1), node(3)));
+        assert!(net.reachable(node(3), node(2)));
+        assert!(net.reachable(node(3), node(4)));
+
+        net.heal();
+        assert!(net.reachable(node(1), node(2)));
+    }
+
+    #[test]
+    fn a_dropped_message_is_counted_on_both_paths() {
+        // `dropped += 1` could become `*=`, and the counter starts at zero, so
+        // it would report nothing dropped forever. `stats` exists so a test can
+        // assert it exercised what it claims, which makes a counter that never
+        // moves worse than no counter: it makes those assertions vacuous.
+        let mut net: Network<u8> = Network::new(1, NetworkFaults::default());
+        assert_eq!(net.stats().1, 0);
+
+        net.partition(&[node(1)], &[node(2)]);
+        net.send(node(1), node(2), 0);
+        assert_eq!(
+            net.stats().1,
+            1,
+            "a message across a partition was not counted as dropped"
+        );
+
+        net.send(node(2), node(1), 0);
+        net.send(node(1), node(2), 0);
+        assert_eq!(net.stats().1, 3, "the drop counter stopped moving");
+
+        // `send` increments the counter in two places: once for a partition and
+        // once for the configured drop rate. The first version of this test only
+        // reached the partition path, so the counter on the rate path could stay
+        // at zero forever and nothing asked.
+        let mut lossy: Network<u8> = Network::new(
+            1,
+            NetworkFaults {
+                drop_percent: 100,
+                ..NetworkFaults::default()
+            },
+        );
+        lossy.send(node(1), node(2), 0);
+        lossy.send(node(1), node(2), 0);
+        assert_eq!(
+            lossy.stats().1,
+            2,
+            "messages lost to the configured drop rate were not counted"
+        );
+        assert_eq!(lossy.in_flight(), 0);
+    }
+
+    #[test]
+    fn a_reordered_message_adds_its_extra_delay_rather_than_multiplying_it() {
+        // `delay += self.rng.below(..)` could become `*=`. Reordering is
+        // modelled as a second delay drawn from the same range and added, and a
+        // product is a different distribution that happens to look plausible:
+        // it is often larger, and it collapses to zero whenever either draw is
+        // zero, which silently un-reorders that message.
+        //
+        // Rather than assert a hard-coded schedule, this re-derives it from a
+        // generator seeded the same way, replicating the draws `send` makes in
+        // the order it makes them. That states the rule the code is supposed to
+        // follow instead of blessing whatever it currently produces.
+        let seed = 4;
+        let faults = NetworkFaults {
+            drop_percent: 0,
+            max_delay_ms: 50,
+            reorder_percent: 100,
+        };
+        let mut net: Network<u8> = Network::new(seed, faults);
+        let mut oracle = Rng::new(seed);
+
+        let mut expected = Vec::new();
+        for i in 0..8_u8 {
+            net.send(node(1), node(2), i);
+
+            // Exactly what `send` draws on a reachable link, in order: the
+            // drop roll, the base delay, the reorder roll, then the extra
+            // delay. The drop roll is consumed and discarded because
+            // `drop_percent` is zero here, and skipping it would put the
+            // oracle out of step with the network from the first message.
+            let _ = oracle.chance(faults.drop_percent);
+            let base = oracle.below(faults.max_delay_ms.max(1));
+            let reordered = oracle.chance(faults.reorder_percent);
+            let extra = if reordered {
+                oracle.below(faults.max_delay_ms.max(1))
+            } else {
+                0
+            };
+            expected.push(base + extra);
+        }
+
+        let mut due: Vec<u64> = net
+            .advance(Duration::from_millis(1_000))
+            .into_iter()
+            .map(|e| e.due.0)
+            .collect();
+        due.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(
+            due, expected,
+            "delivery times do not match base + extra for every message"
+        );
+
+        // And the sum genuinely exceeds a single draw somewhere, so the test is
+        // not passing on a run where every extra happened to be zero.
+        assert!(
+            expected.iter().any(|d| *d >= faults.max_delay_ms),
+            "no message was delayed beyond one draw, so this run proves nothing"
+        );
+    }
+
     #[test]
     fn the_same_seed_produces_the_same_run() {
         // Without this, a failing seed is not reproducible and every property

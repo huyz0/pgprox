@@ -4335,7 +4335,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   `NodeMode::Draining` arms deleted from `view_hash`. A view hash that ignores
   whether a node is draining is a view hash that says two different clusters are
   the same, which is what gossip convergence rests on.
-- [ ] `M14.15` `sim.rs`: the deterministic simulator's `Rng::next_u64` (`^=` to
+- [x] `M14.15` `sim.rs`: the deterministic simulator's `Rng::next_u64` (`^=` to
   `|=`, `<<` to `>>`) and `Network::reachable` and `send`.
   This one needs a decision before it needs tests, and the decision is the
   interesting part. `sim.rs` is test infrastructure: mutating the RNG does not
@@ -4346,6 +4346,37 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Acceptance: either tests that pin the generator and the network model as the
   contracts they are, or baseline entries arguing why a weaker search is not a
   defect. Do not kill them with an assertion that merely re-states the RNG.
+  Pinned, not baselined, and the reasoning is the task. A weakened search is
+  worse than it sounds rather than better: this crate's headline claim is that
+  the quota invariant holds across a randomized schedule set including
+  partitions, and that rests entirely on this file actually randomizing and
+  actually partitioning. Degrade the generator to a near-constant and every
+  property test still passes while exploring one schedule. Nothing fails, and
+  the evidence quietly stops being evidence.
+  All 61 mutants in `sim.rs` are now caught, none missed, none baselined.
+  Four tries, and the failures are the useful record.
+  The first attempt asserted the generator produced distinct values and that
+  `below` covered its range. Every mutant survived it, because only one of the
+  four xorshift operations is mutated at a time and a three-quarters-intact
+  xorshift still looks random. Distinctness is a property of almost any
+  generator; being *this* generator is not.
+  What killed all four is a golden vector, for the reason `pgprox-auth` uses
+  published vectors for SCRAM: the only thing that pins an algorithm is its
+  output. A simulator is evidence only if it is reproducible, so two runs on
+  different machines exploring the same schedules is the actual requirement.
+  `reachable` fell to asserting the half the existing tests never asked: that
+  pairs which were *not* partitioned stay reachable. `==` becoming `!=` makes
+  almost everything unreachable, which still satisfies "a partition drops
+  messages".
+  The last one was mine to misread. I recorded line 215 as the dropped counter
+  and wrote a test for the drop rate path; it was the reorder branch,
+  `delay += below(..)` becoming `*=`. A product is a different distribution that
+  looks plausible and collapses to zero whenever either draw is zero, silently
+  un-reordering that message. The test re-derives the whole schedule from a
+  generator seeded the same way, replicating the draws `send` makes in order,
+  so it states the rule rather than blessing the current output. The drop-rate
+  test stayed anyway: it covers the second `dropped += 1`, which nothing asked
+  about either.
 - [ ] `M14.2` Mutation testing for `pgprox-pool`, 273 mutants. The pool state
   machine, whose refusal and pinning behaviour `M11` spent four tasks measuring
   from the outside without ever asking whether its tests would notice a change.
