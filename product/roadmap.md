@@ -27,8 +27,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M8 | FIPS and release | complete |
 | M9 | Query cache (post-MVP) | complete; it costs 7.8% of the median on the reference workload, which is the opposite of what `M9.10` measured and is a fact about `M7.58` |
 | M10 | The claims nothing enforces | complete; the three claims now fail when they stop holding, and the cache turns out to change sign with load rather than with workload |
-
-| M11 | The gaps the completed milestones name | open |
+| M11 | The gaps the completed milestones name | complete; two of its four measurable questions corrected the claim that raised them, and pinning costs 0.650 upstream connections per pinned session with no threshold |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -486,7 +485,7 @@ hit rate, which is the mechanism's own signature. See
 `product/perf/run-2026-07-30-cached-workload.md` and
 `run-2026-07-31-saturation.md`.
 
-## M11: the gaps the completed milestones name
+## M11: the gaps the completed milestones name (complete)
 
 Ten milestones are complete and each wrote down what its own numbers do not say.
 This one works that list. Nothing in it is a feature: every task is a claim some
@@ -506,6 +505,30 @@ run needs three machines and a real network; ADR 0012's interactive half needs a
 second agent tool and a human's judgement; and the plan's three M0 open items
 each need an owner outside this repo.
 
-The gate for this milestone does not exist yet, which `M10.17` is the reason to
-mention: writing it is part of the milestone rather than a thing to discover at
-the end of it.
+The gate for this milestone was written before the milestone needed closing,
+which `M10.17` is the reason to mention: it is part of the work rather than
+something to discover at the end of it.
+
+What the four found, none of which was the expected answer:
+
+- `M11.1` The cache raises fleet throughput 4.11%, 8 of 8 matched pairs
+  positive, 95% CI [+1.14%, +7.08%]. `M10.9` declined to claim this and the
+  reason it declined, that a cache only reorders who waits, is wrong: served
+  statements are nearly free rather than merely reordered, so they add
+  completions while the 64% that still reach the database wait longer.
+- `M11.2` FIPS mode's TLS 1.2 restriction is real and now has a control. A
+  ChaCha20-Poly1305 suite the default build accepts is refused by the FIPS
+  build, and an AES-GCM suite is taken by both.
+- `M11.3` The premise was wrong, found by reading `shed::decide` rather than by
+  running anything. Shedding cannot fire at the connection cap: it refuses with
+  `NoHeadroomAtHome`. The cap is where shedding is designed *not* to work, and
+  the roadmap sentence claiming otherwise is gone. `M11.6` then measured what
+  actually happens to displaced clients, which is `53300`.
+- `M11.7` Pinning costs `0.650` upstream connections per pinned session,
+  linearly, with no knee and no safe fraction. Zero free parameters, R^2 =
+  0.994. With every session pinned the fleet held one connection per client,
+  which is ADR 0001's "collapses back to session pooling" as an identity rather
+  than an analogy. Throughput is unaffected while the pool has headroom.
+
+Two of the four corrected a claim rather than confirming one, and in both cases
+reading the code beat running the experiment.

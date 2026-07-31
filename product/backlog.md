@@ -3596,3 +3596,20 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   already describes, arriving from the other direction. The local node is
   skipped, with its own test, because ageing out of liveness is a statement
   about the loop and not about the data.
+- [x] `M11.11` Close M11. All eleven tasks are done, so the section header, the
+  status table and the milestone summary have to say so.
+  Filed after the fact rather than before, which is the wrong order and is
+  recorded here rather than tidied away: the commit hook checks that a subject
+  matches the task pattern, not that the task exists, so `M11.11:` passed with
+  nothing behind it. The entry exists now because the rule is one task, one
+  commit, and a commit whose task is invented in the subject line is a commit
+  with no task.
+  The summary says what the four measurable questions found rather than that
+  they ran, because a milestone that records only its own completion is the
+  thing this whole milestone was written to correct. Two of the four changed
+  the answer that raised them: `M11.1` found the cache raises fleet throughput
+  4.11% where `M10.9` declined to claim it did anything, and `M11.3` found that
+  shedding cannot fire at the connection cap at all. In both, reading the code
+  beat running the experiment.
+  The status table also had a blank line between the `M10` and `M11` rows,
+  which splits it into two tables in any renderer.
