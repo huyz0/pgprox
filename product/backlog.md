@@ -4200,3 +4200,9 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Both were run: the first pass without the control, then the control added and
   the whole thing re-run, so the recorded result comes from a search known to
   work rather than from one that had never found anything.
+- [x] `M13.9` Close M13. Filed before the commit that does it, which is the
+  order `M12.1` enforces and `M11.11` got wrong.
+  `AGENTS.md` rule 7 also still said the end-to-end half was "not built yet",
+  which stopped being true in `M13.8` one commit earlier. A list that names its
+  own gaps has to stop naming the ones it has closed, or it decays into the
+  thing this milestone was about from the other direction.

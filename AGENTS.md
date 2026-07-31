@@ -76,8 +76,10 @@ no script or with the wrong one credited.
    [standards/contracts.md](standards/contracts.md).
 7. Credentials never reach a log. `scripts/check-secrets.sh` holds the static
    half: `SecretString` cannot be printed, so the one route to a real value is
-   `expose()`, and no result of it may reach a formatting macro. The end-to-end
-   half, running the stack and grepping its own logs, is not built yet. See
+   `expose()`, and no result of it may reach a formatting macro.
+   `scripts/e2e.sh` holds the claim itself, searching every node's log for the
+   token it authenticated with and the backend password the sidecar returned,
+   with a positive control so a clean result means something. See
    [standards/security.md](standards/security.md).
 
 ## Checks

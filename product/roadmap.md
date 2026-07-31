@@ -29,6 +29,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M10 | The claims nothing enforces | complete; the three claims now fail when they stop holding, and the cache turns out to change sign with load rather than with workload |
 | M11 | The gaps the completed milestones name | complete; two of its four measurable questions corrected the claim that raised them, and pinning costs 0.650 upstream connections per pinned session with no threshold |
 | M12 | The gates that count files | complete; five gate checks now read what a file says instead of matching its name, and every gate is proven able to fail |
+| M13 | The non-negotiables that nothing enforces | complete; six of the seven rules have a script and the seventh is marked as having none, which is the honest half of the answer |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -612,7 +613,7 @@ gates against a tree holding none of their artefacts. It asserts exit codes and
 never output, because the bug that motivated it printed the right message in red
 and returned 0.
 
-## M13: the non-negotiables that nothing enforces
+## M13: the non-negotiables that nothing enforces (complete)
 
 `AGENTS.md` lists seven non-negotiables and says of them: "Each is enforced by a
 script, not by good intentions." `M12` spent its length finding that gates can
@@ -659,3 +660,27 @@ The milestone fixes what can be fixed and rewords what cannot. A rule that
 genuinely cannot be scripted should say so in `AGENTS.md` rather than sit under a
 sentence promising it is enforced, because a false claim about enforcement is
 worse than an honest claim about intent.
+
+**What it came to.** Six of the seven have a script and it is named beside the
+rule. Rule 3, never claim a test passes without having run it, has none and
+cannot: nothing checks a claim against an intention. It stays in the list,
+marked, because every other rule rests on it.
+
+Four scripts were written: `check-tests-kept.sh` names any test that disappears
+and requires a `Removes-test:` line, `check-secrets.sh` refuses an exposed
+credential reaching a formatter, `check-sans-io.sh` refuses a socket or a real
+clock in a library crate, and `check-core-contract.sh` requires a core trait
+change to bring its implementors and an ADR. Three thresholds became constants.
+
+Two of the audits found the rule already held everywhere and nothing watching
+it. Every `now()` call in the library crates is in test code but six, four of
+which are `pgprox-core::clock` itself. That is the pattern `M12` kept producing,
+one layer up.
+
+**And the milestone reproduced its own defect, in the commit that fixed the
+security rule.** `M13.3`'s first lint used `\b`, a GNU extension the awk on this
+machine does not have, so it matched no line and reported
+`ok no exposed credential reaches a formatter (133 file(s))`. It was found by
+planting a leak and watching nothing happen. Everything after it plants a
+violation and requires the rule to object, and `M13.8`'s end-to-end check carries
+a positive control for the same reason.
