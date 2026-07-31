@@ -4057,11 +4057,42 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   and the safe uses that must not be flagged.
   The end-to-end half is `M13.8`, split out on inspection: this lint cannot see
   a value exposed into a local and formatted three functions later.
-- [ ] `M13.4` Rule 5 says business logic is sans-I/O and `check-layering.sh`
+- [x] `M13.4` Rule 5 says business logic is sans-I/O and `check-layering.sh`
   checks the crate dependency rule, which is a different property.
   Acceptance: either a check for the stated property, or `AGENTS.md` reworded so
   the rule says what is enforced. Deciding which is the task, and the decision
   goes in the entry with its reasoning.
+  The property is checkable, so it is checked rather than reworded, and the
+  decision came out of an audit rather than a preference.
+  `product/architecture.md` gives the mechanical shape: "The I/O shell that
+  wraps it is generic over `AsyncRead + AsyncWrite + Unpin`." So a concrete
+  socket type named inside a library crate is the violation and the generic
+  bound is not. The tree already satisfies that completely: `pgprox-session`
+  holds the entire I/O shell and names no concrete socket type anywhere.
+  The clock half is stronger than expected. Across every library crate there are
+  109 `now()` calls and **all but six are in test code**. Of the six, four are
+  inside `pgprox-core/src/clock.rs`, which is the injection point that exists so
+  nothing else reads a clock, and two are `tokio::time::Instant::now()` in
+  `pgprox-session/src/shell.rs`'s buffer-wait deadline.
+  Those two are not violations and the distinction is earned, not excused.
+  `tokio::time` is the runtime clock, which `#[tokio::test(start_paused = true)]`
+  makes virtual, so it costs nothing in determinism, and the tests that drive
+  that path do pause time. The rule is about non-determinism, and a clock the
+  test controls is not a source of it.
+  So the rule already held everywhere. What was missing was anything that would
+  notice if it stopped, which is the same finding `M12` kept producing.
+  Three exceptions, each named with a reason rather than listed: `src/bin/*` is
+  a composition root, `pgprox-auth/src/client.rs` is the sidecar adapter ADR
+  0003 chose, and `pgprox-core/src/clock.rs` is the one place allowed a clock.
+  `bin/` is not scanned at all, because holding the concrete types the libraries
+  are generic over is what a composition root is for.
+  `AGENTS.md` is corrected too: rule 5 credited nothing, and the checks list now
+  names `check-sans-io.sh` and `check-secrets.sh`. 0.12s over 86 files, so it
+  runs on every commit and in CI.
+  One bug worth keeping: an apostrophe in a comment inside the single-quoted awk
+  program closed the quote, and bash then tried to parse awk. It is the third
+  time in two milestones that the shape of a check broke on quoting or on a
+  regex dialect rather than on its logic.
 - [ ] `M13.5` Rule 6 says a core trait change updates the trait, every fake,
   every implementation and the ADR in one commit. `m0-complete.sh` checks that
   every public trait has a fake, which is the static half and not the rule.

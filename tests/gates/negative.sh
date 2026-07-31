@@ -449,6 +449,35 @@ case_secrets() {
     env PGPROX_RUST_ROOTS="$dir/ok.rs" scripts/check-secrets.sh
 }
 
+# --- check-sans-io.sh, M13.4 -------------------------------------------------
+#
+# Non-negotiable 5. AGENTS.md credited check-layering.sh with this, and that
+# script enforces the crate dependency rule: a crate can depend on nothing but
+# pgprox-core and still open a socket inside its state machine.
+case_sans_io() {
+  echo
+  echo "  check-sans-io.sh"
+
+  local dir="$WORK/sansio"
+  rm -rf "$dir"; mkdir -p "$dir"
+
+  printf 'use tokio::net::TcpStream;\nfn f() { let s = TcpStream::connect("x"); }\n' > "$dir/sock.rs"
+  expect_fail "flags a concrete socket type in a library" \
+    env PGPROX_SANS_IO_ROOTS="$dir/sock.rs" scripts/check-sans-io.sh
+
+  printf 'use std::time::Instant;\nfn f() { let t = Instant::now(); }\n' > "$dir/clock.rs"
+  expect_fail "flags reading the real clock" \
+    env PGPROX_SANS_IO_ROOTS="$dir/clock.rs" scripts/check-sans-io.sh
+
+  # Four things that must not be flagged, each for its own reason: the generic
+  # bound is the I/O shell and is the point; tokio time is virtual under
+  # start_paused; IpAddr is a value type that performs no I/O; and a clock in a
+  # test is how a fake clock gets its starting instant.
+  printf 'fn f<S: AsyncRead + AsyncWrite + Unpin>(s: S) {}\nfn g() { let t = tokio::time::Instant::now(); }\nuse std::net::IpAddr;\n#[cfg(test)]\nmod tests { use std::time::Instant; fn t() { Instant::now(); } }\n' > "$dir/ok.rs"
+  expect_pass "leaves the generic bound, tokio time, IpAddr and test clocks alone" \
+    env PGPROX_SANS_IO_ROOTS="$dir/ok.rs" scripts/check-sans-io.sh
+}
+
 # -----------------------------------------------------------------------------
 
 echo "gates: proof that they can fail"
@@ -464,6 +493,7 @@ if [[ -z "$WANTED" || "$WANTED" == every-gate ]]; then case_every_gate; ran=1; f
 if [[ -z "$WANTED" || "$WANTED" == thresholds ]]; then case_thresholds; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == tests-kept ]]; then case_tests_kept; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == secrets ]]; then case_secrets; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == sans-io ]]; then case_sans_io; ran=1; fi
 
 if (( ! ran )); then
   fail "no such case: $WANTED"

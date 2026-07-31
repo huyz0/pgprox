@@ -48,7 +48,10 @@ a script, not by good intentions.
 3. Never claim a test passes without having run it.
 4. Every crate holds 95% line coverage on its own, from tier 1 tests alone.
 5. Business logic is sans-I/O. If it needs a socket to test, it is in the wrong
-   layer. See [standards/async-concurrency.md](standards/async-concurrency.md).
+   layer. Enforced by `scripts/check-sans-io.sh`: no library crate names a
+   concrete socket type or reads the real clock outside the two places that
+   exist to hold them. See
+   [standards/async-concurrency.md](standards/async-concurrency.md).
 6. Changing a `pgprox-core` trait means updating the trait, every fake, every
    implementation, and the ADR in one commit. See
    [standards/contracts.md](standards/contracts.md).
@@ -61,6 +64,8 @@ scripts/check-fmt.sh              # workspace formatting
 scripts/check-crate.sh <crate>    # fmt and clippy for one crate
 scripts/check-coverage.sh <crate> # the 95% gate
 scripts/check-drift.sh            # derived files still match canonical source
+scripts/check-sans-io.sh          # business logic touches no socket and no clock
+scripts/check-secrets.sh          # no exposed credential reaches a formatter
 ```
 
 Measurement, which is slower and runs when asked rather than per commit:
