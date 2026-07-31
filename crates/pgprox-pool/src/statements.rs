@@ -325,6 +325,111 @@ impl ConnectionStatements {
 mod tests {
     use super::*;
 
+    /// `M14.22`. Three mutants survived in this file. Two are accessors nobody
+    /// asserted; the third is the one that matters.
+    #[test]
+    fn use_order_decides_eviction_rather_than_name_order() {
+        // `prepare_for` opens with `self.tick += 1`, and `tick` starts at zero,
+        // so `*=` freezes it there. Every held statement then carries the same
+        // use time, and `least_recently_used` breaks ties on the name: the
+        // eviction policy silently becomes "alphabetically first" instead of
+        // "least recently used". The cache still works, still respects its cap,
+        // and evicts the wrong statement, which shows up as a re-prepare storm
+        // on whatever the busiest statement happens to hash to.
+        //
+        // Names are hashes of the SQL, so the deciding case has to be found
+        // rather than written: the statement that is touched again must sort
+        // *before* the one that should be evicted. Then use order and name
+        // order disagree, and only use order gives the right victim.
+        let (keep, evict_me) = (0..200)
+            .flat_map(|i| (0..200).map(move |j| (i, j)))
+            .map(|(i, j)| {
+                (
+                    GlobalName::for_sql(&format!("SELECT {i}")),
+                    GlobalName::for_sql(&format!("SELECT {j}, 2")),
+                )
+            })
+            .find(|(a, b)| a.as_str() < b.as_str())
+            .unwrap();
+
+        let mut held = ConnectionStatements::new(config(2));
+        let third = GlobalName::for_sql("SELECT 'third'");
+
+        assert!(matches!(
+            held.prepare_for(&keep),
+            Preparation::Replay { .. }
+        ));
+        assert!(matches!(
+            held.prepare_for(&evict_me),
+            Preparation::Replay { .. }
+        ));
+
+        // Touch the one that sorts first, so it is the most recently used while
+        // still being alphabetically first. This is the whole test.
+        assert!(matches!(held.prepare_for(&keep), Preparation::AlreadyHeld));
+
+        let outcome = held.prepare_for(&third);
+        assert_eq!(
+            outcome,
+            Preparation::Replay {
+                evict: vec![evict_me]
+            },
+            "eviction followed name order rather than use order"
+        );
+        assert!(
+            held.holds(&keep),
+            "the most recently used statement was evicted"
+        );
+        assert!(held.holds(&third));
+    }
+
+    #[test]
+    fn a_session_reports_how_many_statements_it_has_prepared() {
+        // `SessionStatements::len` could return `1` unconditionally. Nothing
+        // asked it for any other number, so a constant matched every case that
+        // was tested and none that mattered.
+        let mut session = SessionStatements::new();
+        assert_eq!(session.len(), 0);
+        assert!(session.is_empty());
+
+        session.parse("s1", "SELECT 1");
+        assert_eq!(session.len(), 1);
+        assert!(!session.is_empty());
+
+        session.parse("s2", "SELECT 2");
+        session.parse("s3", "SELECT 3");
+        assert_eq!(
+            session.len(),
+            3,
+            "three distinct client names, three statements"
+        );
+
+        // Re-preparing an existing client name replaces rather than adds, which
+        // is what a driver rotating its cache does.
+        session.parse("s1", "SELECT 99");
+        assert_eq!(session.len(), 3);
+    }
+
+    #[test]
+    fn the_held_set_reports_its_own_size() {
+        // `is_empty` could return `true` unconditionally, and the only test
+        // that touched it asked an empty set.
+        let mut held = ConnectionStatements::new(config(4));
+        assert!(held.is_empty());
+
+        held.prepare_for(&GlobalName::for_sql("SELECT one"));
+        assert!(
+            !held.is_empty(),
+            "a set holding a statement called itself empty"
+        );
+
+        held.prepare_for(&GlobalName::for_sql("SELECT two"));
+        assert!(!held.is_empty());
+
+        held.forget_all();
+        assert!(held.is_empty());
+    }
+
     fn config(cap: usize) -> StatementConfig {
         StatementConfig {
             per_connection_cap: cap,

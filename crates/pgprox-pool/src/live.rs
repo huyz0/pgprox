@@ -487,6 +487,91 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
+    /// `M14.22`. Two mutants survived in this file.
+    #[tokio::test]
+    async fn the_debug_rendering_says_what_it_holds() {
+        // The `Debug` impl is hand-written so that a socket is never printable
+        // and no payload can reach a log by construction, and it could be
+        // replaced wholesale by `Ok(Default::default())`: an empty rendering,
+        // every time. Nothing asked, so `LivePool` would have printed as
+        // nothing in every diagnostic that ever formatted it.
+        let (pool, clock) = pool(4);
+
+        let empty = format!("{pool:?}");
+        assert!(
+            empty.contains("LivePool"),
+            "the type name is missing: {empty}"
+        );
+        assert!(
+            empty.contains("pools"),
+            "the pool count is missing: {empty}"
+        );
+        assert!(
+            empty.contains('0'),
+            "an empty pool did not report zero: {empty}"
+        );
+
+        // Once a key exists the count follows it, so the rendering is derived
+        // rather than a fixed string that happens to contain the right words.
+        let _guard = pool.acquire(&key(), never(&clock)).await.unwrap();
+        let one = format!("{pool:?}");
+        assert!(
+            one.contains('1'),
+            "a pool holding one key did not report it: {one}"
+        );
+        assert_ne!(empty, one, "the rendering did not change with the contents");
+    }
+
+    #[tokio::test]
+    async fn a_waiter_woken_with_nothing_to_take_is_counted() {
+        // `futile_wakeups` could return `0` unconditionally, and the existing
+        // test asserts it *is* zero, which the mutant satisfies exactly. That
+        // test is the measurement `M7.58` rests on: waking one waiter per
+        // released connection rather than all of them. A counter frozen at zero
+        // makes that measurement unfalsifiable, which is worse than not having
+        // it, because the assertion still reads as evidence.
+        //
+        // A futile wakeup is a waiter that wakes and finds nothing, so ringing
+        // the doorbell without releasing anything produces one deliberately.
+        let (pool, clock) = pool(1);
+        let held = pool.acquire(&key(), never(&clock)).await.unwrap();
+
+        let waiting = {
+            let pool = pool.clone();
+            let deadline = never(&clock);
+            tokio::spawn(async move { pool.acquire(&key(), deadline).await })
+        };
+        while pool.stats(&key()).waiting == 0 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(pool.futile_wakeups(), 0, "nothing has been woken yet");
+
+        // Wake it with no connection available. It must find nothing, count the
+        // wakeup, and park again.
+        pool.doorbell(&key()).notify_one();
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            pool.futile_wakeups(),
+            1,
+            "a waiter woken with no connection available was not counted"
+        );
+        assert_eq!(pool.stats(&key()).waiting, 1, "it should have parked again");
+
+        // A second futile wakeup counts again, so the counter accumulates
+        // rather than latching at one.
+        pool.doorbell(&key()).notify_one();
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(pool.futile_wakeups(), 2);
+
+        // And a real release still moves the waiter on.
+        drop(held);
+        assert!(waiting.await.unwrap().is_ok());
+    }
+
     fn key() -> PoolKey {
         PoolKey::new(ServerId::new("db-1", 5432), "tenant_acme", "acme_app")
     }

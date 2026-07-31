@@ -4440,7 +4440,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   makes enumeration and membership agree, and checks that an empty list still
   enumerates as empty so the assertion is about contents rather than about the
   method always returning something.
-- [ ] `M14.22` The counters and accessors: `SessionStatements::len` to `1`,
+- [x] `M14.22` The counters and accessors: `SessionStatements::len` to `1`,
   `ConnectionStatements::is_empty` to `true`, `prepare_for`'s `tick += 1` to
   `*=`, `LivePool`'s hand-written `Debug` to a default, and `futile_wakeups` to
   `0`.
@@ -4449,6 +4449,26 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   eviction policy runs on. `futile_wakeups` is the counter `M7.58` added to
   measure the thundering herd it fixed, so a constant zero makes that
   measurement unfalsifiable.
+  Five tests. Both files fully covered: 97 mutants, 63 caught, 34 unviable.
+  `tick` was the interesting one and the eviction test had to be built rather
+  than written. Statement names are hashes of the SQL, so the deciding case,
+  where the statement that is touched again sorts *before* the one that should
+  be evicted, cannot be written by hand. The test searches for such a pair and
+  says why it needs one. Only then do use order and name order disagree, and
+  only then does a frozen tick pick the wrong victim.
+  **`futile_wakeups` is the sharpest of the nine.** The existing test asserts
+  the count *is* zero, which a constant zero satisfies exactly, and that test is
+  the whole measurement `M7.58` rests on: waking one waiter per released
+  connection rather than all of them. A frozen counter makes that assertion
+  unfalsifiable, which is worse than not having it, because it still reads as
+  evidence. A futile wakeup is a waiter that wakes and finds nothing, so ringing
+  the doorbell without releasing anything produces one on purpose, and the test
+  also checks the counter accumulates rather than latching at one.
+  The `Debug` impl is hand-written so a socket is never printable and no payload
+  can reach a log by construction. It could be replaced wholesale with an empty
+  rendering, so `LivePool` would have printed as nothing in every diagnostic
+  that ever formatted it. The test asserts the rendering changes with the
+  contents, not just that it contains the right words.
 - [ ] `M14.3` Mutation testing for `pgprox-core`, 536 mutants. Every contract
   and every fake. `mutants.sh` opens by arguing that M9 hid three defects behind
   a fake that answered something Postgres refuses, which makes the fakes the
