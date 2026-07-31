@@ -77,32 +77,84 @@ impl Startup<'_> {
     /// libpq emits both.
     #[must_use]
     pub fn options(&self) -> Vec<(String, String)> {
-        let Some(raw) = self.param("options") else {
-            return Vec::new();
-        };
-
         let mut out = Vec::new();
-        for token in split_escaped(raw) {
-            // Strip a leading -c, which may be joined or already separated by
-            // the splitter above.
-            let setting = token.strip_prefix("-c").unwrap_or(&token).trim().to_owned();
-            if setting.is_empty() || setting == "-c" {
-                continue;
-            }
-            if let Some((name, value)) = setting.split_once('=') {
-                out.push((name.trim().to_owned(), value.to_owned()));
-            }
-        }
+        self.each_option(|name, value| {
+            out.push((name.to_owned(), value.to_owned()));
+            // Never stop: this one wants all of them.
+            false
+        });
         out
     }
 
     /// Looks up one runtime setting from `options`.
     #[must_use]
     pub fn option(&self, name: &str) -> Option<String> {
-        self.options()
-            .into_iter()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v)
+        let mut found = None;
+        self.each_option(|key, value| {
+            if key == name {
+                found = Some(value.to_owned());
+                return true;
+            }
+            false
+        });
+        found
+    }
+
+    /// Walks the settings in `options`, stopping when `visit` returns true.
+    ///
+    /// Both public forms go through this. `option` used to build the whole list
+    /// and throw all but one entry away, which is a `Vec` and two `String`s per
+    /// setting for a single lookup. Now it stops at the one it wants and
+    /// allocates only what it returns.
+    fn each_option(&self, mut visit: impl FnMut(&str, &str) -> bool) {
+        let Some(raw) = self.param("options") else {
+            return;
+        };
+
+        // One buffer, reused across tokens, rather than one `String` each. It
+        // has to be a buffer rather than a subslice because a backslash escape
+        // means the token is not contiguous in the input.
+        let mut token = String::new();
+        let mut escaped = false;
+        let mut rest = raw.chars();
+
+        loop {
+            let ch = rest.next();
+            match ch {
+                Some(c) if escaped => {
+                    token.push(c);
+                    escaped = false;
+                    continue;
+                }
+                Some('\\') => {
+                    escaped = true;
+                    continue;
+                }
+                Some(' ') | None => {}
+                Some(c) => {
+                    token.push(c);
+                    continue;
+                }
+            }
+
+            // A token boundary, or the end of the input.
+            if !token.is_empty() {
+                // Strip a leading -c, which may be joined to the setting or
+                // already separated by the space above.
+                let setting = token.strip_prefix("-c").unwrap_or(&token).trim();
+                if !setting.is_empty()
+                    && setting != "-c"
+                    && let Some((name, value)) = setting.split_once('=')
+                    && visit(name.trim(), value)
+                {
+                    return;
+                }
+                token.clear();
+            }
+            if ch.is_none() {
+                return;
+            }
+        }
     }
 
     /// Looks up a startup parameter.
@@ -150,36 +202,6 @@ pub fn negotiate_version(requested: i32) -> VersionResponse {
         return VersionResponse::Accept;
     }
     VersionResponse::Negotiate { minor: 0 }
-}
-
-/// Splits on unescaped spaces, honouring backslash escapes.
-///
-/// libpq allows a value to contain a space by escaping it, so a naive
-/// `split_whitespace` would cut a `search_path` of `"a, b"` in half and yield a
-/// setting nobody sent.
-fn split_escaped(input: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut escaped = false;
-
-    for ch in input.chars() {
-        if escaped {
-            current.push(ch);
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else if ch == ' ' {
-            if !current.is_empty() {
-                out.push(std::mem::take(&mut current));
-            }
-        } else {
-            current.push(ch);
-        }
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    out
 }
 
 /// Why a startup packet could not be decoded.
@@ -372,6 +394,32 @@ mod tests {
             decode(&body).unwrap().option("foo").as_deref(),
             Some("a=b=c")
         );
+    }
+
+    #[test]
+    fn looking_up_one_setting_stops_at_it() {
+        // `option` used to build the entire list and throw all but one entry
+        // away. It now stops at the match, so the first of a repeated key wins,
+        // which is what building the list and calling `find` on it did too.
+        let body = startup_body(
+            PROTOCOL_3_0,
+            &[
+                ("user", "u"),
+                (
+                    "options",
+                    "-c search_path=first -c work_mem=64MB -c search_path=second",
+                ),
+            ],
+        );
+        let parsed = decode(&body).unwrap();
+
+        assert_eq!(parsed.option("search_path").as_deref(), Some("first"));
+        assert_eq!(parsed.option("work_mem").as_deref(), Some("64MB"));
+        assert_eq!(parsed.option("nothing_like_this"), None);
+
+        // And the collecting form still sees every one of them, including the
+        // duplicate, because a caller listing settings wants what was sent.
+        assert_eq!(parsed.options().len(), 3);
     }
 
     #[test]

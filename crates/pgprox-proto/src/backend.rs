@@ -337,11 +337,38 @@ fn decode_error_fields<'a>(r: &mut Reader<'a>) -> Result<ErrorFields<'a>, Backen
 ///
 /// Fails when the list is unterminated or not UTF-8.
 pub fn select_sasl_mechanism(body: &[u8]) -> Result<Option<&str>, BackendError> {
+    select_mechanism_from(body, SUPPORTED_SASL_MECHANISMS)
+}
+
+/// [`select_sasl_mechanism`] against an explicit preference list.
+///
+/// Split out so the preference rule can be tested. `SUPPORTED_SASL_MECHANISMS`
+/// holds one entry, and an ordering rule over a one-element list is a rule
+/// nothing can disagree with: every ranking of it is the same ranking. `M14`
+/// spent a milestone on assertions of exactly that shape, so the way to state
+/// this one is against a list long enough to have an order.
+///
+/// # Errors
+///
+/// As [`select_sasl_mechanism`].
+fn select_mechanism_from<'a>(
+    body: &'a [u8],
+    supported: &[&str],
+) -> Result<Option<&'a str>, BackendError> {
     let mut r = Reader::new(body);
     // Skip the subtype the caller already read.
     r.i32("auth_subtype")?;
 
-    let mut offered = Vec::new();
+    // One pass, no vector. The offered list used to be collected so it could be
+    // searched once per supported mechanism, which allocated on the
+    // authentication path of every connection to hold at most a handful of
+    // string slices.
+    //
+    // Server order is advisory; our preference decides, so a server listing a
+    // mechanism we would rather not use cannot force it by putting it first.
+    // That is what `rank` keeps: the index into `SUPPORTED_SASL_MECHANISMS`,
+    // so a later offer replaces an earlier one only when we prefer it.
+    let mut best: Option<(usize, &str)> = None;
     loop {
         if r.is_empty() {
             break;
@@ -350,14 +377,14 @@ pub fn select_sasl_mechanism(body: &[u8]) -> Result<Option<&str>, BackendError> 
         if name.is_empty() {
             break;
         }
-        offered.push(name);
+        if let Some(rank) = supported.iter().position(|w| *w == name)
+            && best.is_none_or(|(seen, _)| rank < seen)
+        {
+            best = Some((rank, name));
+        }
     }
 
-    // Server order is advisory; our preference decides, so a server listing a
-    // mechanism we would rather not use cannot force it.
-    Ok(SUPPORTED_SASL_MECHANISMS
-        .iter()
-        .find_map(|wanted| offered.iter().find(|o| *o == wanted).copied()))
+    Ok(best.map(|(_, name)| name))
 }
 
 /// Rebuilds the connection ID from a cancel key the proxy issued.
@@ -469,6 +496,53 @@ mod tests {
             Some("SCRAM-SHA-256"),
             "the server's first choice overrode ours"
         );
+    }
+
+    #[test]
+    fn our_preference_order_decides_and_not_just_our_membership() {
+        // `SUPPORTED_SASL_MECHANISMS` has one entry, so the test above cannot
+        // tell "we prefer ours" from "we take whichever of ours we see first".
+        // Every ordering of a one-element list is the same ordering. `M14`
+        // spent a milestone on assertions of that shape, so this one is made
+        // against a list long enough to have an order.
+        let supported = &["BEST", "WORSE"];
+
+        let mut offer = 10_i32.to_be_bytes().to_vec();
+        offer.extend_from_slice(b"WORSE\x00BEST\x00\x00");
+        assert_eq!(
+            select_mechanism_from(&offer, supported).unwrap(),
+            Some("BEST"),
+            "the server's order overrode ours"
+        );
+
+        // And the same list offered the other way round gives the same answer,
+        // which is what makes the first assertion about preference rather than
+        // about position.
+        let mut offer = 10_i32.to_be_bytes().to_vec();
+        offer.extend_from_slice(b"BEST\x00WORSE\x00\x00");
+        assert_eq!(
+            select_mechanism_from(&offer, supported).unwrap(),
+            Some("BEST")
+        );
+
+        // A server offering only the one we like less still gets it: the rule
+        // is a preference, not a requirement.
+        let mut offer = 10_i32.to_be_bytes().to_vec();
+        offer.extend_from_slice(b"WORSE\x00\x00");
+        assert_eq!(
+            select_mechanism_from(&offer, supported).unwrap(),
+            Some("WORSE")
+        );
+    }
+
+    #[test]
+    fn a_repeated_offer_does_not_change_the_answer() {
+        // The one thing the single-entry list can still say. Without the rank
+        // comparison a later duplicate would overwrite the earlier match, which
+        // is harmless here and would not be if the list ever grows.
+        let mut body = 10_i32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"SCRAM-SHA-256\x00SCRAM-SHA-256\x00\x00");
+        assert_eq!(select_sasl_mechanism(&body).unwrap(), Some("SCRAM-SHA-256"));
     }
 
     #[test]

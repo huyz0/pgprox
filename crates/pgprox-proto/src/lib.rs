@@ -11,8 +11,30 @@
 //!
 //! **Validate length before allocating.** This code reads bytes sent by anyone
 //! who can reach the listener, so a declared length is untrusted until checked
-//! against a maximum. Nothing here allocates at all: frames borrow from the
-//! caller's buffer.
+//! against a maximum, and no buffer is ever sized from a number a peer sent.
+//!
+//! # What that does and does not promise
+//!
+//! Decoding does not allocate: a [`Frame`] borrows its body from the caller's
+//! buffer and every accessor hands out a slice of it. That is the rule, and it
+//! is what keeps `DataRow` off the heap.
+//!
+//! It is not the same as "nothing here allocates", which this said until
+//! `M15.6` and which was never true. Four things allocate on purpose, each
+//! bounded by something other than a peer's declared length:
+//!
+//! - [`frontend::bind_parameters`] builds a vector of borrowed values, for a
+//!   caller that has already decided to key a cache on them. Its own docs
+//!   explain why it is not a field on the `Bind` variant.
+//! - [`startup::decode`] collects the startup parameters, once per connection.
+//! - [`rewrite`] returns a new body, because rewriting a statement name changes
+//!   the length of a message that has to keep its tail byte for byte.
+//! - [`relay::FrameRelay`] holds the part of a body it was asked to inspect,
+//!   bounded by [`frame::DEFAULT_MAX_INSPECT`] rather than by the body.
+//!
+//! A fifth used to: `backend::select_sasl_mechanism` collected the offered
+//! mechanisms in order to search them. It no longer does, which is the only
+//! one of the five that was not paying for anything.
 
 pub mod backend;
 pub mod encode;

@@ -4876,7 +4876,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   the code: it pushed the tail of a split header once and expected the body to
   be consumed too, which is not what `push` promises. Driven through `drive` it
   passes, and the contract is the one that was already documented.
-- [ ] `M15.6` The crate says it never allocates and it does. `lib.rs`: "Nothing
+- [x] `M15.6` The crate says it never allocates and it does. `lib.rs`: "Nothing
   here allocates at all: frames borrow from the caller's buffer." Untrue of
   `bind_parameters`, of `startup::decode`, of everything in `rewrite`, of
   `FrameRelay`, and of `select_sasl_mechanism`, which builds a `Vec<&str>` of
@@ -4887,6 +4887,14 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   build a list to throw it away, and the sentence in `lib.rs` says what is
   actually true. The rule it is trying to state is real; it is the scope that
   is wrong.
+  **A second finding came out of it.** `select_sasl_mechanism`'s rule is that
+  our preference order decides and the server's does not, and
+  `SUPPORTED_SASL_MECHANISMS` holds one entry, so the test asserting that rule
+  could not fail: every ordering of a one-element list is the same ordering.
+  That is an `M14` shape, an assertion compared against the thing that produced
+  it. The selection is now split into a private form taking an explicit
+  preference list, and the rule is stated against a list long enough to have an
+  order.
 - [ ] `M15.7` `Reader` adds client-controlled lengths without checking. `i32`,
   `i16` and `bytes` all compute `self.pos + n` and rely on the slice index to
   refuse the result. `bytes` takes its `n` from the wire: a `Bind` parameter
