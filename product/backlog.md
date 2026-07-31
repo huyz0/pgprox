@@ -4963,7 +4963,7 @@ milestone said it would do and which found three more.
   `bytea_output` and `intervalstyle` are already on it and are exactly as rare.
   Its absence is an omission rather than a decision.
   Acceptance: on the list, with the replay test that covers the others.
-- [ ] `M15.12` The mutants my own tests let live. A mutation run over
+- [x] `M15.12` The mutants my own tests let live. A mutation run over
   `pgprox-proto` after the first seven tasks found three survivors in code this
   milestone wrote, and one of them is the shape `M14` catalogued and this
   milestone quoted: `the_buffer_a_large_message_needed_does_not_outlive_it`
@@ -4977,5 +4977,7 @@ milestone said it would do and which found three more.
   Acceptance: the constant is asserted against something that is not itself,
   the two equivalents carry arguments, the two stale entries are gone, and a
   clean run agrees.
+  **The clean run agrees: 359 mutants, 6 surviving, every one of them in the
+  baseline with an argument.**
 - [ ] `M15.8` Close M15. Filed before the commit that does it, and after the
   second reading the milestone promised, which found four more.

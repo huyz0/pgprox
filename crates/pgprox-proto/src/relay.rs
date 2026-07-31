@@ -69,6 +69,11 @@ pub struct RelayOutcome {
 /// `CommandComplete` a few dozen, so the steady state sits far below it.
 const RETAINED_INSPECT: usize = 8 * 1024;
 
+/// Retaining as much as the cap allows would retain everything and mean
+/// nothing. Checked at compile time, the way `frame.rs` checks the pair above
+/// it, so the relationship cannot be broken by a value nobody re-read.
+const _: () = assert!(RETAINED_INSPECT < DEFAULT_MAX_INSPECT);
+
 /// Where a relay is in a message.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Phase {
@@ -694,6 +699,35 @@ mod tests {
             "the relay kept {} bytes for a session that is not using them",
             relay.buffer.capacity()
         );
+    }
+
+    #[test]
+    fn the_retained_size_is_the_size_it_says() {
+        // The assertion above compares against `RETAINED_INSPECT`, which is the
+        // constant that produced the number, so it holds for any value of it. A
+        // mutation run made the point by turning `8 * 1024` into `8 + 1024` and
+        // watching the whole file stay green.
+        //
+        // That is the shape `M14` catalogued and this milestone quoted before
+        // committing an instance of it. So the number is pinned, and it is
+        // pinned against the thing that chose it rather than against itself:
+        // the retained buffer has to cover the largest prefix a frequently
+        // inspected message asks for, or a session seeing ordinary errors would
+        // give the capacity back and take it again on every one.
+        assert_eq!(RETAINED_INSPECT, 8192);
+
+        let Inspect::Prefix(error_prefix) = inspect_policy(Direction::Backend, Tag::ERROR_RESPONSE)
+        else {
+            unreachable!("ErrorResponse should be prefix-inspected")
+        };
+        assert!(
+            RETAINED_INSPECT >= error_prefix,
+            "retaining {RETAINED_INSPECT} would churn on every {error_prefix}-byte error"
+        );
+
+        // The other end of the range, that a retention as large as the cap
+        // would retain everything, is a `const` assertion beside the constant
+        // rather than a test: it cannot compile rather than cannot pass.
     }
 
     #[test]
