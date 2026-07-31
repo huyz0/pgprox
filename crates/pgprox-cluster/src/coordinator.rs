@@ -220,9 +220,27 @@ impl NodeCoordinator {
     /// itself is still a peer we can hear, and treating a stale payload as
     /// silence would age out a node that is merely quiet.
     pub fn gossip(&mut self, incoming: VersionedDigest, now: Instant) -> MergeOutcome {
-        self.liveness
-            .heard(incoming.digest.node, incoming.digest.mode, now);
-        self.digests.merge(incoming)
+        let node = incoming.digest.node;
+        let mode = incoming.digest.mode;
+
+        // Merge first, because whether to take the sender's word on its mode
+        // depends on whether its digest was fresh enough to keep.
+        //
+        // Contact is unconditional: hearing from a node is evidence it is alive
+        // whatever version it sent. The mode is not, because it is content the
+        // sender asserts and content is ordered by the sender's own version.
+        // Taking it from a message just rejected as stale let an old digest
+        // undo a drain in the view while the store still held the newer one,
+        // which put a shutting-down node back into rendezvous hashing until its
+        // next round re-asserted the drain. `M14.16`.
+        let outcome = self.digests.merge(incoming);
+        match outcome {
+            MergeOutcome::Stale => self.liveness.heard_without_mode(node, now),
+            MergeOutcome::Added | MergeOutcome::Updated => {
+                self.liveness.heard(node, mode, now);
+            }
+        }
+        outcome
     }
 
     /// Records that this node is still running.
@@ -791,23 +809,16 @@ mod tests {
     }
 
     #[test]
-    fn a_home_the_view_still_lists_but_whose_digest_says_draining_reads_as_draining() {
-        // `home_draining` could return `false` unconditionally and nothing
-        // noticed. Finding out why took longer than writing the test, and the
-        // answer is the useful part.
+    fn a_stale_digest_cannot_undo_a_drain_in_the_view() {
+        // `M14.13` found `home_draining` could return `false` unconditionally
+        // with nothing noticing, and working out why turned up the reason:
+        // `gossip` took a node's mode from a digest the store had just rejected
+        // as stale, so an out-of-order message put a draining node back into
+        // `active()` while the store still held its Draining digest.
         //
-        // `MembershipView::home_node` hashes over `active()`, which excludes
-        // draining nodes, so a drain rehomes its tenants the moment it is
-        // announced. On that reading the home can never be draining and this
-        // function is dead code.
-        //
-        // It is not, because `gossip` updates liveness from a digest that the
-        // store may reject: `heard` takes the incoming mode unconditionally and
-        // `merge` returns `Stale` for an older version. So an out-of-order
-        // message that says Active can put a node back into `active()` while
-        // the store still holds its newer Draining digest, and that is exactly
-        // the disagreement this guard is for. `M14.16` files whether `gossip`
-        // should take the mode from a digest it is about to reject.
+        // `M14.16` decided that is wrong. Contact is reachability and belongs
+        // to the latest message; mode is content the sender asserts and belongs
+        // to the latest *version*. This is that decision, tested.
         let now = Instant::now();
         let mut c = NodeCoordinator::new(node(1), config_for(3), now);
         c.heartbeat(now);
@@ -819,32 +830,37 @@ mod tests {
             .map(|i| TenantId::new(format!("tenant-{i}")))
             .find(|t| view.home_node(t) == Some(node(2)))
             .unwrap();
-        assert!(
-            !c.home_draining(&tenant, now),
-            "an active home read as draining"
-        );
 
-        // Node 2 announces a drain. Its tenants rehome at once, so the home is
-        // no longer node 2 and the answer is still false, correctly.
+        // Node 2 announces a drain, so its tenants rehome at once.
         c.gossip(digest_for(2, 11, NodeMode::Draining), now);
         assert_ne!(c.membership(now).home_node(&tenant), Some(node(2)));
 
-        // Now the stale Active message arrives. Liveness takes its word, the
-        // store keeps the Draining digest, and node 2 is back in the ring while
-        // its own latest digest says it is going away.
+        // An older message from node 2 arrives late, still claiming Active.
+        // The store rejects it, and the view must not take its word either.
         assert_eq!(
             c.gossip(digest_for(2, 5, NodeMode::Active), now),
             MergeOutcome::Stale
         );
-        assert_eq!(c.membership(now).home_node(&tenant), Some(node(2)));
+        assert_ne!(
+            c.membership(now).home_node(&tenant),
+            Some(node(2)),
+            "a stale digest put a draining node back into rendezvous hashing"
+        );
         assert_eq!(
             c.digests().get(node(2)).map(|d| d.mode),
-            Some(NodeMode::Draining)
+            Some(NodeMode::Draining),
+            "the store lost the drain it had already accepted"
         );
 
+        // The view and the store now agree, which is the property that makes
+        // `home_draining` unreachable and the shed guard structural.
+        assert!(!c.home_draining(&tenant, now));
+
+        // Contact still counts: the stale message is evidence node 2 is alive,
+        // so it has not aged out of the view.
         assert!(
-            c.home_draining(&tenant, now),
-            "the view homes this tenant on a node whose digest says draining, and it read as available"
+            c.membership(now).members().iter().any(|m| m.id == node(2)),
+            "a stale message should still count as having heard from the node"
         );
     }
 
@@ -1147,13 +1163,19 @@ mod tests {
         assert!(nodes[0].request(&server(), node(2), 5, ready).is_ok());
 
         // Node 1 starts draining, so node 2 leads.
+        //
+        // Version 3, not 2. This delivered version 2 twice until `M14.16`, so
+        // the second digest was stale and the store rejected it; the drain
+        // reached the view only through the liveness side-channel that took a
+        // rejected message's word on its mode. The test passed for a reason it
+        // did not intend. A node announcing a drain increments its version.
         deliver(
             &mut nodes,
             Faults {
                 split_at: None,
                 leader_loss: true,
             },
-            2,
+            3,
             ready,
         );
 

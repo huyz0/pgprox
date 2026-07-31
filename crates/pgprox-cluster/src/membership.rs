@@ -124,6 +124,24 @@ impl Membership {
             .or_insert(Contact { mode, at });
     }
 
+    /// Records contact without taking the sender's word on its mode.
+    ///
+    /// For a message whose digest was rejected as stale. Hearing from a node is
+    /// evidence it is alive whatever version it sent, and recency of contact is
+    /// the right ordering for that. Its *mode* is not reachability, it is
+    /// content the sender asserts, and content is ordered by the sender's own
+    /// version, which is what the digest store just decided was old.
+    ///
+    /// Without this the two disagree: `merge` keeps the newer digest while the
+    /// view takes the older message's mode, so a node that announced a drain
+    /// re-enters rendezvous hashing until its next round re-asserts it, and
+    /// tenants rehome onto a node that is shutting down. `M14.16`.
+    pub fn heard_without_mode(&mut self, node: NodeId, at: Instant) {
+        if let Some(contact) = self.peers.get_mut(&node).filter(|c| at >= c.at) {
+            contact.at = at;
+        }
+    }
+
     /// Drops a node immediately, as an explicit leave announcement does.
     pub fn forget(&mut self, node: NodeId) {
         self.peers.remove(&node);

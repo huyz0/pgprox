@@ -4512,7 +4512,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   mutation runs that own the machine for a long stretch and this needed none.
 - [ ] `M14.6` Write `scripts/m14-complete.sh`, before the milestone needs
   closing. Under `M12.8`'s constraint: run things, do not match filenames.
-- [ ] `M14.16` `gossip` takes a node's mode from a digest it then rejects as
+- [x] `M14.16` `gossip` takes a node's mode from a digest it then rejects as
   stale. Found by `M14.13`, while working out why `home_draining` could return
   `false` unconditionally with nothing noticing.
   ```rust
@@ -4541,3 +4541,30 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   next reader does not file this again.
   Not urgent: no test failed and no run misbehaved. It is a latent
   inconsistency, found by asking why a mutant survived.
+  **Decided: the mode comes only from an accepted digest.** Contact and mode
+  are different things. Hearing from a node is evidence it is alive whatever
+  version it sent, and recency of contact is the right ordering for that. Its
+  mode is not reachability, it is content the sender asserts, and content is
+  ordered by the sender's own version, which is exactly what `merge` has just
+  ruled on. `Membership::heard_without_mode` records contact alone, and `gossip`
+  merges first so it knows which to call.
+  Scope of the bug, established before deciding rather than assumed. Nodes never
+  relay a peer's digest: `outgoing()` returns this node's own, with a
+  monotonically increasing version. So a stale mode needs two of a node's own
+  messages arriving out of order, and it un-drains that node in one receiver's
+  view until its next round re-asserts the drain. Real, narrow, self-healing
+  within a round, and during that round a shutting-down node is back in
+  rendezvous hashing and can be homed.
+  **It broke an existing test, and that is the finding.**
+  `a_leader_that_loses_office_stops_granting` delivered version 2 twice, so its
+  second digest was stale and the store rejected it: the drain reached the view
+  only through the side-channel this task closed. The test passed for a reason
+  it did not intend, and it went green again by bumping the version, which is
+  what a node announcing a drain actually does.
+  The consequence is followed through as the acceptance asked. `home_draining`
+  is now unreachable, because the view and the store agree and `home_node`
+  excludes draining nodes, so its `-> false` mutant is equivalent by
+  construction and goes to the baseline with that argument and a re-triage
+  condition. The `HomeDraining` guard in `shed` stays: the property is then
+  enforced structurally *and* checked, and removing it would change the public
+  `ShedReason` for no behavioural gain.
