@@ -5030,15 +5030,47 @@ milestone said it would do and which found three more.
   `Inspect::None`, so the relay reads the header, learns it has nothing to
   inspect, and forwards every byte without copying one.
   See [run-2026-08-01-streaming.md](perf/run-2026-08-01-streaming.md).
-- [ ] `M16.2` Stream the server-to-client direction. Blocked on `M16.1`'s
-  number, and scoped from it.
-  The pump does four things with each frame besides forwarding it: it decodes
-  for `relay.on_server`, it swallows the `ParseComplete` and `CloseComplete`
-  answering messages the proxy sent itself, it records answers for the query
-  cache, and it counts outstanding requests. `FrameRelay` gives the first
-  through `inspected()` and `Completed`, and the rest key off the tag, which
-  arrives with the header. Nothing here needs the whole body except the cache,
-  which already has a size bound of its own.
-- [ ] `M16.3` Stream the client-to-server direction. The same shape, and the one
-  that carries `CopyData` and `Bind` parameters, so it is the direction where a
-  client rather than a server chooses the size.
+### What the pump uses a body for
+
+Established before designing the change, because three of the four uses turn out
+not to need one.
+
+| use | needs the body |
+| --- | --- |
+| `backend::decode` for `relay.on_server` | only for inspected tags; `DataRow` decodes to `Opaque(tag)` without reading it |
+| swallowing `ParseComplete`/`CloseComplete` | no, the tag decides |
+| `pumping.owed.received(tag)` | no, the tag decides |
+| cache recording | yes, and `belongs_in_payload` includes `DataRow` |
+
+So the streaming path is available whenever the tag is `Inspect::None` and the
+session is not recording for the cache. That is every `DataRow` and every
+`CopyData` of every uncached statement, which is the traffic this is about.
+Recording stays on the buffering path and is bounded by the cache's own limit,
+which it must have anyway or it would cache a gigabyte.
+
+There is a second copy nobody has counted: `forward` re-encodes the tag, the
+length and the body into the write buffer, so a 16 MiB row is held twice.
+Streaming removes both.
+
+- [ ] `M16.2` A wire can move a body without holding it. The enabling piece,
+  and the reason it is its own task is that `Wire` owns both a borrowed read
+  buffer and a borrowed write buffer, and streaming crosses two wires: read from
+  the upstream one, write to the client one, in bounded chunks, flushing as it
+  goes so the write side does not become the buffer the read side stopped being.
+  Acceptance: the primitive, its tests, **and its caller**. Not landed
+  separately. A streaming primitive with no caller is the defect this milestone
+  exists to fix, and adding a second one would be a joke at the project's
+  expense.
+- [ ] `M16.3` Stream the server-to-client pump. `M16.2`'s caller, in full:
+  header, then `inspect_policy`, then either the current path or the streamed
+  one, with COPY, the swallow counter, the cache recording and the `Flush`
+  terminator all still behaving. The tests that cover those today are the
+  acceptance criteria; none of them may be relaxed.
+- [ ] `M16.4` Stream the client-to-server direction. The same shape, and the one
+  where a client rather than a server chooses the size: `CopyData` and `Bind`
+  parameters both arrive here, and the client-side cap is the 1 GiB relay cap
+  because `M15.9` deliberately left the authenticated path alone.
+- [ ] `M16.5` Re-measure. `M16.1`'s test drives `Wire::read_tagged` directly; it
+  will still report what that call holds. The number that closes this milestone
+  is the same 16 MiB row through the real pump, and the honest version of it
+  needs the machines `M7`'s full run needed.
