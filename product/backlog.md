@@ -4698,8 +4698,28 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   real tenants and stays open inside the item rather than as a separate entry.
   Taken out of backlog order, ahead of `M14.1` to `M14.4`, because those are
   mutation runs that own the machine for a long stretch and this needed none.
-- [ ] `M14.6` Write `scripts/m14-complete.sh`, before the milestone needs
+- [x] `M14.6` Write `scripts/m14-complete.sh`, before the milestone needs
   closing. Under `M12.8`'s constraint: run things, do not match filenames.
+  Five checks.
+  The list is compared against the crates that exist rather than against its own
+  header, because the header is prose and the milestone exists precisely because
+  prose and array disagreed. Fourteen of fourteen.
+  A failed baseline is planted as an outcomes file and read back, then the guard
+  itself is confirmed present, because `M14.4` found `mutants.sh` reporting
+  "1 mutants, 0 surviving" and "all checks passed" for a crate whose baseline
+  had failed to build. A gate for this milestone that did not check that would
+  be repeating the mistake it exists to record.
+  Every baseline entry is required to carry a reason, which is the file's own
+  rule: the list may not grow without somebody writing down why. Twenty-three
+  entries, all reasoned.
+  And a real run, on `pgprox-testkit`: one crate rather than fourteen, because
+  the sweep is tens of minutes and this sits in CI beside twelve other gates.
+  Testkit is the smallest and was the only crate in the milestone that needed no
+  work, which makes it the cheapest thing that still exercises the whole path.
+  It also corrected a stale claim in `ci.yml`, which described the mutation job
+  as "nine hundred of them across the four sans-I/O crates". That was true when
+  it was written and stopped being true in `M13.4`, which made every crate
+  sans-I/O and enforced it.
 - [x] `M14.16` `gossip` takes a node's mode from a digest it then rejects as
   stale. Found by `M14.13`, while working out why `home_draining` could return
   `false` unconditionally with nothing noticing.

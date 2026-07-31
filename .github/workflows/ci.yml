@@ -169,9 +169,14 @@ jobs:
     name: tier 3 - mutation testing
     runs-on: ubuntu-latest
     # Nightly, because a mutant is a full build and test run and there are
-    # nine hundred of them across the four sans-I/O crates. Coverage says a
-    # line ran; this says the line mattered, and `standards/testing.md` has
+    # roughly three thousand of them across all fourteen crates. Coverage says
+    # a line ran; this says the line mattered, and `standards/testing.md` has
     # claimed it runs since M-1.
+    #
+    # Said "nine hundred across the four sans-I/O crates" until M14, which is
+    # what the list held then. M13.4 made every crate sans-I/O and enforced it,
+    # so the criterion selected all fourteen while the array still selected
+    # four; M14 closed that and this sentence with it.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
@@ -262,3 +267,5 @@ jobs:
         run: scripts/m12-complete.sh
       - name: M13
         run: scripts/m13-complete.sh
+      - name: M14
+        run: scripts/m14-complete.sh
