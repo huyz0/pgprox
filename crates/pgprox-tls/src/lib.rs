@@ -223,7 +223,17 @@ mod tests {
 
     /// Writes a self-signed certificate and its key to a temporary directory.
     fn test_cert() -> (PathBuf, PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("pgprox-tls-test-{}", std::process::id()));
+        // Per call, not per process. `cargo test` runs a binary's tests on
+        // parallel threads, so a directory keyed on the process id alone is
+        // one directory shared by every test in the crate, and all of them
+        // write `cert.pem` and `key.pem`. One truncates a file another is
+        // reading, or a certificate is paired with a different test's key.
+        //
+        // That failed about one run in three and looked random. `M16.8`.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("pgprox-tls-test-{}-{unique}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();

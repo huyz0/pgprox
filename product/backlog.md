@@ -5120,3 +5120,33 @@ Streaming removes both.
   statement will actually run on, and a check that says so rather than a test
   of the function in isolation. Its signature takes the two memory structs and
   the proxy holds the two maps, which is part of why it did not fit anywhere.
+- [x] `M16.8` A test in `pgprox-tls` fails about one run in three.
+  `test_cert` builds its directory from the process id alone, and every test in
+  a binary shares one process, so all of them write `cert.pem` and `key.pem` to
+  the same two paths. `cargo test` runs them on parallel threads, so one
+  truncates a file another is reading, or pairs a certificate with a different
+  test's key.
+  It shows as `a_server_config_builds_from_a_certificate_and_key`,
+  `a_mismatched_certificate_and_key_are_rejected` or
+  `a_root_store_holds_exactly_what_was_added` failing, apparently at random.
+  Found while verifying something else, and confirmed to predate it by
+  stashing: three runs at `HEAD~1` failed once too.
+  This matters more than one flaky test. Non-negotiable 3 is that a claim a
+  test passed is only worth what the run behind it was worth, and a suite that
+  fails a third of the time trains everyone to re-run it. That is how a real
+  failure gets re-run until it goes away.
+  Acceptance: a directory per call, and a run of the crate's tests repeated
+  enough times to say the flake is gone rather than hiding.
+  **Twelve consecutive clean runs**, against a failure rate of roughly one in
+  three before. Twelve rather than three because at one in three, three clean
+  runs happen thirty per cent of the time by luck.
+- [ ] `M16.9` Nothing checks that a thing written is a thing reached. Four
+  findings in two milestones were correct code with no caller: `FrameRelay`
+  (`M16`), `DEFAULT_MAX_INSPECT` (`M15.1`), the two statement-clearing
+  functions (`M15.3`), and the function `M15.3` added to call them (`M16.7`).
+  The last was committed one commit after writing that a primitive with no
+  caller is the defect the milestone exists to fix, which says as clearly as
+  anything can that the rule needs a script rather than a reader.
+  Acceptance: a check that names the symbols which must reach production code
+  and fails when one does not, wired into CI and into `negative.sh` like every
+  other gate, seeded with all four.
