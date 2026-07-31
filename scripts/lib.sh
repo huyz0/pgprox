@@ -13,7 +13,17 @@ export REPO_ROOT
 # which is the difference between a 90 second hook and a 6 minute one.
 export COVERAGE_TARGET_DIR="${COVERAGE_TARGET_DIR:-$REPO_ROOT/target-coverage}"
 
-COVERAGE_MIN="${COVERAGE_MIN:-95}"
+# A constant, deliberately not `${COVERAGE_MIN:-95}`. Non-negotiable 4 in
+# AGENTS.md is the 95% gate and non-negotiable 2 is that a threshold is never
+# lowered to make a check pass, and a settable default is a threshold anyone can
+# lower. `COVERAGE_MIN=10 scripts/check-coverage.sh pgprox-route` used to print
+# `ok coverage (pgprox-route): 99.65% >= 10%` and exit 0: the gate announced its
+# own weakened bar and passed anyway. `M13.1`.
+#
+# Nothing is lost by fixing it. The script already prints the measured
+# percentage, so anyone who wants to know where a crate stands reads that
+# number rather than moving the line it is compared against.
+COVERAGE_MIN=95
 export COVERAGE_MIN
 
 _fail_count=0

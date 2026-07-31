@@ -320,6 +320,39 @@ case_every_gate() {
   done
 }
 
+# --- the thresholds, M13.1 ---------------------------------------------------
+#
+# Non-negotiable 2 is that a threshold is never lowered to make a check pass. A
+# settable default is a threshold anyone can lower, and the gate then reports
+# its own weakened bar as a pass.
+case_thresholds() {
+  echo
+  echo "  pass/fail thresholds"
+
+  # The property itself, directly: an exported COVERAGE_MIN must not reach the
+  # gate. This is the behaviour, not the source text.
+  if COVERAGE_MIN=10 bash -c 'source scripts/lib.sh >/dev/null 2>&1; [[ "$COVERAGE_MIN" == 95 ]]'; then
+    ok "an exported COVERAGE_MIN does not move the coverage gate"
+  else
+    fail "COVERAGE_MIN=10 reaches the coverage gate: the 95% bar can be lowered from the environment"
+  fi
+
+  local dir="$WORK/thresh"
+  rm -rf "$dir"; mkdir -p "$dir"
+
+  # Reintroducing one must be refused.
+  printf '#!/usr/bin/env bash\nCOVERAGE_MIN="${COVERAGE_MIN:-50}"\n' > "$dir/plant.sh"
+  expect_fail "refuses a pass/fail threshold reintroduced as a settable default" \
+    env PGPROX_SHELL_ROOTS="$dir/*.sh" scripts/check-drift.sh
+
+  # And a run parameter must stay settable. Overriding a duration, a seed or a
+  # port is what those defaults are for, and a rule that flagged them would be
+  # turned off rather than obeyed.
+  printf '#!/usr/bin/env bash\nCOVERAGE_MIN=95\nDURATION="${SCALE_DURATION:-30}"\n' > "$dir/plant.sh"
+  expect_pass "leaves run parameters settable" \
+    env PGPROX_SHELL_ROOTS="$dir/*.sh" scripts/check-drift.sh
+}
+
 # -----------------------------------------------------------------------------
 
 echo "gates: proof that they can fail"
@@ -332,6 +365,7 @@ if [[ -z "$WANTED" || "$WANTED" == m11-admission ]]; then case_m11_admission; ra
 if [[ -z "$WANTED" || "$WANTED" == m1f-adr ]]; then case_m1f_adr; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == drift-subshell ]]; then case_drift_subshell; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == every-gate ]]; then case_every_gate; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == thresholds ]]; then case_thresholds; ran=1; fi
 
 if (( ! ran )); then
   fail "no such case: $WANTED"

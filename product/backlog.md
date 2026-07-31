@@ -3955,7 +3955,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   `PGPROX_SCALE_MINIMUM`, in a milestone about checks that do not check. Filed
   as a finding rather than fixed quietly, because the useful fact is that this
   class is easy to reproduce while looking straight at it.
-- [ ] `M13.1` The three pass/fail thresholds can be lowered from the
+- [x] `M13.1` The three pass/fail thresholds can be lowered from the
   environment: `COVERAGE_MIN` at 95, `BENCH_TOLERANCE` at 5 and
   `PGPROX_SCALE_MINIMUM` at 1000.
   The distinction that matters, and the reason this is not "remove every
@@ -3970,6 +3970,29 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   different figure while writing tests. If that stays, it has to be an argument
   that reports loudly and cannot be reached by an exported variable, so a stray
   environment does not silently weaken CI.
+  Done, and the care turned out to be unnecessary. No replacement knob is
+  needed, because `check-coverage.sh` already prints the measured percentage:
+  anyone who wants to know where a crate stands reads that number rather than
+  moving the line it is compared against. All three are plain constants.
+  The drift rule refuses to let any of them come back as `${NAME:-n}`, and it is
+  scoped to pass/fail thresholds by name rather than to every settable default,
+  because most `${X:-n}` values in `scripts/` are run parameters and overriding
+  a duration, a seed or a port is what they exist for. A rule that flagged those
+  would be turned off rather than obeyed.
+  Three cases in the negative suite: the property itself, that an exported
+  `COVERAGE_MIN` does not reach the gate; a reintroduced settable threshold,
+  refused; and a run parameter, left alone.
+  Two mistakes while writing it, both caught rather than reasoned away.
+  The rule first flagged `lib.sh` on the comment explaining why `COVERAGE_MIN`
+  is now a constant. That is `M12.8`'s mistake exactly, matching text that looks
+  like the thing rather than the thing, made again one milestone later. It
+  strips comments now.
+  And moving the `SHELL_ROOTS` definition put it after the subshell lint that
+  uses it, so that lint scanned an empty list and passed. `check-drift.sh`
+  reported all-green while one of its rules had stopped looking at anything.
+  `tests/gates/negative.sh` caught it, which is the first time the suite has
+  failed on a regression rather than on a deliberately broken artefact, and is
+  the clearest argument for `M12` that this milestone could have produced.
 - [ ] `M13.2` Nothing detects a deleted test. Rule 2's second half.
   Sized on inspection before starting: a count is the obvious thing and is the
   wrong thing, because a commit that deletes one test and adds another passes it

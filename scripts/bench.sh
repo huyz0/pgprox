@@ -35,7 +35,10 @@ ITERATIONS="${BENCH_ITERATIONS:-2000}"
 # How far a count may drift before it is called a change. Callgrind is
 # deterministic for a given binary, but a compiler release moves everything a
 # little, so zero tolerance would fail on every toolchain bump.
-TOLERANCE_PERCENT="${BENCH_TOLERANCE:-5}"
+# A constant for the reason in lib.sh beside COVERAGE_MIN: this decides whether
+# a benchmark run passes, and a threshold that can be raised from the
+# environment is not a threshold. `M13.1`.
+TOLERANCE_PERCENT=5
 
 UPDATE=""
 [[ "${1:-}" == "--update" ]] && UPDATE=1

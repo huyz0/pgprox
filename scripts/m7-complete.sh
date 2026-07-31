@@ -60,7 +60,10 @@ fi
 # connection count it ran at, which is also the number the comment above has
 # always named as the requirement.
 PERF_DIR="${PGPROX_PERF_DIR:-product/perf}"
-SCALE_MINIMUM="${PGPROX_SCALE_MINIMUM:-1000}"
+# A constant, and it was not one when M12.2 wrote it. That task added a
+# settable pass/fail threshold during a milestone about checks that do not
+# check, which is the finding M13.0 kept rather than tidying away. `M13.1`.
+SCALE_MINIMUM=1000
 scale_runs=0
 largest=0
 for run in "$PERF_DIR"/run-*.md; do

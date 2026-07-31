@@ -82,6 +82,12 @@ else
   fail ".agents/skills/ missing"
 fi
 
+# The scan roots are a variable so `tests/gates/negative.sh` can point the rule
+# at planted files instead of writing them into `scripts/`. A test that plants a
+# deliberately broken script in the tree it is testing leaves it there when it
+# is interrupted, and this runs in pre-commit.
+SHELL_ROOTS="${PGPROX_SHELL_ROOTS:-scripts/*.sh tests/gates/*.sh}"
+
 # --- a gate that cannot fail --------------------------------------------------
 #
 # `fail` increments `_fail_count` in the shell that runs it. The right-hand side
@@ -102,12 +108,6 @@ fi
 # The alternative fix, `shopt -s lastpipe`, is not used here: it needs job
 # control off and applies to the last stage only, so it would trade a visible
 # rule for an invisible one.
-# The scan roots are a variable so `tests/gates/negative.sh` can point the rule
-# at planted files instead of writing them into `scripts/`. A test that plants a
-# deliberately broken script in the tree it is testing leaves it there when it
-# is interrupted, and this runs in pre-commit.
-SHELL_ROOTS="${PGPROX_SHELL_ROOTS:-scripts/*.sh tests/gates/*.sh}"
-
 subshell_fail=0
 while read -r hit; do
   [[ -n "$hit" ]] || continue
@@ -144,6 +144,33 @@ done < <(
   done
 )
 (( subshell_fail == 0 )) && ok "no check calls fail from inside a pipeline subshell"
+
+# --- a pass/fail threshold is not a setting -----------------------------------
+#
+# AGENTS.md's non-negotiable 2 is that a threshold is never lowered to make a
+# check pass. A `${NAME:-95}` default is a threshold anyone can lower, including
+# by accident from an exported variable, and the gate then reports its own
+# weakened bar as a pass: `ok coverage (pgprox-route): 99.65% >= 10%`. `M13.1`.
+#
+# This is about pass/fail thresholds only. Most `${X:-n}` defaults in scripts/
+# are run parameters, and overriding a connection count, duration, seed or port
+# is what they exist for. The list below is the values that decide whether a
+# check passes.
+threshold_settable=0
+for t in COVERAGE_MIN BENCH_TOLERANCE PGPROX_SCALE_MINIMUM TOLERANCE_PERCENT SCALE_MINIMUM; do
+  while read -r hit; do
+    [[ -n "$hit" ]] || continue
+    fail "$hit sets a pass/fail threshold from the environment; make it a constant (M13.1)"
+    threshold_settable=1
+    # Comments stripped first. The first version of this flagged lib.sh on the
+    # comment explaining why COVERAGE_MIN is a constant, which is M12.8's
+    # mistake repeated: matching text that looks like the thing, not the thing.
+  done < <(for f in $SHELL_ROOTS; do
+             [[ -f "$f" ]] || continue
+             sed 's/#.*//' "$f" | grep -qE "\\$\\{$t:-" && echo "$f"
+           done)
+done
+(( threshold_settable == 0 )) && ok "no pass/fail threshold can be moved from the environment"
 
 # --- the delegated-check skip never reaches CI --------------------------------
 #
