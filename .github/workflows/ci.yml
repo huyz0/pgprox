@@ -260,3 +260,5 @@ jobs:
       # a gate that only described it would be the defect M12 exists to remove.
       - name: M12
         run: scripts/m12-complete.sh
+      - name: M13
+        run: scripts/m13-complete.sh

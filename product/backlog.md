@@ -4152,10 +4152,24 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   must exist and be executable. Thirteen named today. It cannot tell whether a
   script checks the right thing, which is what went wrong with rule 5, but a
   named script that is not there is the same failure with less ambiguity.
-- [ ] `M13.7` Write `scripts/m13-complete.sh`, before the milestone needs
+- [x] `M13.7` Write `scripts/m13-complete.sh`, before the milestone needs
   closing, as `M10.17`, `M11.5` and `M12.8` all establish.
   Under `M12.8`'s constraint as well: no check may match a filename or a word
   where it can run something and read an exit code.
+  Ten checks, and eight of them plant a violation and require the rule to
+  object. That is the only way to know a rule is awake rather than absent, and
+  this milestone earned the point the hard way: `M13.3`'s first lint reported the
+  whole workspace clean while its pattern matched nothing.
+  Two are prose checks and could not be anything else. A gate cannot read
+  `AGENTS.md` and judge it, so it checks that the specific wrong sentence, "Each
+  is enforced by a script", has not come back, and that rule 3 is still marked
+  as having no script. That is `M11.3`'s device, used for the same reason.
+  Two more assert the tree itself is clean rather than that the rule works,
+  which is a different claim and is worth stating separately: a rule that
+  objects correctly to a planted violation tells you nothing about whether the
+  real tree has one.
+  Covered by `M12.7`'s floor with nothing added, because that loop globs.
+  Fifteen gates now, up from fourteen.
 - [ ] `M13.8` The end-to-end half of non-negotiable 7: run the stack and grep
   its own logs for the token it authenticated with. Split out of `M13.3` on
   inspection, before starting, once the difference between the two became clear.
