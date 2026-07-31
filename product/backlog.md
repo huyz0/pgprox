@@ -4405,9 +4405,50 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   so it states the rule rather than blessing the current output. The drop-rate
   test stayed anyway: it covers the second `dropped += 1`, which nothing asked
   about either.
-- [ ] `M14.2` Mutation testing for `pgprox-pool`, 273 mutants. The pool state
+- [~] `M14.2` Mutation testing for `pgprox-pool`, 273 mutants. The pool state
   machine, whose refusal and pinning behaviour `M11` spent four tasks measuring
   from the outside without ever asking whether its tests would notice a change.
+  The run found **274 mutants and 9 survivors**, in two groups by cause.
+  | group | files | count | what it is |
+  | --- | --- | --- | --- |
+  | 21 | `params.rs`, `pin.rs` | 4 | pure parsers, character rules nothing pinned |
+  | 22 | `statements.rs`, `live.rs` | 5 | counters and accessors nobody asserted |
+- [x] `M14.21` The parsers: `quote`'s two `||` alternatives for `.` and `-`,
+  `unquote`'s `&&` chain, and `Replayable::names` replaced by an empty iterator.
+  These decide how a `SET` value is rendered when it is replayed onto a new
+  upstream connection, which is the mechanism that makes transaction pooling
+  transparent. Getting the quoting wrong is not a crash, it is a session that
+  silently comes back with a different setting.
+  Three tests. Both files are now fully covered: 127 mutants, 117 caught, 10
+  unviable, none missed.
+  `quote`'s guard is a chain of alternatives, so turning any `||` into `&&`
+  makes it unsatisfiable, since no character is alphanumeric *and* an
+  underscore. Every value would then be quoted. Nothing noticed because no test
+  ever asked for a bare value containing a dot or a dash, which are exactly the
+  two alternatives the surviving mutants sat on. The test names a value for
+  each, and one with all four kinds at once.
+  `unquote` needs length, a leading quote and a matching trailing one, all
+  three. Any `&&` becoming `||` accepts a value that is not actually quoted and
+  slices a character off each end anyway, so `'utf8` becomes `utf`. The test
+  walks the unpaired, mismatched and too-short cases, which is where the
+  difference lives.
+  `Replayable::names` returning an empty iterator is the quietest of the three.
+  Its one caller walks it to reset every replayable parameter a previous session
+  left behind before the connection is handed on, so an empty iterator is a
+  connection returned to the pool still carrying the last session's settings,
+  which is the precise failure the replay mechanism exists to prevent. The test
+  makes enumeration and membership agree, and checks that an empty list still
+  enumerates as empty so the assertion is about contents rather than about the
+  method always returning something.
+- [ ] `M14.22` The counters and accessors: `SessionStatements::len` to `1`,
+  `ConnectionStatements::is_empty` to `true`, `prepare_for`'s `tick += 1` to
+  `*=`, `LivePool`'s hand-written `Debug` to a default, and `futile_wakeups` to
+  `0`.
+  `tick` is the one that matters: it starts at zero, so `*=` freezes it and
+  every held statement carries the same use time, which is the LRU order the
+  eviction policy runs on. `futile_wakeups` is the counter `M7.58` added to
+  measure the thundering herd it fixed, so a constant zero makes that
+  measurement unfalsifiable.
 - [ ] `M14.3` Mutation testing for `pgprox-core`, 536 mutants. Every contract
   and every fake. `mutants.sh` opens by arguing that M9 hid three defects behind
   a fake that answered something Postgres refuses, which makes the fakes the

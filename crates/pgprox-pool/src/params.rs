@@ -321,6 +321,67 @@ fn unquote(value: &str) -> &str {
 mod tests {
     use super::*;
 
+    /// `M14.21`. Three mutants survived in this file, all in the two functions
+    /// that decide how a value is written back out. That matters more than a
+    /// parser usually would: these run when a session's `SET` state is replayed
+    /// onto a fresh upstream connection, which is what makes transaction
+    /// pooling transparent. Quoting a value wrongly is not a crash. It is a
+    /// session that comes back with a different setting than it asked for.
+    #[test]
+    fn a_value_is_left_bare_only_when_every_character_allows_it() {
+        // `quote`'s guard is a chain of alternatives:
+        //   is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-'
+        // Turning any `||` into `&&` makes the test unsatisfiable, because no
+        // character is alphanumeric *and* an underscore, so every value gets
+        // quoted. Nothing noticed, because no test asked for a bare value
+        // containing a dot or a dash.
+        for bare in [
+            "utf8",
+            "read_committed",
+            "on",
+            "ISO",
+            "9",
+            "a_b",
+            "1.5",        // the `.` alternative
+            "read-only",  // the `-` alternative
+            "UTC.0-1_x9", // all four at once
+        ] {
+            assert_eq!(quote(bare), bare, "{bare} should need no quoting");
+        }
+
+        // And anything else is quoted, with embedded quotes doubled.
+        assert_eq!(quote(""), "''");
+        assert_eq!(quote("has space"), "'has space'");
+        assert_eq!(quote("it's"), "'it''s'");
+        assert_eq!(quote("semi;colon"), "'semi;colon'");
+    }
+
+    #[test]
+    fn only_a_properly_paired_quote_is_stripped() {
+        // `unquote` requires length, a leading quote and a matching trailing
+        // one, all three. Any `&&` becoming `||` accepts a value that is not
+        // actually quoted and then slices a character off each end regardless.
+        assert_eq!(unquote("'utf8'"), "utf8");
+        assert_eq!(unquote("\"utf8\""), "utf8");
+
+        // Unpaired: nothing is stripped. This is the case the mutants pass.
+        assert_eq!(unquote("'utf8"), "'utf8");
+        assert_eq!(unquote("utf8'"), "utf8'");
+        assert_eq!(unquote("\"utf8"), "\"utf8");
+
+        // Mismatched kinds are not a pair either.
+        assert_eq!(unquote("'utf8\""), "'utf8\"");
+
+        // Too short to be a pair. A single quote character is its own start
+        // and end, and stripping it would slice past the string.
+        assert_eq!(unquote("'"), "'");
+        assert_eq!(unquote("\""), "\"");
+        assert_eq!(unquote(""), "");
+
+        // The empty quoted string is a pair, and unwraps to nothing.
+        assert_eq!(unquote("''"), "");
+    }
+
     fn observe(params: &mut SessionParams, sql: &str) -> Option<ParamChange> {
         params.observe_statement(sql, Replayable::DEFAULT)
     }

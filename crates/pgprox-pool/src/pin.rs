@@ -419,6 +419,41 @@ fn statements_of(sql: &str) -> Vec<Vec<String>> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_replayable_list_is_enumerable_and_agrees_with_itself() {
+        // `M14.21`. `names` could return an empty iterator and nothing noticed.
+        // The one caller, in `params.rs`, walks it to reset every replayable
+        // parameter a previous session left behind before handing the
+        // connection on. An empty iterator there is a connection returned to
+        // the pool still carrying the last session's settings, which is the
+        // exact failure the replay mechanism exists to prevent, and it is
+        // silent.
+        let listed: Vec<&str> = Replayable::DEFAULT.names().collect();
+
+        assert!(!listed.is_empty(), "the shipped list enumerated as empty");
+        assert_eq!(
+            listed.len(),
+            REPLAYABLE_NAMES.len(),
+            "names() and the list it is built from disagree about how many there are"
+        );
+
+        // Enumeration and membership have to agree, or one of them is lying.
+        for name in &listed {
+            assert!(
+                Replayable::DEFAULT.contains(name),
+                "{name} was enumerated but is not contained"
+            );
+        }
+
+        // An empty list enumerates as empty, so the assertion above is about
+        // the contents rather than about the method always returning something.
+        assert_eq!(Replayable::NONE.names().count(), 0);
+
+        // And a custom list round-trips in the order it was written.
+        let custom = Replayable::from_names(&["b", "a", "c"]);
+        assert_eq!(custom.names().collect::<Vec<_>>(), vec!["b", "a", "c"]);
+    }
+
     fn reason(sql: &str) -> Option<PinReason> {
         pin_reason(sql, Replayable::DEFAULT)
     }
