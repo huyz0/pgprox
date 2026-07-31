@@ -3292,6 +3292,43 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   `prove_drain_check_catches_losses`. That is the harness to extend rather than
   a new one to write; what it lacks is the saturation before the kill and the
   SQLSTATE after it.
+  **Two corrections to the note above, both found by reading before running,
+  and both change what the run is looking for.**
+  The first sentence of it is wrong. There *is* a client connection cap:
+  `max_client_conns`, defaulting to 10,000 and set to 200 in the e2e stack's
+  document, enforced by `serve::Gate` and refused after the handshake with
+  53300. What appears in this repo only as a misspelled key to be rejected is
+  `max_client_connections`, which is the wrong name for the real knob rather
+  than evidence that no knob exists.
+  So a displaced client has three outcomes, not two, and two of them are 53300.
+  The gate's refusal carries `ServerId::new("this node", 0)`, so it renders as
+  "upstream this node:0 is at its connection cap of 200"; the pool's carries the
+  real server, "upstream primary:5432 is at its connection cap of 60". The
+  message is what separates a node that is full of clients from a fleet that is
+  full of upstream connections, and both arrive at the client as the same
+  SQLSTATE. A run that recorded only codes would merge them.
+  The second correction is about what the run can record at all, and it is why
+  this task is now blocked on `M11.8`. `pgprox_load::Report` carries `errors`,
+  `relocations` and `first_error`, and nothing that says how the errors divide.
+  `first_error` is one string from whichever client failed first, which cannot
+  answer "which of those two do they get" when the answer is a mixture. That is
+  a crate change with a coverage gate on it, so it is a commit of its own, the
+  same way `M11.4`'s knob was.
+- [ ] `M11.8` The load client records what clients were told, by SQLSTATE.
+  Split out of `M11.6` on inspection, before starting, which is what `M11.4`
+  did once the size of its own scope note became visible.
+  `Report` counts failures and quotes the first one. `M11.6` needs the
+  distribution: how many clients were refused at the door by the node's own
+  gate, how many were refused by a full upstream pool, how many timed out
+  waiting for one, and how many lost a connection outright. Those are four
+  different operator responses and today they are one number.
+  Keyed by SQLSTATE, with the message kept alongside, because `M11.6`'s two
+  interesting outcomes share the code `53300` and differ only in what the
+  message names. Unbounded growth is the hazard to avoid: the map is keyed by
+  code, of which there are a handful, rather than by message.
+  Acceptance: the report has a per-SQLSTATE breakdown that sums to `errors`
+  plus `relocations`, a test that a run against a target answering a known code
+  reports that code, and `pgprox-load` and `bin/pgload` both still hold 95%.
 - [ ] `M11.7` The pinning curve itself, once `M11.4` has given the load
   generator a statement kind that pins. At least three values of the pinned
   share, each a matched run, reading `pgprox_pin_total` by reason and the
