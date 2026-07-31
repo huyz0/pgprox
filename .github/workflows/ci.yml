@@ -244,10 +244,9 @@ jobs:
       # that keeps the check from being able to pass by describing nothing.
       - name: M10
         run: scripts/m10-complete.sh
-      # M11 is open, so this job would fail on it. `continue-on-error` keeps the
-      # gate visible and running while the milestone is in progress: the point
-      # of writing it early is to watch it go green a check at a time, and a
-      # gate nobody runs until the end is the thing M10.17 was about.
-      - name: M11 (open, informational)
-        continue-on-error: true
+      # This ran with `continue-on-error` while M11 was open, so that writing
+      # the gate early meant watching it go green a check at a time. M11 closed
+      # in M11.11 and the flag outlived its reason, which made it an instance of
+      # M12's own subject: a gate that runs and cannot fail. It enforces now.
+      - name: M11
         run: scripts/m11-complete.sh

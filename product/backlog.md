@@ -3713,13 +3713,23 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   closing, which `M10.17` and `M11.5` both establish as the order. It has to
   avoid being an instance of its own subject: no check in it may glob for a
   filename and report a conclusion.
-- [ ] `M12.9` CI runs the `M11` gate with `continue-on-error: true`, so it
+- [x] `M12.9` CI runs the `M11` gate with `continue-on-error: true`, so it
   cannot fail the build. That was right while the milestone was open, which is
   what the comment beside it says, and `M11` closed in `M11.11`.
   A gate that cannot fail is this milestone's subject, so leaving it is not an
   oversight to fix quietly but an instance of the thing being fixed.
   Acceptance: the step enforces, and the comment explaining why it did not is
   replaced rather than left to confuse the next reader.
+  Done. The flag is gone and the comment now says why it was there and why it
+  is not: writing the gate early meant watching it go green a check at a time,
+  which stopped being a reason when the milestone closed.
+  Taken out of backlog order, immediately after `M12.1`, because both are the
+  same defect. `M12.1` fixed a check that could not fail on a bad input; this
+  fixed a check whose result was discarded. A gate that cannot fail and a gate
+  whose failure is ignored are the same gate.
+  No other step in `ci.yml` carries `continue-on-error`, checked rather than
+  assumed. The `M11` gate reads committed artefacts and greps `shed.rs`, with
+  no Docker or network, so enforcing it does not make CI depend on a stack.
 - [ ] `M12.10` Two commits in history reference tasks the backlog never had:
   `M1F.0` and `M-1.18`. Found by `M12.1`, by running the tightened hook over all
   321 commits rather than by review.
