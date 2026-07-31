@@ -26,3 +26,8 @@ dhat-heap.json
 
 # Upstream proxies cloned for protocol reference. Read-only, never vendored.
 /reference
+
+# cargo-mutants writes here when run directly rather than through
+# scripts/mutants.sh, which redirects it under target/. M14.1a.
+/mutants.out
+/mutants.out.old

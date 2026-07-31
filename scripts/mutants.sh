@@ -39,6 +39,15 @@ fi
 BASELINE="product/mutants-baseline.txt"
 # Parallelism and a per-mutant ceiling. Without the ceiling one mutated loop
 # that no longer terminates stops the whole run rather than being reported.
+# cargo-mutants copies the whole build tree once per worker. On this machine
+# /tmp is a 16 GB tmpfs and the tree with target-coverage is around 29 GB, so
+# six workers exhaust it and the run dies partway with "No space left on
+# device" after having already spent the build. The repo disk has hundreds of
+# gigabytes, so the copies go there instead. `M14.1`.
+MUTANTS_TMP="${MUTANTS_TMPDIR:-$REPO_ROOT/target/mutants-tmp}"
+mkdir -p "$MUTANTS_TMP"
+export TMPDIR="$MUTANTS_TMP"
+
 JOBS="${MUTANTS_JOBS:-6}"
 TIMEOUT="${MUTANTS_TIMEOUT:-60}"
 

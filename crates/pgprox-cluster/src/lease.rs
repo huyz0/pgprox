@@ -209,6 +209,19 @@ impl LeaseLedger {
     pub fn holders(&self, now: Instant) -> usize {
         self.grants.values().filter(|g| g.expires_at > now).count()
     }
+
+    /// Entries the ledger is still carrying, live or expired.
+    ///
+    /// Test-only, and it exists because of a surviving mutant. `reap` is
+    /// housekeeping: every other reader filters expired grants out, so
+    /// replacing its body with `()` changes no answer this type gives and no
+    /// test could tell. What it does change is that a long-lived leader carries
+    /// every grant it ever made. That is a real property with no observer, so
+    /// `M14.1` added one here rather than accepting the mutant as equivalent.
+    #[cfg(test)]
+    fn tracked(&self) -> usize {
+        self.grants.len()
+    }
 }
 
 #[cfg(test)]
@@ -234,6 +247,90 @@ mod tests {
         let start = Instant::now();
         ledger.observe_leadership(true, start);
         (ledger, start + config.takeover_wait)
+    }
+
+    /// The four mutants `M14.1` found in this file, and one shape behind three
+    /// of them: expiry is exclusive. A grant is live while `expires_at > now`,
+    /// so at exactly `expires_at` it is already gone. Every reader was written
+    /// that way and nothing pinned it, so `>` could become `>=` in `grant`,
+    /// `holders` and `reap` with all 156 tests in this crate still passing.
+    ///
+    /// The instant matters because it is reachable. Grants expire at
+    /// `now + ttl`, and a caller that computes its next deadline the same way
+    /// lands exactly on it rather than near it.
+    #[test]
+    fn a_grant_is_gone_at_the_instant_it_expires_and_not_a_tick_later() {
+        let (mut ledger, now) = serving(100);
+        let ttl = LeaseConfig::default().ttl;
+
+        let lease = ledger.grant(&server(), node(2), 40, now).unwrap();
+        let expiry = now + ttl;
+        assert_eq!(lease.expires_at(), expiry);
+
+        // One tick before: still held, by every reader.
+        let before = expiry.checked_sub(Duration::from_nanos(1)).unwrap();
+        assert_eq!(ledger.holders(before), 1);
+        assert_eq!(ledger.outstanding(before), 40);
+
+        // At the instant itself: gone, by every reader. `>=` in any of them
+        // would keep it alive here.
+        assert_eq!(ledger.holders(expiry), 0);
+        assert_eq!(ledger.outstanding(expiry), 0);
+        assert_eq!(ledger.available(expiry), 100);
+    }
+
+    #[test]
+    fn a_holder_at_its_expiry_instant_no_longer_competes_for_the_pool() {
+        // The same boundary seen from `grant`, which sums what others hold to
+        // decide what is left. A grant expiring exactly now must not count, or
+        // the pool looks smaller than it is and a node is refused capacity that
+        // is free.
+        let (mut ledger, now) = serving(100);
+        let ttl = LeaseConfig::default().ttl;
+
+        ledger.grant(&server(), node(2), 100, now).unwrap();
+        let expiry = now + ttl;
+
+        // The whole pool is held right up to the instant.
+        let before = expiry.checked_sub(Duration::from_nanos(1)).unwrap();
+        assert_eq!(
+            ledger.grant(&server(), node(3), 10, before).unwrap_err(),
+            QuotaError::Exhausted { server: server() }
+        );
+
+        // And free at it.
+        let lease = ledger.grant(&server(), node(3), 100, expiry).unwrap();
+        assert_eq!(lease.count(expiry), 100);
+    }
+
+    #[test]
+    fn reap_drops_what_it_is_meant_to_and_keeps_what_it_is_not() {
+        // `reap` is the one function here whose effect no other reader exposes,
+        // which is why two of its mutants survived: replacing its body with
+        // `()`, and moving its boundary to `>=`. Both leave every answer this
+        // type gives unchanged and let the map grow instead.
+        let (mut ledger, now) = serving(100);
+        let ttl = LeaseConfig::default().ttl;
+
+        ledger.grant(&server(), node(2), 10, now).unwrap();
+        ledger.grant(&server(), node(3), 10, now).unwrap();
+        assert_eq!(ledger.tracked(), 2);
+
+        // A third, granted a tick later, so it expires a tick later too.
+        let stagger = Duration::from_nanos(1);
+        ledger.grant(&server(), node(4), 10, now + stagger).unwrap();
+        assert_eq!(ledger.tracked(), 3);
+
+        // At the first two's expiry instant they are gone and the third is not.
+        // `()` keeps all three; `>=` keeps the two that expire exactly now.
+        let expiry = now + ttl;
+        ledger.reap(expiry);
+        assert_eq!(ledger.tracked(), 1);
+        assert_eq!(ledger.holders(expiry), 1);
+
+        // And once the last one goes, nothing is carried at all.
+        ledger.reap(expiry + stagger);
+        assert_eq!(ledger.tracked(), 0);
     }
 
     #[test]

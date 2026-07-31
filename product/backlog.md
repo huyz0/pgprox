@@ -4222,7 +4222,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Ordered by what a surviving mutant would mean rather than by size.
   `pgprox-cluster` first: it holds the quota invariant that is M3's completion
   condition and the roadmap's headline safety claim.
-- [ ] `M14.1` Mutation testing for `pgprox-cluster`, 280 mutants.
+- [~] `M14.1` Mutation testing for `pgprox-cluster`, 280 mutants.
   The quota invariant, guaranteed plus leased never exceeding the cap, is the
   strongest claim this project makes and 156 tests assert around it. Whether any
   of them would notice the invariant breaking is untested.
@@ -4232,6 +4232,71 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Expect this to split if the survivor count is large. One commit per group of
   survivors that share a cause is better than one commit that rewrites a crate's
   test module, and `M10` set that precedent.
+  It split. The run found **22 surviving mutants**, 19 distinct baseline keys,
+  and they fall into five groups by cause. One task each, `M14.11` to `M14.15`.
+  Numbered that way rather than `M14.1a` to `M14.1e`, because
+  `check-commit-msg.sh` accepts a letter on the milestone, as in `M1F.1` and
+  `M1R.2`, and not on the task number. Widening the pattern to fit a naming whim
+  would be the wrong direction: `M14` has seven top-level tasks, so 11 to 15 are
+  unambiguous and still read as belonging to `M14.1`.
+  | group | file | count | what it is |
+  | --- | --- | --- | --- |
+  | 11 | `lease.rs` | 4 | the quota invariant: `grant`, `reap`, `holders` |
+  | 12 | `service.rs` | 6 | coordinator accessors and a match guard |
+  | 13 | `coordinator.rs` | 3 | `heartbeat`, `has_quorum`, `home_draining` |
+  | 14 | `digest.rs` | 3 | `is_empty` and two `view_hash` arms |
+  | 15 | `sim.rs` | 6 | the deterministic simulator's RNG and network |
+- [x] `M14.11` The lease ledger's four survivors, which are the quota invariant.
+  Three of the four are one shape: **expiry is exclusive**. A grant is live
+  while `expires_at > now`, so at exactly `expires_at` it is gone. Every reader
+  was written that way and nothing pinned it, so `>` could become `>=` in
+  `grant`, `holders` and `reap` with all 156 tests in the crate still passing.
+  That instant is reachable rather than theoretical: grants expire at
+  `now + ttl`, and a caller computing its next deadline the same way lands
+  exactly on it.
+  The fourth is `reap` replaced by `()`. It survived because `reap` is
+  housekeeping and every other reader filters expired grants out already, which
+  the function's own doc comment says. So no answer the type gives changes. What
+  does change is that a long-lived leader carries every grant it ever made, and
+  that property had no observer.
+  Rather than accept it as equivalent, this adds a `#[cfg(test)] fn tracked()`
+  returning the map length. A test-only accessor is not a widened public API,
+  and "no test can see it" is a reason to give the property an observer when the
+  property is real, not a reason to write it into the baseline. The baseline is
+  for mutants no test *could* kill; this was one no test *did*.
+  Three tests. All 38 mutants in `lease.rs` are now caught, none missed, and the
+  crate holds 99.73% coverage with fmt and clippy clean.
+  `scripts/mutants.sh` also had to be fixed to get here. It copies the build
+  tree once per worker into `TMPDIR`, and `/tmp` on this machine is a 16 GB
+  tmpfs against a tree of about 29 GB, so six workers exhausted it and the run
+  died partway with `No space left on device` after paying for the build. The
+  copies go to the repo disk now.
+- [ ] `M14.12` The gossip coordinator's six survivors in `service.rs`:
+  `track_tenant` and `forget_tenant` replaced by `()`, `view_hash` by `1`,
+  `cluster_usage` and `cluster_clients` by `0`, and the `!matches!(err,
+  QuotaError::NoLeader)` match guard by `false`.
+  The accessors are what `/v1/servers` and `/v1/stats` are built on, and
+  `M11.9` was a bug in exactly that accounting, so a mutant that makes them
+  return zero unnoticed is worth more than its size suggests.
+- [ ] `M14.13` `coordinator.rs`: `heartbeat`'s `+=` to `*=`, `has_quorum`'s `>`
+  to `>=`, and `home_draining` to `false`.
+  `has_quorum` decides whether this node may act as leader at all, and its
+  boundary is the same shape `M14.11` found in the ledger.
+- [ ] `M14.14` `digest.rs`: `is_empty` to `true`, and the `NodeMode::Active` and
+  `NodeMode::Draining` arms deleted from `view_hash`. A view hash that ignores
+  whether a node is draining is a view hash that says two different clusters are
+  the same, which is what gossip convergence rests on.
+- [ ] `M14.15` `sim.rs`: the deterministic simulator's `Rng::next_u64` (`^=` to
+  `|=`, `<<` to `>>`) and `Network::reachable` and `send`.
+  This one needs a decision before it needs tests, and the decision is the
+  interesting part. `sim.rs` is test infrastructure: mutating the RNG does not
+  break a test, it changes which schedules the simulator explores. The tests
+  still pass because they assert invariants that hold under any schedule, which
+  is what they are for. So these mutants are not missing assertions about
+  behaviour, they are a weakened search that nothing would notice.
+  Acceptance: either tests that pin the generator and the network model as the
+  contracts they are, or baseline entries arguing why a weaker search is not a
+  defect. Do not kill them with an assertion that merely re-states the RNG.
 - [ ] `M14.2` Mutation testing for `pgprox-pool`, 273 mutants. The pool state
   machine, whose refusal and pinning behaviour `M11` spent four tasks measuring
   from the outside without ever asking whether its tests would notice a change.
