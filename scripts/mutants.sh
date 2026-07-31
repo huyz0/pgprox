@@ -113,8 +113,24 @@ for crate in "${CRATES[@]}"; do
   echo "mutating $crate"
   # The exit code is deliberately ignored: a survivor is not a failure until it
   # has been compared against the baseline, which is the next step.
+  # `src/bin/**` is excluded, for the reason `M13.4` already established when it
+  # exempted the same paths from the sans-I/O rule: a binary is a composition
+  # root or a fixture, not logic with unit tests. `M14.4` found twelve of
+  # `pgprox-auth`'s fifteen survivors in `bin/mock_sidecar.rs`, a stand-in the
+  # compose stack drives and that `scripts/e2e.sh` asserts against end to end.
+  # Mutating it reports that a binary with no unit tests has no unit tests,
+  # which is true and is not a finding.
+  #
+  # Narrow on purpose. This excludes files, not rules: everything in `src/` that
+  # is not a binary entry point stays in.
+  #
+  # `**/src/bin/**` rather than `src/bin/**`, because cargo-mutants matches a
+  # glob containing a slash against the *entire* path, and the entire path is
+  # `crates/pgprox-auth/src/bin/mock_sidecar.rs`. The shorter glob matched
+  # nothing and the run reported all twelve survivors again, which is how the
+  # difference was noticed rather than assumed.
   cargo mutants -p "$crate" --output "$out" --jobs "$JOBS" --timeout "$TIMEOUT" \
-    --test-tool=nextest >"$out.log" 2>&1 || true
+    --exclude '**/src/bin/**' --test-tool=nextest >"$out.log" 2>&1 || true
   if [[ ! -f "$out/mutants.out/outcomes.json" ]]; then
     fail "$crate produced no outcomes; see $out.log"
     measured=0

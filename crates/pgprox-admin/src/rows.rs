@@ -507,6 +507,37 @@ fn cache_rows(observatory: &dyn Observatory) -> Vec<Vec<String>> {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_server_row_is_active_only_while_something_is_checked_out() {
+        // `pool.stats.active > 0` had three surviving mutants: `>= 0` makes
+        // every pool active, `== 0` inverts it, and `< 0` on a `u32` makes
+        // none active. This is the `state` column of `SHOW SERVERS`, which an
+        // operator reads to see whether a backend is doing anything, and every
+        // existing test used a pool in one state only.
+        let with_active = |active: u32, idle: u32| {
+            let fake = FakeObservatory::new(node(1));
+            fake.set_pools(vec![PoolView {
+                node: node(1),
+                key: PoolKey::new(ServerId::new("db-1", 5432), "tenant_acme", "acme_app"),
+                stats: PoolStats {
+                    active,
+                    idle,
+                    ..PoolStats::default()
+                },
+            }]);
+            let rows = server_socket_rows(&*fake, Scope::Cluster);
+            let state = SOCKETS
+                .iter()
+                .position(|name| *name == "state")
+                .unwrap_or_default();
+            rows[0][state].clone()
+        };
+
+        assert_eq!(with_active(0, 3), "idle", "nothing checked out");
+        assert_eq!(with_active(1, 2), "active", "one checked out");
+        assert_eq!(with_active(7, 0), "active", "several checked out");
+    }
+
     use pgprox_core::admin::{
         ClientState, ClientView, FakeObservatory, PoolView, ServerView, TenantView,
     };

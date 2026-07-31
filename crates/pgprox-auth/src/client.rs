@@ -236,6 +236,56 @@ fn unix_to_system_time(seconds: i64) -> Option<std::time::SystemTime> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_deadline_says_the_sidecar_did_not_answer() {
+        // Deleting the `Code::DeadlineExceeded` arm drops it to the catch-all,
+        // which returns the same `Unavailable` variant with a different reason,
+        // so nothing about caching or retry changes. What changes is the line
+        // an operator reads: "sidecar did not answer within the timeout" says
+        // the sidecar is slow or gone, and "sidecar returned DeadlineExceeded"
+        // reads as the sidecar having said something.
+        let timed_out = map_status(&tonic::Status::deadline_exceeded("whatever"));
+        let AuthError::Unavailable { reason } = timed_out else {
+            unreachable!("a deadline is unavailable")
+        };
+        assert_eq!(
+            reason, "sidecar did not answer within the timeout",
+            "a deadline lost its dedicated message"
+        );
+
+        // The catch-all still names the code it saw, so the two are distinct.
+        let unknown = map_status(&tonic::Status::internal("boom"));
+        let AuthError::Unavailable { reason } = unknown else {
+            unreachable!("an internal error is unavailable")
+        };
+        assert!(
+            reason.contains("Internal"),
+            "the catch-all lost the code: {reason}"
+        );
+        assert!(reason.contains("boom"));
+    }
+
+    #[test]
+    fn a_unix_timestamp_counts_forward_from_the_epoch() {
+        // `UNIX_EPOCH + Duration` could become `-`, which puts every expiry
+        // the same distance before 1970 instead of after it. Every comparison
+        // against `now` would then say the token expired long ago, so a
+        // perfectly good grant reads as stale.
+        let one_day = 86_400_i64;
+        let converted = unix_to_system_time(one_day).unwrap();
+        assert_eq!(
+            converted,
+            std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(86_400)
+        );
+        assert!(
+            converted > std::time::SystemTime::UNIX_EPOCH,
+            "a positive timestamp landed before the epoch"
+        );
+
+        // The guards either side stay as they are.
+        assert!(unix_to_system_time(0).is_none());
+        assert!(unix_to_system_time(-1).is_none());
+    }
 
     fn proto_backend() -> pb::Backend {
         pb::Backend {

@@ -334,6 +334,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_cached_answer_is_gone_at_the_instant_it_expires() {
+        // `entry.expires_at > now` could become `>=`, which keeps an answer
+        // alive for the instant it was due to expire. The same shape `M14.11`
+        // found in the quota ledger, here on an authentication decision: a
+        // grant that outlives its TTL is a client admitted against a token the
+        // sidecar has already stopped vouching for.
+        let config = CacheConfig::default();
+        let f = fixture(config);
+        let tok = token("expiry");
+        f.inner
+            .insert(&tok, grant(Duration::from_secs(3_600), None));
+
+        f.cache.resolve(request(&tok, "tenant_acme")).await.unwrap();
+        assert_eq!(f.inner.call_count(), 1);
+
+        // One tick before the entry expires it is still served from cache.
+        f.clock
+            .advance(config.max_ttl.checked_sub(Duration::from_nanos(1)).unwrap());
+        f.cache.resolve(request(&tok, "tenant_acme")).await.unwrap();
+        assert_eq!(f.inner.call_count(), 1, "the entry expired early");
+
+        // At the instant itself it is gone and the inner resolver is asked
+        // again. `>=` would serve the stale entry here instead.
+        f.clock.advance(Duration::from_nanos(1));
+        f.cache.resolve(request(&tok, "tenant_acme")).await.unwrap();
+        assert_eq!(
+            f.inner.call_count(),
+            2,
+            "a cached decision outlived its TTL by an instant"
+        );
+    }
+
+    #[tokio::test]
     async fn a_hit_avoids_the_underlying_call() {
         let f = fixture(CacheConfig::default());
         let tok = token("a");

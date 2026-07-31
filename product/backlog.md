@@ -4599,6 +4599,37 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   bound, `max_series() <= CEILING`, which any small constant satisfies. That
   check is the cardinality budget for the whole metric surface, so a constant
   made the budget unfalsifiable.
+  **Second batch: `auth` and `admin`, both now at zero survivors.**
+  `pgprox-auth` had 15, and 12 were in `bin/mock_sidecar.rs`. Binaries are now
+  excluded, for the reason `M13.4` already established when it exempted the same
+  paths from the sans-I/O rule: a binary is a composition root or a fixture, not
+  logic with unit tests, and `scripts/e2e.sh` asserts this one end to end.
+  Mutating it reports that a binary with no unit tests has none.
+  The exclusion did nothing at first and the survivor count is the only reason
+  that was noticed. `cargo-mutants` matches a glob containing a slash against
+  the entire path, so `src/bin/**` never matched
+  `crates/pgprox-auth/src/bin/mock_sidecar.rs`. `**/src/bin/**` does, checked
+  with `--list` before being trusted: 12 matches against 0. A flag that runs is
+  not a flag that does something, which is this milestone's own lesson one layer
+  out from the code.
+  The three real ones: a cached authentication decision could outlive its TTL by
+  an instant, the same boundary `M14.11` found in the quota ledger and here
+  admitting a client against a token the sidecar has stopped vouching for; the
+  `DeadlineExceeded` arm could be deleted, which keeps the variant and loses the
+  message that distinguishes a silent sidecar from one that answered; and
+  `UNIX_EPOCH + Duration` could become `-`, putting every token expiry the same
+  distance before 1970 so every valid grant reads as long expired.
+  `pgprox-admin` had 5. Three are the `active > 0` predicate behind the `state`
+  column of `SHOW SERVERS`, where `>= 0` makes every pool active and `== 0`
+  inverts it; every existing test used a pool in one state only.
+  The other two are `DEFAULT_DRAIN_TTL`, and they are **the third instance of an
+  assertion compared against the constant that produced it**. This crate's own
+  check is `assert_eq!(ttl, Some(DEFAULT_DRAIN_TTL))`, which passes for any
+  value. Its documented partner in `pgprox-config` asserts that crate's own
+  literal and says in a comment that admin mirrors it, but the two cannot see
+  each other, which is exactly why the value is duplicated. A constant described
+  as held together by a test was held by neither side. Both now pin the literal
+  independently, which is the only way a duplicated constant can be paired.
 - [x] `M14.5` `product/plan.md`'s M0 open items are stale. Item 1 says the
   sidecar `.proto` "needs sign-off from whoever owns the sidecar"; ADR 0017
   decided this repository owns it and the file is marked `STATUS: FROZEN`. Item

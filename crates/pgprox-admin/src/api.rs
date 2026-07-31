@@ -793,6 +793,28 @@ pub struct ConfigBody {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_default_drain_ttl_is_thirty_minutes() {
+        // `30 * 60` could become `30 + 60`, which is ninety seconds, or
+        // `30 / 60`, which is none at all. Two tests were supposed to stop
+        // that and neither could.
+        //
+        // This crate's own check is `assert_eq!(ttl, Some(DEFAULT_DRAIN_TTL))`,
+        // which compares the result against the constant that produced it and
+        // passes for any value. `pgprox-config`'s check asserts its own
+        // literal and says in a comment that this crate mirrors it, but the
+        // two cannot see each other: this crate cannot depend on that one,
+        // which is why the value is repeated in the first place.
+        //
+        // So the pairing only works if each side pins the literal
+        // independently, which is what this does.
+        assert_eq!(
+            DEFAULT_DRAIN_TTL,
+            Duration::from_secs(1_800),
+            "thirty minutes; pgprox-config::DrainConfig::default mirrors this"
+        );
+    }
+
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
