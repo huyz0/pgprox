@@ -5104,3 +5104,19 @@ Streaming removes both.
   claimed. `e2e.sh` reported 160.5 tps before and 174.8 after, which is worth
   almost nothing as a performance claim on one machine with pgbench's tiny rows,
   and is quoted only because it is the run that says nothing broke.
+- [ ] `M16.7` `M15.3`'s fix has no caller. `resume::observe_statement` clears
+  both statement maps when a client runs `DISCARD ALL`, it has tests, and
+  nothing in the proxy calls it. The desync `M15.3` set out to close is still
+  there.
+  Found while reading `serve.rs` for `M16.6`, which is the point: this
+  milestone exists because `FrameRelay` had no caller, `M15.1` because
+  `DEFAULT_MAX_INSPECT` had none, and `M15.3` because two clearing functions
+  had none. The fix for the third added a fourth, in the same session, by the
+  same hand, after writing the sentence "a streaming primitive with no caller
+  is the defect this milestone exists to fix".
+  Writing the rule down is not the same as following it. That is the finding,
+  and it is worth more than the bug.
+  Acceptance: called from the relay loop, with the connection map that the
+  statement will actually run on, and a check that says so rather than a test
+  of the function in isolation. Its signature takes the two memory structs and
+  the proxy holds the two maps, which is part of why it did not fit anywhere.
