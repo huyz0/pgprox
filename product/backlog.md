@@ -3351,6 +3351,27 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   pooling, and the curve is what says at what share that starts to bite.
   Acceptance: three or more values, matched runs, and a stated crossing point
   or a statement that there is none inside the range measured.
+  First run done, and it is not the curve. Recorded in
+  `product/perf/run-2026-07-31-pinning.md` because a run that fails to answer
+  its question is worth keeping when it says why.
+  The intended y-axis is flat by construction: upstream peak is 60 in all four
+  arms including the control, because 60 is the pool's cap and 150 clients reach
+  it with no pinning at all. `scripts/pinning.sh`'s own header says the run sits
+  "well under its cap", and the control arm proves that false. The x-axis is
+  compressed for the same reason: pinned sessions go 0, 60, 60, 71, because once
+  sixty sessions pin they own the pool outright.
+  What it did measure is worth keeping. **Pinning is paid for in refused work,
+  not in connections**, because there is no headroom for connections. Transactions
+  fall 9.5%, 38.8% and 47.1% against the control, and every error is `53300 too
+  many connections`: 0, 57, 90, 270 across the arms. That is ADR 0001's "collapses
+  back to session pooling" observed, with the SQLSTATE an operator would see.
+  The `high` arm's p50 is 63% *lower* than the control's, which reads as an
+  improvement and is the opposite: that arm refused 270 transactions and a median
+  over the work an arm kept is a median over the faster half. The harness prints
+  that warning beside the table rather than leaving it to be inferred.
+  The re-run needs a connection count low enough that the pool is demand-driven,
+  so upstream has somewhere to rise from, and probably shorter sessions so the
+  pin count does not saturate at the pool size.
   First run: three points, no baseline, so no curve yet.
   `scripts/pinning.sh` gained a guard first, because its first run reported
   `ok` for three arms that had measured nothing at all: peak 0 upstream
