@@ -914,9 +914,32 @@ Tooling in M7:
 
 ## Open items to settle during M0
 
-- The sidecar `.proto` needs sign-off from whoever owns the sidecar. It is the
-  only interface we do not control, and Track B is blocked on it.
+Reviewed in `M14.5`. Two of the three were answered by work done since and were
+still listed as open; one remains genuinely outside this repository. Each says
+which it is, because a list of open questions that keeps answered ones on it
+stops being read.
+
+- ~~The sidecar `.proto` needs sign-off from whoever owns the sidecar.~~
+  **Settled, differently from how it was asked.** ADR 0017 decided that this
+  repository owns the contract, and `proto/pgprox/auth/v1/auth.proto` carries
+  `STATUS: FROZEN` at v1. The premise was that the sidecar is the one interface
+  we do not control; the decision was to control it. What survives is the
+  discipline in [../standards/contracts.md](../standards/contracts.md): field
+  numbers are never reused, fields are never removed, and a change needs
+  agreement from the sidecar owners before the Rust side moves.
 - Upstream `max_connections` and the reserve to subtract from it, per server
   class, so quota caps can be configured rather than guessed.
-- Whether any tenant needs `LISTEN`/`NOTIFY` at scale. If a large fraction of
-  tenants do, pinning will dominate and the pool sizing model needs revisiting.
+  **Half done, and the half that is left needs an owner outside this repo.**
+  The mechanism exists: `max_connections` and `guaranteed_fraction` are fields
+  on the config document, so a cap is configured and not baked in. The values
+  per server class are not something this repository can know. Still open, and
+  it is the only one of the three that is.
+- ~~Whether any tenant needs `LISTEN`/`NOTIFY` at scale.~~
+  **The consequence half is measured; the population half needs real tenants.**
+  `M11.7` ran the curve: a pinned session costs `0.650` upstream connections,
+  linearly, with no knee and no safe fraction, so the sizing model does not need
+  revisiting so much as one extra term, `upstream = c0 + (1 - 1/r0) * pins`.
+  With every session pinned the fleet held one upstream connection per client,
+  which is ADR 0001's "collapses back to session pooling" as an identity. What
+  this repository still cannot answer is what fraction of real tenants do it.
+  See [perf/run-2026-07-31-pinning-curve.md](perf/run-2026-07-31-pinning-curve.md).

@@ -4245,7 +4245,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Acceptance: `mutants.sh`'s list matches its stated criterion, or the criterion
   is reworded to match the list with a reason. What must not survive is the
   present state, where the header says one thing and the array says another.
-- [ ] `M14.5` `product/plan.md`'s M0 open items are stale. Item 1 says the
+- [x] `M14.5` `product/plan.md`'s M0 open items are stale. Item 1 says the
   sidecar `.proto` "needs sign-off from whoever owns the sidecar"; ADR 0017
   decided this repository owns it and the file is marked `STATUS: FROZEN`. Item
   3 asks what happens if a large fraction of tenants use `LISTEN`/`NOTIFY`, and
@@ -4255,5 +4255,22 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   at it, and the ones that genuinely need an owner outside this repo stay open
   and say so. Item 2, upstream `max_connections` per server class, is one of
   those and must not be dressed up as resolved.
+  Done, and item 2 turned out to be two questions rather than one, which is why
+  reading it beat assuming it. It asks for the values *and* for caps to be
+  configurable rather than guessed. The second half is built: `max_connections`
+  and `guaranteed_fraction` are fields on the config document. The values per
+  server class are not knowable here and stay open. It is the only one of the
+  three still open, and it says so.
+  Item 1 was settled differently from how it was asked. The premise was that the
+  sidecar is the one interface this project does not control; ADR 0017 decided
+  to control it, and the `.proto` carries `STATUS: FROZEN`. The discipline that
+  survives the premise is recorded rather than dropped: field numbers never
+  reused, fields never removed, sidecar owners agree before the Rust side moves.
+  Item 3's consequence half is `M11.7`'s curve, and the answer is milder than
+  the question feared. "The pool sizing model needs revisiting" becomes one
+  extra term, because the cost is linear with no knee. The population half needs
+  real tenants and stays open inside the item rather than as a separate entry.
+  Taken out of backlog order, ahead of `M14.1` to `M14.4`, because those are
+  mutation runs that own the machine for a long stretch and this needed none.
 - [ ] `M14.6` Write `scripts/m14-complete.sh`, before the milestone needs
   closing. Under `M12.8`'s constraint: run things, do not match filenames.
