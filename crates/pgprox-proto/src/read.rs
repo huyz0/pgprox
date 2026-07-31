@@ -119,10 +119,12 @@ impl<'a> Reader<'a> {
     /// Fails if there is no terminator, or the bytes are not UTF-8.
     pub fn cstr(&mut self, what: &'static str) -> Result<&'a str, FieldError> {
         let rest = &self.buf[self.pos..];
-        let end = rest
-            .iter()
-            .position(|b| *b == 0)
-            .ok_or(FieldError::Unterminated)?;
+        // `memchr` rather than `iter().position()`, which is a byte at a time.
+        // This is the most-run loop in the crate: the SQL of every Query and
+        // Parse, both strings of every ParameterStatus, every CommandComplete
+        // tag, and every field of every error all arrive as one of these scans,
+        // and the SQL case runs to the 64 KiB inspect prefix.
+        let end = memchr::memchr(0, rest).ok_or(FieldError::Unterminated)?;
         let text = std::str::from_utf8(&rest[..end]).map_err(|_| FieldError::NotUtf8 { what })?;
         self.pos += end + 1;
         Ok(text)

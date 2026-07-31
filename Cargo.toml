@@ -17,6 +17,17 @@ async-trait = "0.1"
 tokio = { version = "1", default-features = false }
 proptest = "1"
 thiserror = "2"
+# SIMD null-byte search. The wire protocol is null-terminated strings and
+# little else, so every string field this proxy reads is one of these scans:
+# the SQL of every Query and Parse, both halves of every ParameterStatus, every
+# CommandComplete tag, and every field of every error. It has no dependencies
+# of its own.
+#
+# Default features, which means std, and that is the point rather than an
+# oversight: without std memchr falls back to SSE2 only, because selecting AVX2
+# needs the runtime feature detection that lives in std. This crate is std
+# already.
+memchr = "2"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 serde = { version = "1", default-features = false }
 # Archived upstream and kept anyway: it clears this project's own supply-chain

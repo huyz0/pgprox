@@ -4847,7 +4847,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   ALL` is rolled back, where both over-clear, and over-clearing costs a
   re-prepare while under-clearing produces "prepared statement does not exist"
   on a connection the proxy thought was warm.
-- [ ] `M15.4` `cstr` scans one byte at a time. `Reader::cstr` finds its
+- [x] `M15.4` `cstr` scans one byte at a time. `Reader::cstr` finds its
   terminator with `iter().position(|b| *b == 0)`, which is a scalar loop, and
   it is on every hot path this crate has: the SQL in `Query` and `Parse` up to
   the 64 KiB prefix, every `CommandComplete` tag, both strings of every
@@ -4857,6 +4857,12 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   supply-chain gate has nothing to say, plus a microbenchmark in
   `benches/hot_paths.rs` that measures the scan and a before/after instruction
   count recorded in `product/perf/`.
+  **Measured: 2168 to 460 instructions on the long scan, 4.7x.** The short-string
+  case, eight fields of an `ErrorResponse`, improves by 14.3% rather than by
+  anything like that, because at five bytes the work is call overhead and the
+  UTF-8 validation that follows. Both shapes are benched separately for exactly
+  that reason, and three unchanged benches are the control.
+  See [run-2026-08-01-cstr-scan.md](perf/run-2026-08-01-cstr-scan.md).
 - [ ] `M15.5` The header copy on every frame. `FrameRelay::push_header` copies
   the five header bytes into `header_buf` and clears it again, on every message,
   including the overwhelmingly common case where all five are already contiguous

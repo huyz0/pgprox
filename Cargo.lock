@@ -1137,6 +1137,7 @@ name = "pgprox-proto"
 version = "0.1.0"
 dependencies = [
  "dhat",
+ "memchr",
  "pgprox-core",
  "pgprox-testkit",
  "proptest",

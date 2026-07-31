@@ -35,7 +35,7 @@ pub fn parse_statement(body: &[u8], name: &str) -> Option<Vec<u8>> {
 /// the portal is the client's to keep.
 #[must_use]
 pub fn bind_statement(body: &[u8], name: &str) -> Option<Vec<u8>> {
-    let portal_end = body.iter().position(|byte| *byte == 0)? + 1;
+    let portal_end = memchr::memchr(0, body)? + 1;
     replace_cstring(body, portal_end, name)
 }
 
@@ -62,12 +62,12 @@ pub fn describes_statement(body: &[u8]) -> bool {
 fn replace_cstring(body: &[u8], at: usize, name: &str) -> Option<Vec<u8>> {
     // A name with a null in it cannot be encoded, and one that arrived that
     // way is a client doing something the protocol does not allow.
-    if name.as_bytes().contains(&0) {
+    if memchr::memchr(0, name.as_bytes()).is_some() {
         return None;
     }
 
     let rest = body.get(at..)?;
-    let end = at + rest.iter().position(|byte| *byte == 0)? + 1;
+    let end = at + memchr::memchr(0, rest)? + 1;
 
     let mut out = Vec::with_capacity(body.len() + name.len());
     out.extend_from_slice(&body[..at]);
