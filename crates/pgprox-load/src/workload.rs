@@ -437,6 +437,96 @@ mod tests {
     }
 
     #[test]
+    fn the_committed_pinning_workloads_are_valid_and_differ_only_in_one_weight() {
+        // `M11.7`'s curve rests on these three being the reference document
+        // with one statement added. If a weight drifted, the curve would be
+        // measuring two changes at once and would say nothing about pinning.
+        let documents = [
+            (
+                "low",
+                include_str!("../../../product/perf/workload-pin-low.yaml"),
+                1,
+            ),
+            (
+                "mid",
+                include_str!("../../../product/perf/workload-pin-mid.yaml"),
+                2,
+            ),
+            (
+                "high",
+                include_str!("../../../product/perf/workload-pin-high.yaml"),
+                20,
+            ),
+        ];
+
+        for (name, yaml, expected_weight) in documents {
+            let workload = Workload::parse(yaml)
+                .unwrap_or_else(|error| panic!("workload-pin-{name} does not parse: {error}"));
+
+            assert_eq!(workload.version, SUPPORTED_VERSION, "{name}");
+            assert_eq!(workload.statements.len(), 5, "{name}");
+
+            let listen: Vec<_> = workload
+                .statements
+                .iter()
+                .filter(|s| s.kind == Kind::Listen)
+                .collect();
+            assert_eq!(listen.len(), 1, "{name} should hold exactly one LISTEN");
+            assert_eq!(listen[0].weight, expected_weight, "{name}");
+            assert!(listen[0].sql.starts_with("LISTEN "), "{name}");
+
+            // The other four are the reference mix scaled by ten, which is the
+            // same mix. Asserted as the ratio rather than as four numbers, so
+            // the claim being checked is the one the documents make.
+            let others: Vec<u32> = workload
+                .statements
+                .iter()
+                .filter(|s| s.kind != Kind::Listen)
+                .map(|s| s.weight)
+                .collect();
+            assert_eq!(others, vec![600, 100, 250, 50], "{name}");
+
+            // Everything else has to be the reference document, or the curve
+            // is not a curve in one variable.
+            assert_eq!(workload.churn.transactions_per_connection, 500, "{name}");
+            assert_eq!(
+                workload.tenants.iter().map(|g| g.count).sum::<u32>(),
+                204,
+                "{name}"
+            );
+            assert_eq!(workload.cluster_size, 3, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_pinning_workloads_rise_in_listen_weight() {
+        // The curve needs its three points to be in order and distinct. Two
+        // documents that happened to carry the same weight would produce two
+        // identical rows and a curve nobody could read as a curve.
+        let weights: Vec<u32> = [
+            include_str!("../../../product/perf/workload-pin-low.yaml"),
+            include_str!("../../../product/perf/workload-pin-mid.yaml"),
+            include_str!("../../../product/perf/workload-pin-high.yaml"),
+        ]
+        .iter()
+        .map(|yaml| {
+            Workload::parse(yaml)
+                .unwrap()
+                .statements
+                .iter()
+                .find(|s| s.kind == Kind::Listen)
+                .unwrap()
+                .weight
+        })
+        .collect();
+
+        assert!(
+            weights.windows(2).all(|pair| pair[0] < pair[1]),
+            "the pinning weights are not strictly increasing: {weights:?}"
+        );
+    }
+
+    #[test]
     fn a_valid_document_round_trips_its_values() {
         let workload = Workload::parse(&document()).unwrap();
         assert_eq!(workload.tenants[0].name, "hot");

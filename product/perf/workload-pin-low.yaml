@@ -1,0 +1,129 @@
+# The reference workload with a one in a thousand of its statements holding the session
+# open, for `M11.7`'s pinning curve.
+#
+# One of three. They differ from each other and from `workload.yaml` in exactly
+# one thing: the weight of a `LISTEN` statement. Everything else, including the
+# proportions between the other four statements, is the reference document.
+#
+# ## Why the other weights are ten times the reference's
+#
+# They are not a different mix. Scaling every weight by the same factor changes
+# no proportion, and 600/100/250/50 is 60/10/25/5. It is done so the small end
+# of the curve can be written down: the useful range of `LISTEN` probabilities
+# starts near one in five thousand, and against a total of 100 the smallest
+# integer weight is one in a hundred.
+#
+# ## Why the knob is a probability rather than a share of sessions
+#
+# A `LISTEN` pins its session for the rest of that session's life, so what a
+# weight buys is not "this fraction of sessions pin". Above a very small weight
+# nearly every long-lived connection eventually pins and that number saturates.
+# What varies continuously is the share of a session's *life* spent pinned,
+# which is decided by how far into it the first `LISTEN` falls. A connection
+# here runs about 670 statements, so a per-statement probability q puts the
+# first pin near statement 1/q, and the pinned share of session-time is roughly
+# what is left after it.
+#
+# This document's q is 0.001, which is a first pin near statement 1,000 of 670 and
+# therefore about roughly a tenth of session-time pinned. That is the arithmetic the
+# curve's x-axis is predicted from; what it is *measured* from is
+# `pgprox_pin_total{reason="listen"}`, because a prediction is not a
+# measurement.
+#
+# ## Why no version bump
+#
+# `SUPPORTED_VERSION` exists so a version that changed meaning without changing
+# its number cannot silently invalidate a recorded run. Adding a document does
+# not reinterpret an existing one, and this file says `version: 3` because a
+# version 3 document means what it has always meant.
+version: 3
+
+# A handful of busy tenants and a long tail of near-idle ones, which is what a
+# multitenant proxy actually sees. A uniform mix would hide the two things this
+# proxy exists to get right: the grant cache working for the busy few, and
+# 100k idle connections costing almost nothing.
+tenants:
+  - name: hot
+    count: 4
+    share: 0.80
+  - name: tail
+    count: 200
+    share: 0.20
+
+# Query shapes, by weight. The SQL is what pgbench's default workload does,
+# because it is the shape everyone recognises and because the e2e stack already
+# runs it, so a number here can be checked against a number there.
+statements:
+  - name: point_select
+    weight: 600
+    kind: read
+    sql: "SELECT abalance FROM pgbench_accounts WHERE aid = 1"
+  - name: range_scan
+    weight: 100
+    kind: read
+    sql: "SELECT sum(abalance) FROM pgbench_accounts WHERE bid = 1"
+  - name: update_account
+    weight: 250
+    kind: write
+    sql: "UPDATE pgbench_accounts SET abalance = abalance + 1 WHERE aid = 1"
+  - name: insert_history
+    weight: 50
+    kind: write
+    sql: "INSERT INTO pgbench_history (tid, bid, aid, delta) VALUES (1, 1, 1, 1)"
+  # The statement the curve is about. `LISTEN` registers interest on one
+  # backend, so a session that moved would stop receiving notifications
+  # without anything reporting an error, which is why the pool pins it. It is
+  # neither a read nor a write: calling it a write would move a watermark that
+  # has not moved, and calling it a read would make it eligible for a replica
+  # the notifications never reach.
+  - name: watch_channel
+    weight: 1
+    kind: listen
+    sql: "LISTEN pgprox_curve"
+
+# Most transactions are one statement, which is what a pooled proxy is
+# optimised for, and a minority are long enough that holding a connection
+# across them matters.
+transactions:
+  - statements: 1
+    weight: 80
+  - statements: 4
+    weight: 15
+  - statements: 20
+    weight: 5
+
+# How many statements go through the extended protocol, with a named prepared
+# statement, rather than the simple one. Every mainstream driver uses it, and
+# it is the path that deadlocked twice during M6 and whose statement mapping
+# the semantic coverage report showed almost untouched. A workload that only
+# sent simple queries measured a proxy nobody deploys.
+prepared_fraction: 0.5
+
+# How long a client waits between transactions. Without this, N connections
+# means N requests in flight and a run measures the database queueing rather
+# than the proxy: the first run at 200 connections reported a p50 of 101ms
+# against a direct baseline of 4ms, which is a saturated Postgres and says
+# nothing about a proxy hop.
+#
+# It is also what makes the workload describe the design point. This proxy
+# exists because 100k connections are idle most of the time; a workload where
+# every connection is always busy is a workload for a different product.
+think:
+  min_ms: 50
+  max_ms: 500
+
+# How often a client goes away and a new one arrives, in transactions per
+# connection. Connection churn is a cost the proxy pays and pgbench does not
+# generate, so it is declared here rather than left to whatever the load client
+# happens to do.
+churn:
+  transactions_per_connection: 500
+
+# Of the reads, how many are eligible to be served by a replica. The rest go to
+# the primary either because they are writes or because the session has written
+# and is behind its own watermark.
+replica_read_fraction: 0.50
+
+# Cluster size the gossip budgets measure at. A digest encode that is free at
+# one node and quadratic at ten is a fact this workload has to pin down.
+cluster_size: 3

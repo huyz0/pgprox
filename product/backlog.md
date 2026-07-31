@@ -3453,7 +3453,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   answer "which of those two do they get" when the answer is a mixture. That is
   a crate change with a coverage gate on it, so it is a commit of its own, the
   same way `M11.4`'s knob was.
-- [ ] `M11.10` The pinning workload documents, so `M11.7` has something to run.
+- [x] `M11.10` The pinning workload documents, so `M11.7` has something to run.
   Three variants of the reference workload differing only in the weight of one
   `LISTEN` statement, chosen so the share of a session's life spent pinned
   spans roughly a tenth to nearly all of it. The reference document itself is
@@ -3468,3 +3468,23 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Acceptance: three documents that parse, the crate's committed-document test
   extended to cover them rather than left naming only the reference, and
   `pgprox-load` still at 95%.
+  Done. `workload-pin-low`, `-mid` and `-high`, with `LISTEN` weights of 1, 2
+  and 20 against the reference mix scaled by ten.
+  Four tests rather than one, and two of them are the ones worth having. That
+  the three documents differ from the reference and from each other in exactly
+  one weight, since a curve where two things moved is not a curve in one
+  variable. And that the sampled stream actually carries `LISTEN` at the
+  declared rate, asserted relatively rather than absolutely because the three
+  rates differ by a factor of twenty and one absolute tolerance suiting the
+  largest would pass a smallest of zero. A document whose `LISTEN` never
+  reached the stream would produce a run with no pins in it, which reads as
+  "pinning costs nothing" and is the reference workload wearing another name.
+  `M11.4` left one invariant vacuous and this fills it. The sampler has a rule
+  that no `LISTEN` is ever marked replica-eligible, and it could not be checked
+  against anything, because no committed document held a `LISTEN` statement.
+  It is checked against `workload-pin-high` now.
+  One fact about Postgres was checked before committing rather than after,
+  because half of every document's statements go through the extended protocol
+  and a `LISTEN` that could not be parsed there would break half the run.
+  SQL-level `PREPARE ... LISTEN` is a syntax error; protocol-level `Parse` of
+  the same statement is fine, which is the path the load client uses.

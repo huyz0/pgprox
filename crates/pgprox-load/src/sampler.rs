@@ -288,6 +288,75 @@ mod tests {
     }
 
     #[test]
+    fn the_pinning_workloads_emit_listen_at_the_rate_they_declare() {
+        // The arithmetic `M11.7`'s curve is predicted from. A document whose
+        // `LISTEN` weight did not reach the sampled stream would produce a run
+        // with no pins in it, which reads as "pinning costs nothing" and is
+        // the reference workload wearing another name.
+        for (name, yaml, expected) in [
+            (
+                "low",
+                include_str!("../../../product/perf/workload-pin-low.yaml"),
+                1.0 / 1001.0,
+            ),
+            (
+                "mid",
+                include_str!("../../../product/perf/workload-pin-mid.yaml"),
+                2.0 / 1002.0,
+            ),
+            (
+                "high",
+                include_str!("../../../product/perf/workload-pin-high.yaml"),
+                20.0 / 1020.0,
+            ),
+        ] {
+            let workload = Workload::parse(yaml).unwrap();
+            let mut sampler = Sampler::new(&workload, 13);
+            let statements: Vec<Planned> = (0..40_000)
+                .flat_map(|_| sampler.next_transaction().statements)
+                .collect();
+            let total = statements.len() as f64;
+            let seen = statements
+                .iter()
+                .filter(|s| s.name == "watch_channel")
+                .count() as f64
+                / total;
+
+            // Relative rather than absolute: the three rates differ by a factor
+            // of twenty, so one tolerance that suits the largest would pass a
+            // smallest of zero.
+            assert!(
+                (seen - expected).abs() < expected * 0.35,
+                "{name}: saw {seen:.5}, workload declares {expected:.5}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pinning_workload_never_sends_its_listen_to_a_replica() {
+        // The invariant that made `M11.4` file `Kind::Listen` as a variant
+        // rather than reuse `Read`. It was vacuous there, because no committed
+        // document held a `LISTEN` statement to check it against. These do.
+        let workload =
+            Workload::parse(include_str!("../../../product/perf/workload-pin-high.yaml")).unwrap();
+        let mut sampler = Sampler::new(&workload, 17);
+        let statements: Vec<Planned> = (0..20_000)
+            .flat_map(|_| sampler.next_transaction().statements)
+            .collect();
+
+        let watches = statements.iter().filter(|s| s.name == "watch_channel");
+        let mut seen = 0;
+        for statement in watches {
+            seen += 1;
+            assert!(
+                !statement.replica_eligible,
+                "a LISTEN was marked replica-eligible, where the notifications never arrive"
+            );
+        }
+        assert!(seen > 0, "no LISTEN was drawn, so nothing was checked");
+    }
+
+    #[test]
     fn the_tenant_mix_converges_on_what_was_declared() {
         // Four hot tenants take 80% of the traffic and two hundred idle ones
         // take the rest. A uniform mix would hide both things the proxy is
