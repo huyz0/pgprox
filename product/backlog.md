@@ -3192,10 +3192,24 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Split on inspection, before starting, the way `M10.8` and `M10.13` were split
   once their size was visible. The knob is not a knob: `pgprox_load::workload`
   has `Kind` as `Read | Write`, and a pinning workload needs a third variant, a
-  client that issues `LISTEN` and holds the session, a schema version bump on
-  every workload document, and every match on `Kind` updated, with the crate's
-  95% gate on top. That is a commit. The curve is a separate commit and a
-  separate hour of runs.
+  client that issues `LISTEN` and holds the session, and the crate's 95% gate on
+  top. That is a commit. The curve is a separate commit and a separate hour of
+  runs.
+  Correcting the first version of this note, which said a schema version bump
+  was needed on every workload document. It is not. `SUPPORTED_VERSION` exists
+  because "a version that changed meaning without changing its number would
+  silently invalidate every recorded run", and adding a variant changes nothing
+  about what a version 3 document means: one that never says `kind: listen`
+  means exactly what it meant before. The bump is for changes that reinterpret
+  existing files and this is not one, so `workload.yaml` and its two derivatives
+  stay at 3 and the runs recorded against them stay comparable.
+  The hazard to watch instead is that `Kind` is compared with `==` rather than
+  matched exhaustively, in three places across `workload.rs` and `sampler.rs`.
+  A new variant therefore compiles clean and is silently excluded from all
+  three, which is the opposite of what an enum is usually good for. Each site
+  needs a decision written down, and `sampler.rs:143`, which decides replica
+  eligibility, is the one that matters: a pinned session belongs on the
+  primary.
   This task keeps the knob. `M11.7` takes the curve, and cannot start until this
   one lands.
 - [x] `M11.5` Write `scripts/m11-complete.sh` before the milestone needs
