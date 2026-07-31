@@ -192,10 +192,36 @@ arm() {
 
   local mean=0
   (( samples > 0 )) && mean=$(( sum / samples ))
-  printf '%s\t%s\t%s\t%s\t%s\n' "$label" "$peak" "$mean" \
-    "$(( pins_after - pins_before ))" "$samples" >> "$OUT_DIR/held.tsv"
+  local pinned=$(( pins_after - pins_before ))
 
-  ok "$label: peak $peak upstream, mean $mean, $(( pins_after - pins_before )) sessions pinned"
+  # An arm that never saw an upstream connection measured nothing, and a curve
+  # built from points like that is a curve of zeros with a shape. The first run
+  # of this script reported `ok` for three arms at peak 0 and produced a report
+  # anyway, which is the failure mode this repo keeps finding: a category the
+  # harness prints is not a result until somebody has read what it is a category
+  # of. So the arm fails here rather than contributing a point.
+  if (( samples == 0 || peak == 0 )); then
+    fail "$label: $samples samples, peak $peak upstream; this arm measured nothing"
+    tail -10 "$OUT_DIR/$label.log" | sed 's/^/  /'
+    return 1
+  fi
+
+  # And an arm whose workload declares `LISTEN` has to pin something, or the
+  # document is not doing what its name says and the curve's x-axis is fiction.
+  # `none` is the control and must pin nothing, which is the same check the
+  # other way round.
+  if [[ "$label" == none ]]; then
+    (( pinned == 0 )) || { fail "none: $pinned sessions pinned by a workload with no LISTEN"; return 1; }
+  elif (( pinned == 0 )); then
+    fail "$label: no session pinned, so this document's LISTEN never ran"
+    tail -10 "$OUT_DIR/$label.log" | sed 's/^/  /'
+    return 1
+  fi
+
+  printf '%s\t%s\t%s\t%s\t%s\n' "$label" "$peak" "$mean" \
+    "$pinned" "$samples" >> "$OUT_DIR/held.tsv"
+
+  ok "$label: peak $peak upstream, mean $mean, $pinned sessions pinned"
 }
 
 # ---------------------------------------------------------------------------
@@ -283,6 +309,22 @@ PY
 
 require_tool docker || finish
 require_tool python3 || finish
+
+# One at a time, and the reason is a run that was thrown away. Two of these
+# overlapped: they share a compose project name, so each tore down the other's
+# stack, and they share an output directory, so each appended to the other's
+# results. What came out was a table with two arms missing, one arm reporting
+# zero upstream connections, and two rows from a run at a different connection
+# count. None of it looked like an error.
+# Outside `$OUT_DIR`, because a caller that clears the output directory before
+# a fresh run would otherwise delete the lock out from under a run in progress
+# and both would proceed. That happened.
+LOCK="${TMPDIR:-/tmp}/pgprox-pinning.lock"
+exec 9>"$LOCK"
+if ! flock --nonblock 9; then
+  fail "another run is using $OUT_DIR; they would tear down each other's stack"
+  finish
+fi
 
 trap tear_down EXIT
 

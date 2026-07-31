@@ -3351,6 +3351,26 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   pooling, and the curve is what says at what share that starts to bite.
   Acceptance: three or more values, matched runs, and a stated crossing point
   or a statement that there is none inside the range measured.
+  First run: three points, no baseline, so no curve yet.
+  `scripts/pinning.sh` gained a guard first, because its first run reported
+  `ok` for three arms that had measured nothing at all: peak 0 upstream
+  connections, 0 samples, 0 pins. An arm like that contributes a zero to the
+  curve and a shape to the picture, and the harness said it was fine. The guard
+  fails an arm with no samples, no peak, or no pin where the document declares
+  one, and fails the control if it pins anything.
+  It caught something on the next run, which is the finding to chase. The
+  control ran perfectly by every other measure, 150 connections for 120s,
+  44,832 transactions and no errors on `workload.yaml`, and was rejected
+  because `pgprox_pin_total` rose while it ran. That document contains no
+  `LISTEN`. Either something else in it pins, or the counter counts something
+  the script's own comment says it does not, and until that is known the
+  x-axis of this curve is not what it claims to be.
+  The three pin arms did produce points, held connections against pins:
+  low 71/63, mid 73/73, high 60/76. Two things about them to check rather than
+  publish: `high` holds *fewer* connections than `low` and `mid`, which is the
+  wrong direction for the hypothesis, and peak equals mean exactly in all three
+  arms, which means every one of the 32 samples read the same number and is a
+  smell rather than a measurement.
   Split on inspection, before starting, the same way `M11.4` was once its size
   became visible. The curve needs workload documents that do not exist, and a
   committed workload document is a measurement baseline: three of them, with
