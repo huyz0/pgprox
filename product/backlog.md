@@ -3940,3 +3940,71 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   order `M11.11` got wrong and `M12.1` now enforces.
   The status table and the section header say so, and the section says what the
   milestone found rather than that it ran.
+
+## M13: the non-negotiables that nothing enforces
+
+- [x] `M13.0` Plan M13: audit the seven non-negotiables against the scripts that
+  are supposed to enforce them.
+  One rule at a time, checked by running things rather than by reading
+  `AGENTS.md` and believing it. Three hold, four do not, and the table is in
+  `product/roadmap.md`.
+  The sharpest is rule 2. `COVERAGE_MIN=10 scripts/check-coverage.sh
+  pgprox-route` prints `ok coverage (pgprox-route): 99.65% >= 10%` and exits 0.
+  The gate announces its own weakened threshold and passes.
+  One of the four defects was introduced by `M12.2`, which added
+  `PGPROX_SCALE_MINIMUM`, in a milestone about checks that do not check. Filed
+  as a finding rather than fixed quietly, because the useful fact is that this
+  class is easy to reproduce while looking straight at it.
+- [ ] `M13.1` The three pass/fail thresholds can be lowered from the
+  environment: `COVERAGE_MIN` at 95, `BENCH_TOLERANCE` at 5 and
+  `PGPROX_SCALE_MINIMUM` at 1000.
+  The distinction that matters, and the reason this is not "remove every
+  override": most `${X:-n}` defaults in `scripts/` are run parameters, and
+  overriding a connection count, a duration, a seed or a port is exactly what
+  they are for. These three decide whether a check passes. Those are different
+  things and only the second kind is a threshold.
+  Acceptance: the three become constants that no environment can move, with a
+  negative test showing the override no longer takes effect, and `check-drift.sh`
+  refuses to let a pass/fail threshold be reintroduced as a settable default.
+  Care needed: `check-coverage.sh` legitimately needs a way to run at a
+  different figure while writing tests. If that stays, it has to be an argument
+  that reports loudly and cannot be reached by an exported variable, so a stray
+  environment does not silently weaken CI.
+- [ ] `M13.2` Nothing detects a deleted test. Rule 2's second half.
+  Sized on inspection before starting: a count is the obvious thing and is the
+  wrong thing, because a commit that deletes one test and adds another passes it
+  while doing exactly what the rule forbids.
+  Acceptance: a check that names what disappeared, not one that compares totals.
+  If that turns out to need a committed inventory of test names, this splits:
+  the inventory and its drift check are one commit, the enforcement another.
+- [ ] `M13.3` Rule 7, credentials never reach a log, is a repo-wide claim held
+  up by one unit test in one crate.
+  Acceptance: a check that covers the claim's actual scope. What that means has
+  to be settled first and written down: candidates are a lint against passing
+  secret-bearing types to a logging macro, a test per crate that holds one, and
+  a run of the e2e stack grepping its logs for the token it authenticated with.
+  The last is the only one that tests the claim end to end and it is the
+  slowest, so the decision is which of the three the rule actually needs.
+- [ ] `M13.4` Rule 5 says business logic is sans-I/O and `check-layering.sh`
+  checks the crate dependency rule, which is a different property.
+  Acceptance: either a check for the stated property, or `AGENTS.md` reworded so
+  the rule says what is enforced. Deciding which is the task, and the decision
+  goes in the entry with its reasoning.
+- [ ] `M13.5` Rule 6 says a core trait change updates the trait, every fake,
+  every implementation and the ADR in one commit. `m0-complete.sh` checks that
+  every public trait has a fake, which is the static half and not the rule.
+  Acceptance: a check on the commit, since that is what the rule is about. It
+  has the same shape as `M12.1`'s: read the staged change, and if it touches a
+  trait in `pgprox-core`, require the fakes and an ADR alongside it.
+- [ ] `M13.6` Whatever remains unenforceable gets said plainly in `AGENTS.md`.
+  Rule 3, never claim a test passes without having run it, is the likely
+  candidate: it is a rule about honesty in reporting and it may have no script.
+  A rule that cannot be scripted should sit under a sentence that says so,
+  because a false claim about enforcement is worse than an honest claim about
+  intent, and this whole milestone exists because one sentence claimed seven.
+  Acceptance: the sentence introducing the non-negotiables matches the audit,
+  and `m13-complete.sh` checks the ones that are claimed to be enforced.
+- [ ] `M13.7` Write `scripts/m13-complete.sh`, before the milestone needs
+  closing, as `M10.17`, `M11.5` and `M12.8` all establish.
+  Under `M12.8`'s constraint as well: no check may match a filename or a word
+  where it can run something and read an exit code.

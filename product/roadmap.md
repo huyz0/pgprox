@@ -611,3 +611,51 @@ artefact and asserting a non-zero exit, including a floor that runs all fourteen
 gates against a tree holding none of their artefacts. It asserts exit codes and
 never output, because the bug that motivated it printed the right message in red
 and returned 0.
+
+## M13: the non-negotiables that nothing enforces
+
+`AGENTS.md` lists seven non-negotiables and says of them: "Each is enforced by a
+script, not by good intentions." `M12` spent its length finding that gates can
+report conclusions nothing checks. This asks the same question of the sentence
+that introduces the rules those gates exist to serve.
+
+```bash
+scripts/m13-complete.sh
+```
+
+Audited before the milestone was written, one rule at a time. Three hold. Four
+do not, and one of the four was introduced by `M12` itself.
+
+| # | rule | enforced by | holds |
+| --- | --- | --- | --- |
+| 1 | one task, one commit, green tree | `check-commit-msg.sh`, pre-commit | yes, since `M12.1` |
+| 2 | never lower a threshold or delete a test | nothing | **no** |
+| 3 | never claim a test passes without running it | nothing directly | partly |
+| 4 | 95% line coverage per crate, tier 1 alone | `check-coverage.sh` | yes, but see 2 |
+| 5 | business logic is sans-I/O | `check-layering.sh` | **no, it checks something else** |
+| 6 | a core trait change updates trait, fakes, impls and ADR in one commit | `m0-complete.sh`, partly | **no** |
+| 7 | credentials never reach a log | one unit test | **no** |
+
+**Rule 2 is the sharpest.** Three values decide pass or fail and all three can be
+moved from the environment: `COVERAGE_MIN` at 95, `BENCH_TOLERANCE` at 5, and
+`PGPROX_SCALE_MINIMUM` at 1000. Run
+`COVERAGE_MIN=10 scripts/check-coverage.sh pgprox-route` and it prints
+`ok coverage (pgprox-route): 99.65% >= 10%` and exits 0. The gate announces its
+own weakened threshold and passes anyway. Nothing detects a deleted test at all.
+
+The third of those was added by `M12.2`, in a milestone about checks that do not
+check. That is worth stating rather than quietly fixing: the defect class is easy
+to reproduce while actively looking for it.
+
+**Rule 5 names a property and the script checks a different one.** `check-layering.sh`
+enforces the crate dependency rule, that every crate depends on `pgprox-core` and
+nothing else in the workspace. That is a real rule and it is not the sans-I/O
+rule. Nothing checks that business logic has no sockets in it.
+
+**Rule 7 is a repo-wide claim held up by one test**, `a_token_cannot_reach_a_log`
+in `crates/pgprox-session/src/auth.rs`, across fifteen crates.
+
+The milestone fixes what can be fixed and rewords what cannot. A rule that
+genuinely cannot be scripted should say so in `AGENTS.md` rather than sit under a
+sentence promising it is enforced, because a false claim about enforcement is
+worse than an honest claim about intent.
