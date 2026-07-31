@@ -4331,7 +4331,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   just exercising it.
   Whether `gossip` should behave that way is a separate question and a design
   decision rather than a test, filed as `M14.16`.
-- [ ] `M14.14` `digest.rs`: `is_empty` to `true`, and the `NodeMode::Active` and
+- [x] `M14.14` `digest.rs`: `is_empty` to `true`, and the `NodeMode::Active` and
   `NodeMode::Draining` arms deleted from `view_hash`. A view hash that ignores
   whether a node is draining is a view hash that says two different clusters are
   the same, which is what gossip convergence rests on.

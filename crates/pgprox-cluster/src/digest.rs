@@ -388,6 +388,29 @@ mod tests {
     }
 
     #[test]
+    fn a_store_holding_anything_is_not_empty() {
+        // `is_empty` could return `true` unconditionally. The existing test
+        // only ever asked an empty store, so the constant matched it. Callers
+        // in `bin/pgprox` and `service.rs` use this to decide whether a node
+        // knows anything about the fleet yet, and a node that always claims to
+        // know nothing is a node that never starts serving. `M14.14`.
+        let mut store = DigestStore::new();
+        assert!(store.is_empty());
+
+        store.merge(digest(1, 1, 10));
+        assert!(
+            !store.is_empty(),
+            "a store holding one digest called itself empty"
+        );
+        assert_eq!(store.len(), 1);
+
+        // And it goes back to empty when the last node is forgotten, so the
+        // answer tracks the contents rather than being latched either way.
+        store.forget(node(1));
+        assert!(store.is_empty());
+    }
+
+    #[test]
     fn an_empty_store_answers_rather_than_failing() {
         let store = DigestStore::new();
         assert!(store.is_empty());
