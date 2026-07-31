@@ -4914,7 +4914,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
 The first pass fixed what it found. This is the second reading, which the
 milestone said it would do and which found three more.
 
-- [ ] `M15.9` The pre-authentication path is bounded by the relay cap. A client
+- [x] `M15.9` The pre-authentication path is bounded by the relay cap. A client
   sends a startup packet before it has proved anything, and
   `shell::negotiate` reads it with `read_untagged(.., DEFAULT_MAX_FRAME)`, which
   is 1 GiB. `Wire::fill` grows its buffer 16 KiB at a time until the declared
@@ -4932,6 +4932,16 @@ milestone said it would do and which found three more.
   than served.
   `M15.1` was the same mistake one layer down: a documented bound with no
   caller. This is a bound that was never written.
+  **The cap is a parameter rather than a second default**, so every one of the
+  eleven call sites had to state which stage it is in. That is the point: a
+  default is what let this sit unnoticed, and the compiler asking the question
+  once is worth more than a constant nobody reads. The upstream reads and the
+  authenticated relay loop keep `DEFAULT_MAX_FRAME`, deliberately: a client's
+  own `Bind` or `CopyData` can legitimately be large, and narrowing those is a
+  different question from this one.
+  32 KiB rather than Postgres's 10000, because a startup packet carrying a long
+  `options` string and a JWT with a full claim set both have to fit. The number
+  that matters is that it is not a gigabyte.
 - [ ] `M15.10` A count and the list it counts can disagree.
   `encode::row_description` writes `i16::try_from(columns.len())` saturated to
   `i16::MAX` and then writes every column. `encode::data_row` and

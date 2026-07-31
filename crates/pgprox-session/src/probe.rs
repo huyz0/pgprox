@@ -33,7 +33,7 @@ use pgprox_core::ids::{Lsn, ServerId};
 use pgprox_core::pool::PoolError;
 use pgprox_proto::backend::{self, BackendMessage};
 use pgprox_proto::encode_frontend;
-use pgprox_proto::frame::{Frame, Tag};
+use pgprox_proto::frame::{DEFAULT_MAX_FRAME, Frame, Tag};
 use pgprox_route::poller::{Probe, ReplicaProbe};
 
 use crate::connect::{PgConnector, Upstream, Upstreamed};
@@ -268,7 +268,7 @@ where
 
     loop {
         let tag = wire
-            .read_tagged(&mut body)
+            .read_tagged(&mut body, DEFAULT_MAX_FRAME)
             .await
             .map_err(|err| err.to_string())?;
 
@@ -342,7 +342,7 @@ where
 
     loop {
         let tag = wire
-            .read_tagged(&mut body)
+            .read_tagged(&mut body, DEFAULT_MAX_FRAME)
             .await
             .map_err(|err| err.to_string())?;
 

@@ -42,7 +42,7 @@ use pgprox_core::buf::{BufferSlab, PooledBuf};
 use pgprox_core::error::ClientError;
 use pgprox_core::ids::ConnId;
 use pgprox_proto::backend::TxStatus;
-use pgprox_proto::frame::{DEFAULT_MAX_FRAME, Decoded, Tag, decode, decode_untagged};
+use pgprox_proto::frame::{Decoded, Tag, decode, decode_untagged};
 use pgprox_proto::{encode, startup};
 use std::time::SystemTime;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -92,6 +92,22 @@ const FIRST_READ: usize = 512;
 
 /// Every read after that, into the buffer already held.
 const HELD_READ: usize = 16 * 1024;
+
+/// The largest message the proxy will read before a client has authenticated.
+///
+/// A client sends exactly two things before it has proved anything: a startup
+/// packet and a password. Neither is large, and both were being read against
+/// `DEFAULT_MAX_FRAME`, which is a gigabyte because it is sized for a `DataRow`
+/// carrying a `bytea`. Nothing about a handshake resembles that. An
+/// unauthenticated client could make a wire grow its buffer to whatever it was
+/// willing to send, on as many connections as it could open.
+///
+/// Postgres does not allow this either: `MAX_STARTUP_PACKET_LENGTH` is 10000
+/// bytes. This is larger, because a startup packet carrying a long `options`
+/// string and a JWT with a full claim set both have to fit and neither is
+/// something an operator should have to tune. The number that matters is that
+/// it is not a gigabyte.
+pub const MAX_HANDSHAKE_FRAME: usize = 32 * 1024;
 
 /// How long a wire waits for a buffer before it gives up on the connection.
 ///
@@ -303,9 +319,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     ///
     /// Fails on disconnect, on a socket error, or on a length the codec
     /// refuses.
-    pub async fn read_untagged(&mut self, body: &mut Vec<u8>) -> Result<(), ShellError> {
+    pub async fn read_untagged(
+        &mut self,
+        body: &mut Vec<u8>,
+        max_frame: usize,
+    ) -> Result<(), ShellError> {
         loop {
-            match decode_untagged(self.buffered(), DEFAULT_MAX_FRAME)? {
+            match decode_untagged(self.buffered(), max_frame)? {
                 Decoded::Frame(frame, consumed) => {
                     body.clear();
                     body.extend_from_slice(frame.body());
@@ -342,9 +362,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     /// # Errors
     ///
     /// As [`Wire::read_untagged`].
-    pub async fn read_tagged(&mut self, body: &mut Vec<u8>) -> Result<Tag, ShellError> {
+    pub async fn read_tagged(
+        &mut self,
+        body: &mut Vec<u8>,
+        max_frame: usize,
+    ) -> Result<Tag, ShellError> {
         loop {
-            match decode(self.buffered(), DEFAULT_MAX_FRAME)? {
+            match decode(self.buffered(), max_frame)? {
                 Decoded::Frame(frame, consumed) => {
                     let tag = frame.tag();
                     body.clear();
@@ -438,7 +462,7 @@ pub async fn negotiate<S: AsyncRead + AsyncWrite + Unpin>(
 ) -> Result<Handoff, ShellError> {
     let mut body = Vec::new();
     loop {
-        wire.read_untagged(&mut body).await?;
+        wire.read_untagged(&mut body, MAX_HANDSHAKE_FRAME).await?;
         let message = startup::decode(&body)?;
         let reply = handshake.on_startup(&message);
 
@@ -494,7 +518,7 @@ where
     R: CredentialResolver + ?Sized,
 {
     let mut body = Vec::new();
-    let tag = wire.read_tagged(&mut body).await?;
+    let tag = wire.read_tagged(&mut body, MAX_HANDSHAKE_FRAME).await?;
     if tag != Tag::PASSWORD {
         return Err(wire
             .refuse(ClientError::ProtocolViolation(
@@ -544,7 +568,7 @@ where
     let mut first = true;
 
     loop {
-        let tag = wire.read_tagged(&mut body).await?;
+        let tag = wire.read_tagged(&mut body, MAX_HANDSHAKE_FRAME).await?;
         if tag != Tag::PASSWORD {
             return Err(wire
                 .refuse(ClientError::ProtocolViolation("expected a SASL message"))
@@ -679,7 +703,9 @@ mod tests {
 
         peer.send(&untagged(b"hello")).await;
         let mut body = Vec::new();
-        wire.read_untagged(&mut body).await.unwrap();
+        wire.read_untagged(&mut body, MAX_HANDSHAKE_FRAME)
+            .await
+            .unwrap();
         assert_eq!(body, b"hello");
 
         assert!(!wire.is_buffered());
@@ -688,6 +714,53 @@ mod tests {
             0,
             "the read buffer was held after the frame was consumed"
         );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_handshake_message_is_refused_before_it_is_read() {
+        // The finding. A startup packet is the first thing a client sends and
+        // it was read against DEFAULT_MAX_FRAME, a gigabyte, because that is
+        // the cap for a DataRow carrying a bytea. Nothing about a handshake
+        // resembles one, and this runs before the client has proved anything.
+        //
+        // The refusal comes from the five-byte length prefix, so the bytes
+        // behind it are never read and never held. That is the property: a
+        // client cannot make the proxy allocate by announcing a large number.
+        let slab = test_slab();
+        let (server, client) = duplex(4096);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+
+        // A length prefix and nothing else. The body is never sent, and if the
+        // cap did not fire this would wait for it forever.
+        let declared = u32::try_from(MAX_HANDSHAKE_FRAME + 1).unwrap();
+        peer.send(&declared.to_be_bytes()).await;
+
+        let mut body = Vec::new();
+        let error = wire
+            .read_untagged(&mut body, MAX_HANDSHAKE_FRAME)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ShellError::Frame(pgprox_proto::frame::DecodeError::LengthTooLarge { .. })
+            ),
+            "an oversized startup packet was accepted: {error:?}"
+        );
+        assert!(body.is_empty());
+
+        // And a handshake message of an ordinary size is still read, so the cap
+        // refuses the attack rather than the protocol.
+        let (server, client) = duplex(64 * 1024);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+        let ordinary = vec![b'x'; 4096];
+        peer.send(&untagged(&ordinary)).await;
+        wire.read_untagged(&mut body, MAX_HANDSHAKE_FRAME)
+            .await
+            .unwrap();
+        assert_eq!(body.len(), ordinary.len());
     }
 
     #[tokio::test]
@@ -705,12 +778,16 @@ mod tests {
         peer.send(&two).await;
 
         let mut body = Vec::new();
-        wire.read_untagged(&mut body).await.unwrap();
+        wire.read_untagged(&mut body, MAX_HANDSHAKE_FRAME)
+            .await
+            .unwrap();
         assert_eq!(body, b"first");
         assert!(wire.is_buffered(), "the second message was dropped");
         assert_eq!(slab.outstanding(), 1, "the buffer was returned too early");
 
-        wire.read_untagged(&mut body).await.unwrap();
+        wire.read_untagged(&mut body, MAX_HANDSHAKE_FRAME)
+            .await
+            .unwrap();
         assert_eq!(body, b"second");
         assert_eq!(slab.outstanding(), 0);
     }
@@ -748,7 +825,10 @@ mod tests {
         peer.send(&untagged(b"hello")).await;
 
         let mut body = Vec::new();
-        let error = wire.read_untagged(&mut body).await.unwrap_err();
+        let error = wire
+            .read_untagged(&mut body, MAX_HANDSHAKE_FRAME)
+            .await
+            .unwrap_err();
         assert!(
             matches!(error, ShellError::Refused(ClientError::Internal(_))),
             "{error}"
@@ -774,9 +854,10 @@ mod tests {
         // The read is polled first and gets as far as an empty slab, so the
         // buffer comes back while it is waiting rather than before it asks.
         let mut body = Vec::new();
-        let (result, ()) = tokio::join!(wire.read_untagged(&mut body), async {
-            drop(held);
-        });
+        let (result, ()) =
+            tokio::join!(wire.read_untagged(&mut body, MAX_HANDSHAKE_FRAME), async {
+                drop(held);
+            });
 
         result.unwrap();
         assert_eq!(body, b"hello");
@@ -1296,7 +1377,10 @@ mod tests {
 
         let mut body = Vec::new();
         for sql in ["SELECT 1", "SELECT 22", "SELECT 333", "SELECT 4444"] {
-            let tag = wire.read_tagged(&mut body).await.unwrap();
+            let tag = wire
+                .read_tagged(&mut body, MAX_HANDSHAKE_FRAME)
+                .await
+                .unwrap();
             assert_eq!(tag, Tag::QUERY);
             assert_eq!(
                 String::from_utf8_lossy(&body).trim_end_matches('\0'),
@@ -1331,13 +1415,17 @@ mod tests {
 
         let mut body = Vec::new();
         for sql in ["SELECT 1", "SELECT 22"] {
-            wire.read_tagged(&mut body).await.unwrap();
+            wire.read_tagged(&mut body, MAX_HANDSHAKE_FRAME)
+                .await
+                .unwrap();
             assert_eq!(String::from_utf8_lossy(&body).trim_end_matches('\0'), sql);
         }
 
         let task = tokio::spawn(async move {
             let mut body = Vec::new();
-            wire.read_tagged(&mut body).await.unwrap();
+            wire.read_tagged(&mut body, MAX_HANDSHAKE_FRAME)
+                .await
+                .unwrap();
             body
         });
         client.send(tail).await;
@@ -1395,15 +1483,20 @@ mod tests {
         client.send(head).await;
 
         let mut body = Vec::new();
-        let cancelled =
-            tokio::time::timeout(Duration::from_millis(20), wire.read_untagged(&mut body)).await;
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(20),
+            wire.read_untagged(&mut body, MAX_HANDSHAKE_FRAME),
+        )
+        .await;
         assert!(
             cancelled.is_err(),
             "the read completed, so nothing was cancelled"
         );
 
         client.send(tail).await;
-        wire.read_untagged(&mut body).await.unwrap();
+        wire.read_untagged(&mut body, MAX_HANDSHAKE_FRAME)
+            .await
+            .unwrap();
         assert!(
             !body.is_empty(),
             "the bytes read before the cancellation were lost"

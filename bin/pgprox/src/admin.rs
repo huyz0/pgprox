@@ -152,7 +152,9 @@ where
 {
     let mut body = Vec::new();
     loop {
-        let tag = wire.read_tagged(&mut body).await?;
+        let tag = wire
+            .read_tagged(&mut body, pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .await?;
         if tag == Tag::TERMINATE {
             return Ok(());
         }

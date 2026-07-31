@@ -38,7 +38,7 @@ use pgprox_core::pool::PoolError;
 use pgprox_core::secret::SecretString;
 use pgprox_pool::live::Connector;
 use pgprox_proto::backend::{self, AuthRequest, BackendMessage};
-use pgprox_proto::frame::{Frame, Tag};
+use pgprox_proto::frame::{DEFAULT_MAX_FRAME, Frame, Tag};
 use pgprox_proto::{encode, encode_frontend};
 
 use crate::auth::SCRAM_SHA_256;
@@ -503,7 +503,7 @@ where
                     .await
                     .map_err(|err| refused(format!("sending to the server failed: {err}")))?;
                 let tag = wire
-                    .read_tagged(&mut body)
+                    .read_tagged(&mut body, DEFAULT_MAX_FRAME)
                     .await
                     .map_err(|err| refused(format!("reading from the server failed: {err}")))?;
                 need = handshake.on_frame(tag, &body);

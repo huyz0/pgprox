@@ -573,7 +573,7 @@ where
         // what a drain is for.
         let idle = live.upstream.is_none();
         let tag = tokio::select! {
-            result = wire.read_tagged(&mut body) => result?,
+            result = wire.read_tagged(&mut body, pgprox_proto::frame::DEFAULT_MAX_FRAME) => result?,
             () = context.draining.waited(), if idle => {
                 return Err(wire.refuse(ClientError::Draining).await);
             }
@@ -1782,7 +1782,10 @@ async fn resume(
 
         let mut body = Vec::new();
         loop {
-            let tag = upstream.wire.read_tagged(&mut body).await?;
+            let tag = upstream
+                .wire
+                .read_tagged(&mut body, pgprox_proto::frame::DEFAULT_MAX_FRAME)
+                .await?;
             if tag == pgprox_proto::frame::Tag::READY_FOR_QUERY {
                 break;
             }
@@ -1892,7 +1895,11 @@ where
         // and it is told rather than having its socket closed underneath it.
         // Passing the disconnect straight through made a database restart look
         // to every driver like a network fault against the proxy.
-        let tag = match upstream.wire.read_tagged(&mut body).await {
+        let tag = match upstream
+            .wire
+            .read_tagged(&mut body, pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .await
+        {
             Ok(tag) => tag,
             Err(ShellError::Disconnected | ShellError::Io(_)) => {
                 return Err(wire.refuse(ClientError::UpstreamClosed).await);
@@ -2003,7 +2010,9 @@ where
     use pgprox_proto::frame::Tag;
 
     loop {
-        let tag = wire.read_tagged(body).await?;
+        let tag = wire
+            .read_tagged(body, pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .await?;
         forward(&mut upstream.wire, tag, body);
         upstream.wire.flush().await?;
 
@@ -2103,7 +2112,9 @@ where
     // Read whatever the client opened with, so the error lands where a driver
     // expects one rather than in the middle of its startup.
     let mut body = Vec::new();
-    let _ = wire.read_untagged(&mut body).await;
+    let _ = wire
+        .read_untagged(&mut body, pgprox_session::shell::MAX_HANDSHAKE_FRAME)
+        .await;
 
     wire.queue(|out| {
         encode::error_response(
@@ -2193,7 +2204,9 @@ where
 {
     let mut wire = Wire::new(stream, slab);
     let mut body = Vec::new();
-    let _ = wire.read_untagged(&mut body).await;
+    let _ = wire
+        .read_untagged(&mut body, pgprox_session::shell::MAX_HANDSHAKE_FRAME)
+        .await;
 
     wire.queue(|out| encode::error_response(out, &ClientError::Draining));
     wire.flush().await
