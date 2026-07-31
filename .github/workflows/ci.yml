@@ -250,3 +250,8 @@ jobs:
       # M12's own subject: a gate that runs and cannot fail. It enforces now.
       - name: M11
         run: scripts/m11-complete.sh
+      # M12's gate runs tests/gates/negative.sh itself, so the step above it and
+      # this one overlap on purpose: the suite is the milestone's deliverable and
+      # a gate that only described it would be the defect M12 exists to remove.
+      - name: M12
+        run: scripts/m12-complete.sh

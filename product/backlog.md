@@ -3846,10 +3846,30 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   A harness reporting success for a failure it had measured correctly is
   `M11.7`'s bug wearing different clothes. The comment in the file says so, so
   the loop does not get rewritten that way.
-- [ ] `M12.8` Write `scripts/m12-complete.sh` before the milestone needs
+- [x] `M12.8` Write `scripts/m12-complete.sh` before the milestone needs
   closing, which `M10.17` and `M11.5` both establish as the order. It has to
   avoid being an instance of its own subject: no check in it may glob for a
   filename and report a conclusion.
+  Seven checks, and none of them looks for a file. The first runs
+  `tests/gates/negative.sh`, because that suite is the milestone's deliverable
+  and a gate that described it rather than ran it would be the exact defect.
+  Two run `check-commit-msg.sh` against a fake ID and a real one, so the check
+  is on behaviour rather than on the source. One resolves every task ID in
+  history against the backlog in a single pass. One plants the pipeline-subshell
+  shape in a temp directory and requires the lint to object. One reads `ci.yml`
+  for a discarded failure. The last asserts the four globs this milestone
+  removed have not regrown, which is the device `M11.3` used for its roadmap
+  sentence, and is the only one that is a pattern match rather than a run.
+  Two things went wrong writing it, both worth keeping.
+  Adding the gate made `check-drift.sh` fail, because a new `mN-complete.sh`
+  that is not named in `ci.yml` is a gate nobody runs. That rule was written in
+  `M10.1` and it fired correctly on the first new gate since.
+  And the `continue-on-error` check failed on `M12.9`'s own comment explaining
+  why the flag was removed. It matched the word instead of the construct, which
+  is this milestone's defect one layer up, in the gate written to detect it. It
+  strips comments now.
+  It is covered by its own `M12.7` floor without anything being added, because
+  that loop globs: fourteen gates now, up from thirteen.
 - [x] `M12.9` CI runs the `M11` gate with `continue-on-error: true`, so it
   cannot fail the build. That was right while the milestone was open, which is
   what the comment beside it says, and `M11` closed in `M11.11`.
