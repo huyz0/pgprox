@@ -135,9 +135,20 @@ pub fn replayed(session: &SessionMemory, connection: &mut ConnectionMemory) {
 /// The parameter half was already handled: `SessionParams::observe_statement`
 /// treats `DISCARD ALL` as `RESET ALL`. Only the statements were missed, which
 /// is what made this hard to see. Half the state was being tracked correctly.
+/// # The two maps rather than the two memory structs
+///
+/// `SessionMemory` and `ConnectionMemory` are how this module carries state
+/// around, and taking them was the obvious signature. It was also why this
+/// function sat uncalled for a milestone: the proxy holds a `SessionMemory` but
+/// keeps the connection's statements on `Upstreamed`, which is the thing the
+/// pool lends, so there was no call site where both structs were in scope at
+/// once. `M16.7`.
+///
+/// The maps are what it needs, and asking for them is what lets the caller
+/// exist.
 pub fn observe_statement(
-    session: &mut SessionMemory,
-    connection: &mut ConnectionMemory,
+    session: &mut SessionStatements,
+    connection: &mut ConnectionStatements,
     sql: &str,
 ) -> bool {
     if !deallocates_everything(sql) {
@@ -148,8 +159,8 @@ pub fn observe_statement(
     // names, and the client knows it ran a DISCARD ALL, so it will re-parse.
     // The connection map is what the server holds, and the server has just
     // dropped it.
-    session.statements.close_all();
-    connection.statements.forget_all();
+    session.close_all();
+    connection.forget_all();
     true
 }
 
@@ -450,8 +461,8 @@ mod tests {
         assert!(!connection.statements.is_empty());
 
         assert!(observe_statement(
-            &mut session,
-            &mut connection,
+            &mut session.statements,
+            &mut connection.statements,
             "DISCARD ALL"
         ));
 
@@ -476,7 +487,11 @@ mod tests {
 
         session.statements.parse("S_1", "SELECT $1");
         before_bind(&session, &mut connection, "S_1").unwrap();
-        observe_statement(&mut session, &mut connection, "DISCARD ALL");
+        observe_statement(
+            &mut session.statements,
+            &mut connection.statements,
+            "DISCARD ALL",
+        );
 
         session.statements.parse("S_1", "SELECT $1");
         let steps = before_bind(&session, &mut connection, "S_1").unwrap();
@@ -497,7 +512,7 @@ mod tests {
 
         for sql in ["SELECT 1", "DISCARD PLANS", "SET search_path = a"] {
             assert!(
-                !observe_statement(&mut session, &mut connection, sql),
+                !observe_statement(&mut session.statements, &mut connection.statements, sql),
                 "{sql:?} reported a deallocation"
             );
         }

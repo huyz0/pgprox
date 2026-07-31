@@ -5104,7 +5104,7 @@ Streaming removes both.
   claimed. `e2e.sh` reported 160.5 tps before and 174.8 after, which is worth
   almost nothing as a performance claim on one machine with pgbench's tiny rows,
   and is quoted only because it is the run that says nothing broke.
-- [ ] `M16.7` `M15.3`'s fix has no caller. `resume::observe_statement` clears
+- [x] `M16.7` `M15.3`'s fix has no caller. `resume::observe_statement` clears
   both statement maps when a client runs `DISCARD ALL`, it has tests, and
   nothing in the proxy calls it. The desync `M15.3` set out to close is still
   there.

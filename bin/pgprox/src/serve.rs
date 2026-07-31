@@ -661,7 +661,7 @@ where
             upstream,
             &mut live.pumping,
             &message,
-            &live.session,
+            &mut live.session,
             onward,
         );
         if !sent.await? {
@@ -1246,7 +1246,7 @@ where
             upstream,
             &mut live.pumping,
             &message,
-            &live.session,
+            &mut live.session,
             Frame::new(tag, &mapped),
         )
         .await?;
@@ -1465,12 +1465,32 @@ async fn send_upstream<S>(
     upstream: &mut Upstreamed<crate::dial::Stream>,
     pumping: &mut Pumping,
     message: &pgprox_proto::frontend::FrontendMessage<'_>,
-    session: &pgprox_session::resume::SessionMemory,
+    session: &mut pgprox_session::resume::SessionMemory,
     onward: Frame<'_>,
 ) -> Result<bool, ShellError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    // `DISCARD ALL` deallocates every prepared statement on the connection this
+    // is about to go to, so both maps have to hear about it. Here rather than
+    // beside the parameter half in `observe`, because this is the first point
+    // where the connection it will run on is known: `observe` sees the frame
+    // before a connection has been acquired.
+    //
+    // Before the statement is forwarded, not after. Over-clearing costs a
+    // re-prepare and under-clearing produces "prepared statement does not
+    // exist" on a connection the proxy thought was warm, so the safe direction
+    // is to forget early. `M15.3` argued that and `M16.7` connected it.
+    if let pgprox_proto::frontend::FrontendMessage::Query { sql }
+    | pgprox_proto::frontend::FrontendMessage::Parse { sql, .. } = message
+    {
+        pgprox_session::resume::observe_statement(
+            &mut session.statements,
+            &mut upstream.statements,
+            sql,
+        );
+    }
+
     // A `Parse` or a `Bind` names a statement the connection this session was
     // just lent may never have seen, or may already hold.
     match ready_statement(upstream, message, session) {
