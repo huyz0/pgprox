@@ -835,3 +835,32 @@ which is the first of the four shapes M14 catalogued, and which `M15.6` quoted
 while fixing a different instance of it. Knowing the failure mode, and having
 just written about it, did not stop me committing it. That is the argument for
 running the check rather than for knowing the rule.
+
+## M16: the streaming relay nothing streams through
+
+`M15` read `pgprox-proto` three times and did not ask the one question that
+turned out to matter most: who calls this.
+
+`FrameRelay` was written so that a large message is forwarded as it arrives
+rather than held. Its module header states the alternative it exists to prevent
+in as many words: a relay built on `decode` "must accumulate an entire body
+before forwarding a byte", and "a single large `DataRow` would then hold up to a
+gigabyte, and ADR 0008's whole premise is that an idle connection costs roughly
+200 bytes".
+
+The relay loop in `bin/pgprox/src/serve.rs` is built on `decode`. `FrameRelay`
+has no caller in the workspace outside its own module, its tests and its
+benches. The one other mention of it anywhere is a comment in `shell.rs`
+pointing at it for an unrelated reason.
+
+This is the same shape as `M15.1`, where `DEFAULT_MAX_INSPECT` documented a
+bound nothing read, and as `M15.3`, where two clearing functions existed with no
+caller outside their own tests. Three times in one review, the defect was not
+wrong code but correct code nothing reached. That is worth naming: this project
+tests what it writes and does not check what it wires.
+
+`M7` held 100k connections at 546 MB. That run used small rows, so it does not
+contradict any of this and does not answer it either.
+
+Completion condition: a measurement first, then the two directions, then the
+same 100k run with a result set large enough that the difference would show.

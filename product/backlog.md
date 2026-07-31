@@ -4999,3 +4999,41 @@ milestone said it would do and which found three more.
   declared count with no columns behind it is refused rather than reserved.
 - [x] `M15.8` Close M15. Filed before the commit that does it, and after the
   readings the milestone promised, which between them found five more.
+
+## M16: the streaming relay nothing streams through
+
+- [ ] `M16.1` Measure what the data path actually holds. `FrameRelay` exists to
+  read a five-byte header, ask `inspect_policy` how much of the body is needed,
+  and forward the rest as it arrives. Its module header says why: "`decode`
+  needs a whole message before it returns one, so a relay built on it must
+  accumulate an entire body before forwarding a byte. A single large `DataRow`
+  would then hold up to a gigabyte, and ADR 0008's whole premise is that an idle
+  connection costs roughly 200 bytes."
+  The relay loop in `bin/pgprox/src/serve.rs` is built on `decode`. Every server
+  frame goes through `read_tagged(&mut body, DEFAULT_MAX_FRAME)`, which waits
+  for the whole message and copies its body into a `Vec`, and `forward` then
+  copies it again into the write buffer. `FrameRelay` has no caller anywhere
+  outside its own module, its tests and its benches; the only other mention of
+  it in the workspace is a comment in `shell.rs` referring to it for a different
+  reason.
+  So the thing the crate says must not happen is what the proxy does, and the
+  code written to prevent it was never wired in.
+  Acceptance: a number, not a reading. A test or a scale run that drives one
+  large result through a real session and reports peak RSS per connection
+  against the same result driven through `FrameRelay`. `M7`'s 100k figure was
+  measured with small rows, so it does not answer this.
+  Filed before the fix, because the fix is a rewrite of the most
+  correctness-critical loop in the project and it should be justified by a
+  measurement rather than by a module header.
+- [ ] `M16.2` Stream the server-to-client direction. Blocked on `M16.1`'s
+  number, and scoped from it.
+  The pump does four things with each frame besides forwarding it: it decodes
+  for `relay.on_server`, it swallows the `ParseComplete` and `CloseComplete`
+  answering messages the proxy sent itself, it records answers for the query
+  cache, and it counts outstanding requests. `FrameRelay` gives the first
+  through `inspected()` and `Completed`, and the rest key off the tag, which
+  arrives with the header. Nothing here needs the whole body except the cache,
+  which already has a size bound of its own.
+- [ ] `M16.3` Stream the client-to-server direction. The same shape, and the one
+  that carries `CopyData` and `Bind` parameters, so it is the direction where a
+  client rather than a server chooses the size.
