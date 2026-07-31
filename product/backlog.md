@@ -4122,7 +4122,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Same limitation as `M13.2` and stated the same way: it reads the index, so it
   runs at pre-commit and CI cannot run it, having nothing staged. A PR-level
   equivalent would diff against the base branch. Not done, not pretended.
-- [ ] `M13.6` Whatever remains unenforceable gets said plainly in `AGENTS.md`.
+- [x] `M13.6` Whatever remains unenforceable gets said plainly in `AGENTS.md`.
   Rule 3, never claim a test passes without having run it, is the likely
   candidate: it is a rule about honesty in reporting and it may have no script.
   A rule that cannot be scripted should sit under a sentence that says so,
@@ -4130,6 +4130,28 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   intent, and this whole milestone exists because one sentence claimed seven.
   Acceptance: the sentence introducing the non-negotiables matches the audit,
   and `m13-complete.sh` checks the ones that are claimed to be enforced.
+  Done for the wording; the gate is `M13.7`.
+  The sentence said "Each is enforced by a script, not by good intentions" and
+  four of the seven had no script or had the wrong one credited. It now says six
+  of seven, names the script beside each rule, and marks rule 3 as the one that
+  cannot be enforced. It also records what the audit found, so the next reader
+  learns that the sentence was once wrong rather than trusting the new one on
+  the same faith.
+  Rule 3 was the candidate and it is the right one. Nothing can check a claim
+  against an intention: "never claim a test passes without having run it" is a
+  rule about what you say. It stays in the list, marked, because it is what the
+  other six rest on. A green gate reported by someone who did not run it is
+  worth less than no gate, which is a sentence this session has earned the right
+  to write: `M13.3`'s first lint reported the workspace clean while matching
+  nothing at all.
+  Rules 6 and 7 are marked partial rather than done, which is the same honesty
+  in smaller print. `check-core-contract.sh` holds two of `contracts.md`'s six
+  items, and `check-secrets.sh` holds the static half of rule 7 with the
+  end-to-end half filed as `M13.8` and not pretended to exist.
+  A drift rule keeps the credits honest: every `scripts/*.sh` AGENTS.md names
+  must exist and be executable. Thirteen named today. It cannot tell whether a
+  script checks the right thing, which is what went wrong with rule 5, but a
+  named script that is not there is the same failure with less ambiguity.
 - [ ] `M13.7` Write `scripts/m13-complete.sh`, before the milestone needs
   closing, as `M10.17`, `M11.5` and `M12.8` all establish.
   Under `M12.8`'s constraint as well: no check may match a filename or a word

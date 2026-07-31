@@ -538,6 +538,37 @@ case_core_contract() {
     bash "$repo/scripts/check-core-contract.sh"
 }
 
+# --- AGENTS.md names scripts that exist, M13.6 -------------------------------
+#
+# Rule 5 credited check-layering.sh, which enforces a different rule. A named
+# script that does not exist is the same failure with less ambiguity.
+case_named_scripts() {
+  echo
+  echo "  AGENTS.md script credits"
+
+  local dir="$WORK/agents"
+  rm -rf "$dir"; mkdir -p "$dir"
+
+  # check-drift.sh reads AGENTS.md from REPO_ROOT, so this case copies the tree
+  # rule into a bare root the way case_every_gate does, rather than editing the
+  # real AGENTS.md and hoping to put it back.
+  local root="$WORK/agentsroot"
+  rm -rf "$root"; mkdir -p "$root/scripts" "$root/.agents/skills"
+  cp scripts/*.sh "$root/scripts/"
+  printf 'Named: `scripts/does-not-exist.sh`\n' > "$root/AGENTS.md"
+  expect_fail "refuses a script AGENTS.md names and does not have" \
+    bash "$root/scripts/check-drift.sh"
+
+  printf 'Named: `scripts/check-drift.sh`\n' > "$root/AGENTS.md"
+  # Still fails on the other rules in that bare tree, so assert the specific
+  # message is gone rather than that the whole script passes.
+  if bash "$root/scripts/check-drift.sh" 2>&1 | grep -q 'does-not-exist'; then
+    fail "a script that exists is still reported missing"
+  else
+    ok "accepts a script AGENTS.md names and has"
+  fi
+}
+
 # -----------------------------------------------------------------------------
 
 echo "gates: proof that they can fail"
@@ -555,6 +586,7 @@ if [[ -z "$WANTED" || "$WANTED" == tests-kept ]]; then case_tests_kept; ran=1; f
 if [[ -z "$WANTED" || "$WANTED" == secrets ]]; then case_secrets; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == sans-io ]]; then case_sans_io; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == core-contract ]]; then case_core_contract; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == named-scripts ]]; then case_named_scripts; ran=1; fi
 
 if (( ! ran )); then
   fail "no such case: $WANTED"

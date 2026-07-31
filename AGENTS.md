@@ -39,14 +39,31 @@ something it calls a script in `scripts/`, never a tool-specific built-in.
 
 ## Non-negotiables
 
-These are the ones that cause the most damage when missed. Each is enforced by
-a script, not by good intentions.
+These are the ones that cause the most damage when missed. Six of the seven are
+enforced by a script and the script is named beside each. **Rule 3 is not, and
+cannot be**: no script reads whether you ran the thing you say you ran. It is
+here because it is the one that makes the other six trustworthy, and it is
+marked so that this list stops claiming an enforcement it does not have.
+
+That distinction was not free. `M13` audited this sentence when it read "Each is
+enforced by a script, not by good intentions", and found four of the seven with
+no script or with the wrong one credited.
 
 1. One task equals one commit equals one change that leaves the tree green.
-   Split anything that cannot meet that.
-2. Never lower a threshold or delete a test to make a check pass.
-3. Never claim a test passes without having run it.
+   Split anything that cannot meet that. `scripts/check-commit-msg.sh` requires
+   the subject to name a task the backlog actually lists; the pre-commit hooks
+   are what "green" means.
+2. Never lower a threshold or delete a test to make a check pass. Thresholds are
+   constants and `scripts/check-drift.sh` refuses to let one become settable;
+   `scripts/check-tests-kept.sh` names any test that disappears and requires a
+   `Removes-test:` line in the commit message.
+3. Never claim a test passes without having run it. **No script enforces this.**
+   It is a rule about what you say, and nothing can check a claim against an
+   intention. Every other rule here rests on it: a green gate reported by
+   someone who did not run it is worth less than no gate.
 4. Every crate holds 95% line coverage on its own, from tier 1 tests alone.
+   `scripts/check-coverage.sh`, against a constant that no environment can
+   move.
 5. Business logic is sans-I/O. If it needs a socket to test, it is in the wrong
    layer. Enforced by `scripts/check-sans-io.sh`: no library crate names a
    concrete socket type or reads the real clock outside the two places that
@@ -57,7 +74,11 @@ a script, not by good intentions.
    holds the two mechanical halves: every implementor is in the commit, and so
    is an ADR. Call sites and dependent specs stay with the skill and review. See
    [standards/contracts.md](standards/contracts.md).
-7. Credentials never reach a log. See [standards/security.md](standards/security.md).
+7. Credentials never reach a log. `scripts/check-secrets.sh` holds the static
+   half: `SecretString` cannot be printed, so the one route to a real value is
+   `expose()`, and no result of it may reach a formatting macro. The end-to-end
+   half, running the stack and grepping its own logs, is not built yet. See
+   [standards/security.md](standards/security.md).
 
 ## Checks
 

@@ -220,6 +220,26 @@ else
   fail "missing $CI_WORKFLOW"
 fi
 
+# --- AGENTS.md names scripts that exist ---------------------------------------
+#
+# The non-negotiables each credit a script now, which is only worth anything if
+# the script is there. `M13` found rule 5 crediting `check-layering.sh`, which
+# enforces a different rule, and rules 2, 3 and 7 crediting nothing at all while
+# the sentence above them said all seven were enforced. A named script that does
+# not exist is the same failure with less ambiguity. `M13.6`.
+missing_script=0
+while read -r script; do
+  [[ -n "$script" ]] || continue
+  if [[ ! -f "$script" ]]; then
+    fail "AGENTS.md names $script, which does not exist"
+    missing_script=1
+  elif [[ ! -x "$script" ]]; then
+    fail "AGENTS.md names $script, which is not executable"
+    missing_script=1
+  fi
+done < <(grep -oE 'scripts/[a-z0-9-]+\.sh' AGENTS.md | sort -u)
+(( missing_script == 0 )) && ok "every script AGENTS.md names exists and runs"
+
 # --- standards referenced by AGENTS.md actually exist ------------------------
 missing=0
 while read -r link; do
