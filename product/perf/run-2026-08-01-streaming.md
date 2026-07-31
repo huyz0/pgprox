@@ -47,3 +47,52 @@ roadmap as the completion condition rather than claimed here.
 Nor does this say the proxy is slow. It says it holds the whole of a large
 message, once per direction, per connection carrying one. A single client doing
 that is nothing; the design's premise is a hundred thousand of them.
+
+## After (`M16.3`)
+
+The pump now reads the header, and reads the body only when something needs it.
+For an uninspected tag on a session that is not recording for the cache, the
+body is moved from one socket to the other a chunk at a time.
+
+| | held for one 16 MiB `DataRow` |
+| --- | --- |
+| before, `Wire::read_tagged` | 16,777,216 bytes |
+| after, `read_header` then `take_body` | 512 bytes |
+
+512 is `FIRST_READ`, the stack chunk a quiet connection reads into, so the
+largest piece the pump ever holds is a read rather than a message. A busy
+connection reads into the 16 KiB borrowed buffer instead, which is the same
+answer with a different constant: bounded by what the slab lends, not by what
+the peer sent.
+
+There is a second copy that goes with it. `forward` re-encoded the tag, the
+length and the body into the write buffer, so a 16 MiB row was held twice. The
+streaming path queues the header from `body_len` and then moves the body
+through, flushing per chunk, so the write side does not become the buffer the
+read side stopped being.
+
+### What still buffers, on purpose
+
+Everything `inspect_policy` marks `Whole` or `Prefix`, which is every message
+the proxy acts on and none of the bulk, and every message on a session
+recording for the query cache, because `belongs_in_payload` includes `DataRow`
+and a cache entry is the bytes. The cache has its own bound.
+
+### The end-to-end numbers
+
+`scripts/e2e.sh`, three databases and three proxy nodes, before and after:
+
+| | tps |
+| --- | --- |
+| before | 160.5 |
+| after | 178.2 |
+
+Worth almost nothing as a performance claim. pgbench rows are tiny, so this
+change does not touch that path, and a single run of a compose stack on one
+machine is not a measurement of throughput. It is quoted because it is the run
+that says the rewrite did not break anything: pgbench clean with prepared
+statements, a drain with zero failed transactions, 25 write-then-read rounds
+with none served stale, and no token in any log.
+
+The claim this milestone makes is about memory, and it is 16,777,216 against
+512.

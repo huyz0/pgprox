@@ -123,3 +123,61 @@ async fn one_large_row_through_the_buffering_path_and_the_streaming_one() {
          streaming held {held_streaming}."
     );
 }
+
+#[tokio::test]
+async fn the_pair_the_pump_now_uses_holds_a_chunk_rather_than_a_row() {
+    // `M16.3`. The measurement above compares `read_tagged` against
+    // `FrameRelay`, which is the gap. This one measures what the pump actually
+    // does now: `read_header`, then `take_body` until the body is gone.
+    //
+    // `take_body` hands out a borrowed slice of the wire's own read buffer, so
+    // the number to watch is the largest slice it ever returns. That is bounded
+    // by the buffer the slab lends, not by the message.
+    let bytes = data_row(BODY);
+
+    let slab = BufferSlab::new(16 * 1024, 4);
+    let (server, mut client) = tokio::io::duplex(64 * 1024);
+    let mut wire = Wire::new(server, slab);
+
+    let writer = tokio::spawn(async move {
+        client
+            .write_all(&bytes)
+            .await
+            .expect("the fixture is written");
+        client
+    });
+
+    let header = wire
+        .read_header(DEFAULT_MAX_FRAME)
+        .await
+        .expect("the header decodes");
+    assert_eq!(header.tag, Tag::DATA_ROW);
+    assert_eq!(header.body_len, BODY);
+
+    let mut remaining = header.body_len;
+    let mut largest = 0;
+    let mut moved = 0;
+    while remaining > 0 {
+        let chunk = wire.take_body(remaining).await.expect("the body streams");
+        assert!(
+            !chunk.is_empty(),
+            "take_body returned nothing and would spin"
+        );
+        largest = largest.max(chunk.len());
+        moved += chunk.len();
+        remaining -= chunk.len();
+    }
+    drop(writer.await.expect("the writer finishes"));
+
+    assert_eq!(moved, BODY, "the body was not moved in full");
+    assert!(
+        largest < BODY / 100,
+        "the largest piece held was {largest} of a {BODY}-byte row, which is \
+         not streaming"
+    );
+
+    println!(
+        "M16.3: the same {BODY}-byte DataRow through the pump's pair. \
+         largest piece held {largest}."
+    );
+}

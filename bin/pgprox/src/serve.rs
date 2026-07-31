@@ -1895,17 +1895,78 @@ where
         // and it is told rather than having its socket closed underneath it.
         // Passing the disconnect straight through made a database restart look
         // to every driver like a network fault against the proxy.
-        let tag = match upstream
+        //
+        // The header first, and the body only if something here needs it.
+        // `M16.1` measured what reading it unconditionally costs: one 16 MiB
+        // DataRow was held in full, twice, once in `body` and once again in the
+        // write buffer that `forward` copies it into.
+        //
+        // Splitting the read is safe here and would not be in the relay loop
+        // above. `read_header` consumes five bytes before the body arrives, so
+        // a future dropped between the two leaves the wire inside a message.
+        // This loop has no `select!` and nothing races it; the relay loop does,
+        // which is why `read_tagged` stays atomic and is still what it calls.
+        let header = match upstream
             .wire
-            .read_tagged(&mut body, pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME)
             .await
         {
-            Ok(tag) => tag,
+            Ok(header) => header,
             Err(ShellError::Disconnected | ShellError::Io(_)) => {
                 return Err(wire.refuse(ClientError::UpstreamClosed).await);
             }
             Err(other) => return Err(other),
         };
+        let tag = header.tag;
+
+        // Everything this loop does with a frame besides forwarding it is
+        // decided by the tag, except recording for the cache, which is the one
+        // thing that wants the bytes. And an uninspected tag decodes to
+        // `Opaque` without reading a body at all, which
+        // `what_is_not_inspected_is_not_decoded_either` states as a property
+        // rather than leaving to two lists that happen to agree.
+        //
+        // So when both hold, the body is moved straight from one socket to the
+        // other and never lands anywhere. That is every DataRow and every
+        // CopyData of every uncached statement.
+        if pgprox_proto::frame::inspect_policy(pgprox_proto::frame::Direction::Backend, tag)
+            == pgprox_proto::frame::Inspect::None
+            && pumping.recording.is_none()
+        {
+            let server = relay.on_server(&BackendMessage::Opaque(tag));
+            if let Some(reason) = server.pinned {
+                context.sessions.set_pinned(conn, reason.as_str());
+            }
+
+            // The swallowed completions are uninspected too, and both have
+            // empty bodies, so this is the same check the buffering path makes
+            // and it still has to happen before anything is queued.
+            let swallowed = matches!(
+                tag,
+                pgprox_proto::frame::Tag::PARSE_COMPLETE | pgprox_proto::frame::Tag::CLOSE_COMPLETE
+            ) && pumping.swallow > 0;
+            if swallowed {
+                pumping.swallow -= 1;
+            } else {
+                forward_header(wire, tag, header.body_len);
+            }
+            stream_body(&mut upstream.wire, wire, header.body_len, swallowed).await?;
+
+            // `Opaque` is never a ReadyForQuery and never a copy response, so
+            // the two terminators below cannot apply to it. What remains is the
+            // Flush case, which is the same here as there.
+            pumping.owed.received(tag);
+            if flushing && pumping.owed.settled() {
+                wire.flush().await?;
+                return Ok(false);
+            }
+            continue;
+        }
+
+        upstream
+            .wire
+            .read_body_into(&mut body, header.body_len)
+            .await?;
         let frame = Frame::new(tag, &body);
         let decoded = backend::decode(&frame).unwrap_or(BackendMessage::Opaque(tag));
         let server = relay.on_server(&decoded);
@@ -2023,6 +2084,57 @@ where
 }
 
 /// Queues one frame verbatim.
+/// Queues a message header, with the body still to come.
+///
+/// The other half of [`forward`], for the path that never holds a body.
+fn forward_header<S>(wire: &mut Wire<S>, tag: pgprox_proto::frame::Tag, body_len: usize)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    wire.queue(|out| {
+        out.push(tag.get());
+        out.extend_from_slice(
+            &u32::try_from(body_len + 4)
+                .unwrap_or(u32::MAX)
+                .to_be_bytes(),
+        );
+    });
+}
+
+/// Moves `remaining` body bytes from one wire to the other without holding them.
+///
+/// Flushed per chunk rather than at the end, which is the point: queueing the
+/// whole body and flushing once would move the buffer from the read side to the
+/// write side rather than removing it.
+///
+/// `discard` drops the bytes instead of forwarding them, for a message the
+/// proxy asked for on the client's behalf and the client must not see. They
+/// still have to be read, or the next header would be taken from the middle of
+/// this body.
+async fn stream_body<A, B>(
+    from: &mut Wire<A>,
+    to: &mut Wire<B>,
+    mut remaining: usize,
+    discard: bool,
+) -> Result<(), ShellError>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    while remaining > 0 {
+        let chunk = from.take_body(remaining).await?;
+        let taken = chunk.len();
+        if !discard {
+            to.queue(|out| out.extend_from_slice(chunk));
+        }
+        remaining -= taken;
+        if !discard {
+            to.flush().await?;
+        }
+    }
+    Ok(())
+}
+
 fn forward<S>(wire: &mut Wire<S>, tag: pgprox_proto::frame::Tag, body: &[u8])
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -2226,6 +2338,93 @@ mod tests {
     }
     use super::*;
     use pgprox_proto::frame::Tag;
+
+    #[tokio::test]
+    async fn a_body_streams_across_without_being_held() {
+        // `M16.3`. The mechanism the pump now uses for every uninspected
+        // message: the header is queued from what the header said, and the body
+        // is moved a chunk at a time. Nothing here ever holds the message.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let body = vec![b'r'; 400 * 1024];
+        let slab = test_slab();
+
+        // The upstream side, holding a body the pump is about to move.
+        let (from_io, mut server) = tokio::io::duplex(64 * 1024);
+        let mut from = Wire::new(from_io, std::sync::Arc::clone(&slab));
+        // The client side, which reads what comes out.
+        let (to_io, mut client) = tokio::io::duplex(1024 * 1024);
+        let mut to = Wire::new(to_io, slab);
+
+        let sent = body.clone();
+        let writer = tokio::spawn(async move {
+            server.write_all(&sent).await.expect("the body is written");
+            server
+        });
+
+        forward_header(&mut to, Tag::DATA_ROW, body.len());
+        stream_body(&mut from, &mut to, body.len(), false)
+            .await
+            .expect("the body streams");
+        to.flush().await.expect("the last chunk goes out");
+        drop(writer.await.expect("the writer finishes"));
+
+        // What arrived is the message, byte for byte, with a length prefix that
+        // agrees with what follows it. A header written from `body_len` and a
+        // body streamed separately are two places the count could disagree.
+        let mut got = vec![0_u8; 5 + body.len()];
+        client
+            .read_exact(&mut got)
+            .await
+            .expect("the message arrives");
+        assert_eq!(got[0], Tag::DATA_ROW.get());
+        assert_eq!(
+            u32::from_be_bytes(got[1..5].try_into().expect("four bytes")),
+            u32::try_from(body.len() + 4).expect("the fixture fits"),
+        );
+        assert_eq!(&got[5..], &body[..], "the body did not arrive intact");
+    }
+
+    #[tokio::test]
+    async fn a_discarded_body_is_still_read_off_the_wire() {
+        // The swallow case. A `ParseComplete` the proxy asked for has an empty
+        // body, but the rule has to hold for any length: bytes the client must
+        // not see still have to leave the socket, or the next header would be
+        // taken from the middle of this body.
+        use tokio::io::AsyncWriteExt;
+
+        let slab = test_slab();
+        let (from_io, mut server) = tokio::io::duplex(64 * 1024);
+        let mut from = Wire::new(from_io, std::sync::Arc::clone(&slab));
+        let (to_io, _client) = tokio::io::duplex(64 * 1024);
+        let mut to = Wire::new(to_io, slab);
+
+        // A body to discard, then a header that must be readable afterwards.
+        let writer = tokio::spawn(async move {
+            server.write_all(&vec![b'x'; 8192]).await.expect("body");
+            let mut next = vec![Tag::READY_FOR_QUERY.get()];
+            next.extend_from_slice(&5_u32.to_be_bytes());
+            next.push(b'I');
+            server.write_all(&next).await.expect("the next header");
+            server
+        });
+
+        stream_body(&mut from, &mut to, 8192, true)
+            .await
+            .expect("the body is consumed");
+        drop(writer.await.expect("the writer finishes"));
+
+        let header = from
+            .read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .await
+            .expect("the next header decodes");
+        assert_eq!(
+            header.tag,
+            Tag::READY_FOR_QUERY,
+            "the discarded body left the wire mid-message"
+        );
+        assert_eq!(header.body_len, 1);
+    }
 
     #[test]
     fn a_gate_admits_up_to_its_ceiling() {

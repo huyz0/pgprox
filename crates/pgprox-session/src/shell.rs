@@ -42,7 +42,9 @@ use pgprox_core::buf::{BufferSlab, PooledBuf};
 use pgprox_core::error::ClientError;
 use pgprox_core::ids::ConnId;
 use pgprox_proto::backend::TxStatus;
-use pgprox_proto::frame::{Decoded, Tag, decode, decode_untagged};
+use pgprox_proto::frame::{
+    Decoded, FrameHeader, LEN_PREFIX, Tag, decode, decode_header, decode_untagged,
+};
 use pgprox_proto::{encode, startup};
 use std::time::SystemTime;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -335,6 +337,87 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
                 Decoded::Incomplete { .. } => self.fill().await?,
             }
         }
+    }
+
+    /// Reads one tagged message header, consuming the five bytes it occupies.
+    ///
+    /// The other half of [`Wire::read_tagged`], split out so a caller that does
+    /// not need the body never holds one. See [`Wire::take_body`].
+    ///
+    /// # Not cancellation-safe, unlike `read_tagged`
+    ///
+    /// This consumes the header before the body has arrived, so a future
+    /// dropped between the two leaves the wire inside a message with no way to
+    /// say so. `read_tagged` is atomic and stays that way for exactly this
+    /// reason: it is called from a `select!` in the relay loop, where the
+    /// drain branch can drop it mid-frame.
+    ///
+    /// Use this only where the read is not a cancellation point. The
+    /// server-to-client pump is one such place: it awaits in a plain loop with
+    /// nothing racing it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Wire::read_tagged`].
+    pub async fn read_header(&mut self, max_frame: usize) -> Result<FrameHeader, ShellError> {
+        loop {
+            if let Some(header) = decode_header(self.buffered(), max_frame)? {
+                self.consume(1 + LEN_PREFIX);
+                return Ok(header);
+            }
+            self.fill().await?;
+        }
+    }
+
+    /// Reads exactly `n` body bytes into `body`, replacing what was there.
+    ///
+    /// The buffering half of the pair, for a message something has to read. See
+    /// [`Wire::read_header`] for why the split is safe only where the read is
+    /// not a cancellation point.
+    ///
+    /// # Errors
+    ///
+    /// Fails on disconnect or on a socket error.
+    pub async fn read_body_into(&mut self, body: &mut Vec<u8>, n: usize) -> Result<(), ShellError> {
+        body.clear();
+        while body.len() < n {
+            let want = n - body.len();
+            let chunk = self.take_body(want).await?;
+            body.extend_from_slice(chunk);
+        }
+        self.reclaim();
+        Ok(())
+    }
+
+    /// Hands out up to `n` body bytes that have already arrived.
+    ///
+    /// Returns what is there rather than waiting for all of it, which is what
+    /// makes it a stream: the caller forwards each piece and comes back for
+    /// the next, so neither side ever holds the whole message. Never returns an
+    /// empty slice without having read: it fills first when nothing is
+    /// buffered, so a caller counting down cannot spin.
+    ///
+    /// The slice borrows the wire's own read buffer, so it is valid until the
+    /// next call. Nothing is copied.
+    ///
+    /// # Errors
+    ///
+    /// Fails on disconnect or on a socket error.
+    pub async fn take_body(&mut self, n: usize) -> Result<&[u8], ShellError> {
+        // Before the slice is taken, not after: `reclaim` can drop the buffer
+        // the slice would point into.
+        self.reclaim();
+        if !self.is_buffered() {
+            self.fill().await?;
+        }
+
+        let at = self.read_at;
+        let take = n.min(self.buffered().len());
+        self.read_at = at + take;
+        Ok(self
+            .read
+            .as_ref()
+            .map_or(&[][..], |buf| &buf.as_slice()[at..at + take]))
     }
 
     /// Drops the bytes a frame used, and the buffer with them if it is now

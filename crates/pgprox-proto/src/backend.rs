@@ -414,6 +414,7 @@ pub fn key_from_conn_id(id: ConnId) -> (i32, i32) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::frame::{Direction, Inspect, inspect_policy};
     use pgprox_core::ids::NodeId;
 
     fn frame(tag: Tag, body: &[u8]) -> Frame<'_> {
@@ -867,6 +868,32 @@ mod tests {
             decoded,
             BackendMessage::NegotiateProtocolVersion { minor: 0 }
         );
+    }
+
+    #[test]
+    fn what_is_not_inspected_is_not_decoded_either() {
+        // The invariant a streaming relay rests on, and it is worth stating
+        // because two lists in two modules happen to agree and nothing said so.
+        //
+        // `inspect_policy` decides how much of a body must be buffered; this
+        // function decides how much is read. If a tag were `Inspect::None` here
+        // and still decoded to something carrying a field, a caller that
+        // streamed the body past without keeping it would hand `decode` an
+        // empty slice and get a wrong answer or an error instead of `Opaque`.
+        //
+        // `M16.3` uses exactly that implication: an uninspected tag decodes
+        // from no body at all.
+        for code in 0_u8..=255 {
+            let tag = Tag(code);
+            if inspect_policy(Direction::Backend, tag) != Inspect::None {
+                continue;
+            }
+            assert_eq!(
+                decode(&frame(tag, b"")).unwrap(),
+                BackendMessage::Opaque(tag),
+                "{tag} is not inspected but decodes to something that read a body"
+            );
+        }
     }
 
     #[test]

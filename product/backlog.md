@@ -5052,7 +5052,7 @@ There is a second copy nobody has counted: `forward` re-encodes the tag, the
 length and the body into the write buffer, so a 16 MiB row is held twice.
 Streaming removes both.
 
-- [ ] `M16.2` A wire can move a body without holding it. The enabling piece,
+- [x] `M16.2` A wire can move a body without holding it. The enabling piece,
   and the reason it is its own task is that `Wire` owns both a borrowed read
   buffer and a borrowed write buffer, and streaming crosses two wires: read from
   the upstream one, write to the client one, in bounded chunks, flushing as it
@@ -5061,7 +5061,7 @@ Streaming removes both.
   separately. A streaming primitive with no caller is the defect this milestone
   exists to fix, and adding a second one would be a joke at the project's
   expense.
-- [ ] `M16.3` Stream the server-to-client pump. `M16.2`'s caller, in full:
+- [x] `M16.3` Stream the server-to-client pump. `M16.2`'s caller, in full:
   header, then `inspect_policy`, then either the current path or the streamed
   one, with COPY, the swallow counter, the cache recording and the `Flush`
   terminator all still behaving. The tests that cover those today are the
