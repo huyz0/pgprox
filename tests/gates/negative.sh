@@ -478,6 +478,66 @@ case_sans_io() {
     env PGPROX_SANS_IO_ROOTS="$dir/ok.rs" scripts/check-sans-io.sh
 }
 
+# --- check-core-contract.sh, M13.5 -------------------------------------------
+#
+# Non-negotiable 6. m0-complete.sh was credited with this and checks something
+# static and adjacent: that every public trait has a fake. A trait can gain a
+# method, leave four implementors broken and no ADR written, and pass that.
+core_contract_repo() {
+  local repo="$WORK/contract"
+  rm -rf "$repo"; mkdir -p "$repo/scripts" "$repo/crates/pgprox-core/src" \
+                           "$repo/crates/other/src" "$repo/product/decisions"
+  cp scripts/*.sh "$repo/scripts/"
+  git -C "$repo" init -q .
+  git -C "$repo" config user.email t@example.com
+  git -C "$repo" config user.name t
+  printf 'pub trait QueryCache: Send {\n    async fn get(&self, k: &K) -> Option<V>;\n}\n' \
+    > "$repo/crates/pgprox-core/src/cache.rs"
+  printf 'impl QueryCache for Store {\n    async fn get(&self, k: &K) -> Option<V> { None }\n}\n' \
+    > "$repo/crates/other/src/store.rs"
+  printf '# 0001. A decision\n\nStatus: accepted\n' > "$repo/product/decisions/0001-a.md"
+  git -C "$repo" add -A
+  git -C "$repo" commit -qm "M0.1: seed"
+  printf '%s' "$repo"
+}
+
+case_core_contract() {
+  echo
+  echo "  check-core-contract.sh"
+
+  local repo; repo="$(core_contract_repo)"
+  local grown='pub trait QueryCache: Send {\n    async fn get(&self, k: &K) -> Option<V>;\n    async fn peek(&self, k: &K) -> bool;\n}\n'
+
+  # A method added, nothing else in the commit.
+  printf "$grown" > "$repo/crates/pgprox-core/src/cache.rs"
+  git -C "$repo" add crates/pgprox-core/src/cache.rs
+  expect_fail "refuses a trait change with its implementor left behind" \
+    bash "$repo/scripts/check-core-contract.sh"
+
+  # The implementor staged, still no ADR.
+  printf 'impl QueryCache for Store {\n    async fn get(&self, k: &K) -> Option<V> { None }\n    async fn peek(&self, k: &K) -> bool { false }\n}\n' \
+    > "$repo/crates/other/src/store.rs"
+  git -C "$repo" add crates/other/src/store.rs
+  expect_fail "refuses a trait change with no ADR" \
+    bash "$repo/scripts/check-core-contract.sh"
+
+  # Whole.
+  printf '# 0002. Why peek\n\nStatus: accepted\n' > "$repo/product/decisions/0002-peek.md"
+  git -C "$repo" add product/decisions/0002-peek.md
+  expect_pass "accepts a trait change that arrives whole" \
+    bash "$repo/scripts/check-core-contract.sh"
+
+  # A doc comment is not a contract change. If this demanded an ADR the rule
+  # would be noise and would be switched off, which is the failure mode that
+  # matters more than any missed violation.
+  repo="$(core_contract_repo)"
+  printf 'pub trait QueryCache: Send {\n    /// A new doc comment.\n    async fn get(&self, k: &K) -> Option<V>;\n}\n' \
+    > "$repo/crates/pgprox-core/src/cache.rs"
+  git -C "$repo" add crates/pgprox-core/src/cache.rs
+  expect_pass "ignores a doc comment edit on a trait" \
+    bash "$repo/scripts/check-core-contract.sh"
+}
+
 # -----------------------------------------------------------------------------
 
 echo "gates: proof that they can fail"
@@ -494,6 +554,7 @@ if [[ -z "$WANTED" || "$WANTED" == thresholds ]]; then case_thresholds; ran=1; f
 if [[ -z "$WANTED" || "$WANTED" == tests-kept ]]; then case_tests_kept; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == secrets ]]; then case_secrets; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == sans-io ]]; then case_sans_io; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == core-contract ]]; then case_core_contract; ran=1; fi
 
 if (( ! ran )); then
   fail "no such case: $WANTED"

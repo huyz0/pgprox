@@ -53,7 +53,9 @@ a script, not by good intentions.
    exist to hold them. See
    [standards/async-concurrency.md](standards/async-concurrency.md).
 6. Changing a `pgprox-core` trait means updating the trait, every fake, every
-   implementation, and the ADR in one commit. See
+   implementation, and the ADR in one commit. `scripts/check-core-contract.sh`
+   holds the two mechanical halves: every implementor is in the commit, and so
+   is an ADR. Call sites and dependent specs stay with the skill and review. See
    [standards/contracts.md](standards/contracts.md).
 7. Credentials never reach a log. See [standards/security.md](standards/security.md).
 

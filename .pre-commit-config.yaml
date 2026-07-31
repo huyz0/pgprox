@@ -122,6 +122,15 @@ repos:
 
       # Non-negotiable 7. Runs on every commit rather than per-crate, because
       # the whole workspace scan takes well under a second. M13.3.
+      # Non-negotiable 6. Reads the index, so it only runs where a commit is
+      # being made: CI has no staged change to inspect. M13.5.
+      - id: core-contract
+        name: a core trait change arrives whole
+        entry: scripts/check-core-contract.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+
       # Non-negotiable 5. Whole-workspace scan, well under a second. M13.4.
       - id: sans-io
         name: business logic is sans-I/O

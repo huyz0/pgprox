@@ -4093,12 +4093,35 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   program closed the quote, and bash then tried to parse awk. It is the third
   time in two milestones that the shape of a check broke on quoting or on a
   regex dialect rather than on its logic.
-- [ ] `M13.5` Rule 6 says a core trait change updates the trait, every fake,
+- [x] `M13.5` Rule 6 says a core trait change updates the trait, every fake,
   every implementation and the ADR in one commit. `m0-complete.sh` checks that
   every public trait has a fake, which is the static half and not the rule.
   Acceptance: a check on the commit, since that is what the rule is about. It
   has the same shape as `M12.1`'s: read the staged change, and if it touches a
   trait in `pgprox-core`, require the fakes and an ADR alongside it.
+  Done, with two of `standards/contracts.md`'s six items enforced and the other
+  four left to the skill and to review, deliberately and with the reason stated
+  in the script. Every implementation and the ADR are mechanical; call sites and
+  dependent specs are not distinguishable from ordinary edits, and a rule that
+  guessed at them would be routed around.
+  The fakes item needed no check: every fake in this repo lives in the same file
+  as its trait, so the trait file being staged already implies it.
+  **It fires on the trait's method set, not on the file.** Editing a doc comment
+  on a trait is not a contract change and must not demand an ADR. A rule that
+  demanded one would be noise and would be switched off, which is a worse
+  outcome than any single missed violation, so the check compares the `fn`
+  signatures inside each `pub trait` block between `HEAD` and the index and
+  stays quiet unless that set actually differs. Tested.
+  Implementor matching is `impl Trait for` or `impl pgprox_core::module::Trait
+  for` and no other path, because `impl pb::credential_resolver_server::
+  CredentialResolver for MockSidecar` is the generated gRPC service, a different
+  trait sharing a name. Matching it would have demanded an unrelated file in
+  every `CredentialResolver` change.
+  Four cases: a trait grown with its implementor left behind, the implementor
+  staged but no ADR, the whole change, and a doc comment alone.
+  Same limitation as `M13.2` and stated the same way: it reads the index, so it
+  runs at pre-commit and CI cannot run it, having nothing staged. A PR-level
+  equivalent would diff against the base branch. Not done, not pretended.
 - [ ] `M13.6` Whatever remains unenforceable gets said plainly in `AGENTS.md`.
   Rule 3, never claim a test passes without having run it, is the likely
   candidate: it is a rule about honesty in reporting and it may have no script.
