@@ -413,6 +413,199 @@ fn is_dollar_tag(inner: &str) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    /// `M14.31`. Eighteen mutants survived in this file, the largest group in
+    /// `M14`, and it is the crate's most load-bearing pure function: the
+    /// statement classifier and the pin detector are both lexical scans over
+    /// it. A quote boundary in the wrong place is a write classified as a read,
+    /// or a `LISTEN` inside a string literal pinning a session that never asked
+    /// for one.
+    #[test]
+    fn a_word_ends_where_punctuation_starts_and_not_before() {
+        // `word_end` has a `!byte.is_ascii()` whose `!` could be deleted, which
+        // inverts which half of the input goes down the byte path.
+        assert_eq!(word_end("select"), 6);
+        assert_eq!(word_end("select 1"), 6);
+        assert_eq!(word_end("a_b9,c"), 4);
+        assert_eq!(word_end("(x)"), 0, "punctuation is not a word");
+
+        // Non-ASCII is a word character, so an accented identifier is one word
+        // and a multi-byte character is not punctuation.
+        assert_eq!(word_end("naïve"), "naïve".len());
+        assert_eq!(word_end("naïve+1"), "naïve".len());
+        assert_eq!(word_end("日本語 x"), "日本語".len());
+    }
+
+    #[test]
+    fn leading_space_is_trimmed_whether_it_is_ascii_or_not() {
+        // `trim_leading_space` matches on `byte.is_ascii()` and both `true` and
+        // `false` survived as guards, because no test used a non-ASCII space.
+        assert_eq!(trim_leading_space("   select"), "select");
+        assert_eq!(trim_leading_space("\t\n select"), "select");
+        assert_eq!(trim_leading_space("select"), "select");
+        assert_eq!(trim_leading_space(""), "");
+
+        // A non-breaking space is whitespace to Unicode and not to `is_ascii`,
+        // so this is the case that separates the two arms.
+        assert_eq!(trim_leading_space("\u{a0}select"), "select");
+        assert_eq!(trim_leading_space("\u{3000}select"), "select");
+
+        // A non-ASCII character that is *not* whitespace must survive.
+        assert_eq!(trim_leading_space(" naïve"), "naïve");
+    }
+
+    #[test]
+    fn only_the_four_single_letter_introducers_introduce_a_string() {
+        // `is_string_introducer` could return `true` for everything, and its
+        // `&&` could become `||`, which would make every one-character word a
+        // string introducer or every `e`-like word one regardless of length.
+        for yes in ["e", "E", "b", "B", "x", "X", "u", "U"] {
+            assert!(is_string_introducer(yes), "{yes} should introduce a string");
+        }
+        for no in ["", "a", "z", "1", "ee", "ex", "select", "exists", "union"] {
+            assert!(
+                !is_string_introducer(no),
+                "{no} should not introduce a string"
+            );
+        }
+    }
+
+    #[test]
+    fn a_block_comment_nests_and_ends_where_it_closes() {
+        // Postgres nests these, unlike C. `<` becoming `<=` runs the scan one
+        // byte past the end.
+        assert_eq!(block_comment_end("/* x */rest"), 7);
+        assert_eq!(block_comment_end("/* /* x */ y */rest"), 15, "nesting");
+        assert_eq!(
+            block_comment_end("/* unterminated"),
+            15,
+            "an unterminated comment consumes the rest, as the server does"
+        );
+        assert_eq!(block_comment_end("/**/"), 4);
+    }
+
+    #[test]
+    fn a_single_quoted_string_ends_at_its_closing_quote() {
+        // Three mutants here: the doubled-quote guard forced to `false`, and
+        // the two `+=` steps. Getting this wrong exposes the rest of the
+        // statement as SQL, which is the whole reason the lexer consumes
+        // strings rather than skipping to the next quote.
+        assert_eq!(single_quoted_end("'abc'rest", false), 5);
+        assert_eq!(single_quoted_end("''rest", false), 2, "the empty string");
+
+        // A doubled quote is an escaped quote, not a terminator.
+        assert_eq!(single_quoted_end("'a''b'rest", false), 6);
+
+        // With backslash escapes on, a backslash-quote is not a terminator.
+        assert_eq!(single_quoted_end(r"'a\'b'rest", true), 6);
+        // And with them off, it is.
+        assert_eq!(single_quoted_end(r"'a\'b'rest", false), 4);
+
+        assert_eq!(
+            single_quoted_end("'unterminated", false),
+            13,
+            "an unterminated string consumes the rest"
+        );
+    }
+
+    #[test]
+    fn a_quoted_identifier_ends_at_its_closing_quote() {
+        // The same three shapes as the single-quoted case, plus a `+` that
+        // could become `-` in the doubled-quote lookahead.
+        assert_eq!(double_quoted_end(r#""abc"rest"#), 5);
+        assert_eq!(double_quoted_end(r#"""rest"#), 2);
+        assert_eq!(
+            double_quoted_end(r#""a""b"rest"#),
+            6,
+            "a doubled quote escapes"
+        );
+        assert_eq!(double_quoted_end(r#""unterminated"#), 13);
+    }
+
+    #[test]
+    fn a_dollar_tag_follows_the_identifier_rules_and_a_placeholder_does_not() {
+        // Four mutants sat here, on the two `!` and the `&&`/`||` between the
+        // first-character rule and the rest-of-the-tag rule. `$1` being read as
+        // a tag rather than a placeholder would swallow the rest of a statement
+        // as a string.
+        assert!(is_dollar_tag(""), "$$ is a valid empty tag");
+        assert!(is_dollar_tag("tag"));
+        assert!(is_dollar_tag("_tag"));
+        assert!(is_dollar_tag("t4g"));
+        assert!(is_dollar_tag("naïve"), "non-ASCII is allowed in a tag");
+        assert!(is_dollar_tag("_"));
+
+        // A leading digit is a placeholder, which is the case the `!` protects.
+        assert!(!is_dollar_tag("1"), "$1 is a placeholder");
+        assert!(!is_dollar_tag("12"));
+        assert!(!is_dollar_tag("1tag"));
+
+        // Punctuation anywhere disqualifies it.
+        assert!(!is_dollar_tag("a-b"));
+        assert!(!is_dollar_tag("a b"));
+        assert!(!is_dollar_tag("a.b"));
+    }
+
+    #[test]
+    fn a_doubled_quote_advances_by_two_from_wherever_it_is() {
+        // `i += 2` could become `i *= 2`, which agrees with addition only when
+        // `i` happens to be 2. The first version of these tests put the doubled
+        // quote at exactly that offset, so both survived. The escape has to sit
+        // somewhere else for the two to differ.
+        assert_eq!(single_quoted_end("'ab''c'rest", false), 7);
+        assert_eq!(single_quoted_end("'abcd''e'rest", false), 9);
+        assert_eq!(double_quoted_end(r#""ab""c"rest"#), 7);
+        assert_eq!(double_quoted_end(r#""abcd""e"rest"#), 9);
+    }
+
+    #[test]
+    fn an_underscore_is_allowed_after_the_first_character_of_a_tag() {
+        // `is_dollar_tag`'s trailing rule is
+        //   c.is_alphanumeric() || c == '_' || !c.is_ascii()
+        // and the second `||` becoming `&&` makes the underscore clause
+        // unsatisfiable, since no character is both `_` and non-ASCII. The
+        // earlier test only ever put an underscore first, where a different
+        // clause handles it.
+        assert!(is_dollar_tag("a_b"));
+        assert!(is_dollar_tag("tag_1"));
+        assert!(is_dollar_tag("a__b"));
+    }
+
+    #[test]
+    fn a_u_introducer_needs_its_ampersand_and_a_string_without_one_still_closes() {
+        // `word.eq_ignore_ascii_case("u") && self.rest.starts_with("&'")`
+        // becoming `||` makes any `u` word skip a byte, so `u'abc'` loses its
+        // opening quote and the string is never consumed: the rest of the
+        // statement is then read as SQL, which is exactly what consuming
+        // strings in the lexer exists to prevent.
+        let quoted: Vec<Token<'_>> = Lexer::new("u'abc' , 1").collect();
+        assert_eq!(quoted.first(), Some(&Token::Quoted));
+
+        // The real `U&'...'` form still works.
+        let escaped: Vec<Token<'_>> = Lexer::new("u&'abc' , 1").collect();
+        assert_eq!(escaped.first(), Some(&Token::Quoted));
+
+        // And a word that is not `u` followed by `&'` is not an introducer.
+        let other: Vec<Token<'_>> = Lexer::new("e&'abc'").collect();
+        assert_eq!(other.first(), Some(&Token::Word("e")));
+    }
+
+    #[test]
+    fn trivia_is_skipped_in_any_order_and_any_amount() {
+        // `skip_trivia`'s `+` could become `*` in the line-comment end, and the
+        // lexer's own `&&` could become `||`. Both need trivia that repeats and
+        // mixes kinds to tell apart.
+        let mut lexer = Lexer::new("  -- one\n /* two */ \n--three\n  select 1");
+        assert_eq!(lexer.next(), Some(Token::Word("select")));
+
+        // A line comment with no trailing newline ends the input.
+        let mut only_comment = Lexer::new("-- nothing after this");
+        assert_eq!(only_comment.next(), None);
+
+        // A block comment at the very end, likewise.
+        let mut trailing = Lexer::new("select /* end");
+        assert_eq!(trailing.next(), Some(Token::Word("select")));
+        assert_eq!(trailing.next(), None);
+    }
 
     fn words(sql: &str) -> Vec<String> {
         Lexer::new(sql)

@@ -4473,10 +4473,63 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   rendering, so `LivePool` would have printed as nothing in every diagnostic
   that ever formatted it. The test asserts the rendering changes with the
   contents, not just that it contains the right words.
-- [ ] `M14.3` Mutation testing for `pgprox-core`, 536 mutants. Every contract
+- [~] `M14.3` Mutation testing for `pgprox-core`, 536 mutants. Every contract
   and every fake. `mutants.sh` opens by arguing that M9 hid three defects behind
   a fake that answered something Postgres refuses, which makes the fakes the
   most valuable thing in this milestone to point a mutant at.
+  The run found **537 mutants and 58 survivors**, far more than the other two
+  crates combined, across eight files. Split by file, since the files are the
+  causes here: a lexer, a hash, a set of trait defaults and a set of fakes are
+  four different kinds of gap.
+  | group | file | count |
+  | --- | --- | --- |
+  | 31 | `sql.rs` | 18 |
+  | 32 | `cluster.rs` | 10 |
+  | 33 | `admin.rs`, `cache.rs` | 7 |
+  | 34 | `config.rs`, `ids.rs`, `buf.rs`, `error.rs` | 10 |
+- [x] `M14.31` The SQL lexer, 18 survivors and the largest group in the
+  milestone. `trim_leading_space`, `is_string_introducer`, `word_end`,
+  `block_comment_end`, `single_quoted_end`, `double_quoted_end` and
+  `is_dollar_tag`, which between them decide where a statement's first word
+  ends and what counts as a string.
+  This is the crate's most load-bearing pure function: the statement classifier
+  and the pin detector are both lexical scans over it, so getting a quote or a
+  dollar tag wrong is a write classified as a read, or a `LISTEN` inside a
+  string literal that pins a session that never asked.
+  Ten tests. Fifteen killed, three accepted as equivalent with arguments.
+  **The instructive failure is one of my own tests.** The first round put the
+  doubled quote in `'a''b'` at exactly offset 2, which is the single value where
+  `i += 2` and `i *= 2` agree, so both mutants survived a test that looked
+  thorough. Moving the escape to any other offset kills both. A test that
+  exercises a line is not a test that constrains it.
+  Two more needed a case nobody had written: an underscore *after* the first
+  character of a dollar tag, since the earlier test only ever put one first
+  where a different clause handles it; and `u'abc'` without the ampersand, where
+  turning `&&` into `||` makes any `u` word skip a byte and the string is never
+  consumed, so the rest of the statement is read as SQL.
+  Three are equivalent and each argument names the loop that absorbs it: the
+  line-comment `+ 1` that the next `trim_leading_space` would have done anyway,
+  the `is_ascii` guard that only chooses which of two identical answers to
+  compute, and the `< len` bound that slices with a range rather than an index.
+  The `true` form of that guard is *not* equivalent and is killed by a
+  non-breaking space, which is why the entry says so.
+- [ ] `M14.32` `cluster.rs`, 10 survivors, including three in `stable_hash` and
+  `MembershipView::is_home_for` to `false`.
+  `stable_hash` is rendezvous hashing. Its own comment says `DefaultHasher` was
+  rejected because it is not stable across Rust releases, since two nodes on
+  different compilers would disagree about which node owns a tenant. Three
+  mutants of the mixing function survived, so nothing pins the value it produces
+  and the property that comment is about is unchecked.
+- [ ] `M14.33` `admin.rs` and `cache.rs`, 7 survivors in trait defaults and in
+  the fakes themselves, including `FakeObservatory::stats`, `FakeQueryCache::
+  is_empty` and `Observatory::config_is_current`.
+  These are what `mutants.sh`'s own header is about: a fake that answers
+  something the real thing would not is how `M9` hid three defects.
+- [ ] `M14.34` `config.rs`, `ids.rs`, `buf.rs` and `error.rs`, 10 survivors.
+  `ConfigSource::is_healthy` survived being replaced by both `true` and `false`,
+  which means nothing calls it through the trait at all. `ConnId::counter` and
+  the `Lsn` parser are identity handling, and `ClientError::client_message`
+  being replaceable by a literal means no test reads what a client is told.
 - [ ] `M14.4` The remaining seven crates, or a written decision about which stay
   out and why. `pgprox-testkit` at 296 lines and `pgprox-tls` at 968 are small;
   `pgprox-admin`, `pgprox-auth`, `pgprox-config` and `pgprox-observe` are not.
