@@ -89,10 +89,34 @@ else
 fi
 
 # --- measured -----------------------------------------------------------------
-if compgen -G 'product/perf/run-*cache*.md' >/dev/null; then
-  ok "a run is recorded ($(compgen -G 'product/perf/run-*cache*.md' | wc -l) file(s))"
+#
+# This used to glob `product/perf/run-*cache*.md` and report the match count,
+# which is a check that a filename exists reporting a conclusion about whether
+# the cache helps. `M12.3`.
+#
+# What M9 actually claims is a number with a sign, and the roadmap states it in
+# the milestone's own row. So take the figure from the roadmap and require a
+# recorded run to contain it. That ties the claim to its evidence in the
+# direction that matters: re-measure the cache and this fails until the roadmap
+# is updated, and edit the roadmap's number and this fails until a run says so.
+PERF_DIR="${PGPROX_PERF_DIR:-product/perf}"
+ROADMAP="${PGPROX_ROADMAP:-product/roadmap.md}"
+
+claim="$(grep -m1 '^| M9 ' "$ROADMAP" 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)?%' | head -1 || true)"
+
+if [[ -z "$claim" ]]; then
+  fail "the roadmap's M9 row states no figure for the cache, so there is nothing to hold it to"
 else
-  fail "no recorded run: whether the cache helps is an opinion"
+  backing=""
+  for run in "$PERF_DIR"/run-*cache*.md; do
+    [[ -f "$run" ]] || continue
+    if grep -qF -- "$claim" "$run"; then backing="$(basename "$run")"; break; fi
+  done
+  if [[ -n "$backing" ]]; then
+    ok "the roadmap's $claim is backed by a recorded run ($backing)"
+  else
+    fail "the roadmap says the cache costs $claim and no run in $PERF_DIR records it: the number is an opinion"
+  fi
 fi
 
 # --- the usual gates ----------------------------------------------------------

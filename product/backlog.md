@@ -3695,13 +3695,31 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   connection count into a silent abort, since the `[[ ]] &&` was the writing
   group's last command and returned 1. The suite stopped after one case and
   reported nothing wrong about the rest.
-- [ ] `M12.3` `m9-complete.sh` globs `product/perf/run-*cache*.md` and reports a
+- [x] `M12.3` `m9-complete.sh` globs `product/perf/run-*cache*.md` and reports a
   recorded run. Three files match. The same shape as `M12.2` and it needs the
   same treatment, with the difference that M9's claim is a number with a sign:
   the cache costs 7.8% of the median and, by `M11.1`, raises fleet throughput
   4.11%. A check that reads the file can check the numbers are still there.
   Acceptance: the recorded figure is read rather than the filename matched, and
   a negative test proves the check fails without it.
+  Done, and the check is stronger than the acceptance asked for. Rather than
+  hard-coding 7.8%, it reads the figure out of the roadmap's own `M9` row and
+  requires a recorded cache run to contain it. The tie then holds in both
+  directions: re-measure the cache and the gate fails until the roadmap is
+  updated, edit the roadmap's number and it fails until a run supports it.
+  Neither can drift from the other quietly, which is the failure `M9` and
+  `M11.1` between them already demonstrated is possible.
+  Reports "the roadmap's 7.8% is backed by a recorded run
+  (run-2026-07-30-cached-workload.md)" where it used to report a file count.
+  Four negative cases: a cache run that does not record the figure, which is the
+  regression; a roadmap figure the runs no longer support; a roadmap row that
+  states no figure at all; and the tie intact.
+  One cost worth naming before `M12.7` runs into it. The suite now takes 37
+  seconds, nearly all of it `m9-complete.sh` invoking `check-crate.sh` and so
+  `cargo fmt` and `clippy`, four times over. Extending this to twelve gates by
+  running each gate whole, several times each, will not stay in that budget.
+  `M12.7` has to either run each gate once per broken artefact with the
+  expensive checks skipped, or accept a tier-3 runtime and say so.
 - [ ] `M12.4` `m11-complete.sh` globs `product/perf/*admission*.md`. One file
   matches and the check reports what a full fleet tells displaced clients, which
   is a claim about `53300` that the filename cannot carry.

@@ -129,6 +129,42 @@ case_m7_scale() {
     env PGPROX_PERF_DIR="$dir" scripts/m7-complete.sh
 }
 
+# --- m9-complete.sh, the cache figure, M12.3 ---------------------------------
+#
+# M9's claim is a number with a sign, so the check ties the roadmap's figure to
+# a run that records it. These cases break that tie in each direction.
+case_m9_cache() {
+  echo
+  echo "  m9-complete.sh, the cache figure"
+
+  local dir="$WORK/perf9" road="$WORK/roadmap.md"
+  rm -rf "$dir"; mkdir -p "$dir"
+  printf '| M9 | Query cache | complete; it costs 7.8%% of the median |\n' > "$road"
+
+  # A run document exists and matches the glob, and does not contain the number
+  # the roadmap claims. This is the regression: the old check counted the file.
+  printf '# The cache run\n\nIt was faster, roughly.\n' > "$dir/run-2026-01-01-cache.md"
+  expect_fail "refuses a cache run that does not record the claimed figure" \
+    env PGPROX_PERF_DIR="$dir" PGPROX_ROADMAP="$road" scripts/m9-complete.sh
+
+  # The other direction: the run says 9.9%, the roadmap says 7.8%. A number
+  # that drifted from its evidence.
+  printf '# The cache run\n\nThe cache costs 9.9%% of the median.\n' > "$dir/run-2026-01-01-cache.md"
+  expect_fail "refuses a roadmap figure its runs no longer support" \
+    env PGPROX_PERF_DIR="$dir" PGPROX_ROADMAP="$road" scripts/m9-complete.sh
+
+  # A roadmap row with no figure at all: nothing to hold the milestone to.
+  printf '| M9 | Query cache | complete; the cache is good |\n' > "$road"
+  expect_fail "refuses a roadmap row that states no figure" \
+    env PGPROX_PERF_DIR="$dir" PGPROX_ROADMAP="$road" scripts/m9-complete.sh
+
+  # And the tie intact.
+  printf '| M9 | Query cache | complete; it costs 7.8%% of the median |\n' > "$road"
+  printf '# The cache run\n\nThe cache costs 7.8%% of the median.\n' > "$dir/run-2026-01-01-cache.md"
+  expect_pass "accepts a figure a run records" \
+    env PGPROX_PERF_DIR="$dir" PGPROX_ROADMAP="$road" scripts/m9-complete.sh
+}
+
 # -----------------------------------------------------------------------------
 
 echo "gates: proof that they can fail"
@@ -136,6 +172,7 @@ echo "gates: proof that they can fail"
 ran=0
 if [[ -z "$WANTED" || "$WANTED" == commit-msg ]]; then case_commit_msg; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m7-scale ]]; then case_m7_scale; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == m9-cache ]]; then case_m9_cache; ran=1; fi
 
 if (( ! ran )); then
   fail "no such case: $WANTED"
