@@ -2070,20 +2070,39 @@ where
 {
     use pgprox_proto::frame::Tag;
 
+    // `body` is still taken so the caller keeps owning the buffer, and it is
+    // still used: everything that ends a copy is small and read whole. What
+    // does not land in it is the copy data itself, which is the whole traffic
+    // of a `COPY ... FROM STDIN` and the one message here a client chooses the
+    // size of. `M16.3` did the other direction; this is the same split, on the
+    // side where the sender is the untrusted one.
+    //
+    // Safe for the same reason it is safe there. Nothing races this loop: the
+    // module comment above says why the direction is one-way, so there is no
+    // cancellation point between the header and its body.
     loop {
-        let tag = wire
-            .read_tagged(body, pgprox_proto::frame::DEFAULT_MAX_FRAME)
+        let header = wire
+            .read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME)
             .await?;
+        let tag = header.tag;
+
+        if tag == Tag::COPY_DATA {
+            forward_header(&mut upstream.wire, tag, header.body_len);
+            stream_body(wire, &mut upstream.wire, header.body_len, false).await?;
+            upstream.wire.flush().await?;
+            continue;
+        }
+
+        // `CopyDone`, `CopyFail`, `Terminate`, or a stray `Query`. All of them
+        // end the copy, and the caller's loop needs the frame, so this is the
+        // path that reads one.
+        wire.read_body_into(body, header.body_len).await?;
         forward(&mut upstream.wire, tag, body);
         upstream.wire.flush().await?;
-
-        if tag != Tag::COPY_DATA {
-            return Ok(());
-        }
+        return Ok(());
     }
 }
 
-/// Queues one frame verbatim.
 /// Queues a message header, with the body still to come.
 ///
 /// The other half of [`forward`], for the path that never holds a body.
@@ -2135,6 +2154,7 @@ where
     Ok(())
 }
 
+/// Queues one frame verbatim.
 fn forward<S>(wire: &mut Wire<S>, tag: pgprox_proto::frame::Tag, body: &[u8])
 where
     S: AsyncRead + AsyncWrite + Unpin,

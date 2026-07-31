@@ -5066,10 +5066,32 @@ Streaming removes both.
   one, with COPY, the swallow counter, the cache recording and the `Flush`
   terminator all still behaving. The tests that cover those today are the
   acceptance criteria; none of them may be relaxed.
-- [ ] `M16.4` Stream the client-to-server direction. The same shape, and the one
-  where a client rather than a server chooses the size: `CopyData` and `Bind`
-  parameters both arrive here, and the client-side cap is the 1 GiB relay cap
-  because `M15.9` deliberately left the authenticated path alone.
+- [x] `M16.4` Stream the client-to-server direction, in the COPY loop.
+  The same shape, on the side where the sender is the untrusted one.
+  `copying` read every client frame whole, and a `COPY ... FROM STDIN` is
+  nothing but those frames. It now reads the header and streams a `CopyData`
+  body straight upstream; everything that ends a copy is small and is still
+  read whole, because the caller's loop needs the frame.
+  Safe without a cancellation-point argument beyond the one already in the
+  function's own header: nothing races this loop, which is why it is one-way.
+  Covered end to end rather than by a new fixture. `pgbench --initialize`
+  loads 100,000 rows with `COPY pgbench_accounts FROM STDIN` through the proxy,
+  and `scripts/e2e.sh` runs it. The mechanism has its own unit tests from
+  `M16.2`.
+- [ ] `M16.6` Stream the prefix-inspected client messages. What `M16.4` leaves:
+  the main relay loop still reads a whole `Bind`, and `inspect_policy` says only
+  its first 4 KiB matters, so a client binding a 100 MB parameter has 100 MB
+  held for a name at the front. Same for `Query` and `Parse` past 64 KiB.
+  Harder than the two directions above and deliberately separate. The read sits
+  inside a `select!`, so the header and the body must not straddle it, and
+  statement rewriting changes the length of the prefix it just inspected, so
+  the forwarded header cannot be copied from the one that arrived.
+  `read_header` is itself cancellation-safe, since it consumes only after the
+  five bytes decode and its only await is the fill before that. So the shape is
+  available: read the header inside the `select!`, inspect and rewrite the
+  prefix outside it, stream the tail. Filed rather than attempted, because it
+  is the one remaining case where getting it wrong desynchronises a session
+  rather than costing memory.
 - [ ] `M16.5` Re-measure. `M16.1`'s test drives `Wire::read_tagged` directly; it
   will still report what that call holds. The number that closes this milestone
   is the same 16 MiB row through the real pump, and the honest version of it
