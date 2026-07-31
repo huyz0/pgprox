@@ -712,6 +712,142 @@ mod tests {
         }
     }
 
+    /// `M14.13`. Three mutants survived in this file, each on a different
+    /// safety decision, and none of the 156 tests noticed.
+    #[test]
+    fn a_second_heartbeat_is_not_discarded_as_stale() {
+        // `self_version += 1` could become `*=`. The counter starts at 0, so
+        // multiplying leaves it 0 for the life of the process, and
+        // `DigestStore::merge` treats an equal version as stale. The node's
+        // first heartbeat would land and every later one would be dropped, so
+        // its own store would describe it as it was at startup forever: the
+        // wrong mode through a drain, and a stale connection count in every
+        // cluster-wide total, which are sums over that store.
+        let now = Instant::now();
+        let mut c = NodeCoordinator::new(node(1), config_for(1), now);
+
+        c.heartbeat(now);
+        assert_eq!(
+            c.digests().get(node(1)).map(|d| d.mode),
+            Some(NodeMode::Active)
+        );
+
+        c.set_mode(NodeMode::Draining);
+        c.heartbeat(now);
+        assert_eq!(
+            c.digests().get(node(1)).map(|d| d.mode),
+            Some(NodeMode::Draining),
+            "a second heartbeat was rejected as stale, so the node still looks active while draining"
+        );
+
+        // And the count keeps rising rather than stopping at one increment.
+        c.report(99, Vec::new());
+        c.heartbeat(now);
+        assert_eq!(c.digests().get(node(1)).map(|d| d.client_conns), Some(99));
+    }
+
+    #[test]
+    fn a_bare_majority_has_quorum_and_an_exact_half_does_not() {
+        // `alive * 2 > fleet` could become `>=`, which is the difference
+        // between a majority and a tie. In a fleet of two, one live node would
+        // believe it had quorum, and both halves of a partition would grant
+        // against the same cap. This is the boundary the ledger had in
+        // `M14.11`, in the one place where getting it wrong is split brain.
+        let start = Instant::now();
+        let config = config_for(2);
+        let mut alone = NodeCoordinator::new(node(1), config, start);
+        alone.set_cap(server(), CAP);
+
+        // Heartbeat for long enough that the takeover wait cannot be the
+        // reason for a refusal, keeping only itself alive.
+        let mut now = start;
+        for _ in 0..12 {
+            alone.heartbeat(now);
+            alone.observe(now);
+            now += Duration::from_secs(1);
+        }
+        now += config.effective_lease().takeover_wait;
+        alone.heartbeat(now);
+        alone.observe(now);
+
+        assert_eq!(
+            alone.request(&server(), node(1), 1, now).unwrap_err(),
+            QuotaError::NoLeader,
+            "one of two is exactly half, and it granted as though that were a majority"
+        );
+
+        // The second node appears. Gossip every round rather than jumping, or
+        // it goes suspect between rounds and the fleet is back to one alive.
+        for round in 1..=12 {
+            alone.gossip(digest_for(2, 100 + round, NodeMode::Active), now);
+            alone.heartbeat(now);
+            alone.observe(now);
+            now += Duration::from_secs(1);
+        }
+        assert!(
+            alone.request(&server(), node(1), 1, now).is_ok(),
+            "two of two alive is a majority and granting did not resume"
+        );
+    }
+
+    #[test]
+    fn a_home_the_view_still_lists_but_whose_digest_says_draining_reads_as_draining() {
+        // `home_draining` could return `false` unconditionally and nothing
+        // noticed. Finding out why took longer than writing the test, and the
+        // answer is the useful part.
+        //
+        // `MembershipView::home_node` hashes over `active()`, which excludes
+        // draining nodes, so a drain rehomes its tenants the moment it is
+        // announced. On that reading the home can never be draining and this
+        // function is dead code.
+        //
+        // It is not, because `gossip` updates liveness from a digest that the
+        // store may reject: `heard` takes the incoming mode unconditionally and
+        // `merge` returns `Stale` for an older version. So an out-of-order
+        // message that says Active can put a node back into `active()` while
+        // the store still holds its newer Draining digest, and that is exactly
+        // the disagreement this guard is for. `M14.16` files whether `gossip`
+        // should take the mode from a digest it is about to reject.
+        let now = Instant::now();
+        let mut c = NodeCoordinator::new(node(1), config_for(3), now);
+        c.heartbeat(now);
+        c.gossip(digest_for(2, 10, NodeMode::Active), now);
+        c.gossip(digest_for(3, 10, NodeMode::Active), now);
+
+        let view = c.membership(now);
+        let tenant = (0..1_000)
+            .map(|i| TenantId::new(format!("tenant-{i}")))
+            .find(|t| view.home_node(t) == Some(node(2)))
+            .unwrap();
+        assert!(
+            !c.home_draining(&tenant, now),
+            "an active home read as draining"
+        );
+
+        // Node 2 announces a drain. Its tenants rehome at once, so the home is
+        // no longer node 2 and the answer is still false, correctly.
+        c.gossip(digest_for(2, 11, NodeMode::Draining), now);
+        assert_ne!(c.membership(now).home_node(&tenant), Some(node(2)));
+
+        // Now the stale Active message arrives. Liveness takes its word, the
+        // store keeps the Draining digest, and node 2 is back in the ring while
+        // its own latest digest says it is going away.
+        assert_eq!(
+            c.gossip(digest_for(2, 5, NodeMode::Active), now),
+            MergeOutcome::Stale
+        );
+        assert_eq!(c.membership(now).home_node(&tenant), Some(node(2)));
+        assert_eq!(
+            c.digests().get(node(2)).map(|d| d.mode),
+            Some(NodeMode::Draining)
+        );
+
+        assert!(
+            c.home_draining(&tenant, now),
+            "the view homes this tenant on a node whose digest says draining, and it read as available"
+        );
+    }
+
     #[test]
     fn guaranteed_plus_leased_never_exceeds_the_cap() {
         // The milestone. Randomized schedules over sustained partitions, leader

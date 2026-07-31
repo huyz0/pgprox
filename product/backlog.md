@@ -4302,10 +4302,35 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   adding to it. That is a documented property of `grant` and it took a failing
   test to remember it. The fix is to have another node hold the leasable half
   through `serve_request`.
-- [ ] `M14.13` `coordinator.rs`: `heartbeat`'s `+=` to `*=`, `has_quorum`'s `>`
+- [x] `M14.13` `coordinator.rs`: `heartbeat`'s `+=` to `*=`, `has_quorum`'s `>`
   to `>=`, and `home_draining` to `false`.
   `has_quorum` decides whether this node may act as leader at all, and its
   boundary is the same shape `M14.11` found in the ledger.
+  Three tests. `coordinator.rs` now has 55 mutants, 44 caught and 11 unviable,
+  none missed.
+  `heartbeat`'s `self_version += 1` becoming `*=` is worse than it looks,
+  because the counter starts at 0: multiplying leaves it 0 forever, and
+  `DigestStore::merge` treats an equal version as stale. The node's first
+  heartbeat would land and every later one would be dropped, so its own store
+  would describe it as it was at startup for the life of the process, through a
+  drain and through every change in its connection count. Every cluster-wide
+  total is a sum over that store.
+  `has_quorum`'s `alive * 2 > fleet` becoming `>=` is the difference between a
+  majority and a tie. In a fleet of two, one live node would believe it had
+  quorum, and both halves of a partition would grant against the same cap.
+  **`home_draining` took longer to understand than to test, and the
+  understanding is the finding.** `home_node` hashes over `active()`, which
+  excludes draining nodes, so a drain rehomes its tenants the moment it is
+  announced and the home can never be draining. On that reading the function is
+  dead code and the mutant is equivalent.
+  It is not, because `gossip` updates liveness from a digest the store may
+  reject. An out-of-order Active message can put a node back into `active()`
+  while the store holds its newer Draining digest, and that disagreement is
+  exactly what the guard is for. The test constructs it and asserts the
+  `MergeOutcome::Stale` on the way, so it documents the mechanism rather than
+  just exercising it.
+  Whether `gossip` should behave that way is a separate question and a design
+  decision rather than a test, filed as `M14.16`.
 - [ ] `M14.14` `digest.rs`: `is_empty` to `true`, and the `NodeMode::Active` and
   `NodeMode::Draining` arms deleted from `view_hash`. A view hash that ignores
   whether a node is draining is a view hash that says two different clusters are
@@ -4363,3 +4388,32 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   mutation runs that own the machine for a long stretch and this needed none.
 - [ ] `M14.6` Write `scripts/m14-complete.sh`, before the milestone needs
   closing. Under `M12.8`'s constraint: run things, do not match filenames.
+- [ ] `M14.16` `gossip` takes a node's mode from a digest it then rejects as
+  stale. Found by `M14.13`, while working out why `home_draining` could return
+  `false` unconditionally with nothing noticing.
+  ```rust
+  pub fn gossip(&mut self, incoming: VersionedDigest, now: Instant) -> MergeOutcome {
+      self.liveness.heard(incoming.digest.node, incoming.digest.mode, now);
+      self.digests.merge(incoming)   // may return Stale and keep the newer digest
+  }
+  ```
+  `heard` is unconditional and `merge` is not, so an out-of-order message can
+  put a node back into `active()` as Active while the store holds its newer
+  Draining digest. The two then disagree about the same node's mode.
+  That disagreement is the only thing that makes `home_draining` reachable, and
+  therefore the only thing that makes `shed`'s `HomeDraining` guard reachable,
+  because `home_node` hashes over `active()` and excludes draining nodes: a
+  drain normally rehomes its tenants before anything can shed toward them.
+  The question is which of the two is right, and it is a design decision rather
+  than a test. Hearing *from* a node is evidence it is alive whatever version it
+  sent, so passing the message to `heard` is defensible. Taking the *mode* from
+  a digest being discarded as stale is harder to defend: it lets an old message
+  undo a drain announcement in the view while the store still knows better.
+  Acceptance: a decision, recorded, and whichever way it goes the consequence is
+  followed through. If the mode should come only from an accepted digest, then
+  `home_draining` becomes unreachable and the `HomeDraining` guard and its
+  `ShedReason` have to go with it, or be documented as defence in depth that
+  cannot fire. If the current behaviour is right, say why in `gossip` so the
+  next reader does not file this again.
+  Not urgent: no test failed and no run misbehaved. It is a latent
+  inconsistency, found by asking why a mutant survived.
