@@ -3936,3 +3936,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   was duplicated work rather than the only coverage of them, and because the
   drift check refuses to let the variable appear in `ci.yml` or the pre-commit
   config at all.
+- [x] `M12.12` Close M12. Filed before the commit that does it, which is the
+  order `M11.11` got wrong and `M12.1` now enforces.
+  The status table and the section header say so, and the section says what the
+  milestone found rather than that it ran.

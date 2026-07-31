@@ -28,6 +28,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M9 | Query cache (post-MVP) | complete; it costs 7.8% of the median on the reference workload, which is the opposite of what `M9.10` measured and is a fact about `M7.58` |
 | M10 | The claims nothing enforces | complete; the three claims now fail when they stop holding, and the cache turns out to change sign with load rather than with workload |
 | M11 | The gaps the completed milestones name | complete; two of its four measurable questions corrected the claim that raised them, and pinning costs 0.650 upstream connections per pinned session with no threshold |
+| M12 | The gates that count files | complete; five gate checks now read what a file says instead of matching its name, and every gate is proven able to fail |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -539,7 +540,7 @@ What the four found, none of which was the expected answer:
 Two of the four corrected a claim rather than confirming one, and in both cases
 reading the code beat running the experiment.
 
-## M12: the gates that count files
+## M12: the gates that count files (complete)
 
 Eleven milestones are gated by a script, and the scripts are why this repo
 trusts its own history. `M11` then spent its whole length finding that recorded
@@ -588,3 +589,25 @@ So the milestone has two halves. Replace the file-counting checks with checks
 that read what the file says. Then prove the gates can fail at all, by feeding
 each one a broken artefact and asserting a non-zero exit, because the only way
 that near miss became visible was checking the exit code instead of the output.
+
+**What it found.** Five checks rewritten, and four of the rewrites caught
+something on their first reading rather than merely tightening a rule:
+
+- `M12.1`'s hook found that `M11.11` was the third commit to reference a task
+  that did not exist, not the first. `M1F.0` and `M-1.18` were the others, found
+  by running the tightened hook over all 321 commits. `M12.10` filed both.
+- `M12.2` corrected the plan that filed it. `M12.0` said five of sixteen run
+  documents were scale runs, counted by eye; three declare themselves so.
+- `M12.4` found a wrong claim in prose written one task earlier. `M11.11`
+  summarised `M11.6` as measuring that displaced clients get `53300`, and the
+  run's own headline is that they get served and neither refusal code reaches
+  them.
+- `M12.8`'s own `continue-on-error` check failed on the comment explaining why
+  that flag had been removed, matching the word rather than the construct. The
+  milestone's defect appeared inside the gate written to detect it.
+
+`tests/gates/negative.sh` is the deliverable: 38 cases, each breaking an
+artefact and asserting a non-zero exit, including a floor that runs all fourteen
+gates against a tree holding none of their artefacts. It asserts exit codes and
+never output, because the bug that motivated it printed the right message in red
+and returned 0.
