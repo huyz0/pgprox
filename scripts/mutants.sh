@@ -36,7 +36,7 @@ cd "$REPO_ROOT"
 # machine", and `M13.4` proved every crate under `crates/` is sans-I/O, so the
 # criterion selects all of them and this array selects a few. `M14.4` settles
 # which stay out and writes down why.
-CRATES=(pgprox-proto pgprox-route pgprox-cache pgprox-session pgprox-cluster)
+CRATES=(pgprox-proto pgprox-route pgprox-cache pgprox-session pgprox-cluster pgprox-pool)
 if (( $# > 0 )); then
   CRATES=("$@")
 fi

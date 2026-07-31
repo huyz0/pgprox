@@ -4405,7 +4405,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   so it states the rule rather than blessing the current output. The drop-rate
   test stayed anyway: it covers the second `dropped += 1`, which nothing asked
   about either.
-- [~] `M14.2` Mutation testing for `pgprox-pool`, 273 mutants. The pool state
+- [x] `M14.2` Mutation testing for `pgprox-pool`, 273 mutants. The pool state
   machine, whose refusal and pinning behaviour `M11` spent four tasks measuring
   from the outside without ever asking whether its tests would notice a change.
   The run found **274 mutants and 9 survivors**, in two groups by cause.
@@ -4413,6 +4413,10 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   | --- | --- | --- | --- |
   | 21 | `params.rs`, `pin.rs` | 4 | pure parsers, character rules nothing pinned |
   | 22 | `statements.rs`, `live.rs` | 5 | counters and accessors nobody asserted |
+  Closed by the full-crate run: **274 mutants, 0 surviving**, nothing added to
+  the baseline. Nine survivors, nine killed, eight tests.
+  `pgprox-pool` is in `mutants.sh`'s crate list now, so it cannot drop out of
+  coverage the way it was never in it.
 - [x] `M14.21` The parsers: `quote`'s two `||` alternatives for `.` and `-`,
   `unquote`'s `&&` chain, and `Replayable::names` replaced by an empty iterator.
   These decide how a `SET` value is rendered when it is replayed onto a new
