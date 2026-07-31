@@ -350,6 +350,51 @@ case_m15_missing_test() {
     env PGPROX_MUTANTS_BASELINE=product/mutants-baseline.txt bash "$root/gate.sh"
 }
 
+# --- check-wired.sh, M16.9 ---------------------------------------------------
+#
+# The check exists because four things were written, tested and reached from
+# nowhere. Its own first two versions had the same problem in miniature: it
+# counted `pub use` re-exports as callers, and then it counted doc comments, so
+# it reported `FrameRelay` reached during the entire milestone in which nothing
+# called it. A check that would have passed while the defect was live is not a
+# check, which is why all four of these cases are planted rather than described.
+case_wired() {
+  echo
+  echo "  check-wired.sh"
+
+  local dir="$WORK/wired"
+  rm -rf "$dir"; mkdir -p "$dir"
+
+  # A symbol nothing mentions at all.
+  printf 'NeverCalled\tcrates/pgprox-proto/src/relay.rs\tdo something\n' > "$dir/absent.txt"
+  expect_fail "objects to a symbol reached from nowhere" \
+    env PGPROX_WIRED_LIST="$dir/absent.txt" scripts/check-wired.sh
+
+  # Reached only by a re-export. This is the case the first version passed.
+  printf 'FrameRelay\tcrates/pgprox-proto/src/relay.rs\tstream\n' > "$dir/reexport.txt"
+  expect_fail "does not count a pub use as a caller" \
+    env PGPROX_WIRED_LIST="$dir/reexport.txt" scripts/check-wired.sh
+
+  # An empty list passes by describing nothing, so it must not pass.
+  printf '# only a comment\n' > "$dir/empty.txt"
+  expect_fail "objects to a list that checks nothing" \
+    env PGPROX_WIRED_LIST="$dir/empty.txt" scripts/check-wired.sh
+
+  # The tracked-debt marker is not a way to pass silently: it has to name a task.
+  printf '?FrameRelay\tcrates/pgprox-proto/src/relay.rs\tno task named here\n' > "$dir/untracked.txt"
+  expect_fail "objects to known-unwired with no task to settle it" \
+    env PGPROX_WIRED_LIST="$dir/untracked.txt" scripts/check-wired.sh
+
+  # And the marker cannot outlive its cause.
+  printf '?take_body\tcrates/pgprox-session/src/shell.rs\tM16.9 says so\n' > "$dir/stale.txt"
+  expect_fail "objects to a stale known-unwired marker" \
+    env PGPROX_WIRED_LIST="$dir/stale.txt" scripts/check-wired.sh
+
+  # A missing list is not a pass either.
+  expect_fail "objects to a list that is not there" \
+    env PGPROX_WIRED_LIST="$dir/nope.txt" scripts/check-wired.sh
+}
+
 # --- the thresholds, M13.1 ---------------------------------------------------
 #
 # Non-negotiable 2 is that a threshold is never lowered to make a check pass. A
@@ -612,6 +657,7 @@ if [[ -z "$WANTED" || "$WANTED" == m1f-adr ]]; then case_m1f_adr; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == drift-subshell ]]; then case_drift_subshell; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == every-gate ]]; then case_every_gate; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m15-missing-test ]]; then case_m15_missing_test; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == wired ]]; then case_wired; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == thresholds ]]; then case_thresholds; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == tests-kept ]]; then case_tests_kept; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == secrets ]]; then case_secrets; ran=1; fi

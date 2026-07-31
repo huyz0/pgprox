@@ -5140,7 +5140,7 @@ Streaming removes both.
   **Twelve consecutive clean runs**, against a failure rate of roughly one in
   three before. Twelve rather than three because at one in three, three clean
   runs happen thirty per cent of the time by luck.
-- [ ] `M16.9` Nothing checks that a thing written is a thing reached. Four
+- [x] `M16.9` Nothing checks that a thing written is a thing reached. Four
   findings in two milestones were correct code with no caller: `FrameRelay`
   (`M16`), `DEFAULT_MAX_INSPECT` (`M15.1`), the two statement-clearing
   functions (`M15.3`), and the function `M15.3` added to call them (`M16.7`).
@@ -5150,3 +5150,29 @@ Streaming removes both.
   Acceptance: a check that names the symbols which must reach production code
   and fails when one does not, wired into CI and into `negative.sh` like every
   other gate, seeded with all four.
+  **Its own first two versions had the defect in miniature, and its first real
+  run found a fifth instance.** Version one counted any mention, so a `pub use`
+  re-export read as a caller. Version two filtered imports and still passed
+  `FrameRelay`, on two doc comments that mention it by name. Prose about a thing
+  is the least reliable evidence anything calls it, since prose is exactly what
+  says it should. Both versions would have passed throughout the milestone in
+  which nothing called it, which is the definition of not a check, and both are
+  planted in `negative.sh` rather than described.
+  The fifth instance is `FrameRelay` itself, still reached from nowhere after
+  `M16.3`, because that task solved streaming with `Wire::read_header` and
+  `take_body` in the I/O shell rather than with the type built for it. Recorded
+  with the marker rather than hidden, and `M16.10` settles it.
+- [ ] `M16.10` Two implementations of one idea, and only one is used.
+  `FrameRelay` reads a header, applies `inspect_policy`, and forwards the rest.
+  `Wire::read_header` and `Wire::take_body` now do the same job in the I/O shell
+  and are what the proxy calls. The first is sans-I/O and tested and
+  benchmarked; the second is used.
+  Neither answer is free. Deleting `FrameRelay` removes about twenty tests and
+  a benchmark and orphans `DEFAULT_MAX_INSPECT`, whose only non-import caller is
+  the file that would go, so `M15.1`'s bound would need a new home. Rewiring the
+  pump onto it means `Wire` driving a push-based state machine from a pull-based
+  read, which is a different shape and would re-open work that `e2e.sh` and
+  `conformance.sh` have just signed off.
+  Filed rather than guessed at, and `check-wired.sh` will not let it be
+  forgotten: the marker naming this task is what keeps that check green, and it
+  fails the moment the marker stops matching reality in either direction.

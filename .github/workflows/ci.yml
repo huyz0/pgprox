@@ -49,6 +49,11 @@ jobs:
       # not check: it enforces the crate dependency rule, a different rule. M13.4.
       - run: scripts/check-sans-io.sh
       - run: scripts/check-layering.sh
+      # The most repeated defect in this project: correct, tested code that
+      # nothing reaches. Four instances across M15 and M16, the last committed
+      # one commit after its author wrote that a primitive with no caller is
+      # the defect the milestone existed to fix. M16.9.
+      - run: scripts/check-wired.sh
       - run: scripts/check-crate.sh
       - run: scripts/check-coverage.sh
 

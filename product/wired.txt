@@ -1,0 +1,16 @@
+# Symbols that exist to be called from somewhere else, and the file that
+# defines each. Checked by scripts/check-wired.sh.
+#
+# Every entry is here because it was once written, tested, and reached from
+# nowhere. This is not a list of public API; most public items are not this.
+# Add one when a thing's whole purpose is to be wired in, so that failing to
+# wire it in is a defect rather than a choice.
+#
+# pattern	defining file	what it exists to do
+?FrameRelay	crates/pgprox-proto/src/relay.rs	stream a large message instead of holding it. Still reached from nowhere after M16.3, which solved streaming with Wire::read_header and take_body in the I/O shell rather than with this. Two implementations of one idea, and M16.10 decides which survives
+DEFAULT_MAX_INSPECT	crates/pgprox-proto/src/frame.rs	bound what one message may buffer, which nothing read until M15.1
+close_all	crates/pgprox-pool/src/statements.rs	forget a session's statements after DISCARD ALL
+forget_all	crates/pgprox-pool/src/statements.rs	forget a connection's statements after DISCARD ALL
+resume::observe_statement	crates/pgprox-session/src/resume.rs	tell both statement maps about a DISCARD ALL, and uncalled until M16.7
+MAX_HANDSHAKE_FRAME	crates/pgprox-session/src/shell.rs	keep an unauthenticated client off the gigabyte relay cap
+take_body	crates/pgprox-session/src/shell.rs	move a body without holding it, which is what M16 is
