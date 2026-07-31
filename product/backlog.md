@@ -4783,7 +4783,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
 
 ## M15: the protocol crate under a second reading
 
-- [ ] `M15.1` The inspect cap that bounds nothing. `DEFAULT_MAX_INSPECT` is
+- [x] `M15.1` The inspect cap that bounds nothing. `DEFAULT_MAX_INSPECT` is
   documented as "largest message body the proxy will buffer in order to read
   it", with the reason stated: bytes parsed are held per connection, so at 100k
   connections their limit must be small. `FrameRelay` never reads it. For
@@ -4798,6 +4798,15 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   asserts what is held. The existing `complete` flag already reports a
   truncated inspection, so the parser side needs no new signal.
   Found because `DEFAULT_MAX_INSPECT` has no caller anywhere in the workspace.
+  **The cap alone was half a fix, and the test that was supposed to confirm it
+  is what said so.** `Vec::clear` keeps its allocation, so capping the peak
+  leaves the capacity in place for the life of the connection: the attack goes
+  from "a gigabyte per connection while the frame is in flight" to "a megabyte
+  per connection, permanently", at a cost of one frame each. At 100k
+  connections that is the same problem in a smaller font. The relay now
+  releases anything above `RETAINED_INSPECT`, 8 KiB, once the message that
+  needed it is over, and keeps everything below it so the ordinary path still
+  allocates nothing. Both halves have a test, including the cost side.
 - [ ] `M15.2` A failed COPY holds the connection for the session's life.
   `SessionState` clears `copy` on a frontend `CopyDone`/`CopyFail` and on a
   backend `CopyDone`, and on nothing else. When the server rejects a COPY it

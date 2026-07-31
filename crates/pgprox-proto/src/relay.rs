@@ -15,8 +15,8 @@
 //! Sans-I/O: bytes go in, instructions come out. Nothing here reads a socket.
 
 use crate::frame::{
-    DEFAULT_MAX_FRAME, DecodeError, Direction, FrameHeader, Inspect, LEN_PREFIX, decode_header,
-    inspect_policy,
+    DEFAULT_MAX_FRAME, DEFAULT_MAX_INSPECT, DecodeError, Direction, FrameHeader, Inspect,
+    LEN_PREFIX, decode_header, inspect_policy,
 };
 
 /// A message boundary the relay just crossed.
@@ -50,6 +50,25 @@ pub struct RelayOutcome {
     pub completed: Option<Completed>,
 }
 
+/// Inspection capacity a relay keeps between messages.
+///
+/// Capping the peak is only half of bounding memory. `Vec::clear` keeps its
+/// allocation, so without this a connection that inspected one large message
+/// holds that capacity for the rest of its life, and the cost of making it do
+/// so is a single frame. The cap alone would turn "a gigabyte per connection,
+/// while the message is in flight" into "a megabyte per connection, for good",
+/// which at 100k connections is the same problem in a smaller font.
+///
+/// Above this, the buffer is released once the message that needed it is over.
+/// Below it, nothing happens: shrinking on every message would trade a bounded
+/// amount of memory for an allocation on the hot path, and
+/// `tests/budgets.rs` is what says that path allocates nothing.
+///
+/// 8 KiB because it is the largest prefix any frequently inspected message
+/// asks for, `ErrorResponse`. `ReadyForQuery` is one byte and
+/// `CommandComplete` a few dozen, so the steady state sits far below it.
+const RETAINED_INSPECT: usize = 8 * 1024;
+
 /// Where a relay is in a message.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Phase {
@@ -66,6 +85,14 @@ enum Phase {
 pub struct FrameRelay {
     direction: Direction,
     max_frame: usize,
+    /// The ceiling on what one message may put in `buffer`.
+    ///
+    /// Distinct from `max_frame`, and the distinction is the reason both
+    /// exist: relayed bytes are never held, so their limit can be generous,
+    /// while inspected bytes are held per connection and are multiplied by the
+    /// connection count. `Inspect::Whole` asks for the whole body, and a body
+    /// length is a number the peer chose.
+    max_inspect: usize,
     phase: Phase,
     /// The header of the message in flight.
     header: Option<FrameHeader>,
@@ -87,15 +114,33 @@ impl FrameRelay {
     /// A relay with an explicit cap on relayed message size.
     #[must_use]
     pub fn with_max_frame(direction: Direction, max_frame: usize) -> Self {
+        Self::with_limits(direction, max_frame, DEFAULT_MAX_INSPECT)
+    }
+
+    /// A relay with both caps set explicitly.
+    ///
+    /// `max_frame` bounds what may pass through; `max_inspect` bounds what may
+    /// be held in order to read it. Nothing requires the second to be smaller,
+    /// but a `max_inspect` above `max_frame` cannot bind, since no message that
+    /// large would be relayed in the first place.
+    #[must_use]
+    pub fn with_limits(direction: Direction, max_frame: usize, max_inspect: usize) -> Self {
         Self {
             direction,
             max_frame,
+            max_inspect,
             phase: Phase::Header,
             header: None,
             want_inspect: 0,
             buffer: Vec::new(),
             header_buf: Vec::new(),
         }
+    }
+
+    /// The ceiling on bytes held for inspection.
+    #[must_use]
+    pub const fn max_inspect(&self) -> usize {
+        self.max_inspect
     }
 
     /// The inspected portion of the message that just completed.
@@ -163,13 +208,28 @@ impl FrameRelay {
 
         self.header = Some(header);
         self.header_buf.clear();
-        self.buffer.clear();
 
+        // The cap applies to every policy, not just `Whole`. A prefix is a
+        // constant chosen here and is already small, but `Whole` means "as much
+        // as the body claims to be", and the body length is the peer's number.
+        // Without this line a `Sync` declaring a gigabyte is a gigabyte held,
+        // and `Sync` is one of four frontend tags a client can send before it
+        // has authenticated.
         self.want_inspect = match inspect_policy(self.direction, header.tag) {
             Inspect::None => 0,
             Inspect::Prefix(n) => n.min(header.body_len),
             Inspect::Whole => header.body_len,
-        };
+        }
+        .min(self.max_inspect);
+
+        // Cleared here rather than at the end of the previous message, because
+        // `inspected()` is documented as valid until the next push and a caller
+        // reads it after the completion that produced it.
+        self.buffer.clear();
+        if self.buffer.capacity() > RETAINED_INSPECT.max(self.want_inspect) {
+            self.buffer
+                .shrink_to(RETAINED_INSPECT.max(self.want_inspect));
+        }
 
         // A body-less message is finished the moment its header is.
         if header.body_len == 0 {
@@ -513,6 +573,129 @@ mod tests {
                 relay.inspected().len()
             );
         }
+    }
+
+    #[test]
+    fn a_whole_inspected_message_cannot_buffer_past_the_inspect_cap() {
+        // The bug this task exists for. `Sync` is `Inspect::Whole` and its body
+        // must be empty, but the relay takes the declared length on trust. Four
+        // frontend tags are `Whole`, so this needs no authentication and no
+        // cooperating server: it is one frame from anyone who can reach the
+        // listener.
+        //
+        // Eight megabytes here to keep the test quick. The declared length is a
+        // u32 checked only against `max_frame`, so the same frame claiming a
+        // gigabyte held a gigabyte.
+        let body_len = 8 * 1024 * 1024;
+        let mut bytes = vec![Tag::SYNC.get()];
+        bytes.extend_from_slice(&u32::try_from(body_len + LEN_PREFIX).unwrap().to_be_bytes());
+        bytes.extend_from_slice(&vec![b'x'; body_len]);
+
+        let mut relay = FrameRelay::new(Direction::Frontend);
+        let mut peak = 0;
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let end = (offset + 8192).min(bytes.len());
+            let mut window = &bytes[offset..end];
+            while !window.is_empty() {
+                let outcome = relay.push(window).unwrap();
+                peak = peak.max(relay.buffered());
+                if outcome.consumed == 0 {
+                    break;
+                }
+                window = &window[outcome.consumed..];
+            }
+            offset = end;
+        }
+
+        assert!(
+            peak <= DEFAULT_MAX_INSPECT,
+            "a client made the relay hold {peak} bytes against a {DEFAULT_MAX_INSPECT} cap"
+        );
+    }
+
+    #[test]
+    fn the_buffer_a_large_message_needed_does_not_outlive_it() {
+        // The other half, and the half that makes the cap worth having.
+        // `Vec::clear` keeps its allocation, so a cap on the peak alone leaves
+        // the capacity in place for the life of the connection, and one frame
+        // per connection is all it costs an attacker to put it there.
+        let body_len = 512 * 1024;
+        let mut bytes = vec![Tag::SYNC.get()];
+        bytes.extend_from_slice(&u32::try_from(body_len + LEN_PREFIX).unwrap().to_be_bytes());
+        bytes.extend_from_slice(&vec![b'x'; body_len]);
+
+        let mut relay = FrameRelay::new(Direction::Frontend);
+        drive(&mut relay, &bytes, 8192);
+        assert!(
+            relay.inspected().len() > RETAINED_INSPECT,
+            "the setup did not put a large buffer in place"
+        );
+
+        // Any following message releases it. A `Terminate` is the smallest
+        // thing a client sends, and the one it would send next.
+        let small = wire(Tag::TERMINATE, b"");
+        drive(&mut relay, &small, small.len());
+
+        assert!(
+            relay.buffer.capacity() <= RETAINED_INSPECT,
+            "the relay kept {} bytes for a session that is not using them",
+            relay.buffer.capacity()
+        );
+    }
+
+    #[test]
+    fn an_ordinary_session_never_shrinks_its_buffer() {
+        // The cost side. Shrinking on every message would trade bounded memory
+        // for an allocation per frame on the hot path, which is what
+        // `tests/budgets.rs` exists to refuse. Everything a busy session
+        // inspects sits under the retention bound, so nothing here reallocates.
+        let mut relay = FrameRelay::new(Direction::Backend);
+        let ready = wire(Tag::READY_FOR_QUERY, b"I");
+        let complete = wire(Tag::COMMAND_COMPLETE, b"SELECT 1\0");
+
+        drive(&mut relay, &ready, ready.len());
+        let settled = relay.buffer.capacity();
+
+        for _ in 0..64 {
+            drive(&mut relay, &complete, complete.len());
+            drive(&mut relay, &ready, ready.len());
+        }
+        assert!(
+            relay.buffer.capacity() >= settled,
+            "an ordinary session gave capacity back and had to take it again"
+        );
+    }
+
+    #[test]
+    fn a_capped_inspection_reports_itself_truncated() {
+        // The signal a parser needs. What it has is the front of the body, not
+        // a short message, and treating one as the other is how a truncated
+        // `ParameterStatus` becomes a parameter nobody set.
+        let body = vec![b'v'; 4096];
+        let bytes = wire(Tag::PARAMETER_STATUS, &body);
+
+        let mut relay = FrameRelay::with_limits(Direction::Backend, DEFAULT_MAX_FRAME, 64);
+        let (done, forwarded) = drive(&mut relay, &bytes, 512);
+
+        assert_eq!(forwarded, bytes.len(), "capping inspection dropped bytes");
+        assert_eq!(relay.inspected().len(), 64);
+        assert_eq!(done.len(), 1);
+        assert!(!done[0].complete, "a capped inspection claimed to be whole");
+    }
+
+    #[test]
+    fn a_whole_message_under_the_cap_is_still_read_whole() {
+        // The cap must not cost anything in the case it exists for. Everything
+        // the policy marks `Whole` is small by construction, so the ordinary
+        // path has to be unaffected.
+        let mut relay = FrameRelay::new(Direction::Backend);
+        assert_eq!(relay.max_inspect(), DEFAULT_MAX_INSPECT);
+
+        let bytes = wire(Tag::READY_FOR_QUERY, b"I");
+        let (done, _) = drive(&mut relay, &bytes, bytes.len());
+        assert_eq!(relay.inspected(), b"I");
+        assert!(done[0].complete);
     }
 
     #[test]
