@@ -429,6 +429,148 @@ impl Report {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    /// `M14.43`. Thirty mutants survived in this file, twenty-four of them in
+    /// `Histogram::bucket` and `Histogram::upper_edge`, which between them are
+    /// every latency number this project has ever published. A percentile that
+    /// is quietly wrong does not fail anything: it changes what the repo
+    /// believes about itself. `M11.1` overturned `M10.9`'s throughput claim on
+    /// numbers this code produced.
+    #[test]
+    fn merging_outcomes_keeps_a_bounded_set_of_messages() {
+        // `mine.messages.len() < MESSAGE_VARIANTS` could become `>`, which
+        // stops recording messages after the first and starts again never. The
+        // cap exists so one client's unique-per-connection error text cannot
+        // grow a report without bound, and a report that silently keeps one
+        // message per code is a report an operator reads as "there was only
+        // one kind of failure".
+        let mut into = Outcomes::default();
+        let mut from = Outcomes::default();
+        for i in 0..MESSAGE_VARIANTS + 3 {
+            from.record("53300", &format!("message {i}"));
+        }
+        into.merge(&from);
+
+        let merged: Vec<_> = into.iter().collect();
+        assert_eq!(merged.len(), 1, "no code was merged");
+        let outcome = merged[0].1;
+        assert_eq!(
+            outcome.count,
+            u64::try_from(MESSAGE_VARIANTS + 3).unwrap_or(u64::MAX),
+            "every occurrence should be counted even when its text is not kept"
+        );
+        assert_eq!(
+            outcome.messages.len(),
+            MESSAGE_VARIANTS,
+            "the message set is not held at its cap"
+        );
+    }
+
+    #[test]
+    fn iterating_outcomes_yields_what_was_recorded() {
+        // `iter` could return an empty iterator, which would make every report
+        // read as though no client was ever told anything. `M11.8` added this
+        // to answer what a full fleet tells displaced clients, and `M11.6`'s
+        // whole result is a count of SQLSTATEs read through here.
+        let mut outcomes = Outcomes::default();
+        outcomes.record("53300", "too many connections");
+        outcomes.record("53300", "too many connections");
+        outcomes.record("57014", "canceled");
+
+        let seen: std::collections::BTreeMap<&str, u64> = outcomes
+            .iter()
+            .map(|(code, outcome)| (code.as_str(), outcome.count))
+            .collect();
+        assert_eq!(seen.len(), 2, "iter did not yield both codes");
+        assert_eq!(seen.get("53300"), Some(&2));
+        assert_eq!(seen.get("57014"), Some(&1));
+    }
+
+    #[test]
+    fn the_bucket_count_is_the_sum_of_the_three_bands_and_the_overflow() {
+        // `FINE + MEDIUM + COARSE + 1` had four surviving mutants on its
+        // operators. The constant sizes the backing vector, so a wrong value is
+        // either wasted memory or an index that lands in the overflow bucket.
+        assert_eq!(FINE_BUCKETS, 10_000);
+        assert_eq!(MEDIUM_BUCKETS, 9_900);
+        assert_eq!(COARSE_BUCKETS, 5_900);
+        assert_eq!(BUCKETS, 25_801, "three bands and one overflow bucket");
+    }
+
+    #[test]
+    fn a_bucket_and_its_upper_edge_are_inverses() {
+        // The strongest thing that can be said about these two functions is
+        // that they agree, across every bucket rather than at a few sampled
+        // points. Twenty-four mutants sit on their arithmetic and most of them
+        // move a boundary by one, which no spot check finds reliably.
+        for index in 0..BUCKETS - 1 {
+            let edge = Histogram::upper_edge(index);
+            assert_eq!(
+                Histogram::bucket(edge),
+                index,
+                "bucket {index} has upper edge {edge}, which lands in a different bucket"
+            );
+
+            // And one microsecond past the edge is the next bucket, so the
+            // bands are contiguous with no gap and no overlap.
+            assert_eq!(
+                Histogram::bucket(edge + 1),
+                index + 1,
+                "the sample after bucket {index}'s edge did not land in {}",
+                index + 1
+            );
+        }
+    }
+
+    #[test]
+    fn each_band_starts_where_the_last_one_ended() {
+        // The band boundaries themselves, named rather than derived, so that a
+        // mutant which moves a limit rather than a step is caught too.
+        assert_eq!(Histogram::bucket(0), 0);
+        assert_eq!(Histogram::bucket(1), 1);
+        assert_eq!(Histogram::bucket(FINE_LIMIT - 1), FINE_BUCKETS - 1);
+        assert_eq!(Histogram::bucket(FINE_LIMIT), FINE_BUCKETS);
+
+        assert_eq!(
+            Histogram::bucket(MEDIUM_LIMIT - 1),
+            FINE_BUCKETS + MEDIUM_BUCKETS - 1
+        );
+        assert_eq!(
+            Histogram::bucket(MEDIUM_LIMIT),
+            FINE_BUCKETS + MEDIUM_BUCKETS
+        );
+
+        assert_eq!(Histogram::bucket(COARSE_LIMIT - 1), BUCKETS - 2);
+
+        // Anything at or past the coarse limit is the overflow bucket: a proxy
+        // taking a minute has a problem no percentile describes.
+        assert_eq!(Histogram::bucket(COARSE_LIMIT), BUCKETS - 1);
+        assert_eq!(Histogram::bucket(u64::MAX), BUCKETS - 1);
+
+        // The overflow bucket's edge is the coarse limit itself and not the
+        // arithmetic the band below it would produce. The round-trip test above
+        // walks `0..BUCKETS - 1` and so never reaches this one, which is how
+        // two mutants of the `bucket < BUCKETS - 1` guard survived it: both let
+        // the overflow bucket fall into the coarse branch, which answers
+        // 60,009,999 instead of 60,000,000.
+        assert_eq!(Histogram::upper_edge(BUCKETS - 1), COARSE_LIMIT);
+    }
+
+    #[test]
+    fn the_upper_edges_rise_without_repeating() {
+        // A mutant that turns a subtraction into an addition can leave the
+        // edges non-monotonic while every individual value still looks
+        // plausible, and a percentile read off a non-monotonic table is
+        // nonsense that reports as a number.
+        let mut previous = Histogram::upper_edge(0);
+        for index in 1..BUCKETS - 1 {
+            let edge = Histogram::upper_edge(index);
+            assert!(
+                edge > previous,
+                "bucket {index} has edge {edge}, not above the previous {previous}"
+            );
+            previous = edge;
+        }
+    }
 
     fn histogram_of(samples: &[u64]) -> Histogram {
         let mut histogram = Histogram::new();

@@ -38,7 +38,9 @@ cd "$REPO_ROOT"
 # which stay out and writes down why.
 CRATES=(
   pgprox-proto pgprox-route pgprox-cache pgprox-session
-  pgprox-cluster pgprox-pool pgprox-core
+  pgprox-cluster pgprox-pool pgprox-core pgprox-admin
+  pgprox-auth pgprox-config pgprox-observe pgprox-load
+  pgprox-tls pgprox-testkit
 )
 if (( $# > 0 )); then
   CRATES=("$@")

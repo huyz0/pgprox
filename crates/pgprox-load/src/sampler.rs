@@ -238,6 +238,236 @@ impl Rng {
 #[allow(clippy::unwrap_used, clippy::panic, clippy::cast_precision_loss)]
 mod tests {
     use super::*;
+    /// `M14.43`. Eleven mutants survived in this file. Three are in the
+    /// generator, which decides which schedule a measurement run explores, and
+    /// the rest are boundaries on the draws that use it.
+    #[test]
+    fn a_roll_equal_to_the_fraction_is_outside_it() {
+        const SEED: u64 = 12_345;
+
+        // `roll < units` had two survivors, `<=` on the replica draw and on the
+        // prepared draw. The two operators disagree for exactly one value of
+        // `roll` out of a million, so no distributional test separates them:
+        // the expected counts differ by one draw in `SCALE`.
+        //
+        // It is reachable, though, because the draw order is fixed and this
+        // file's own comments treat it as a contract: each fraction gets its
+        // own draw so that changing one does not shift the other's stream. So
+        // the test replays that order to find the exact roll the first
+        // statement will make, then sets the fraction to that value. With `<`
+        // the statement is outside the fraction; with `<=` it is inside.
+        //
+        // If the draw order ever changes this test fails, which is correct:
+        // the order is what makes two runs comparable field by field.
+        let document = [
+            "version: 3",
+            "tenants:",
+            "  - { name: only, count: 1, share: 1.0 }",
+            "statements:",
+            "  - { name: read, weight: 1, kind: read, sql: 'SELECT 1' }",
+            "transactions:",
+            "  - { statements: 1, weight: 1 }",
+            "prepared_fraction: 0.0",
+            "think: { min_ms: 1, max_ms: 1 }",
+            "churn: { transactions_per_connection: 500 }",
+            "replica_read_fraction: 0.0",
+            "cluster_size: 1",
+        ]
+        .join("\n");
+        let base = Workload::parse(&document).unwrap();
+
+        // Replay the draws `next_transaction` makes before the replica roll:
+        // the tenant group, the tenant index, the transaction size, and the
+        // statement.
+        let shape = Sampler::new(&base, SEED);
+        let mut probe = Rng::new(SEED);
+        let group = &base.tenants[probe.weighted(&shape.tenant_shares)];
+        let _index = probe.below(u64::from(group.count));
+        let _size = probe.weighted(&shape.size_weights);
+        let _statement = probe.weighted(&shape.statement_weights);
+        let roll = probe.below(SCALE);
+
+        // A fraction whose unit count is exactly that roll.
+        #[allow(clippy::cast_precision_loss, reason = "roll is below SCALE")]
+        let fraction = roll as f64 / SCALE as f64;
+        assert_eq!(
+            units(fraction),
+            roll,
+            "the fraction does not land on the roll"
+        );
+
+        let mut replica = base.clone();
+        replica.replica_read_fraction = fraction;
+        let planned = Sampler::new(&replica, SEED).next_transaction();
+        assert!(
+            !planned.statements[0].replica_eligible,
+            "a roll equal to the fraction was treated as inside it"
+        );
+
+        // The same boundary on the prepared draw, which is the draw after.
+        let prepared_roll = probe.below(SCALE);
+        #[allow(clippy::cast_precision_loss, reason = "roll is below SCALE")]
+        let prepared_fraction = prepared_roll as f64 / SCALE as f64;
+        assert_eq!(units(prepared_fraction), prepared_roll);
+
+        let mut prepared = base.clone();
+        prepared.prepared_fraction = prepared_fraction;
+        let planned = Sampler::new(&prepared, SEED).next_transaction();
+        assert!(
+            !planned.statements[0].prepared,
+            "a roll equal to the fraction was treated as inside it"
+        );
+
+        // And one unit higher is inside, so the assertions above are about the
+        // boundary rather than about the fraction being too small to matter.
+        #[allow(clippy::cast_precision_loss, reason = "roll is below SCALE")]
+        let inside = (roll + 1) as f64 / SCALE as f64;
+        if units(inside) == roll + 1 {
+            let mut wider = base.clone();
+            wider.replica_read_fraction = inside;
+            let planned = Sampler::new(&wider, SEED).next_transaction();
+            assert!(
+                planned.statements[0].replica_eligible,
+                "a roll below the fraction was treated as outside it"
+            );
+        }
+    }
+
+    #[test]
+    fn think_time_spans_the_whole_configured_range_inclusive() {
+        // `min_ms + below(max_ms - min_ms + 1)` had two survivors on the `+ 1`.
+        // Without it the maximum is never drawn, so every run pauses slightly
+        // less than configured and the load is quietly higher than the document
+        // says. `-` instead of `+` would draw below the minimum.
+        let mut workload = workload();
+        workload.think.min_ms = 10;
+        workload.think.max_ms = 12;
+
+        let mut sampler = Sampler::new(&workload, 5);
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..2_000 {
+            seen.insert(sampler.next_transaction().think_ms);
+        }
+
+        assert_eq!(
+            seen,
+            [10, 11, 12].into_iter().collect(),
+            "think time did not cover exactly its configured range"
+        );
+    }
+
+    #[test]
+    fn a_fraction_of_zero_draws_nothing_and_one_draws_everything() {
+        // `roll < units` had four survivors across the replica and prepared
+        // draws. `<=` lets a fraction of zero through once every SCALE draws,
+        // and `>` inverts the fraction outright, which would make a workload
+        // configured for half its statements on a replica send the other half.
+        //
+        // The two extremes are what pin the comparison: at zero nothing may be
+        // eligible, and at one everything must be.
+        let mut none = workload();
+        none.replica_read_fraction = 0.0;
+        none.prepared_fraction = 0.0;
+        let mut sampler = Sampler::new(&none, 11);
+        for _ in 0..500 {
+            for planned in sampler.next_transaction().statements {
+                assert!(
+                    !planned.replica_eligible,
+                    "a fraction of zero sent a read to a replica"
+                );
+                assert!(!planned.prepared, "a fraction of zero prepared a statement");
+            }
+        }
+
+        let mut all = workload();
+        all.replica_read_fraction = 1.0;
+        all.prepared_fraction = 1.0;
+        let mut sampler = Sampler::new(&all, 11);
+        let mut reads = 0_u32;
+        for _ in 0..500 {
+            for planned in sampler.next_transaction().statements {
+                assert!(
+                    planned.prepared,
+                    "a fraction of one left a statement unprepared"
+                );
+                if planned.kind == Kind::Read {
+                    reads += 1;
+                    assert!(
+                        planned.replica_eligible,
+                        "a fraction of one kept a read off the replica"
+                    );
+                }
+            }
+        }
+        assert!(
+            reads > 0,
+            "no read was drawn, so the assertion above never ran"
+        );
+    }
+
+    #[test]
+    fn the_generator_produces_its_documented_sequence() {
+        // A golden vector, for the reason `M14.15` used one for the cluster
+        // simulator: every property short of the value itself holds for almost
+        // any mixing function, including each of these mutants. A load run is
+        // only comparable with another run if the same seed draws the same
+        // stream, which is the whole basis for matched-pair measurement, and
+        // `M11.1`'s eight pairs rest on it.
+        let mut rng = Rng::new(1);
+        let drawn: Vec<u64> = (0..5).map(|_| rng.next()).collect();
+        assert_eq!(
+            drawn,
+            vec![
+                0x47e4_ce4b_896c_dd1d,
+                0xabcf_a6a8_e079_651d,
+                0xb9d1_0d8f_eb73_1f57,
+                0x4db4_18a0_bb1b_019d,
+                0x0e61_99b0_4d5a_a600,
+            ],
+            "the generator is no longer the xorshift this file documents"
+        );
+    }
+
+    #[test]
+    fn a_weighted_draw_lands_in_the_entry_its_point_falls_in() {
+        // `point -= weight` could become `+` or `/`, which walks the wrong way
+        // through the table and skews every mix in the workload: the share of
+        // reads to writes, the transaction sizes, the tenant distribution.
+        //
+        // Driven over the whole range rather than sampled, so the boundaries
+        // between entries are all covered.
+        let weights = [1_u64, 2, 3];
+        let mut seen = [0_usize; 3];
+        let mut rng = Rng::new(99);
+        for _ in 0..6_000 {
+            seen[rng.weighted(&weights)] += 1;
+        }
+
+        // Every entry is reachable, which `+` breaks by never leaving the
+        // first, and the counts follow the weights rather than being uniform.
+        assert!(
+            seen.iter().all(|count| *count > 0),
+            "an entry was unreachable: {seen:?}"
+        );
+        assert!(
+            seen[0] < seen[1],
+            "weight 1 drew at least as often as weight 2: {seen:?}"
+        );
+        assert!(
+            seen[1] < seen[2],
+            "weight 2 drew at least as often as weight 3: {seen:?}"
+        );
+
+        // Roughly one, two and three sixths, generously bounded so this is a
+        // statement about the walk rather than about the generator.
+        let total: usize = seen.iter().sum();
+        let sixth = total / 6;
+        assert!(seen[0].abs_diff(sixth) < sixth / 2, "{seen:?}");
+        assert!(seen[2].abs_diff(sixth * 3) < sixth, "{seen:?}");
+
+        // All-zero weights fall back to the first entry rather than panicking.
+        assert_eq!(rng.weighted(&[0, 0, 0]), 0);
+    }
 
     fn workload() -> Workload {
         Workload::parse(include_str!("../../../product/perf/workload.yaml")).unwrap()

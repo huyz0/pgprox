@@ -372,6 +372,42 @@ mod tests {
         .join("\n")
     }
 
+    #[test]
+    fn the_validator_boundaries_are_where_the_document_says() {
+        // Two `>` mutants survived, one on each validator, and both sit on a
+        // boundary that decides whether a workload document is accepted. A
+        // document that should be refused and is not becomes a measurement
+        // baseline nobody knows is wrong.
+
+        // `think.min_ms > think.max_ms` is an error; equal is not, because a
+        // fixed pause is a legitimate thing to configure. `>=` would refuse it.
+        let fixed = document().replace("min_ms: 10, max_ms: 20", "min_ms: 20, max_ms: 20");
+        assert!(
+            Workload::parse(&fixed).is_ok(),
+            "a fixed think time was refused"
+        );
+
+        let inverted = document().replace("min_ms: 10, max_ms: 20", "min_ms: 21, max_ms: 20");
+        assert!(
+            Workload::parse(&inverted).is_err(),
+            "a minimum above the maximum was accepted"
+        );
+
+        // Shares are compared against a tolerance of 0.001, and a sum exactly
+        // at the tolerance is inside it. `>=` would refuse the boundary.
+        let at_tolerance = document().replace("share: 0.25 }", "share: 0.251 }");
+        assert!(
+            Workload::parse(&at_tolerance).is_ok(),
+            "a sum exactly at the tolerance was refused"
+        );
+
+        let past_tolerance = document().replace("share: 0.25 }", "share: 0.2521 }");
+        assert!(
+            Workload::parse(&past_tolerance).is_err(),
+            "a sum past the tolerance was accepted"
+        );
+    }
+
     fn broken(find: &str, replace: &str) -> WorkloadError {
         let text = document().replace(find, replace);
         match Workload::parse(&text) {

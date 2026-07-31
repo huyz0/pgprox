@@ -4572,7 +4572,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   which means nothing calls it through the trait at all. `ConnId::counter` and
   the `Lsn` parser are identity handling, and `ClientError::client_message`
   being replaceable by a literal means no test reads what a client is told.
-- [~] `M14.4` The remaining seven crates, or a written decision about which stay
+- [x] `M14.4` The remaining seven crates, or a written decision about which stay
   out and why. `pgprox-testkit` at 296 lines and `pgprox-tls` at 968 are small;
   `pgprox-admin`, `pgprox-auth`, `pgprox-config` and `pgprox-observe` are not.
   Acceptance: `mutants.sh`'s list matches its stated criterion, or the criterion
@@ -4630,6 +4630,47 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   each other, which is exactly why the value is duplicated. A constant described
   as held together by a test was held by neither side. Both now pin the literal
   independently, which is the only way a duplicated constant can be paired.
+  **Third batch: `pgprox-load`, 219 mutants and 43 survivors**, the largest
+  single group in the milestone and the one it would have been worst to skip.
+  Thirty in `report.rs`, eleven in `sampler.rs`, two in `workload.rs`: the code
+  that computes every percentile, count and SQLSTATE tally that `M9`, `M10` and
+  `M11` drew conclusions from. A wrong percentile there fails nothing; it
+  changes what this repository believes about itself. `M11.1` overturned
+  `M10.9`'s throughput claim on numbers this code produced.
+  Thirty-seven killed by nine tests, eight accepted with arguments.
+  Twenty-four of the survivors were in `Histogram::bucket` and
+  `Histogram::upper_edge`, which are inverses across three resolution bands, and
+  every one of them moved a boundary by one. No spot check finds that reliably,
+  so the test asserts the two agree across all 25,800 buckets, that each band
+  starts where the last ended, and that the edges rise without repeating: a
+  mutant that flips a subtraction can leave them non-monotonic while each value
+  still looks plausible, and a percentile read off a non-monotonic table is
+  nonsense that reports as a number.
+  That round-trip walks `0..BUCKETS - 1` and so never reached the overflow
+  bucket, which is exactly where two more mutants lived. Naming
+  `upper_edge(BUCKETS - 1)` kills both.
+  **The two I nearly wrote off are the ones worth recording.** `roll < units`
+  and `<=` disagree for exactly one value in a million, so no distributional
+  test separates them: the expected counts differ by a single draw. The
+  temptation was to baseline them as unreachable in practice, which is a
+  convenience argument and not an equivalence argument, and this file is for
+  mutants no test *could* kill. They are reachable, because the draw order is
+  fixed and `sampler.rs`'s own comments treat it as a contract: each fraction
+  gets its own draw so that changing one does not shift the other's stream. The
+  test replays that order to find the exact roll the first statement will make
+  and sets the fraction to it. Confirmed by applying both mutants by hand.
+  The eight accepted are argued rather than asserted, and three of the arguments
+  are proofs: the band guards are equivalent because the bands are seamless by
+  construction, checked at all three boundaries; two `unwrap_or` fallbacks
+  cannot be reached because `usize::try_from(u64)` cannot fail on a 64-bit
+  target, with re-triage noted for 32-bit; `weights.len() - 1` cannot be reached
+  because `point` is drawn below the total; and the share tolerance boundary is
+  not representable in `f64`, since hitting it needs `total` to be exactly
+  `1.0 + 0.001_f64`, which needs more than 53 significant bits. Checked
+  numerically rather than reasoned: 0.0009999999999998899, then
+  0.001000000000000112, with nothing in between.
+  With this, all fourteen crates are mutation tested. `mutants.sh`'s header and
+  its crate list finally say the same thing.
 - [x] `M14.5` `product/plan.md`'s M0 open items are stale. Item 1 says the
   sidecar `.proto` "needs sign-off from whoever owns the sidecar"; ADR 0017
   decided this repository owns it and the file is marked `STATUS: FROZEN`. Item
