@@ -3150,7 +3150,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   succeeds before suite negotiation fails, so a refusal still logs a protocol.
   A cell reading `TLSv1_2` beside a `**refused**` suite says the connection
   worked. Both tables mark refusals now.
-- [ ] `M11.3` What happens when a fleet at its connection cap loses a third of
+- [x] `M11.3` What happens when a fleet at its connection cap loses a third of
   itself, which `M8` says its rehearsal does not cover. That rehearsal is three
   nodes on one machine losing one node, and it lost 22 of 21,088 transactions.
   What it does not say is what happens when the survivors are already at their
@@ -3158,6 +3158,27 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   run under real pressure.
   Acceptance: a run at the cap with a node killed outright, the shed path shown
   to fire, and the transaction loss recorded next to the existing figure.
+  **The acceptance criterion is unsatisfiable, and finding out why is the
+  result.** The shed path cannot fire at the cap. It is refused there
+  deliberately: `pgprox_cluster::shed::decide` returns
+  `Keep(NoHeadroomAtHome)` when the tenant's home node has no room, and
+  `crates/pgprox-cluster/src/shed.rs` has carried a test for exactly that case
+  since M3. Shedding is a rebalancing mechanism and rebalancing needs somewhere
+  to rebalance toward; closing a client so it reconnects to a node that is also
+  full is churn, which the module's own header calls the thing worse than the
+  fan-out it was trying to reduce.
+  So M8's sentence, "it does not say what happens when a fleet at its connection
+  cap loses a third of itself, which is where shedding has to work", is wrong in
+  its second clause. The cap is where shedding is designed *not* to work.
+  Two things follow. The sentence in the roadmap is corrected rather than left
+  to mislead the next reader. And the real question it was reaching for is still
+  open and is now filed with the right mechanism named: what happens to the
+  clients displaced by a dead node when every survivor is full is a question
+  about admission and quota, not about shedding. `M11.6`.
+  Worth recording about method: this was settled by reading the decision
+  function and its tests, in a few minutes, after `kind` turned out not to be
+  installed and the run looked expensive. The expensive experiment would have
+  produced a shed count of zero and no explanation for it.
 - [ ] `M11.4` What pinning costs multiplexing, which ADR 0001 calls an open
   question and hands to the plan. The question the plan asks needs a tenant
   population nobody here has. The question that can be answered here is the one
@@ -3179,3 +3200,18 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   cannot see rather than restate them, and it goes in CI beside its siblings.
   Acceptance: the script exists, fails when any of the four is missing, is named
   in CI, and fails today because none of them is done yet.
+- [ ] `M11.6` What happens to the clients a dead node displaces when every
+  survivor is full. `M11.3` was filed as a question about shedding and is not
+  one: shedding is refused at the cap by design, so the mechanism actually under
+  test is admission.
+  There is no client connection cap in the configuration at all, deliberately;
+  `max_client_connections` appears in this repo only as the example of a
+  misspelled key that must be rejected. The cap that exists is the upstream pool
+  quota, leased per tenant by the cluster. So the question is what the survivors
+  do when the displaced clients arrive and the quota is already fully leased:
+  whether they are refused with `53300`, whether they queue, and how long the
+  leases take to be reissued after the membership change.
+  Acceptance: a run on the compose stack, which has three nodes and needs no
+  `kind`, with the fleet at its upstream quota and one node killed outright;
+  what the displaced clients are told, recorded; and the transaction loss
+  recorded next to `M8`'s 22 of 21,088.

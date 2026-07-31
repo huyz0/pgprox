@@ -273,8 +273,13 @@ FIPS-approved, so the restriction FIPS mode actually imposes on TLS 1.2 was
 never reached. *`M11.2` has since reached it: a client pinned to TLS 1.2 and
 ChaCha20-Poly1305 is taken by the default build and refused by the FIPS build,
 with an AES-GCM probe beside it as the control.* And the rehearsal is three nodes on one machine: it does not say
-what happens when a fleet at its connection cap loses a third of itself, which
-is where shedding has to work.
+what happens when a fleet at its connection cap loses a third of itself.
+*`M11.3` corrected the second half of that sentence, which used to end "which is
+where shedding has to work". It is not: `shed::decide` returns
+`Keep(NoHeadroomAtHome)` when the home node is full, and has been tested that
+way since M3. The cap is where shedding is designed not to fire, because moving
+a client to a node that is also full is churn. What is still untested there is
+admission, which `M11.6` asks properly.*
 
 **What this milestone found by running rather than by reading.** `Flush`
 deadlocked the relay, so asyncpg could not run a single extended query through
