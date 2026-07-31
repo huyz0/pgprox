@@ -20,7 +20,36 @@
 //! `scripts/scale.sh` reads it. A number a script has to scrape out of prose is
 //! a number that changes meaning the next time somebody edits the prose.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
+
+/// What a failure that never reached a server is counted under.
+///
+/// A socket that would not open, a TLS handshake that failed, a frame that
+/// would not decode, a client's own timeout. None of them has a SQLSTATE, and
+/// borrowing one for them (`08006` is the obvious candidate) would put the
+/// server's vocabulary on something the server never said. A SQLSTATE is five
+/// alphanumeric characters, so this cannot collide with a real one.
+pub const NO_SQLSTATE: &str = "local";
+
+/// How many distinct messages are kept under one code.
+///
+/// Kept at all because a code is not always the whole answer, and unbounded
+/// message variety is real: a socket error carries an address, a server's own
+/// error carries whatever it wants to say, and a run against Postgres directly
+/// sees the full vocabulary. A map keyed by message would grow with the run,
+/// in the process that is measuring memory. Past this many, further messages
+/// still raise the count and stop being listed.
+///
+/// Against this proxy the messages are less use than they look, which is worth
+/// knowing before reading a report: `ClientError::client_message` is
+/// deliberately vague, so every `53300` this proxy sends reads "too many
+/// connections, please retry" whether it came from a node at its own client
+/// ceiling or from a fleet at its upstream cap. That is the security posture
+/// working. It means the client side of a run gives the code distribution and
+/// the node's own view has to say which refusal produced it.
+pub const MESSAGE_VARIANTS: usize = 8;
 
 /// One microsecond per bucket, up to this value.
 const FINE_LIMIT: u64 = 10_000;
@@ -212,6 +241,108 @@ impl From<&Histogram> for Latency {
     }
 }
 
+/// What the clients that failed were told, keyed by SQLSTATE.
+///
+/// A count of failures is not diagnosable on its own, and neither is one
+/// example of the first. `M11.6` asks what a fleet with no upstream capacity
+/// left tells the clients a dead node displaces, and the answer is a mixture:
+/// some are refused at the door by the node's own gate, some wait for an
+/// upstream connection and are told the server is full, some wait and time
+/// out. Three operator responses, one error count.
+///
+/// What this can and cannot separate is worth stating, because the answer is
+/// a design decision rather than an oversight. The two refusals differ in
+/// their code from the timeout and not from each other: both are `53300`, and
+/// the message a client sees is the same vague sentence for both, on purpose.
+/// See [`MESSAGE_VARIANTS`].
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct Outcomes(BTreeMap<String, Outcome>);
+
+/// How many failures carried one SQLSTATE, and what they said.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct Outcome {
+    /// How many transactions ended this way.
+    pub count: u64,
+    /// The distinct messages seen under this code, counted.
+    ///
+    /// Capped at [`MESSAGE_VARIANTS`]; see there for why. The counts here sum
+    /// to `count` only while the cap has not been reached.
+    pub messages: BTreeMap<String, u64>,
+}
+
+impl Outcomes {
+    /// Counts one failure.
+    ///
+    /// An empty code is a server that sent no SQLSTATE, which is not a code,
+    /// so it is counted with the failures that never reached one.
+    pub fn record(&mut self, code: &str, message: &str) {
+        let code = if code.is_empty() { NO_SQLSTATE } else { code };
+        // `entry` allocates the key on every call rather than only on the ones
+        // that insert. Left as it is: this runs once per failed transaction in
+        // a measurement tool, never in the proxy, and the version that avoids
+        // the allocation needs an unreachable branch to satisfy the borrow
+        // checker. An unreachable branch in a crate held to 95% is a worse
+        // trade than an allocation on an error path.
+        let outcome = self.0.entry(code.to_owned()).or_default();
+        outcome.count += 1;
+        if let Some(seen) = outcome.messages.get_mut(message) {
+            *seen += 1;
+        } else if outcome.messages.len() < MESSAGE_VARIANTS {
+            outcome.messages.insert(message.to_owned(), 1);
+        }
+    }
+
+    /// Folds another set of outcomes into this one.
+    ///
+    /// One per connection, merged at the end, because a shared map behind a
+    /// lock would be contention the run does not need to measure.
+    pub fn merge(&mut self, other: &Self) {
+        for (code, outcome) in &other.0 {
+            // Counts move over whole rather than one call to `record` per
+            // failure: a run's error count reaches six figures, and merging by
+            // replaying it would make the summary cost what the run cost.
+            let mine = self.0.entry(code.clone()).or_default();
+            mine.count += outcome.count;
+            for (message, count) in &outcome.messages {
+                if let Some(seen) = mine.messages.get_mut(message) {
+                    *seen += count;
+                } else if mine.messages.len() < MESSAGE_VARIANTS {
+                    mine.messages.insert(message.clone(), *count);
+                }
+            }
+        }
+    }
+
+    /// How many failures are counted here.
+    ///
+    /// Equal to a report's `errors` plus its `relocations`: a relocation is
+    /// not a failure but it is something a client was told, and dropping it
+    /// here would leave `57P01` invisible in the one document that says what
+    /// clients saw.
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.0.values().map(|outcome| outcome.count).sum()
+    }
+
+    /// What was seen under one code, if anything was.
+    #[must_use]
+    pub fn get(&self, code: &str) -> Option<&Outcome> {
+        self.0.get(code)
+    }
+
+    /// Whether nothing failed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Every code seen, with what it carried.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Outcome)> {
+        self.0.iter()
+    }
+}
+
 /// What one run of the load client produced.
 ///
 /// The workload version and the seed are in here because a number without them
@@ -259,6 +390,10 @@ pub struct Report {
     /// on its own timeout, and those want opposite responses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_error: Option<String>,
+    /// What the clients that did not get what they asked for were told.
+    ///
+    /// Sums to `errors` plus `relocations`. See [`Outcomes`].
+    pub outcomes: Outcomes,
     /// Per-transaction latency.
     pub latency: Latency,
 }
@@ -421,8 +556,164 @@ mod tests {
             errors: 0,
             relocations: 0,
             first_error: None,
+            outcomes: Outcomes::default(),
             latency: Latency::from(&histogram_of(&[100, 200, 300, 400, 500])),
         }
+    }
+
+    #[test]
+    fn outcomes_count_by_code_and_keep_what_was_said() {
+        let mut outcomes = Outcomes::default();
+        outcomes.record(
+            "53300",
+            "upstream primary:5432 is at its connection cap of 60",
+        );
+        outcomes.record(
+            "53300",
+            "upstream primary:5432 is at its connection cap of 60",
+        );
+        outcomes.record("57014", "timed out after 5s waiting for a connection");
+
+        assert_eq!(outcomes.total(), 3);
+        assert_eq!(outcomes.get("53300").unwrap().count, 2);
+        assert_eq!(outcomes.get("57014").unwrap().count, 1);
+        assert!(outcomes.get("28000").is_none());
+        assert!(!outcomes.is_empty());
+    }
+
+    #[test]
+    fn one_code_from_two_places_stays_two_entries() {
+        // The reason the messages are kept at all. A run against Postgres
+        // directly is the case that needs it: `53300` there is the server's
+        // own, and its text is not one fixed sentence. This proxy's two
+        // `53300`s are deliberately identical to a client, which the test
+        // below is about.
+        let mut outcomes = Outcomes::default();
+        outcomes.record("53300", "sorry, too many clients already");
+        outcomes.record("53300", "remaining connection slots are reserved");
+        outcomes.record("53300", "remaining connection slots are reserved");
+
+        let refused = outcomes.get("53300").unwrap();
+        assert_eq!(refused.count, 3);
+        assert_eq!(refused.messages.len(), 2);
+        assert_eq!(refused.messages["sorry, too many clients already"], 1);
+        assert_eq!(
+            refused.messages["remaining connection slots are reserved"],
+            2
+        );
+    }
+
+    #[test]
+    fn the_proxys_two_refusals_are_one_entry_because_a_client_cannot_tell_them_apart() {
+        // Not a limitation of this type. `ClientError::client_message` is
+        // vague on purpose: an untrusted client must not learn an upstream
+        // hostname or a connection cap. So a node at its client ceiling and a
+        // fleet at its upstream cap send the same code and the same sentence,
+        // and no amount of client-side recording separates them. The node's
+        // own view is what has to, which is why `M11.6` needs both.
+        let mut outcomes = Outcomes::default();
+        outcomes.record("53300", "too many connections, please retry");
+        outcomes.record("53300", "too many connections, please retry");
+
+        let refused = outcomes.get("53300").unwrap();
+        assert_eq!(refused.count, 2);
+        assert_eq!(refused.messages.len(), 1);
+    }
+
+    #[test]
+    fn a_code_whose_messages_are_all_different_stops_growing_but_keeps_counting() {
+        // `57014` carries how long the caller waited, so every one of them is
+        // a distinct string. Left unbounded this map would hold one entry per
+        // failure, in the process that is measuring memory.
+        let mut outcomes = Outcomes::default();
+        for waited in 0..MESSAGE_VARIANTS * 4 {
+            outcomes.record("57014", &format!("timed out after {waited}ms"));
+        }
+
+        let timed_out = outcomes.get("57014").unwrap();
+        assert_eq!(timed_out.count, MESSAGE_VARIANTS as u64 * 4);
+        assert_eq!(timed_out.messages.len(), MESSAGE_VARIANTS);
+        assert_eq!(outcomes.total(), MESSAGE_VARIANTS as u64 * 4);
+    }
+
+    #[test]
+    fn a_failure_with_no_sqlstate_is_counted_as_one() {
+        // A socket that would not open has no code, and neither does a server
+        // that sent an `ErrorResponse` with no `C` field. Both are real and
+        // neither is a SQLSTATE.
+        let mut outcomes = Outcomes::default();
+        outcomes.record("", "server said nothing");
+        outcomes.record(NO_SQLSTATE, "connect 127.0.0.1:1: refused");
+
+        assert_eq!(outcomes.get(NO_SQLSTATE).unwrap().count, 2);
+        assert_eq!(outcomes.total(), 2);
+        assert!(outcomes.get("").is_none());
+    }
+
+    #[test]
+    fn merging_sums_counts_without_replaying_them() {
+        let mut left = Outcomes::default();
+        left.record("53300", "full");
+        left.record("53300", "full");
+        let mut right = Outcomes::default();
+        right.record("53300", "full");
+        right.record(
+            "57P01",
+            "terminating connection due to administrator command",
+        );
+
+        left.merge(&right);
+
+        assert_eq!(left.total(), 4);
+        assert_eq!(left.get("53300").unwrap().count, 3);
+        assert_eq!(left.get("53300").unwrap().messages["full"], 3);
+        assert_eq!(left.get("57P01").unwrap().count, 1);
+    }
+
+    #[test]
+    fn merging_keeps_the_count_of_messages_it_had_no_room_for() {
+        // The cap drops messages, never failures. A merged report whose total
+        // was short by the dropped ones would be a report that undercounts
+        // exactly when a run went worst.
+        let mut left = Outcomes::default();
+        let mut right = Outcomes::default();
+        for waited in 0..MESSAGE_VARIANTS * 2 {
+            left.record("57014", &format!("left {waited}"));
+            right.record("57014", &format!("right {waited}"));
+        }
+
+        left.merge(&right);
+
+        assert_eq!(left.total(), MESSAGE_VARIANTS as u64 * 4);
+        assert_eq!(left.get("57014").unwrap().messages.len(), MESSAGE_VARIANTS);
+    }
+
+    #[test]
+    fn outcomes_serialise_with_the_code_as_the_key() {
+        // A script reads this. Keyed by code rather than wrapped in a list of
+        // objects, so `jq '.outcomes["53300"].count'` is the whole query.
+        let mut report = report();
+        report.outcomes.record(
+            "53300",
+            "upstream primary:5432 is at its connection cap of 60",
+        );
+        let json = report.to_json().unwrap();
+
+        assert!(json.contains("\"outcomes\""), "{json}");
+        assert!(json.contains("\"53300\""), "{json}");
+        assert!(json.contains("\"count\": 1"), "{json}");
+        assert!(json.contains("connection cap of 60"), "{json}");
+    }
+
+    #[test]
+    fn a_clean_run_carries_an_empty_outcome_map_rather_than_nothing() {
+        // Present and empty rather than absent: a script that reads
+        // `.outcomes` on a clean run should get an answer, and "no failures"
+        // is an answer.
+        let json = report().to_json().unwrap();
+        assert!(json.contains("\"outcomes\": {}"), "{json}");
+        assert!(report().outcomes.is_empty());
+        assert_eq!(report().outcomes.iter().count(), 0);
     }
 
     #[test]

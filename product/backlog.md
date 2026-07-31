@@ -3314,7 +3314,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   answer "which of those two do they get" when the answer is a mixture. That is
   a crate change with a coverage gate on it, so it is a commit of its own, the
   same way `M11.4`'s knob was.
-- [ ] `M11.8` The load client records what clients were told, by SQLSTATE.
+- [x] `M11.8` The load client records what clients were told, by SQLSTATE.
   Split out of `M11.6` on inspection, before starting, which is what `M11.4`
   did once the size of its own scope note became visible.
   `Report` counts failures and quotes the first one. `M11.6` needs the
@@ -3329,6 +3329,30 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Acceptance: the report has a per-SQLSTATE breakdown that sums to `errors`
   plus `relocations`, a test that a run against a target answering a known code
   reports that code, and `pgprox-load` and `bin/pgload` both still hold 95%.
+  Done, and the one test that failed before it passed is the finding.
+  **The two `53300`s cannot be told apart from the client side, and that is the
+  security posture working rather than a gap.** The test was written asserting
+  that the message naming `primary:5432` and a cap of 60 reached the report; it
+  reached "too many connections, please retry" instead.
+  `ClientError::client_message` is vague on purpose, and its doc comment says
+  why: an untrusted client must not learn upstream hostnames or the connection
+  cap. So a node refusing at its own client ceiling and a fleet refusing at its
+  upstream cap send the same code and the same sentence.
+  That does not weaken the breakdown, it relocates half of the answer. The code
+  distribution is a client-side fact and says how many were refused against how
+  many timed out, which is the `53300` against `57014` distinction the scope
+  note called the interesting one. Which refusal produced a given `53300` is a
+  node-side fact, and `M11.6` has to read the node's own view for it: the
+  ceiling refusal logs `refused a client: at the connection ceiling` at warn,
+  and the pool refusal does not.
+  Messages are kept anyway, capped at eight distinct ones per code, because a
+  run against Postgres directly sees the server's own vocabulary and because
+  `57014` carries the wait in its text, which is unbounded. The cap drops
+  messages and never failures: merging keeps the count of the ones it had no
+  room for, which has its own test.
+  Relocations are recorded here beside errors rather than left out. `57P01` is
+  something a client was told, and a document that says what clients saw with
+  the drain code missing from it would have a hole exactly where a drain is.
 - [ ] `M11.7` The pinning curve itself, once `M11.4` has given the load
   generator a statement kind that pins. At least three values of the pinned
   share, each a matched run, reading `pgprox_pin_total` by reason and the

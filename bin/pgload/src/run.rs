@@ -18,7 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use pgprox_load::report::{Histogram, Latency, Report};
+use pgprox_load::report::{Histogram, Latency, NO_SQLSTATE, Outcomes, Report};
 use pgprox_load::sampler::Sampler;
 use pgprox_load::workload::Workload;
 use tokio::sync::Mutex;
@@ -109,6 +109,25 @@ impl Refused {
                 if code == crate::client::ADMIN_SHUTDOWN
         )
     }
+
+    /// The code and message this is counted under.
+    fn told(&self) -> (&str, String) {
+        match self {
+            Self::Local(detail) => (NO_SQLSTATE, detail.clone()),
+            Self::Server(error) => told(error),
+        }
+    }
+}
+
+/// What a session failure is counted under.
+///
+/// A `Server` failure carries the SQLSTATE the server sent. Everything else
+/// happened on this side of the socket and has none.
+fn told(error: &crate::client::SessionError) -> (&str, String) {
+    match error {
+        crate::client::SessionError::Server { code, message } => (code, message.clone()),
+        other => (NO_SQLSTATE, other.to_string()),
+    }
 }
 
 impl std::fmt::Display for Refused {
@@ -133,6 +152,12 @@ struct Tally {
     relocations: u64,
     /// The first failure, kept for the message when nothing connected at all.
     first_failure: Option<String>,
+    /// What this connection was told, by SQLSTATE.
+    ///
+    /// Per connection and merged at the end, rather than one shared map behind
+    /// a lock: a thousand tasks contending on it would be the run measuring
+    /// itself.
+    outcomes: Outcomes,
     latencies: Vec<u64>,
 }
 
@@ -206,6 +231,12 @@ async fn one_connection(
         let mut session = match connect(options).await {
             Ok(session) => session,
             Err(refused) => {
+                // Recorded before the split, so a relocation appears here too.
+                // It is not a failure, but it is something a client was told,
+                // and `57P01` missing from the one document that says what
+                // clients saw would be a hole exactly where a drain is.
+                let (code, message) = refused.told();
+                tally.outcomes.record(code, &message);
                 if refused.is_relocation() {
                     tally.relocations += 1;
                 } else {
@@ -252,6 +283,8 @@ async fn one_connection(
                         .push(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
                 }
                 Err(failed) => {
+                    let (code, message) = told(&failed.error);
+                    tally.outcomes.record(code, &message);
                     if failed.is_relocation() {
                         tally.relocations += 1;
                     } else {
@@ -376,11 +409,13 @@ fn summarise(
     let mut errors = 0;
     let mut relocations = 0;
     let mut first_failure = None;
+    let mut outcomes = Outcomes::default();
 
     for tally in tallies {
         transactions += tally.transactions;
         errors += tally.errors;
         relocations += tally.relocations;
+        outcomes.merge(&tally.outcomes);
         for micros in &tally.latencies {
             histogram.record(*micros);
         }
@@ -405,6 +440,7 @@ fn summarise(
         transactions,
         errors,
         relocations,
+        outcomes,
         latency: Latency::from(&histogram),
     })
 }
@@ -436,20 +472,42 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    /// How the fake server behaves.
+    #[derive(Clone, Copy)]
+    enum Fake {
+        /// Answers everything.
+        Working,
+        /// Refuses at startup, with the code a draining node sends.
+        Refusing,
+        /// Answers, then fails every other statement with a `53300`.
+        ///
+        /// Every other rather than every one, because a run in which nothing
+        /// succeeds has no report to inspect: it fails with `NoConnection`,
+        /// which is the right answer to a target that is entirely broken and
+        /// the wrong shape for a test about how failures are counted.
+        FullEveryOtherStatement,
+    }
+
     /// A server that answers every query the same way, as fast as it can.
     ///
     /// The point of running the load client against something real here is
     /// that the socket, the task fan-out and the tally are what these tests
     /// are about, and a duplex stream would not exercise any of them.
-    async fn fake_server(refuse: bool) -> std::net::SocketAddr {
+    async fn fake_server(mode: Fake) -> std::net::SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        // Shared across connections, so a client that reconnects after its
+        // failed statement does not start the alternation again and succeed
+        // forever.
+        let served = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
         tokio::spawn(async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
                     return;
                 };
+                let refuse = matches!(mode, Fake::Refusing);
+                let served = Arc::clone(&served);
                 tokio::spawn(async move {
                     // The startup packet: an untagged length and the rest.
                     let mut length = [0_u8; 4];
@@ -498,8 +556,24 @@ mod tests {
                         }
 
                         let mut out = Vec::new();
-                        encode::command_complete(&mut out, "SELECT 1");
-                        encode::ready_for_query(&mut out, TxStatus::Idle);
+                        let full = matches!(mode, Fake::FullEveryOtherStatement)
+                            && served.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 2 == 1;
+                        if full {
+                            // The message a full upstream pool sends, named
+                            // server and all, because what this test is about
+                            // is that the message survives to the report.
+                            encode::error_response(
+                                &mut out,
+                                &pgprox_core::error::ClientError::UpstreamAtCap {
+                                    server: pgprox_core::ids::ServerId::new("primary", 5432),
+                                    cap: 60,
+                                },
+                            );
+                            encode::ready_for_query(&mut out, TxStatus::Idle);
+                        } else {
+                            encode::command_complete(&mut out, "SELECT 1");
+                            encode::ready_for_query(&mut out, TxStatus::Idle);
+                        }
                         if socket.write_all(&out).await.is_err() {
                             return;
                         }
@@ -528,7 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_run_against_a_working_target_reports_what_it_did() {
-        let addr = fake_server(false).await;
+        let addr = fake_server(Fake::Working).await;
         let report = run(&options(addr)).await.unwrap();
 
         assert!(report.transactions > 0, "nothing ran");
@@ -545,7 +619,7 @@ mod tests {
     async fn a_target_that_refuses_everything_is_an_error_rather_than_a_fast_run() {
         // The failure this whole binary has to make impossible: a beautiful
         // p99 over zero transactions.
-        let addr = fake_server(true).await;
+        let addr = fake_server(Fake::Refusing).await;
         let error = run(&options(addr)).await.unwrap_err();
         assert!(matches!(error, LoadError::NoConnection { .. }), "{error}");
     }
@@ -555,7 +629,7 @@ mod tests {
         // A count on its own is not diagnosable. Three errors in a run of
         // sixteen thousand is either a proxy refusing connections or a client
         // giving up on its own timeout, and those want opposite responses.
-        let addr = fake_server(false).await;
+        let addr = fake_server(Fake::Working).await;
         let mut options = options(addr);
         // A user the fake server accepts, against a port that is not there for
         // half the connections: the run still completes and carries a reason.
@@ -569,6 +643,68 @@ mod tests {
             !json.contains("first_error"),
             "a clean run should not carry an error field: {json}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_run_records_the_sqlstate_its_clients_were_told_and_what_it_said() {
+        // `M11.6` asks which of two errors a displaced client gets, and this
+        // is the half of the answer the client has: the code, and what it was
+        // actually told.
+        //
+        // Which is less than the task assumed. The fake here sends
+        // `UpstreamAtCap` naming `primary:5432` and a cap of 60, and none of
+        // that reaches the wire: `ClientError::client_message` is vague on
+        // purpose, so the client sees "too many connections, please retry" and
+        // would see exactly that from a node refusing at its own client
+        // ceiling too. The two `53300`s are indistinguishable from outside,
+        // which is the security posture working and which means the run has to
+        // read the node's own view to say which one fired.
+        let addr = fake_server(Fake::FullEveryOtherStatement).await;
+        let report = run(&options(addr)).await.unwrap();
+
+        assert!(report.transactions > 0, "nothing succeeded: {report:?}");
+        assert!(report.errors > 0, "nothing failed: {report:?}");
+
+        let refused = report
+            .outcomes
+            .get("53300")
+            .unwrap_or_else(|| panic!("no 53300 in {:?}", report.outcomes));
+        assert_eq!(refused.count, report.errors);
+        assert_eq!(
+            refused.messages.keys().collect::<Vec<_>>(),
+            vec!["too many connections, please retry"],
+            "what the client was told did not survive to the report"
+        );
+
+        // The invariant the document rests on: everything a client was told is
+        // in here, so the breakdown accounts for the totals rather than
+        // sampling them.
+        assert_eq!(
+            report.outcomes.total(),
+            report.errors + report.relocations,
+            "{:?}",
+            report.outcomes
+        );
+
+        let json = report.to_json().unwrap();
+        assert!(json.contains("\"53300\""), "{json}");
+    }
+
+    #[tokio::test]
+    async fn a_failure_with_no_server_behind_it_is_counted_without_a_code() {
+        // The other branch: nothing answered, so there is no SQLSTATE to
+        // record and inventing one would put the server's vocabulary on a
+        // socket error.
+        let mut outcomes = Outcomes::default();
+        let refused = Refused::Local("connect 127.0.0.1:1: refused".into());
+        let (code, message) = refused.told();
+        outcomes.record(code, &message);
+        assert_eq!(outcomes.get(NO_SQLSTATE).unwrap().count, 1);
+
+        // And a session error that is not a server's, which reaches the same
+        // place by the other path.
+        let (code, _) = told(&crate::client::SessionError::Disconnected);
+        assert_eq!(code, NO_SQLSTATE);
     }
 
     #[tokio::test]
@@ -587,7 +723,7 @@ mod tests {
     async fn a_plaintext_server_answering_a_tls_client_is_reported() {
         // The fake postgres does not speak the SSLRequest exchange, so the
         // read of its answer is what fails. Reported rather than hung.
-        let addr = fake_server(false).await;
+        let addr = fake_server(Fake::Working).await;
         let mut options = options(addr);
         options.tls = true;
         options.connections = 1;
@@ -606,7 +742,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_workload_that_cannot_be_read_stops_before_any_load() {
-        let addr = fake_server(false).await;
+        let addr = fake_server(Fake::Working).await;
         let mut options = options(addr);
         options.workload = std::path::PathBuf::from("/nonexistent/workload.yaml");
         let error = run(&options).await.unwrap_err();
@@ -629,7 +765,7 @@ mod tests {
         )
         .unwrap();
 
-        let addr = fake_server(false).await;
+        let addr = fake_server(Fake::Working).await;
         let mut options = options(addr);
         options.workload = file.path().to_path_buf();
         let error = run(&options).await.unwrap_err();
@@ -638,7 +774,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_report_is_written_where_a_script_can_read_it() {
-        let addr = fake_server(false).await;
+        let addr = fake_server(Fake::Working).await;
         let report = run(&options(addr)).await.unwrap();
 
         let dir = tempfile::tempdir().unwrap();
@@ -782,6 +918,7 @@ mod tests {
             transactions: 1,
             errors: 0,
             first_error: None,
+            outcomes: Outcomes::default(),
             latency: Latency::from(&Histogram::new()),
         };
         let error = write_report(&report, Path::new("/nonexistent/dir/run.json")).unwrap_err();

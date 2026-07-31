@@ -17,6 +17,6 @@ pub mod report;
 pub mod sampler;
 pub mod workload;
 
-pub use report::{Histogram, Latency, Report};
+pub use report::{Histogram, Latency, NO_SQLSTATE, Outcome, Outcomes, Report};
 pub use sampler::{Planned, Sampler, Transaction};
 pub use workload::{Churn, Kind, Statement, TenantGroup, TransactionSize, Workload, WorkloadError};
