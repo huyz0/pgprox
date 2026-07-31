@@ -3270,6 +3270,28 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   `kind`, with the fleet at its upstream quota and one node killed outright;
   what the displaced clients are told, recorded; and the transaction loss
   recorded next to `M8`'s 22 of 21,088.
+  The mechanism is already settled by reading, which sharpens what the run has
+  to look for. A displaced client is *accepted* by a survivor, because there is
+  no client connection cap; it then waits for an upstream connection when it
+  issues its first statement, and `Waiters::give_up` decides what it is told:
+  `53300 too_many_connections` when the pool is at its limit, `57014
+  query_canceled` when the pool has headroom and the wait merely expired. The
+  comment there says why the two are separate: "one says the server is full, the
+  other says this node is. Reporting the cap when the pool has headroom would
+  send them to the wrong place."
+  So the run is not asking whether clients are refused. It is asking **which of
+  those two they get**, and the interesting outcome is `57014` while the fleet is
+  genuinely full, because that is the operator sent to the wrong place at exactly
+  the moment they can least afford it.
+  Two things follow for the design. The run needs the client-visible SQLSTATE
+  captured, not just a failed-transaction count, so `pgbench` output alone is not
+  enough. And it needs the pool's own view at the same instant, since the
+  distinction between the two errors is a property of the pool at the moment of
+  giving up rather than of the fleet over the run.
+  `scripts/e2e.sh` already kills `pgprox-3` under load, in
+  `prove_drain_check_catches_losses`. That is the harness to extend rather than
+  a new one to write; what it lacks is the saturation before the kill and the
+  SQLSTATE after it.
 - [ ] `M11.7` The pinning curve itself, once `M11.4` has given the load
   generator a statement kind that pins. At least three values of the pinned
   share, each a matched run, reading `pgprox_pin_total` by reason and the
