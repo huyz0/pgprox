@@ -190,6 +190,15 @@ impl Drop for PooledBuf {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_default_buffer_size_is_sixteen_kibibytes() {
+        // `16 * 1024` could become `16 / 1024`, which is zero, or `16 + 1024`.
+        // Nothing asserted the value, only that buffers worked, and a slab of
+        // zero-length buffers still satisfies "a buffer was handed out". The
+        // constant's own doc says it is chosen to hold a typical Postgres
+        // message without growing, which is a claim about this number.
+        assert_eq!(DEFAULT_BUFFER_SIZE, 16_384);
+    }
 
     #[test]
     fn a_dropped_buffer_returns_to_the_slab() {

@@ -219,6 +219,41 @@ impl ClientError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn every_client_message_is_the_one_this_module_chose() {
+        // `client_message` could return a single literal for every variant.
+        // The existing test checks that no message leaks internal detail, which
+        // a constant satisfies perfectly: one harmless string leaks nothing.
+        // What it does instead is tell every client the same thing, so a
+        // connection refused for capacity and one refused for TLS are
+        // indistinguishable to the driver that has to decide whether to retry.
+        assert_eq!(
+            ClientError::Draining.client_message(),
+            "terminating connection due to administrator command"
+        );
+        assert_eq!(
+            ClientError::TlsRequired.client_message(),
+            "SSL connection is required"
+        );
+        assert_eq!(
+            ClientError::SidecarUnavailable.client_message(),
+            "authentication service unavailable"
+        );
+        assert_eq!(
+            ClientError::AuthRefused(AuthRejection::TokenRejected).client_message(),
+            "authentication failed"
+        );
+
+        // And the messages are distinct where the causes are, which is the
+        // property a single literal destroys.
+        let distinct = [
+            ClientError::Draining.client_message(),
+            ClientError::TlsRequired.client_message(),
+            ClientError::SidecarUnavailable.client_message(),
+        ];
+        let unique: std::collections::HashSet<&str> = distinct.iter().copied().collect();
+        assert_eq!(unique.len(), distinct.len(), "two causes share a message");
+    }
 
     const HOSTNAME: &str = "db-secret-internal.prod.example";
     const TENANT: &str = "acme-corp";

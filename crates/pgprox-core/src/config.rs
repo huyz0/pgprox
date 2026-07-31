@@ -382,6 +382,96 @@ mod fake {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    /// `M14.34`. Four mutants survived in this file, and two of them are the
+    /// same method on the `Arc` forwarding impl: `is_healthy` could be replaced
+    /// by `true` *and* by `false`. A method whose mutants both survive is a
+    /// method nothing calls through the trait at all.
+    ///
+    /// It is the staleness signal. `FileSource` overrides it because a node
+    /// serving a stale document looks exactly like one serving the current one,
+    /// which is when an operator most needs to be told which they have.
+    #[test]
+    fn health_is_forwarded_through_an_arc_rather_than_defaulted() {
+        #[derive(Debug)]
+        struct Fixed(bool);
+
+        #[async_trait::async_trait]
+        impl ConfigSource for Fixed {
+            async fn load(&self) -> Result<Config, ConfigError> {
+                Ok(Config::default())
+            }
+            fn watch(&self) -> watch::Receiver<Arc<Config>> {
+                watch::channel(Arc::new(Config::default())).1
+            }
+            fn is_healthy(&self) -> bool {
+                self.0
+            }
+        }
+
+        // Both directions, or a constant in either position would pass.
+        let healthy: Arc<dyn ConfigSource> = Arc::new(Fixed(true));
+        assert!(healthy.is_healthy());
+        let stale: Arc<dyn ConfigSource> = Arc::new(Fixed(false));
+        assert!(
+            !stale.is_healthy(),
+            "an Arc reported a stale source as healthy"
+        );
+    }
+
+    #[test]
+    fn a_source_with_no_loop_reports_itself_healthy() {
+        // The trait default, which is what a source written outside this
+        // repository gets. `false` would make every such node report its
+        // configuration as stale for ever.
+        #[derive(Debug)]
+        struct Minimal;
+
+        #[async_trait::async_trait]
+        impl ConfigSource for Minimal {
+            async fn load(&self) -> Result<Config, ConfigError> {
+                Ok(Config::default())
+            }
+            fn watch(&self) -> watch::Receiver<Arc<Config>> {
+                watch::channel(Arc::new(Config::default())).1
+            }
+        }
+
+        assert!(
+            Minimal.is_healthy(),
+            "a source with no loop cannot fail between reads, so it is healthy"
+        );
+    }
+
+    #[test]
+    fn the_default_loop_never_returns() {
+        // `run_loop` defaults to `pending()`, and could be replaced with `()`.
+        // The composition root starts this without knowing which source it
+        // holds, so a default that returns immediately turns "start the config
+        // loop" into a no-op that looks like it ran.
+        //
+        // Polled by hand rather than with a timeout, because this crate depends
+        // on tokio only for `sync`: pulling in the time driver to assert that a
+        // future is pending would be a dependency added for one test.
+        #[derive(Debug)]
+        struct Minimal;
+
+        #[async_trait::async_trait]
+        impl ConfigSource for Minimal {
+            async fn load(&self) -> Result<Config, ConfigError> {
+                Ok(Config::default())
+            }
+            fn watch(&self) -> watch::Receiver<Arc<Config>> {
+                watch::channel(Arc::new(Config::default())).1
+            }
+        }
+
+        let mut loop_future = Box::pin(ConfigSource::run_loop(Arc::new(Minimal)));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            std::future::Future::poll(loop_future.as_mut(), &mut cx).is_pending(),
+            "the default run_loop completed; the composition root would treat that as the loop having ended"
+        );
+    }
 
     fn server(name: &str, cap: u32) -> ServerConfig {
         ServerConfig {

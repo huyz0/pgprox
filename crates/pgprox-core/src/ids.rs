@@ -389,6 +389,41 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn the_deprecated_counter_is_the_secret_it_was_renamed_from() {
+        // `counter` could return `0` or `1`. It is deprecated in favour of
+        // `secret`, kept so the rename stayed additive, and it must go on
+        // answering what it always did: a caller that has not migrated would
+        // otherwise start reading a constant as a cancel key.
+        #[expect(deprecated, reason = "the deprecated method is what is under test")]
+        {
+            // The secret is truncated to 48 bits, so the expectation is the
+            // truncation rather than the literal handed in.
+            let id = ConnId::new(NodeId::new(7), 0xdead_beef_cafe_f00d);
+            assert_eq!(id.counter(), id.secret());
+            assert_eq!(id.counter(), 0xdead_beef_cafe_f00d & CONN_COUNTER_MASK);
+
+            // Two different secrets, so a constant cannot pass.
+            let other = ConnId::new(NodeId::new(7), 1);
+            assert_eq!(other.counter(), 1);
+            assert_ne!(id.counter(), other.counter());
+        }
+    }
+
+    #[test]
+    fn an_lsn_half_wider_than_thirty_two_bits_is_combined_by_or() {
+        // `(hi << 32) | lo` could become `^`. The two agree whenever the halves
+        // share no set bit, which is every well-formed LSN, because `lo` is at
+        // most eight hex digits. The parser does not limit the width, so the
+        // case that separates them is an overlong low half, and pinning it says
+        // what this parser does with one rather than leaving it to chance.
+        let wide: Lsn = "1/FFFFFFFFFFFFFFFF".parse().unwrap();
+        assert_eq!(wide.get(), (1_u64 << 32) | u64::MAX);
+
+        // And the ordinary case still round-trips.
+        let normal: Lsn = "16/B374D848".parse().unwrap();
+        assert_eq!(normal.get(), (0x16_u64 << 32) | 0xB374_D848);
+    }
 
     #[test]
     fn tenant_id_clones_share_the_same_string() {

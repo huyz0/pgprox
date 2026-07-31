@@ -4559,7 +4559,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   The `Stats` builder uses `..Stats::default()`, so deleting the `waiting` field
   leaves it at zero and still compiles. Waiting clients are the queue behind a
   full pool, which is the first number an operator reads when latency climbs.
-- [ ] `M14.34` `config.rs`, `ids.rs`, `buf.rs` and `error.rs`, 10 survivors.
+- [x] `M14.34` `config.rs`, `ids.rs`, `buf.rs` and `error.rs`, 10 survivors.
   `ConfigSource::is_healthy` survived being replaced by both `true` and `false`,
   which means nothing calls it through the trait at all. `ConnId::counter` and
   the `Lsn` parser are identity handling, and `ClientError::client_message`
