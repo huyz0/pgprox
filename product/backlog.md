@@ -5092,7 +5092,15 @@ Streaming removes both.
   prefix outside it, stream the tail. Filed rather than attempted, because it
   is the one remaining case where getting it wrong desynchronises a session
   rather than costing memory.
-- [ ] `M16.5` Re-measure. `M16.1`'s test drives `Wire::read_tagged` directly; it
-  will still report what that call holds. The number that closes this milestone
-  is the same 16 MiB row through the real pump, and the honest version of it
-  needs the machines `M7`'s full run needed.
+- [x] `M16.5` Re-measure. **16,777,216 bytes held becomes 512**, for the same
+  16 MiB `DataRow` through the pair the pump now uses. 512 is `FIRST_READ`, the
+  stack chunk a quiet connection reads into, so the largest piece held is a read
+  rather than a message; a busy connection reads into the 16 KiB borrowed buffer
+  instead, which is the same answer with a different constant.
+  `M16.1`'s original comparison is kept alongside it rather than replaced,
+  because it is what says the gap was real.
+  The 100k half is not done and is blocked on the same three machines and real
+  network as `M7`'s full run. It is named in the roadmap as such rather than
+  claimed. `e2e.sh` reported 160.5 tps before and 174.8 after, which is worth
+  almost nothing as a performance claim on one machine with pgbench's tiny rows,
+  and is quoted only because it is the run that says nothing broke.

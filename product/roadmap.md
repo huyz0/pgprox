@@ -864,3 +864,43 @@ contradict any of this and does not answer it either.
 
 Completion condition: a measurement first, then the two directions, then the
 same 100k run with a result set large enough that the difference would show.
+
+**Where it got to.** Both bulk directions stream, and the number is
+16,777,216 bytes held for one 16 MiB `DataRow` becoming 512.
+
+Server to client covers every `DataRow` and every `CopyData` of every uncached
+statement, which is the traffic this was about. Client to server covers the
+COPY-IN loop, which is the whole of a `COPY ... FROM STDIN`. Both were
+validated against things that can disagree: `conformance.sh` against real
+Postgres 17 and 18 across psql, pgx, asyncpg, JDBC and npgsql, and `e2e.sh`
+against the three-node stack, whose `pgbench --initialize` loads 100,000 rows
+through the proxy with a real `COPY`. Both suites were run before the change as
+well, so a green run after it means something. No existing test was relaxed.
+
+Two things came out of the work that were not in the plan.
+
+The split forced a cancellation-safety question into the open. `read_header`
+consumes five bytes before the body arrives, so the *pair* must not straddle a
+cancellation point. It is itself safe, since it consumes only after the five
+bytes decode and its only await is the fill before that. The pump and the COPY
+loop have nothing racing them; the relay loop has a `select!` whose drain
+branch can drop a read mid-frame, so `read_tagged` stays atomic and stays what
+that loop calls. That is written on the function rather than left to be found.
+
+And the streaming decision rests on an implication nobody had stated: an
+uninspected tag decodes to `Opaque` without reading a body. Two lists in two
+modules happened to agree. `what_is_not_inspected_is_not_decoded_either` now
+walks all 256 tags and says so.
+
+**What is left, and it is real.** `M16.6`. The main relay loop still reads a
+whole `Bind` while `inspect_policy` says only its first 4 KiB matters, so a
+client binding a 100 MB parameter still has 100 MB held. It is filed with its
+design and deliberately not attempted alongside the other two: its read is
+inside the `select!`, statement rewriting changes the length of the prefix it
+has just inspected so the forwarded header cannot be copied from the one that
+arrived, and the query cache needs the whole body for its key. It is the one
+remaining case where getting it wrong desynchronises a session rather than
+costing memory.
+
+The 100k run with a large result set is the other half of the completion
+condition and needs the three machines `M7`'s full run needed.
