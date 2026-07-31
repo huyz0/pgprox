@@ -88,7 +88,7 @@ impl<'a> Reader<'a> {
     ///
     /// Fails if fewer than four bytes remain.
     pub fn i32(&mut self, what: &'static str) -> Result<i32, FieldError> {
-        let end = self.pos + 4;
+        let end = self.end_of(4, what)?;
         let slice = self.buf.get(self.pos..end).ok_or(FieldError::Truncated {
             what,
             read: self.pos,
@@ -103,7 +103,7 @@ impl<'a> Reader<'a> {
     ///
     /// Fails if fewer than two bytes remain.
     pub fn i16(&mut self, what: &'static str) -> Result<i16, FieldError> {
-        let end = self.pos + 2;
+        let end = self.end_of(2, what)?;
         let slice = self.buf.get(self.pos..end).ok_or(FieldError::Truncated {
             what,
             read: self.pos,
@@ -130,13 +130,32 @@ impl<'a> Reader<'a> {
         Ok(text)
     }
 
+    /// Where a field of `width` bytes would end, refusing an overflow.
+    ///
+    /// `width` reaches [`Reader::bytes`] straight from the wire: a `Bind`
+    /// parameter length and a `ParameterDescription` count both become one.
+    /// On a 64-bit target the sum cannot wrap, because `pos` is bounded by a
+    /// slice length and `width` by `i32::MAX`, so this is hardening rather than
+    /// a live bug. It is here because the fuzz target runs on 64-bit and so
+    /// cannot reach the case, which makes "cannot wrap" an argument about the
+    /// build rather than about the code.
+    ///
+    /// Overflow reports as truncation, which is what it is from the caller's
+    /// side: the field does not fit in what arrived.
+    fn end_of(&self, width: usize, what: &'static str) -> Result<usize, FieldError> {
+        self.pos.checked_add(width).ok_or(FieldError::Truncated {
+            what,
+            read: self.pos,
+        })
+    }
+
     /// Reads `n` bytes.
     ///
     /// # Errors
     ///
     /// Fails if fewer than `n` bytes remain.
     pub fn bytes(&mut self, n: usize, what: &'static str) -> Result<&'a [u8], FieldError> {
-        let end = self.pos + n;
+        let end = self.end_of(n, what)?;
         let slice = self.buf.get(self.pos..end).ok_or(FieldError::Truncated {
             what,
             read: self.pos,
@@ -196,6 +215,26 @@ mod tests {
                 "{what}: {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_length_that_would_overflow_the_cursor_is_refused() {
+        // `n` reaches `bytes` straight from the wire, so the sum with the
+        // cursor is a peer's number plus ours. On this target it cannot wrap,
+        // which is why the fuzz target never reaches it and why the check is
+        // stated here instead: `usize::MAX` is the one input that separates a
+        // checked add from an unchecked one.
+        let buf = b"abc";
+        let mut r = Reader::new(buf);
+        r.u8("tag").unwrap();
+
+        let err = r.bytes(usize::MAX, "parameter_value").unwrap_err();
+        assert!(matches!(err, FieldError::Truncated { .. }), "{err:?}");
+
+        // And the cursor did not move, so the next read still sees what is
+        // there. A failed read that consumed bytes would desynchronise every
+        // field after it.
+        assert_eq!(r.remaining(), b"bc");
     }
 
     #[test]

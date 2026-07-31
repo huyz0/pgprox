@@ -4895,7 +4895,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   it. The selection is now split into a private form taking an explicit
   preference list, and the rule is stated against a list long enough to have an
   order.
-- [ ] `M15.7` `Reader` adds client-controlled lengths without checking. `i32`,
+- [x] `M15.7` `Reader` adds client-controlled lengths without checking. `i32`,
   `i16` and `bytes` all compute `self.pos + n` and rely on the slice index to
   refuse the result. `bytes` takes its `n` from the wire: a `Bind` parameter
   length and a `ParameterDescription` count both reach it. On a 64-bit target
@@ -4903,4 +4903,8 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   worth the two lines because the fuzz target cannot reach a 32-bit overflow on
   the machine it runs on.
   Acceptance: `checked_add`, and the truncation error rather than a panic.
+  The test passes `usize::MAX`, which is the one input that separates a checked
+  add from an unchecked one on this target, and also asserts the cursor did not
+  move: a failed read that consumed bytes would desynchronise every field after
+  it.
 - [ ] `M15.8` Close M15. Filed before the commit that does it.
