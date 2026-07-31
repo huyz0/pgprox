@@ -95,12 +95,14 @@ pub fn ready_for_query(out: &mut Vec<u8>, status: TxStatus) {
 /// built here: the server's own `RowDescription` passes through untouched.
 pub fn row_description(out: &mut Vec<u8>, columns: &[&str]) {
     tagged(out, Tag::ROW_DESCRIPTION, |b| {
-        b.extend_from_slice(
-            &i16::try_from(columns.len())
-                .unwrap_or(i16::MAX)
-                .to_be_bytes(),
-        );
-        for column in columns {
+        let count = i16::try_from(columns.len()).unwrap_or(i16::MAX);
+        b.extend_from_slice(&count.to_be_bytes());
+        // Truncated to the count, not merely counted. A saturating conversion
+        // that still writes every item produces a message whose header and body
+        // disagree, and the client reads the next message from the middle of
+        // this one. Unreachable from any caller here, and two lines, and
+        // `encode_frontend::bind_with_parameters` already does it this way.
+        for column in columns.iter().take(usize::try_from(count).unwrap_or(0)) {
             cstr(b, column);
             // No table and no column: this row came from the proxy, not from a
             // relation, and claiming otherwise would make a client's metadata
@@ -120,12 +122,9 @@ pub fn row_description(out: &mut Vec<u8>, columns: &[&str]) {
 /// `D`: one row of a result the proxy answered itself.
 pub fn data_row(out: &mut Vec<u8>, values: &[String]) {
     tagged(out, Tag::DATA_ROW, |b| {
-        b.extend_from_slice(
-            &i16::try_from(values.len())
-                .unwrap_or(i16::MAX)
-                .to_be_bytes(),
-        );
-        for value in values {
+        let count = i16::try_from(values.len()).unwrap_or(i16::MAX);
+        b.extend_from_slice(&count.to_be_bytes());
+        for value in values.iter().take(usize::try_from(count).unwrap_or(0)) {
             b.extend_from_slice(&i32::try_from(value.len()).unwrap_or(i32::MAX).to_be_bytes());
             b.extend_from_slice(value.as_bytes());
         }
@@ -168,7 +167,10 @@ pub fn negotiate_protocol_version(out: &mut Vec<u8>, minor: i32, unrecognized: &
         b.extend_from_slice(&minor.to_be_bytes());
         let count = i32::try_from(unrecognized.len()).unwrap_or(i32::MAX);
         b.extend_from_slice(&count.to_be_bytes());
-        for option in unrecognized {
+        for option in unrecognized
+            .iter()
+            .take(usize::try_from(count).unwrap_or(0))
+        {
             cstr(b, option);
         }
     });
@@ -226,6 +228,48 @@ mod answered_tests {
         let len = u32::from_be_bytes(bytes[1..5].try_into().unwrap()) as usize;
         assert_eq!(len + 1, bytes.len(), "the length prefix is wrong");
         (Tag(bytes[0]), bytes[5..].to_vec())
+    }
+
+    #[test]
+    fn a_count_never_disagrees_with_the_list_it_counts() {
+        // The count is an i16 and the list is a slice, so past 32767 the
+        // conversion saturates. Writing every item anyway produces a message
+        // whose header says one thing and whose body says another, and a client
+        // reading it takes the next message from the middle of this one.
+        //
+        // No caller here can reach it: everything this proxy answers itself is
+        // SHOW output. It is asserted rather than argued because the correct
+        // version of this loop is already in the workspace, in
+        // `encode_frontend::bind_with_parameters`, so three of the four
+        // encoders had simply not been given it.
+        let too_many = usize::try_from(i16::MAX).unwrap() + 1;
+
+        let values: Vec<String> = (0..too_many).map(|_| String::new()).collect();
+        let mut out = Vec::new();
+        data_row(&mut out, &values);
+        let (_, body) = frame(&out);
+
+        let declared = i16::from_be_bytes(body[..2].try_into().unwrap());
+        assert_eq!(declared, i16::MAX);
+        // Every value is empty, so each is exactly its four-byte length.
+        let written = (body.len() - 2) / 4;
+        assert_eq!(
+            written,
+            usize::try_from(declared).unwrap(),
+            "the body carries {written} values and the header claims {declared}"
+        );
+
+        // Same shape, same fix, for a row description.
+        let names: Vec<&str> = vec![""; too_many];
+        let mut out = Vec::new();
+        row_description(&mut out, &names);
+        let (_, body) = frame(&out);
+
+        let declared = i16::from_be_bytes(body[..2].try_into().unwrap());
+        assert_eq!(declared, i16::MAX);
+        // An empty name is one null byte, then eighteen bytes of fixed fields.
+        let written = (body.len() - 2) / 19;
+        assert_eq!(written, usize::try_from(declared).unwrap());
     }
 
     #[test]

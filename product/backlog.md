@@ -4942,7 +4942,7 @@ milestone said it would do and which found three more.
   32 KiB rather than Postgres's 10000, because a startup packet carrying a long
   `options` string and a JWT with a full claim set both have to fit. The number
   that matters is that it is not a gigabyte.
-- [ ] `M15.10` A count and the list it counts can disagree.
+- [x] `M15.10` A count and the list it counts can disagree.
   `encode::row_description` writes `i16::try_from(columns.len())` saturated to
   `i16::MAX` and then writes every column. `encode::data_row` and
   `encode::negotiate_protocol_version` have the same shape. Past the saturation
