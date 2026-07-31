@@ -4776,3 +4776,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   condition. The `HomeDraining` guard in `shed` stays: the property is then
   enforced structurally *and* checked, and removing it would change the public
   `ShedReason` for no behavioural gain.
+- [x] `M14.7` Close M14. Filed before the commit that does it, which is the
+  order `M12.1` enforces.
+  The status table and the section say the milestone is complete, and the
+  section says what the runs found rather than that they ran.

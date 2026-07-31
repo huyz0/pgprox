@@ -30,6 +30,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M11 | The gaps the completed milestones name | complete; two of its four measurable questions corrected the claim that raised them, and pinning costs 0.650 upstream connections per pinned session with no threshold |
 | M12 | The gates that count files | complete; five gate checks now read what a file says instead of matching its name, and every gate is proven able to fail |
 | M13 | The non-negotiables that nothing enforces | complete; six of the seven rules have a script and the seventh is marked as having none, which is the honest half of the answer |
+| M14 | The crates mutation testing never reached | complete; 2,926 mutants across all fourteen crates, 155 survivors, 137 killed and 18 argued |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -685,7 +686,7 @@ planting a leak and watching nothing happen. Everything after it plants a
 violation and requires the rule to object, and `M13.8`'s end-to-end check carries
 a positive control for the same reason.
 
-## M14: the crates mutation testing never reached
+## M14: the crates mutation testing never reached (complete)
 
 ```bash
 scripts/m14-complete.sh
@@ -724,3 +725,35 @@ A surviving mutant is a missing test. It is killed by writing one, or it goes in
 difference. `M10` established that an entry there is an argument, never an
 assertion, and that "detected by hanging" was a claim about the runner rather
 than about the code.
+
+**What it came to.** 2,926 mutants across all fourteen crates. 155 survived,
+137 were killed by tests, 18 are accepted with a written argument. The list and
+its header now say the same thing.
+
+The survivors clustered somewhere more mundane than expected. Almost none were
+in complicated logic; they were in accessors, counters, constants and boundaries
+that only one state was ever asked about. Four shapes recurred:
+
+- **An assertion compared against the constant that produced it.** Three
+  separate cases, including one where a value duplicated across two crates was
+  documented as "held together by a test" and held by neither side.
+- **An upper bound a small constant satisfies.** `max_series() <= CEILING` is
+  the cardinality budget for the entire metric surface, and `0` passes it.
+- **A counter asserted to be zero.** `futile_wakeups() == 0` is the whole of
+  `M7.58`'s thundering-herd measurement, and a frozen counter makes it
+  unfalsifiable while still reading as evidence.
+- **A method nothing calls.** `is_healthy` survived being replaced by `true`
+  *and* by `false` in three separate places, which is only possible if nothing
+  asks it.
+
+Three defects were found and fixed rather than merely covered: `gossip` took a
+node's mode from a digest it had already rejected as stale, which let an
+out-of-order message undo a drain; `mutants.sh` reported a crate clean when its
+unmutated baseline had failed to build; and an exclusion added during the
+milestone matched nothing, because cargo-mutants compares a glob containing a
+slash against the whole path.
+
+The lesson the milestone kept teaching, in four different costumes, is that
+running is not constraining. A test can execute a line without pinning it, a
+flag can be passed without matching anything, an assertion can compare a value
+against itself, and a harness can report success for a run that tested nothing.
