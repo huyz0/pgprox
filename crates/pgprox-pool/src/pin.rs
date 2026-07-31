@@ -201,6 +201,15 @@ const REPLAYABLE_NAMES: &[&str] = &[
     "default_transaction_deferrable",
     "intervalstyle",
     "bytea_output",
+    // One of the five pgbouncer tracks by default, and absent here until
+    // `M15.11`. It is an ordinary GUC reproduced by re-issuing the `SET`, so it
+    // meets the criterion above; its absence pinned any session that set it.
+    //
+    // The comment above says additions should be rare and each is a promise,
+    // and that is right. It is not an argument against this one: `bytea_output`
+    // and `intervalstyle` are on the list and are exactly as rare, so the rule
+    // being applied is "can it be replayed", not "is it common".
+    "standard_conforming_strings",
 ];
 
 /// The set of parameters a session may set and still be moved.
@@ -562,9 +571,32 @@ mod tests {
             "set application_name to 'app'",
             "SET statement_timeout = 5000",
             "SET SESSION search_path = public",
+            // `M15.11`. Absent from the list until then, so a session that set
+            // it was pinned for its lifetime. It is one of the five pgbouncer
+            // tracks by default and is reproduced by re-issuing the `SET` like
+            // any other here.
+            "SET standard_conforming_strings = off",
         ] {
             assert_eq!(reason(sql), None, "{sql}");
         }
+    }
+
+    #[test]
+    fn a_parameter_that_replays_is_also_recorded_for_replay() {
+        // The two halves the `Replayable` type exists to keep in step, checked
+        // on the parameter this milestone added. A name on the pin side and off
+        // the record side is a session reported as movable whose setting is
+        // never replayed, which is silent: the client's parameter quietly
+        // reverts between statements and nothing errors.
+        let mut params = crate::params::SessionParams::new();
+        let change =
+            params.observe_statement("SET standard_conforming_strings = off", Replayable::DEFAULT);
+
+        assert!(
+            matches!(change, Some(crate::params::ParamChange::Recorded { .. })),
+            "it does not pin, and it is not recorded either: {change:?}"
+        );
+        assert_eq!(params.len(), 1);
     }
 
     #[test]

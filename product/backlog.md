@@ -4953,7 +4953,7 @@ milestone said it would do and which found three more.
   workspace and written for the same reason, already does it correctly with
   `values.iter().take(count)`. Three of the four got it wrong and one got it
   right, so the fix is to apply the pattern that is already here.
-- [ ] `M15.11` `standard_conforming_strings` pins a session that could be
+- [x] `M15.11` `standard_conforming_strings` pins a session that could be
   replayed. It is one of the five parameters pgbouncer tracks by default, it is
   an ordinary GUC reproducible by re-issuing the `SET`, and it is absent from
   `REPLAYABLE_NAMES`, so a session that sets it is pinned for its lifetime.
