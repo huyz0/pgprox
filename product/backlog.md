@@ -3292,7 +3292,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   `prove_drain_check_catches_losses`. That is the harness to extend rather than
   a new one to write; what it lacks is the saturation before the kill and the
   SQLSTATE after it.
-  Done, in `scripts/admission.sh` and `deploy/docker-compose.admission.yml`,
+  Done, in `scripts/admission.sh` and `deploy/docker-compose.fleet.yml`,
   recorded in `product/perf/run-2026-07-31-admission.md`.
   A new script rather than an extension of `scripts/e2e.sh`, against what the
   note above says. Two reasons, both found once the shape was visible. The e2e
@@ -3407,7 +3407,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   Relocations are recorded here beside errors rather than left out. `57P01` is
   something a client was told, and a document that says what clients saw with
   the drain code missing from it would have a hole exactly where a drain is.
-- [ ] `M11.9` The cluster view keeps counting a node that is gone. Found by
+- [x] `M11.9` The cluster view keeps counting a node that is gone. Found by
   `M11.6` rather than by review.
   `/v1/servers` reports `in_use` as the sum of what every node last gossiped.
   A node killed outright never gossips again, so its last reading stays in that
@@ -3488,3 +3488,38 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   and a `LISTEN` that could not be parsed there would break half the run.
   SQL-level `PREPARE ... LISTEN` is a syntax error; protocol-level `Parse` of
   the same statement is fine, which is the path the load client uses.
+  Fixed, and it is three lines because the design had already decided where
+  they go. `DigestStore` says in its own module comment that it will not filter
+  by liveness, and gives the reason: one source of the view means a caller
+  cannot pick the wrong one. `Coordinator::forget` drops a node from both the
+  liveness map and the digest store, and is called on an explicit leave
+  announcement. `Membership::reap` drops dead nodes from liveness alone.
+  So the hole is precisely the case with no announcement. A node killed
+  outright is reaped from liveness and its digest is never mentioned to
+  anybody, and every cluster-scoped sum keeps adding it. `reap` now returns the
+  nodes it dropped and `observe` forgets their digests in the same breath,
+  which keeps the single source of liveness the module comment asks for.
+  `reap`'s own doc comment said "housekeeping only: `view` and `alive_count`
+  already ignore them, so skipping this cannot make a dead node count". The
+  first half is still true and the last clause was not, for the one consumer
+  that does not go through `view`. It says so now.
+  The test that matters is the one that fails without the fix, and it had to be
+  written with digests that report a non-zero count: the crate's usual
+  `digest_for` helper reports zeros, and a sum over zeros reads the same
+  whether or not a corpse is in it. Two tests either side of the behaviour, so
+  a reap that dropped a live node's digest is caught too, which is the same
+  defect pointing the other way and worse: it reports headroom that is not
+  there.
+  `scripts/m3-complete.sh` still passes, which is the check that matters most
+  here: the quota invariant is proven over randomized schedules with partitions
+  and leader loss, and this changes what those schedules do to the store.
+  One refinement the first version needed, and `bin/pgprox`'s own suite is what
+  found it. A node ages out of its own liveness on purpose, so that one whose
+  loop has wedged stops leading, and forgetting digests on reap therefore made
+  a node forget *itself*: `run::tests::a_client_whose_tenant_belongs_elsewhere_is_shed`
+  gossips for forty-four seconds without ticking, so the local node went dead
+  in its own view and dropped its own tenant usage, and the tenant it homed
+  read as having no headroom. That is the defect the `heartbeat` comment
+  already describes, arriving from the other direction. The local node is
+  skipped, with its own test, because ageing out of liveness is a statement
+  about the loop and not about the data.

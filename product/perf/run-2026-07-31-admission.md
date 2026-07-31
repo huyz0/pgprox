@@ -17,7 +17,7 @@ operator sees, not about what a client is told.
 ## The stack, and the one thing it needed that the e2e stack lacks
 
 Three nodes, a primary capped at 60 connections with `guaranteed_fraction: 0.5`,
-two replicas, the mock sidecar. `deploy/docker-compose.admission.yml` over the
+two replicas, the mock sidecar. `deploy/docker-compose.fleet.yml` over the
 e2e stack, adding exactly two things: the client cap raised so the *upstream*
 quota is the binding constraint rather than the door, and one DNS alias that all
 three nodes answer to.

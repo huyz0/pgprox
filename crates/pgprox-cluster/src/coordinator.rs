@@ -310,7 +310,27 @@ impl NodeCoordinator {
             ledger.observe_leadership(leading, now);
             ledger.reap(now);
         }
-        self.liveness.reap(now);
+        // A node reaped from liveness has its digest dropped in the same
+        // breath. `DigestStore` is deliberately not liveness-filtered, for the
+        // reason its own module comment gives, so the only way it learns a node
+        // is gone is `forget`, and `Self::forget` is called on an explicit
+        // leave announcement. A node killed outright never sends one, so its
+        // last reading stayed in every cluster-scoped sum with nothing to
+        // expire it. See `M11.9`.
+        for node in self.liveness.reap(now) {
+            // Never this node's own. A node ages out of its own liveness on
+            // purpose, so that one whose loop has wedged stops leading, and
+            // that is a statement about the loop rather than about the data:
+            // the digest is still the truth about what this process is
+            // holding. Forgetting it would take this node's contribution out
+            // of every cluster-wide sum it answers, which is the defect
+            // `Self::heartbeat` already carries a comment about, arriving from
+            // the other direction.
+            if node == self.local {
+                continue;
+            }
+            self.digests.forget(node);
+        }
 
         // A reservation decays by counting gossip rounds in which the home node
         // reported no use, so this must advance every round whether or not
@@ -1221,6 +1241,113 @@ mod tests {
         assert_eq!(nodes[0].liveness().tracked(), 2);
         assert_eq!(nodes[0].digests().len(), 2);
         assert_eq!(nodes[0].membership(now).members().len(), 2);
+    }
+
+    #[test]
+    fn a_node_killed_outright_stops_counting_towards_the_cluster_total() {
+        // `M11.9`, found by `M11.6` running rather than by review. A killed
+        // node sends no leave announcement, so `forget` is never called for it,
+        // and the digest store has no liveness of its own. Its last reading
+        // stayed in every cluster-scoped sum with nothing to expire it: the run
+        // watched a three-node fleet report 89 upstream connections against a
+        // cap of 60 for a full minute, the extra 29 belonging to a corpse.
+        // A digest that actually says it is holding something. `digest_for`
+        // reports zeros, which is what most tests here want and is exactly what
+        // this one cannot use: a sum over zeros is the same before and after a
+        // node is dropped from it.
+        let holding = |n: u16, version: u64| VersionedDigest {
+            digest: ClusterDigest {
+                node: node(n),
+                mode: NodeMode::Active,
+                client_conns: 10,
+                upstream_conns: vec![(server(), 10 + u32::from(n))],
+                tenant_usage: Vec::new(),
+            },
+            version,
+        };
+
+        let start = Instant::now();
+        let mut watcher = NodeCoordinator::new(node(1), config_for(3), start);
+        watcher.set_cap(server(), CAP);
+        watcher.report(10, vec![(server(), 11)]);
+        watcher.heartbeat(start);
+        watcher.gossip(holding(2, 1), start);
+        watcher.gossip(holding(3, 1), start);
+
+        // 11 + 12 + 13, every node holding what it said it held.
+        assert_eq!(watcher.digests().cluster_usage(&server()), 36);
+        assert_eq!(watcher.digests().cluster_clients(), 30);
+
+        // Node 3 dies. Nothing announces it and nothing arrives from it again,
+        // so the only evidence available to the survivors is silence. Node 2
+        // keeps talking, which is what separates "gone" from "quiet fleet".
+        let later = start + config_for(3).membership.dead_after + Duration::from_secs(1);
+        watcher.gossip(holding(2, 2), later);
+        watcher.heartbeat(later);
+        watcher.observe(later);
+
+        assert_eq!(
+            watcher.digests().cluster_usage(&server()),
+            23,
+            "the dead node's connections are still being counted"
+        );
+        assert_eq!(
+            watcher.digests().cluster_clients(),
+            20,
+            "the dead node's clients are still being counted"
+        );
+        assert_eq!(watcher.digests().len(), 2);
+    }
+
+    #[test]
+    fn a_node_that_stops_ticking_keeps_its_own_digest() {
+        // A node ages out of its own liveness deliberately, so that one whose
+        // loop has wedged stops leading. That must not take its own numbers
+        // out of the answers it gives: `bin/pgprox` gossips without
+        // heartbeating, so a node reading a peer's digest while its own tick
+        // is late would drop itself from every cluster-wide sum. Found by
+        // `run::tests::a_client_whose_tenant_belongs_elsewhere_is_shed`, which
+        // went red on exactly this.
+        let start = Instant::now();
+        let mut alone = NodeCoordinator::new(node(1), config_for(3), start);
+        alone.set_cap(server(), CAP);
+        alone.report(42, vec![(server(), 7)]);
+        alone.heartbeat(start);
+
+        let much_later = start + config_for(3).membership.dead_after + Duration::from_secs(1);
+        assert_eq!(
+            alone.liveness().state(node(1), much_later),
+            crate::membership::NodeState::Dead
+        );
+
+        alone.observe(much_later);
+
+        assert_eq!(
+            alone.digests().cluster_usage(&server()),
+            7,
+            "a node dropped its own contribution because its tick was late"
+        );
+        assert_eq!(alone.digests().cluster_clients(), 42);
+    }
+
+    #[test]
+    fn a_fleet_where_nobody_dies_keeps_every_digest() {
+        // The other side of it, and the one that would catch a reap that
+        // dropped too much. A view that forgot a live node under-counts the
+        // fleet, which is the same class of defect pointing the other way and
+        // is worse: it reports headroom that is not there.
+        let start = Instant::now();
+        let mut nodes = cluster(3, start);
+
+        let mut now = start;
+        for round in 2..6 {
+            now += Duration::from_secs(1);
+            gossip_round(&mut nodes, round, now);
+        }
+
+        assert_eq!(nodes[0].digests().len(), 3, "a live node was forgotten");
+        assert_eq!(nodes[0].liveness().tracked(), 3);
+        assert_eq!(nodes[0].membership(now).members().len(), 3);
     }
 
     #[test]

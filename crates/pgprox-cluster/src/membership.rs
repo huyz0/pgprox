@@ -181,19 +181,31 @@ impl Membership {
             .count()
     }
 
-    /// Drops dead nodes. Housekeeping only: [`Self::view`] and
-    /// [`Self::alive_count`] already ignore them, so skipping this cannot make
-    /// a dead node count.
-    pub fn reap(&mut self, now: Instant) {
+    /// Drops dead nodes, and says which ones it dropped.
+    ///
+    /// Not housekeeping, which is what this used to say. [`Self::view`] and
+    /// [`Self::alive_count`] do ignore dead nodes, so nothing that decides
+    /// anything was ever wrong. But the digest store is keyed by node and is
+    /// deliberately not liveness-filtered, so it has no way to learn that a
+    /// node is gone except by being told, and a node killed outright never
+    /// sends the leave announcement that would tell it. `M11.6` watched a
+    /// fleet report 89 upstream connections against a cap of 60 for a minute
+    /// after a kill, every one of the extra 29 belonging to a node that no
+    /// longer existed.
+    ///
+    /// Returning the reaped ids is what lets the caller keep the two in step
+    /// without either of them growing a second opinion about who is alive.
+    pub fn reap(&mut self, now: Instant) -> Vec<NodeId> {
         let dead: Vec<NodeId> = self
             .peers
             .keys()
             .copied()
             .filter(|id| self.state(*id, now) == NodeState::Dead)
             .collect();
-        for id in dead {
-            self.peers.remove(&id);
+        for id in &dead {
+            self.peers.remove(id);
         }
+        dead
     }
 
     /// How many nodes are tracked, dead ones included until reaped.
@@ -362,6 +374,34 @@ mod tests {
         assert_eq!(m.tracked(), 1, "reaping did not drop the dead");
         assert_eq!(m.view(now), before, "reaping changed the view");
         assert_eq!(m.alive_count(now), alive_before);
+    }
+
+    #[test]
+    fn reaping_names_the_nodes_it_dropped() {
+        // What the digest store needs, and the only way it can get it. It is
+        // keyed by node and is deliberately not liveness-filtered, so a node
+        // that stopped answering is invisible to it unless somebody says so.
+        let config = MembershipConfig::default();
+        let start = Instant::now();
+        let mut m = tracker(start, 3);
+        // Node 1 keeps talking; 2 and 3 go quiet.
+        m.heard(node(1), NodeMode::Active, start + config.dead_after);
+        let now = start + config.dead_after;
+
+        let mut reaped = m.reap(now);
+        reaped.sort();
+        assert_eq!(reaped, vec![node(2), node(3)]);
+    }
+
+    #[test]
+    fn reaping_a_fleet_that_is_all_alive_names_nobody() {
+        // The common case, every gossip round. A reap that reported a node it
+        // had not dropped would have the caller forgetting a live node's
+        // digest, which is the same defect pointing the other way.
+        let now = Instant::now();
+        let mut m = tracker(now, 3);
+        assert!(m.reap(now).is_empty());
+        assert_eq!(m.tracked(), 3);
     }
 
     #[test]

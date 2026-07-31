@@ -1,6 +1,9 @@
-# What the admission run changes about the e2e stack, and nothing else.
+# The e2e stack addressed as one fleet, with a load generator inside it.
 #
-#   docker compose -f docker-compose.yml -f docker-compose.admission.yml up
+#   docker compose -f docker-compose.yml -f docker-compose.fleet.yml up
+#
+# Shared by `scripts/admission.sh` and `scripts/pinning.sh`, which is why it is
+# named after what it provides rather than after either of them.
 #
 # `M11.6` asks what a fleet with no upstream capacity left tells the clients a
 # dead node displaces. Answering that needs one thing the e2e stack does not
@@ -17,9 +20,9 @@
 #
 #   1. `scale.yaml` rather than the shipped document, for its client cap of
 #      150,000. The shipped 200 per node would make the *client* gate the
-#      binding constraint, and the question here is about the upstream quota.
+#      binding constraint, and the questions here are about the upstream pool.
 #      The upstream cap stays at sixty in both documents, which is the number
-#      being saturated.
+#      these runs are about.
 #   2. A load generator inside the network, because the load has to reach the
 #      alias and an alias is a fact about the compose network.
 #
@@ -38,7 +41,9 @@ services:
     entrypoint: ["sleep", "infinity"]
     volumes:
       - ../product/perf:/workload:ro
-      - ../target/admission:/out
+      # Whose output directory this is, so two runs sharing this file do not
+      # write over each other. `scripts/pinning.sh` sets it to `pinning`.
+      - ../target/${PGPROX_RUN_DIR:-admission}:/out
     ulimits:
       nofile:
         soft: 262144

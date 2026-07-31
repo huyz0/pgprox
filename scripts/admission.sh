@@ -36,7 +36,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 cd "$REPO_ROOT"
 
-COMPOSE=(docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.admission.yml)
+COMPOSE=(docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.fleet.yml)
 NODES=(pgprox-1 pgprox-2 pgprox-3)
 # Chosen at the moment of the kill rather than named here. See `fattest_node`.
 VICTIM=""
