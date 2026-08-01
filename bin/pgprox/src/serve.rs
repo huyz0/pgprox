@@ -572,8 +572,8 @@ where
         // until the grace timer says otherwise: finishing in-flight work is
         // what a drain is for.
         let idle = live.upstream.is_none();
-        let tag = tokio::select! {
-            result = wire.read_tagged(&mut body, pgprox_proto::frame::DEFAULT_MAX_FRAME) => result?,
+        let header = tokio::select! {
+            result = wire.read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME) => result?,
             () = context.draining.waited(), if idle => {
                 return Err(wire.refuse(ClientError::Draining).await);
             }
@@ -590,6 +590,9 @@ where
             }
             () = context.closing.waited() => return Ok(()),
         };
+        let tag = header.tag;
+        let tail = read_client_body(wire, header, &mut body, context.cache.is_some()).await?;
+
         let now = context.clock.now();
         let (message, outgoing) = match decoded(tag, &body, &mut live.session) {
             Ok(pair) => pair,
@@ -663,6 +666,7 @@ where
             &message,
             &mut live.session,
             onward,
+            tail,
         );
         if !sent.await? {
             continue;
@@ -1248,6 +1252,9 @@ where
             &message,
             &mut live.session,
             Frame::new(tag, &mapped),
+            // No tail: these frames come from a sequence this proxy held in
+            // full, not from a socket, so the body here is the whole body.
+            0,
         )
         .await?;
     }
@@ -1467,6 +1474,7 @@ async fn send_upstream<S>(
     message: &pgprox_proto::frontend::FrontendMessage<'_>,
     session: &mut pgprox_session::resume::SessionMemory,
     onward: Frame<'_>,
+    tail: usize,
 ) -> Result<bool, ShellError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1498,12 +1506,29 @@ where
         Statement::Prepared(swallow) => pumping.swallow += swallow,
         Statement::AlreadyPrepared => {
             wire.queue(|out| out.extend_from_slice(&[b'1', 0, 0, 0, 4]));
+            // Nothing goes upstream, but the rest of this message is still on
+            // the client's socket and has to leave it, or the next header is
+            // read from inside this body. Unreachable today, because only a
+            // `Parse` reaches this arm and a `Parse` is never streamed, and
+            // here anyway because the reason it is unreachable lives in another
+            // function.
+            stream_body(wire, &mut upstream.wire, tail, true).await?;
             return Ok(false);
         }
     }
 
     // Statement name mapped, nothing else touched.
-    forward(&mut upstream.wire, onward.tag(), onward.body());
+    //
+    // The length is what arrived plus what rewriting did to it, not the length
+    // of the buffer: `onward` may be a prefix with the rest still on the
+    // client's socket, and `rewrite` changes the size of the part that is here.
+    // Writing the buffer's length would announce a short message and then send
+    // a long one.
+    forward_header(&mut upstream.wire, onward.tag(), onward.body().len() + tail);
+    upstream
+        .wire
+        .queue(|out| out.extend_from_slice(onward.body()));
+    stream_body(wire, &mut upstream.wire, tail, false).await?;
     pumping.owed.sent(message);
     upstream.wire.flush().await?;
     Ok(true)
@@ -2155,6 +2180,72 @@ fn record_frame(
     }
 }
 
+/// Reads as much of a client message as anything here will read.
+///
+/// Returns how much of the body is still on the wire, for the caller to forward
+/// straight upstream once it knows where upstream is. That order is forced:
+/// the destination comes from routing, routing needs the prefix, and the prefix
+/// is what this reads. Until then the tail waits in the socket, which is
+/// backpressure rather than a buffer.
+///
+/// `M16.6`. A `Bind` carries the client's parameter values, which can be
+/// hundreds of megabytes, and the only part of it anything here reads is the
+/// two names at the front.
+async fn read_client_body<S>(
+    wire: &mut Wire<S>,
+    header: pgprox_proto::frame::FrameHeader,
+    body: &mut Vec<u8>,
+    caching: bool,
+) -> Result<usize, ShellError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let wanted = client_body_wanted(header.tag, header.body_len, caching);
+    wire.read_body_into(body, wanted).await?;
+    let tail = header.body_len - wanted;
+
+    // A name that runs past the prefix is rare and legal, so the rest is read
+    // rather than the client refused. `decode` is pure, so asking it twice
+    // costs a parse of a few kilobytes on a path almost nothing takes.
+    if tail > 0 && pgprox_proto::frontend::decode(&Frame::new(header.tag, body)).is_err() {
+        wire.append_body(body, tail).await?;
+        return Ok(0);
+    }
+    Ok(tail)
+}
+
+/// How much of a client message must be in memory before it can be acted on.
+///
+/// `inspect_policy` is the answer for most of them, and for a `Bind` it is four
+/// kilobytes of a message that may be hundreds of megabytes: the two names are
+/// at the front and the rest is parameter values nothing here reads.
+///
+/// # Query and Parse are read whole whatever the policy says
+///
+/// Their SQL is scanned for pin triggers, and `pin_reason` looks at *every*
+/// statement in it rather than the first, because the simple query protocol
+/// allows several in one message and `SELECT 1; LISTEN c` would otherwise go
+/// through unpinned. A truncated scan is a missed pin, and a missed pin hands
+/// one client another client's state. `Parse` has a second reason: the global
+/// statement name is derived from the SQL, so two long statements sharing a
+/// prefix would collide on one name.
+///
+/// # And nothing is streamed while the cache is on
+///
+/// A cache key for a `Bind` is built from its parameter values, so the whole
+/// body has to be there. Coarse on purpose: this asks whether the node has a
+/// cache at all rather than whether this tenant's statement is cacheable, which
+/// is not known until the message is decoded. Erring toward reading is the
+/// direction that cannot be wrong.
+fn client_body_wanted(tag: pgprox_proto::frame::Tag, body_len: usize, caching: bool) -> usize {
+    use pgprox_proto::frame::{DEFAULT_MAX_INSPECT, Direction, Tag};
+
+    if caching || matches!(tag, Tag::QUERY | Tag::PARSE) {
+        return body_len;
+    }
+    pgprox_proto::relay::inspect_budget(Direction::Frontend, tag, body_len, DEFAULT_MAX_INSPECT)
+}
+
 /// The largest answer this proxy will hold on the chance it is cacheable.
 ///
 /// The query cache rejects an entry bigger than its budget, and that guard is
@@ -2539,6 +2630,96 @@ mod tests {
         let mut none: Option<Box<Recording>> = None;
         record_frame(&mut none, Tag::DATA_ROW, b"row");
         assert!(none.is_none());
+    }
+
+    #[test]
+    fn a_bind_is_read_by_its_names_and_a_query_is_read_whole() {
+        // `M16.6`. A `Bind` is the case this exists for: the two names are at
+        // the front and the rest is parameter values nothing here reads, so a
+        // 100 MB parameter should cost four kilobytes.
+        use pgprox_proto::frame::DEFAULT_MAX_INSPECT;
+        let huge = 100 * 1024 * 1024;
+
+        assert_eq!(client_body_wanted(Tag::BIND, huge, false), 4096);
+        assert_eq!(client_body_wanted(Tag::BIND, 300, false), 300);
+
+        // Query and Parse are read whole whatever inspect_policy says, and this
+        // is the assertion that keeps them that way. `pin_reason` scans every
+        // statement in the SQL, so a truncated scan is a missed pin, and a
+        // missed pin hands one client another client's state. `Parse` has a
+        // second reason: its global name is derived from the SQL, so two long
+        // statements sharing a prefix would collide on one name.
+        assert_eq!(
+            client_body_wanted(Tag::QUERY, huge, false),
+            huge,
+            "a Query was truncated, so a LISTEN past the prefix would be missed"
+        );
+        assert_eq!(client_body_wanted(Tag::PARSE, huge, false), huge);
+
+        // Bulk frontend messages read nothing at all.
+        assert_eq!(client_body_wanted(Tag::COPY_DATA, huge, false), 0);
+        assert_eq!(client_body_wanted(Tag::FUNCTION_CALL, huge, false), 0);
+
+        // Nothing is streamed while a cache is present, because a cache key for
+        // a Bind is built from its parameter values.
+        assert_eq!(client_body_wanted(Tag::BIND, huge, true), huge);
+        assert_eq!(client_body_wanted(Tag::COPY_DATA, huge, true), huge);
+
+        // And whatever is read stays under the ceiling.
+        assert!(client_body_wanted(Tag::SYNC, huge, false) <= DEFAULT_MAX_INSPECT);
+    }
+
+    #[tokio::test]
+    async fn a_rewritten_prefix_and_its_tail_announce_one_length() {
+        // The hazard that made this task worth designing before writing. The
+        // forwarded header is built from what arrived plus what rewriting did
+        // to the part that is here, not from the length of the buffer. Writing
+        // the buffer's length would announce a short message and then send a
+        // long one, and every frame after it would be read from the wrong
+        // offset.
+        use tokio::io::AsyncReadExt;
+
+        let slab = test_slab();
+        let (from_io, mut client_side) = tokio::io::duplex(64 * 1024);
+        let mut from = Wire::new(from_io, std::sync::Arc::clone(&slab));
+        let (to_io, mut server_side) = tokio::io::duplex(64 * 1024);
+        let mut to = Wire::new(to_io, slab);
+
+        // A tail waiting on the client's socket, as it would be mid-message.
+        let tail_bytes = vec![b'v'; 5000];
+        let sent = tail_bytes.clone();
+        let writer = tokio::spawn(async move {
+            tokio::io::AsyncWriteExt::write_all(&mut client_side, &sent)
+                .await
+                .expect("the tail is written");
+            client_side
+        });
+
+        // A prefix that rewriting made longer than what arrived.
+        let prefix = b"portal\0pgprox_a_much_longer_global_name\0".to_vec();
+        forward_header(&mut to, Tag::BIND, prefix.len() + tail_bytes.len());
+        to.queue(|out| out.extend_from_slice(&prefix));
+        stream_body(&mut from, &mut to, tail_bytes.len(), false)
+            .await
+            .expect("the tail streams");
+        to.flush().await.expect("the message goes out");
+        drop(writer.await.expect("the writer finishes"));
+
+        let mut got = vec![0_u8; 5 + prefix.len() + tail_bytes.len()];
+        server_side
+            .read_exact(&mut got)
+            .await
+            .expect("the message arrives");
+
+        assert_eq!(got[0], Tag::BIND.get());
+        let declared = u32::from_be_bytes(got[1..5].try_into().expect("four bytes")) as usize;
+        assert_eq!(
+            declared,
+            prefix.len() + tail_bytes.len() + 4,
+            "the length announced does not match the bytes behind it"
+        );
+        assert_eq!(&got[5..5 + prefix.len()], &prefix[..]);
+        assert_eq!(&got[5 + prefix.len()..], &tail_bytes[..]);
     }
 
     #[test]

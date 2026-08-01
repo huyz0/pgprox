@@ -380,8 +380,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     /// Fails on disconnect or on a socket error.
     pub async fn read_body_into(&mut self, body: &mut Vec<u8>, n: usize) -> Result<(), ShellError> {
         body.clear();
-        while body.len() < n {
-            let want = n - body.len();
+        self.append_body(body, n).await
+    }
+
+    /// Reads `n` more body bytes onto the end of `body`.
+    ///
+    /// For a caller that read a prefix, found it was not enough, and wants the
+    /// rest without starting again. A statement name longer than the prefix
+    /// `inspect_policy` allots is rare and legal, and refusing a client over one
+    /// would be a worse answer than a second read.
+    ///
+    /// # Errors
+    ///
+    /// Fails on disconnect or on a socket error.
+    pub async fn append_body(&mut self, body: &mut Vec<u8>, n: usize) -> Result<(), ShellError> {
+        let target = body.len() + n;
+        while body.len() < target {
+            let want = target - body.len();
             let chunk = self.take_body(want).await?;
             body.extend_from_slice(chunk);
         }
@@ -876,6 +891,47 @@ mod tests {
         assert_eq!(body.len(), 300, "a split body came back short");
         let expected: Vec<u8> = (0..300).map(|i| u8::try_from(i % 251).unwrap()).collect();
         assert_eq!(body, expected, "a split body came back scrambled");
+    }
+
+    #[tokio::test]
+    async fn a_prefix_can_be_topped_up_without_starting_again() {
+        // `M16.6`'s fallback. A statement name longer than the prefix
+        // `inspect_policy` allots is rare and legal, so the relay loop reads
+        // the rest rather than refusing the client. Appending, not replacing:
+        // the prefix already read is the front of the same message.
+        //
+        // Reached only from `bin/`, which is not mutation tested, so it is
+        // tested here where the function lives.
+        let slab = test_slab();
+        let (server, client) = duplex(4096);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+
+        let mut frame = vec![Tag::BIND.get()];
+        frame.extend_from_slice(&(4_u32 + 60).to_be_bytes());
+        frame.extend_from_slice(&[b'p'; 60]);
+        peer.send(&frame).await;
+
+        let header = wire
+            .read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .await
+            .unwrap();
+        assert_eq!(header.body_len, 60);
+
+        let mut body = Vec::new();
+        wire.read_body_into(&mut body, 20).await.unwrap();
+        assert_eq!(body.len(), 20, "the prefix read the wrong amount");
+
+        wire.append_body(&mut body, header.body_len - 20)
+            .await
+            .unwrap();
+        assert_eq!(
+            body.len(),
+            60,
+            "the top-up replaced the prefix or fell short"
+        );
+        assert!(body.iter().all(|byte| *byte == b'p'));
+        assert!(!wire.is_buffered(), "bytes were left behind the frame");
     }
 
     #[tokio::test]

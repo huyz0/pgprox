@@ -5078,7 +5078,7 @@ Streaming removes both.
   loads 100,000 rows with `COPY pgbench_accounts FROM STDIN` through the proxy,
   and `scripts/e2e.sh` runs it. The mechanism has its own unit tests from
   `M16.2`.
-- [ ] `M16.6` Stream the prefix-inspected client messages. What `M16.4` leaves:
+- [x] `M16.6` Stream the prefix-inspected client messages. What `M16.4` leaves:
   the main relay loop still reads a whole `Bind`, and `inspect_policy` says only
   its first 4 KiB matters, so a client binding a 100 MB parameter has 100 MB
   held for a name at the front. Same for `Query` and `Parse` past 64 KiB.
@@ -5129,6 +5129,45 @@ Streaming removes both.
   it can go inside the `select!` without the drain branch being able to drop it
   mid-frame. The pair is what must not straddle a cancellation point, and it
   would not.
+
+  **Done, and the design pass found a fifth hazard that set the scope.**
+  `pin_reason` scans *every* statement in a query's SQL rather than the first,
+  because the simple query protocol allows several in one message and its own
+  comment says `SELECT 1; LISTEN c` would otherwise go through unpinned. A
+  truncated scan is a missed pin, and `pgprox-pool`'s own rules say a missed pin
+  hands one client another client's state. `Parse` has a second reason: its
+  global name is derived from the SQL, so two long statements sharing a prefix
+  would collide on one name. **`Query` and `Parse` are read whole whatever the
+  policy says**, and there is a test whose message says why.
+
+  That pointed at the right target rather than away from it. `Bind` carries
+  parameter values, not SQL: nothing scans them, and the rewrite touches only
+  the two names at the front. So the case that matters most, a 100 MB `Bind`
+  parameter, is also the one that is safe, and it now costs 4 KiB.
+
+  The four hazards above are handled rather than avoided. `forward_header`
+  takes the true length, prefix plus tail, instead of the buffer's.
+  `AlreadyPrepared` drains its tail even though only a `Parse` reaches it and a
+  `Parse` is never streamed, because the reason it is unreachable lives in
+  another function. The rewritten prefix's length is computed, not copied. The
+  tail waits on the socket across the acquire, which is backpressure rather
+  than a buffer. And a name longer than the prefix re-reads rather than
+  refusing the client, through `Wire::append_body`.
+
+  Nothing streams while the node has a cache, because a `Bind` key is built
+  from its parameter values. Coarse on purpose: whether *this* statement is
+  cacheable is not known until it is decoded, and erring toward reading cannot
+  be wrong.
+
+  Validated where it can actually disagree: conformance across psql, pgx,
+  asyncpg, JDBC and npgsql against Postgres 17 and 18, e2e with prepared
+  statements, drain and watermark, and 443 mutants over `pgprox-session` with
+  two survivors, both pre-existing and argued.
+
+  One scare worth recording. The first e2e after the change reported 146 tps
+  against a 166 to 179 range. Two re-runs gave 181.6 and 178.7, so it was
+  machine contention rather than a regression. Chased rather than assumed,
+  because a 17% drop on the main path would have mattered.
 
 - [x] `M16.8` A test in `pgprox-tls` fails about one run in three.
   `test_cert` builds its directory from the process id alone, and every test in
