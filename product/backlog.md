@@ -5340,7 +5340,7 @@ Streaming removes both.
   forwarded intact after recording gives up.
   Found by checking an assumption I wrote into a commit message rather than by
   reading the code again.
-- [ ] `M17.2` The binaries mutation testing never reached. `scripts/mutants.sh`
+- [x] `M17.2` The binaries mutation testing never reached. `scripts/mutants.sh`
   lists the fourteen crates under `crates/`. `bin/pgprox` and `bin/pgload` are
   packages with their own lib targets, they are held to the same 95% coverage
   gate, and no mutant has ever been run at either.
