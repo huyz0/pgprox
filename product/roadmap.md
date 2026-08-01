@@ -892,15 +892,23 @@ uninspected tag decodes to `Opaque` without reading a body. Two lists in two
 modules happened to agree. `what_is_not_inspected_is_not_decoded_either` now
 walks all 256 tags and says so.
 
-**What is left, and it is real.** `M16.6`. The main relay loop still reads a
-whole `Bind` while `inspect_policy` says only its first 4 KiB matters, so a
-client binding a 100 MB parameter still has 100 MB held. It is filed with its
-design and deliberately not attempted alongside the other two: its read is
-inside the `select!`, statement rewriting changes the length of the prefix it
-has just inspected so the forwarded header cannot be copied from the one that
-arrived, and the query cache needs the whole body for its key. It is the one
-remaining case where getting it wrong desynchronises a session rather than
-costing memory.
+**`M16.6` is done too, and its design pass is the part worth reading.** Writing
+it out before writing it found five hazards, and the fifth set the scope:
+`pin_reason` scans every statement in a query's SQL, not the first, so a
+truncated scan is a missed pin and a missed pin hands one client another
+client's state. `Query` and `Parse` are therefore read whole whatever the policy
+says. That pointed at the right target rather than away from it, because a
+`Bind` carries parameter values and not SQL, and a 100 MB `Bind` parameter is
+both the case that matters most and the one that is safe. It now costs 4 KiB.
+
+**And the milestone's own subject got a script.** Five findings across `M15` and
+`M16` were correct, tested code that nothing reached, and one of them was
+committed one commit after its author wrote that a primitive with no caller is
+the defect the milestone exists to fix. `dead_code` cannot see them; they are
+all `pub`. `scripts/check-wired.sh` can, and its own first two versions had the
+flaw in miniature, counting a `pub use` and then a doc comment as callers, so
+both would have passed while the defect was live. Those are planted in
+`negative.sh` rather than described.
 
 The 100k run with a large result set is the other half of the completion
 condition and needs the three machines `M7`'s full run needed.
