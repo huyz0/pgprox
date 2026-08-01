@@ -21,9 +21,44 @@
 # nextest counts like any other, so the mutant is caught and the failing test
 # names which method was wrong.
 #
-# Ten seconds, against a suite whose slowest test is 0.207s and whose whole run
-# is 0.321s across the four mutated crates. That is forty-eight times the
-# slowest honest test, so nothing legitimate is at risk, and it sits well inside
-# the sixty seconds the whole per-mutant run gets.
+# # The cap has a second edge, and `M17.7` is about that one
+#
+# nextest reports a terminated test as a failure, and `cargo mutants` reads any
+# failure as the mutant having been caught. So a cap that is too tight does not
+# merely kill a slow test: it reports a **kill for a mutant nothing detected**.
+# That is the direction this whole system exists to prevent, and it is worse
+# than the timeouts above, which at least fail loudly.
+#
+# `M17.7` found it because `drain.rs`'s `Drain::settled` reported `< -> <=` as
+# caught in one full run and missed in a targeted one, on identical code. Run
+# by hand against the whole suite ten times, the mutant survived ten times, so
+# the kill was the anomaly.
+#
+# # Where the numbers come from
+#
+# The ten seconds this held until `M17.7` were chosen against "a suite whose
+# slowest test is 0.207s and whose whole run is 0.321s across the four mutated
+# crates", which was forty-eight times the slowest honest test. `M14` and
+# `M17.2` then added ten more crates and both binaries, and nobody re-derived
+# it. Measured on this machine, `cargo nextest run -p pgprox`:
+#
+#   idle                      slowest test 2.85s, whole suite 2.93s
+#   six concurrent suites     slowest test 6.66s, whole suite 7.17s
+#
+# Six, because that is `MUTANTS_JOBS`. Ten seconds against 6.66s is 1.5x, not
+# 48x, and the real run is worse than this measurement because each worker is
+# also building. That is the margin that went missing.
+#
+# Sixty seconds is nine times the worst honest test observed under the
+# parallelism the run actually uses, and twenty-one times the worst observed
+# idle. The cost of being generous here is bounded and small: a genuinely hung
+# test costs sixty seconds instead of ten, once, for the one mutant that hung
+# it, and `MUTANTS_TIMEOUT` is the backstop that keeps that from costing the
+# run. The cost of being tight is a false kill, which is silent.
+#
+# One number for every crate, and for fourteen of the sixteen it is enormous:
+# their suites finish in under 0.4s. That is deliberate. A per-crate override
+# would be a second place to get this wrong, and the fast crates lose nothing
+# by having a cap they cannot reach.
 [profile.mutants]
-slow-timeout = { period = "5s", terminate-after = 2 }
+slow-timeout = { period = "30s", terminate-after = 2 }

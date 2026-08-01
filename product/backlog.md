@@ -5527,7 +5527,7 @@ Streaming removes both.
   container the run started rather than the last one assigned, and a check that
   a completed run leaves none behind. The last part is the one that would have
   caught this, because the leak was invisible from inside a passing run.
-- [ ] `M17.7` A mutant reported as a timeout is not a mutant that survived.
+- [x] `M17.7` A mutant reported as a timeout is not a mutant that survived.
   `M17.4` measured seven files and got back twelve missed and **three
   timeouts**, in `pools_for`. `scripts/mutants.sh` counts a timeout as a
   survivor, which is correct in principle: a run that was abandoned proved
@@ -5574,9 +5574,51 @@ Streaming removes both.
   same crate at `--timeout 300 --jobs 4` tested 568 mutants with zero timeouts,
   and all nine `pools_for` mutants came back caught. The only variables were the
   budget and the parallelism, so the timeouts were the budget.
-  Acceptance: the three `pools_for` mutants are reported caught rather than
-  timed out on this machine under the same parallelism; `Drain::settled`'s `<=`
-  reports missed rather than flipping between runs; the new budget is
-  argued from the measured suite rather than picked; and `M10.13`'s comment in
-  `.config/nextest.toml` is updated, because it currently cites a suite that is
-  four crates and 0.321s and is quoted as the reason the sixty seconds is safe.
+  **The acceptance this task was filed with does not work, and finding that out
+  is part of the task.** It asked for the three `pools_for` mutants to report
+  caught rather than timed out under the same parallelism. Re-run at the old
+  sixty seconds and the same six jobs, all three reported caught. The failure
+  depends on what else the machine is doing, so it passes before the fix as
+  readily as after, and a criterion that cannot fail is the thing `M12` spent a
+  milestone on. Nothing here can be demonstrated by reproduction.
+  **One of the two measured numbers was wrong because of a test `M17.4` wrote,
+  and it had to be fixed before the derivation meant anything.** The slowest
+  test in `bin/pgprox` was `a_cancel_for_a_peers_connection_is_forwarded_from_a_running_node`
+  at 4.4 to 5.4 seconds, and it is one commit old. Its fake peer accepted the
+  gossip connection and never answered, so every round the node made against it
+  waited out `PEER_TIMEOUT`, and the node was inside one when the shutdown
+  landed. Making the fake answer with a digest, which is what a peer does,
+  took it to 0.04s. Deriving a cap from a suite whose slowest member is slow
+  for a fixable reason would have baked that mistake into the constant.
+  What can be demonstrated is the margin, so that is what this task produces.
+  Measured on this machine with `cargo nextest run -p pgprox`, idle against six
+  concurrent suites, six being what `MUTANTS_JOBS` asks for:
+  slowest test 2.85s against 6.66s, whole suite 2.93s against 7.17s. The
+  ten-second per-test cap was 1.5x the worst honest test rather than the 48x
+  `M10.13` derived it as, and the real run is worse than that measurement
+  because each worker is also building.
+  **The mechanism is verified at the new numbers rather than assumed.** A test
+  that sleeps for two hundred seconds, run under the `mutants` profile, is
+  terminated at 60.01s and the run reports `test run failed`, which is what
+  `cargo mutants` reads as a kill. So the property `M10.13` built still holds:
+  a hang becomes a failure rather than a timeout, and it does so well inside
+  the three hundred seconds the suite gets.
+  Acceptance: both numbers are re-derived from a measured suite under the
+  parallelism the run uses, with the measurement written beside them; the
+  per-test cap's second edge is documented where the cap is set, because
+  nothing said that a terminated test is reported as a *kill*; and a full run
+  of `pgprox` at the new settings reports no timeouts and no verdict that
+  disagrees with `M17.4`'s hand-checked results.
+  Done. The per-test cap is sixty seconds, nine times the worst honest test
+  under six-way parallelism and twenty-one times the worst idle; the suite
+  budget is three hundred, four times the cap plus the worst loaded suite. Both
+  carry their measurement in the file that sets them, and
+  `standards/testing.md` now says what a terminated test is reported as, which
+  it did not. `scripts/mutants.sh pgprox` then ran 571 mutants with **zero
+  timeouts** and seven survivors: the six in the baseline and `reset_pool`,
+  which is `M17.4`'s open item. Every verdict agrees with what `M17.4` checked
+  by hand, which is the only comparison available given the defect is not
+  reproducible on demand.
+  The stale sentence in `standards/testing.md` went with it: it named "the four
+  sans-I/O crates" as what the nightly mutates, which has been wrong since
+  `M14` added ten and `M17.2` added the binaries.

@@ -1891,8 +1891,21 @@ mod tests {
             while let Ok((socket, _)) = peer.accept().await {
                 let caught = caught.clone();
                 tokio::spawn(async move {
-                    let mut lines = BufReader::new(socket).lines();
+                    let (read, mut write) = tokio::io::split(socket);
+                    let mut lines = BufReader::new(read).lines();
                     while let Ok(Some(line)) = lines.next_line().await {
+                        // Answered like a peer, not just recorded. A listener
+                        // that accepts and says nothing makes every gossip
+                        // round wait out `PEER_TIMEOUT`, and the node is inside
+                        // one when the shutdown lands: that alone was two to
+                        // five seconds of this test, which is `M17.7`'s whole
+                        // subject.
+                        let digest = br#"{"kind":"digest","node":2,"mode":"active","version":1,"client_conns":0,"upstream_conns":[],"tenant_usage":[]}"#;
+                        if write.write_all(digest).await.is_err()
+                            || write.write_all(b"\n").await.is_err()
+                        {
+                            return;
+                        }
                         if caught.send(line).is_err() {
                             return;
                         }
@@ -1939,6 +1952,7 @@ mod tests {
             "the forwarded cancel named the wrong connection"
         );
 
+        drop(client);
         shutdown.fire();
         let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
     }

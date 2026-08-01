@@ -43,11 +43,11 @@ threshold.
   thing catches integration mistakes that a mock asserting call counts cannot.
 - **Coverage is a floor, not a goal.** 95% with weak assertions is the standard
   failure mode, and coverage cannot see it: a line that ran is not a line that
-  mattered. `scripts/mutants.sh` runs `cargo-mutants` against the four sans-I/O
-  crates, `pgprox-proto`, `pgprox-route`, `pgprox-cache` and `pgprox-session`,
-  in the nightly job. A surviving mutant is a missing test. One that is accepted
-  instead goes in `product/mutants-baseline.txt` with a reason, and one that is
-  in neither place fails the script.
+  mattered. `scripts/mutants.sh` runs `cargo-mutants` in the nightly job against
+  every crate in the workspace and both binaries: four when `M10.3` built it,
+  fourteen after `M14`, sixteen after `M17.2`. A surviving mutant is a missing
+  test. One that is accepted instead goes in `product/mutants-baseline.txt` with
+  a reason, and one that is in neither place fails the script.
   The suite runs under nextest there, with a per-test timeout, and that is not
   a detail. `cargo mutants` budgets the whole suite and calls the mutant a
   timeout when the budget runs out; under `cargo test` one hung test costs the
@@ -56,6 +56,15 @@ threshold.
   and watching all six come back as timeouts. Twenty-three baseline entries
   turned out to be saying something about the runner rather than about the
   tests. **A timeout is a run nobody read, not a mutant the suite caught.**
+  The cap has a second edge, and `M17.7` is about it. nextest reports a
+  terminated test as a failure and `cargo mutants` reads any failure as a kill,
+  so a cap that is too tight does not merely kill a slow test: it reports a
+  **kill for a mutant nothing detected**. That is worse than the timeouts
+  above, which at least fail loudly. Both numbers are therefore derived from a
+  measured suite under the parallelism the run actually uses, and the
+  measurement is written beside each of them, in `.config/nextest.toml` and in
+  `scripts/mutants.sh`. `M10.13` asked for exactly that and it was not done:
+  its own entry says "Both numbers want measuring rather than picking".
   This ran nowhere until `M10.3`, and the sentence claiming it did was three
   milestones old. M9 is why it was worth building rather than deleting: three of
   its defects survived every gate because a fake answered something Postgres

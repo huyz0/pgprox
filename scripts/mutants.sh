@@ -67,7 +67,33 @@ mkdir -p "$MUTANTS_TMP"
 export TMPDIR="$MUTANTS_TMP"
 
 JOBS="${MUTANTS_JOBS:-6}"
-TIMEOUT="${MUTANTS_TIMEOUT:-60}"
+# The whole-suite budget per mutant, and the backstop rather than the detector.
+#
+# What detects a hang is the per-test cap in `.config/nextest.toml`: nextest
+# kills the test and reports a failure, which cargo-mutants reads as a kill.
+# This number is only reached when nextest itself does not return, so it can be
+# generous at no cost. A tight one converts machine load into a reported
+# timeout, and `survivors_of` below counts a timeout as a survivor, so the gate
+# fails on a mutant that nothing actually escaped.
+#
+# `M17.7` raised it from sixty. That sixty was chosen in `M10.13` against a
+# suite of 0.321s across four crates; `M14` and `M17.2` then added ten crates
+# and both binaries and nobody re-derived it. Measured here, the `pgprox` suite
+# is 2.93s idle and 7.17s with six suites running at once, which is the
+# parallelism `JOBS` asks for.
+#
+# Three hundred is four times the per-test cap plus the worst loaded suite, so
+# a mutant that hangs exactly one test still finishes the suite well inside the
+# budget. The evidence it is enough: a full 568-mutant run of `pgprox` at this
+# setting produced zero timeouts, where the sixty-second setting produced three
+# on mutants that fail a test in four milliseconds.
+#
+# **This is not reproducible on demand, and that is the shape of the defect.**
+# Re-running those three mutants at the old sixty seconds and the same six jobs
+# reported all three caught. The failure depends on what else the machine is
+# doing, so there is no test that fails before the fix and passes after it, and
+# the argument has to be the margin rather than a reproduction.
+TIMEOUT="${MUTANTS_TIMEOUT:-300}"
 
 require_tool cargo-mutants "cargo install cargo-mutants --locked" || finish
 require_tool cargo-nextest "cargo install cargo-nextest --locked" || finish
