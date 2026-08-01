@@ -5082,44 +5082,54 @@ Streaming removes both.
   the main relay loop still reads a whole `Bind`, and `inspect_policy` says only
   its first 4 KiB matters, so a client binding a 100 MB parameter has 100 MB
   held for a name at the front. Same for `Query` and `Parse` past 64 KiB.
-  Harder than the two directions above and deliberately separate. The read sits
-  inside a `select!`, so the header and the body must not straddle it, and
-  statement rewriting changes the length of the prefix it just inspected, so
-  the forwarded header cannot be copied from the one that arrived.
-  `read_header` is itself cancellation-safe, since it consumes only after the
-  five bytes decode and its only await is the fill before that. So the shape is
-  available: read the header inside the `select!`, inspect and rewrite the
-  prefix outside it, stream the tail. Filed rather than attempted, because it
-  is the one remaining case where getting it wrong desynchronises a session
+
+  **Designed but not attempted, and the reasons are specific rather than
+  general caution.** Reading it through turned up four hazards the earlier
+  sketch missed, and each one is a place a mistake desynchronises a session
   rather than costing memory.
-- [x] `M16.5` Re-measure. **16,777,216 bytes held becomes 512**, for the same
-  16 MiB `DataRow` through the pair the pump now uses. 512 is `FIRST_READ`, the
-  stack chunk a quiet connection reads into, so the largest piece held is a read
-  rather than a message; a busy connection reads into the 16 KiB borrowed buffer
-  instead, which is the same answer with a different constant.
-  `M16.1`'s original comparison is kept alongside it rather than replaced,
-  because it is what says the gap was real.
-  The 100k half is not done and is blocked on the same three machines and real
-  network as `M7`'s full run. It is named in the roadmap as such rather than
-  claimed. `e2e.sh` reported 160.5 tps before and 174.8 after, which is worth
-  almost nothing as a performance claim on one machine with pgbench's tiny rows,
-  and is quoted only because it is the run that says nothing broke.
-- [x] `M16.7` `M15.3`'s fix has no caller. `resume::observe_statement` clears
-  both statement maps when a client runs `DISCARD ALL`, it has tests, and
-  nothing in the proxy calls it. The desync `M15.3` set out to close is still
-  there.
-  Found while reading `serve.rs` for `M16.6`, which is the point: this
-  milestone exists because `FrameRelay` had no caller, `M15.1` because
-  `DEFAULT_MAX_INSPECT` had none, and `M15.3` because two clearing functions
-  had none. The fix for the third added a fourth, in the same session, by the
-  same hand, after writing the sentence "a streaming primitive with no caller
-  is the defect this milestone exists to fix".
-  Writing the rule down is not the same as following it. That is the finding,
-  and it is worth more than the bug.
-  Acceptance: called from the relay loop, with the connection map that the
-  statement will actually run on, and a check that says so rather than a test
-  of the function in isolation. Its signature takes the two memory structs and
-  the proxy holds the two maps, which is part of why it did not fit anywhere.
+
+  1. `forward` computes the length prefix from the buffer it is given, not from
+     the header that arrived. Hand it a 4 KiB prefix of a 100 MB `Bind` and it
+     announces a 4 KiB message and then streams 100 MB behind it. Every
+     forwarding path needs the true `body_len` threaded through.
+  2. `send_upstream` can decline to forward at all. `Statement::AlreadyPrepared`
+     queues a synthetic `ParseComplete` and returns false, so the frame never
+     goes upstream, but its tail is still on the client's socket and must be
+     drained or the next header is read from inside this body. `ClientAction::
+     Answer` and `Close` are two more paths with the same problem.
+  3. Rewriting changes the length. `rewrite::bind_statement` replaces the
+     statement name with a global one of a different size, so the forwarded
+     header cannot be copied from the one that arrived; it is
+     `body_len - prefix_read + rewritten_prefix_len`. That arithmetic is
+     correct in one place and wrong in every other, and there is no test today
+     that would catch it being wrong.
+  4. The destination is not known until after routing, and routing needs the
+     prefix. So the order has to be read prefix, route, acquire, forward header
+     and prefix, stream tail, which means the tail sits on the socket across an
+     acquire that can block on the pool. That is defensible, and it is a change
+     in where backpressure appears.
+
+  The cache is a fifth constraint rather than a hazard: `bind_parameters` needs
+  the whole body to build a key, so streaming has to be off whenever the cache
+  is on for the tenant.
+
+  A safe subset exists and is worth naming: the tags that are neither rewritten
+  nor cached, which is `Query`, `FunctionCall`, `CopyData` and `CopyFail`. Those
+  avoid hazards 1 and 3 entirely. It leaves the headline case, a large `Bind`
+  parameter, exactly where it is, which is why it was not taken as a
+  consolation.
+
+  Severity, stated so the priority is arguable rather than assumed: this needs
+  an authenticated client holding a valid grant for a tenant, and the memory is
+  one message in flight rather than retained. `M15.9`, which was the same shape
+  from an unauthenticated client, was the urgent one and is done.
+
+  The `read_header` half is already available and already safe: it consumes
+  only after five bytes decode and its only await is the fill before that, so
+  it can go inside the `select!` without the drain branch being able to drop it
+  mid-frame. The pair is what must not straddle a cancellation point, and it
+  would not.
+
 - [x] `M16.8` A test in `pgprox-tls` fails about one run in three.
   `test_cert` builds its directory from the process id alone, and every test in
   a binary shares one process, so all of them write `cert.pem` and `key.pem` to
