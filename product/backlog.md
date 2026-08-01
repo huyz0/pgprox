@@ -5356,3 +5356,23 @@ Streaming removes both.
   Acceptance: both binaries in the list, the survivors killed or argued, and
   `m14-complete.sh`'s check that the list matches its own criterion updated to
   cover them, since it currently walks `crates/*/` and would not notice.
+  **134 survivors: 109 in `pgprox`, 25 in `pgload`.** Milestone-sized, like
+  `M14`, so it is decomposed below by where the code came from rather than done
+  in one commit.
+- [ ] `M17.3` The mutants in the code `M16` and `M17.1` wrote. Seven of the
+  `serve.rs` survivors are in functions added during the streaming work, which
+  is the half of it never mutated because `bin/` was not in the list:
+  `read_client_body`'s guard, all four of its mutants, so the re-read fallback
+  is unconstrained; `record_frame`'s bound at exactly the limit; `stream_body`'s
+  per-chunk flush, whose whole reason is to keep the write side bounded and
+  which nothing asserts; and `forward`'s length arithmetic, where
+  `body.len() + 4` becoming `* 4` survives.
+  `forward` is the one to note: `M16.3` added `forward_header` and tested its
+  length, and the older `forward` beside it has computed the same length since
+  M6 with nothing checking it.
+- [ ] `M17.4` The rest of `bin/pgprox`: 86 survivors across `run.rs`,
+  `observatory.rs`, `metrics.rs`, `gossip.rs`, `entry.rs`, `wiring.rs`,
+  `sessions.rs`, `replicas.rs`, `admin.rs`, `http.rs`, `drain.rs`, `dial.rs`,
+  `logging.rs` and `main.rs`. Pre-existing, and untouched by this review.
+- [ ] `M17.5` `pgload`: 25 survivors, mostly in `run.rs`. The load generator,
+  whose numbers `M7` and `M11` drew conclusions from.

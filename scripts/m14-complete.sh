@@ -30,14 +30,19 @@ trap 'rm -rf "$WORK"' EXIT
 # not read the header, which is prose: it compares the list against the crates
 # that exist, which is what the header resolves to now that `M13.4` enforces
 # sans-I/O across all of them.
+#
+# `bin/*/` as well as `crates/*/` since `M17.2`. This walked only `crates/*/`,
+# so it reported the list complete while both binaries were absent from it, and
+# `M16` had just moved seven correctness decisions into one of them. A check
+# that names where to look cannot see a place it was not told about.
 declare -a missing=()
-for dir in crates/*/; do
+for dir in crates/*/ bin/*/; do
   crate="$(basename "$dir")"
   [[ -f "$dir/Cargo.toml" ]] || continue
   grep -q "\\b${crate}\\b" scripts/mutants.sh || missing+=("$crate")
 done
 if (( ${#missing[@]} == 0 )); then
-  ok "every crate is in the mutation list ($(ls -d crates/*/ | wc -l) of them)"
+  ok "every package is in the mutation list ($(ls -d crates/*/ bin/*/ | wc -l) of them)"
 else
   fail "not in scripts/mutants.sh: ${missing[*]}"
   printf '       M14 exists because that list and its own header disagreed.\n'

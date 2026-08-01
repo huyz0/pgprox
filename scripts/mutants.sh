@@ -36,11 +36,19 @@ cd "$REPO_ROOT"
 # machine", and `M13.4` proved every crate under `crates/` is sans-I/O, so the
 # criterion selects all of them and this array selects a few. `M14.4` settles
 # which stay out and writes down why.
+#
+# `M17.2` adds the two binaries, which had never been here. They are packages
+# with their own lib targets and they are held to the same coverage gate, and
+# `M14.4`'s argument about what stays out never considered them: they were not
+# excluded, they were not thought about. That mattered more after `M16`, which
+# moved seven correctness decisions into `bin/pgprox/src/serve.rs`, so the code
+# three mutation runs did not touch was the code most recently written.
 CRATES=(
   pgprox-proto pgprox-route pgprox-cache pgprox-session
   pgprox-cluster pgprox-pool pgprox-core pgprox-admin
   pgprox-auth pgprox-config pgprox-observe pgprox-load
   pgprox-tls pgprox-testkit
+  pgprox pgload
 )
 if (( $# > 0 )); then
   CRATES=("$@")
