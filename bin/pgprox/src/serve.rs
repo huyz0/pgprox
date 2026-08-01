@@ -2632,6 +2632,205 @@ mod tests {
         assert!(none.is_none());
     }
 
+    #[tokio::test]
+    async fn a_name_past_the_prefix_is_topped_up_rather_than_refused() {
+        // `read_client_body`'s fallback, and `M17.3` found it unconstrained:
+        // all four mutants of its guard survived, because nothing here ever
+        // sent a message whose names ran past the prefix.
+        //
+        // A `Bind` whose statement name is longer than the 4 KiB
+        // `inspect_policy` allots. Legal, rare, and the client must not be
+        // refused over it.
+        let slab = test_slab();
+        let (server, client) = tokio::io::duplex(64 * 1024);
+        let mut wire = Wire::new(server, slab);
+        let mut peer = client;
+
+        let long_name = "s".repeat(6000);
+        let mut body = Vec::new();
+        body.extend_from_slice(b"portal\0");
+        body.extend_from_slice(long_name.as_bytes());
+        body.push(0);
+        body.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+
+        let mut frame = vec![Tag::BIND.get()];
+        frame.extend_from_slice(&u32::try_from(body.len() + 4).expect("fits").to_be_bytes());
+        frame.extend_from_slice(&body);
+
+        let sent = frame.clone();
+        let writer = tokio::spawn(async move {
+            tokio::io::AsyncWriteExt::write_all(&mut peer, &sent)
+                .await
+                .expect("the frame is written");
+            peer
+        });
+
+        let header = wire
+            .read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .await
+            .expect("the header decodes");
+        let mut got = Vec::new();
+        let tail = read_client_body(&mut wire, header, &mut got, false)
+            .await
+            .expect("the body reads");
+        drop(writer.await.expect("the writer finishes"));
+
+        // The whole body, and no tail, because the name did not fit the prefix
+        // and the rest was read rather than the client refused.
+        assert_eq!(tail, 0, "a name past the prefix left a tail behind");
+        assert_eq!(got.len(), body.len(), "the top-up did not read the rest");
+        assert_eq!(got, body);
+
+        // And it decodes now, which is the point of having read more.
+        let decoded = pgprox_proto::frontend::decode(&Frame::new(Tag::BIND, &got))
+            .expect("a complete Bind decodes");
+        assert_eq!(
+            decoded,
+            pgprox_proto::frontend::FrontendMessage::Bind {
+                portal: "portal",
+                statement: &long_name,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bind_whose_names_fit_keeps_its_tail_on_the_wire() {
+        // The other side of the same guard. A `Bind` with ordinary names and a
+        // large parameter must read the prefix and leave the rest, which is the
+        // whole of `M16.6`. Without this the guard could top up every message
+        // and nothing would notice except the memory.
+        let slab = test_slab();
+        let (server, client) = tokio::io::duplex(64 * 1024);
+        let mut wire = Wire::new(server, slab);
+        let mut peer = client;
+
+        let body_len = 40_000;
+        let mut frame = vec![Tag::BIND.get()];
+        frame.extend_from_slice(&u32::try_from(body_len + 4).expect("fits").to_be_bytes());
+        frame.extend_from_slice(b"p\0s\0");
+        frame.resize(5 + body_len, b'v');
+
+        let writer = tokio::spawn(async move {
+            tokio::io::AsyncWriteExt::write_all(&mut peer, &frame)
+                .await
+                .expect("the frame is written");
+            peer
+        });
+
+        let header = wire
+            .read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .await
+            .expect("the header decodes");
+        let mut got = Vec::new();
+        let tail = read_client_body(&mut wire, header, &mut got, false)
+            .await
+            .expect("the prefix reads");
+
+        assert_eq!(got.len(), 4096, "the prefix was not the prefix");
+        assert_eq!(tail, body_len - 4096, "the tail was read instead of left");
+
+        // Drain so the writer can finish.
+        let mut sink = Vec::new();
+        wire.append_body(&mut sink, tail)
+            .await
+            .expect("the tail drains");
+        drop(writer.await.expect("the writer finishes"));
+    }
+
+    #[test]
+    fn the_recorded_bound_is_a_ceiling_rather_than_a_limit_it_may_reach() {
+        // `record_frame`'s bound at exactly the limit. `>` becoming `>=`
+        // survived, because the test above it loops until the recording gives
+        // up and never lands on the boundary.
+        let mut held = Some(Box::new(recording()));
+
+        // One frame that takes the recording to exactly the bound. A frame is a
+        // tag, four length bytes and the body.
+        let body = vec![b'x'; MAX_RECORDED_ANSWER - 5];
+        record_frame(&mut held, Tag::DATA_ROW, &body);
+
+        let kept = held.expect("an answer of exactly the bound was dropped");
+        assert_eq!(kept.frames.len(), MAX_RECORDED_ANSWER);
+
+        // And one byte more gives up.
+        let mut held = Some(kept);
+        record_frame(&mut held, Tag::DATA_ROW, b"x");
+        assert!(held.is_none(), "one byte past the bound was kept");
+    }
+
+    #[tokio::test]
+    async fn a_streamed_body_reaches_the_peer_while_it_is_still_streaming() {
+        // `stream_body` flushes per chunk, and that is the whole point: queuing
+        // the body and flushing once would move the buffer from the read side
+        // to the write side rather than removing it. Nothing asserted it, so
+        // deleting the `!` on the flush guard survived. The bytes come out the
+        // same either way; what changes is how many are held to get them there.
+        //
+        // The property, stated so a machine can check it: with a receiving
+        // window smaller than the body, streaming can only finish if the peer
+        // is draining as it goes. Queue-then-flush would return having written
+        // nothing, and the reader below would wait for bytes that are sitting
+        // in a buffer.
+        let slab = test_slab();
+        let (from_io, mut source) = tokio::io::duplex(128 * 1024);
+        let mut from = Wire::new(from_io, std::sync::Arc::clone(&slab));
+        let (to_io, mut peer) = tokio::io::duplex(4096);
+        let mut to = Wire::new(to_io, slab);
+
+        let body_len = 32 * 1024;
+        let writer = tokio::spawn(async move {
+            tokio::io::AsyncWriteExt::write_all(&mut source, &vec![b'z'; body_len])
+                .await
+                .expect("the body is written");
+            source
+        });
+
+        let mut got = vec![0_u8; body_len];
+        let both = async {
+            let (streamed, read) = tokio::join!(
+                stream_body(&mut from, &mut to, body_len, false),
+                tokio::io::AsyncReadExt::read_exact(&mut peer, &mut got),
+            );
+            streamed.expect("the body streams");
+            read.expect("the body arrives");
+        };
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), both)
+            .await
+            .expect("streaming did not reach the peer; it was queued instead");
+        drop(writer.await.expect("the writer finishes"));
+
+        assert!(got.iter().all(|byte| *byte == b'z'));
+    }
+
+    #[tokio::test]
+    async fn a_whole_frame_announces_the_length_it_carries() {
+        // `forward` has computed `body.len() + 4` since M6 and nothing checked
+        // it: `+` became `*` and every test stayed green. `M16.3` added
+        // `forward_header` beside it and tested that one, which is how the gap
+        // showed up.
+        let slab = test_slab();
+        let (io, mut peer) = tokio::io::duplex(64 * 1024);
+        let mut wire = Wire::new(io, slab);
+
+        let body = b"SELECT 1\0";
+        forward(&mut wire, Tag::QUERY, body);
+        wire.flush().await.expect("the frame goes out");
+
+        let mut got = vec![0_u8; 5 + body.len()];
+        tokio::io::AsyncReadExt::read_exact(&mut peer, &mut got)
+            .await
+            .expect("the frame arrives");
+
+        assert_eq!(got[0], Tag::QUERY.get());
+        assert_eq!(
+            u32::from_be_bytes(got[1..5].try_into().expect("four bytes")),
+            u32::try_from(body.len() + 4).expect("fits"),
+            "the length announced does not match the body behind it"
+        );
+        assert_eq!(&got[5..], body);
+    }
+
     #[test]
     fn a_bind_is_read_by_its_names_and_a_query_is_read_whole() {
         // `M16.6`. A `Bind` is the case this exists for: the two names are at

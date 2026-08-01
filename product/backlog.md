@@ -5359,7 +5359,7 @@ Streaming removes both.
   **134 survivors: 109 in `pgprox`, 25 in `pgload`.** Milestone-sized, like
   `M14`, so it is decomposed below by where the code came from rather than done
   in one commit.
-- [ ] `M17.3` The mutants in the code `M16` and `M17.1` wrote. Seven of the
+- [x] `M17.3` The mutants in the code `M16` and `M17.1` wrote. Seven of the
   `serve.rs` survivors are in functions added during the streaming work, which
   is the half of it never mutated because `bin/` was not in the list:
   `read_client_body`'s guard, all four of its mutants, so the re-read fallback
@@ -5370,6 +5370,16 @@ Streaming removes both.
   `forward` is the one to note: `M16.3` added `forward_header` and tested its
   length, and the older `forward` beside it has computed the same length since
   M6 with nothing checking it.
+  **Six of the seven killed, each verified by applying the mutation by hand and
+  watching a suite fail rather than by inferring it from coverage.** The
+  seventh, `tail > 0` becoming `tail >= 0`, is equivalent: `tail` is a
+  `usize`, so the left half is always true and the guard collapses to the
+  decode check, after which the only difference is a zero-length `append_body`
+  and returning a zero that was already zero. It carries a re-triage condition.
+  The `stream_body` one needed a property rather than an assertion: flushing
+  per chunk produces the same bytes either way, so what had to be stated is
+  that a peer with a window smaller than the body still receives it, which
+  queue-then-flush cannot do.
 - [ ] `M17.4` The rest of `bin/pgprox`: 86 survivors across `run.rs`,
   `observatory.rs`, `metrics.rs`, `gossip.rs`, `entry.rs`, `wiring.rs`,
   `sessions.rs`, `replicas.rs`, `admin.rs`, `http.rs`, `drain.rs`, `dial.rs`,
