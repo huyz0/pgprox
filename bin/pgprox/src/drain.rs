@@ -319,4 +319,46 @@ mod tests {
         assert!(!closing.fired());
         assert_eq!(cluster.outgoing().digest.mode, NodeMode::Active);
     }
+
+    #[tokio::test]
+    async fn a_drain_prints_its_grace_and_how_many_clients_it_is_waiting_on() {
+        // `M17.4`: this `Debug` could return an empty string, because nothing
+        // read it. It is what an operator sees if the drain task panics, and
+        // the two fields on it are the two questions worth asking at that
+        // moment: how long the grace was, and how many clients had not left.
+        // The same shape as `Deps`, `Context` and `Probes`, all of which had
+        // the same mutant and all of which were only ever asserted for what
+        // they must *not* say.
+        let (cluster, sessions) = (cluster(), Sessions::new());
+        let (draining, closing) = (Shutdown::new(), Shutdown::new());
+        let _held = sessions.register(
+            pgprox_core::ids::ConnId::new(NodeId::new(1), 1),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            std::time::Instant::now(),
+            16,
+            Shutdown::new(),
+        );
+
+        let rendered = format!(
+            "{:?}",
+            drain_over(
+                &cluster,
+                &sessions,
+                &draining,
+                &closing,
+                Duration::from_secs(7),
+            )
+        );
+
+        assert!(rendered.contains("Drain"), "{rendered}");
+        assert!(
+            rendered.contains("7s"),
+            "the grace is not named: {rendered}"
+        );
+        assert!(
+            rendered.contains("clients: 1"),
+            "the client count is not named: {rendered}"
+        );
+    }
 }

@@ -145,11 +145,18 @@ impl Sessions {
     }
 
     /// Records that a client became pinned, and why.
+    ///
+    /// Counts only when there is a client to record it against. A session that
+    /// ended between the decision and this call is normal, and counting it
+    /// would report a pin nobody could find the client for. `shed` has said
+    /// exactly that since it was written; this said the opposite until
+    /// `M17.4`, so `pgprox_pin_total` could climb while `SHOW CLIENTS` showed
+    /// nothing pinned.
     pub fn set_pinned(&self, conn: ConnId, reason: &str) {
         if let Some(entry) = self.lock().get_mut(&conn) {
             entry.pinned = Some(reason.to_owned());
+            self.pins.fetch_add(1, Ordering::Relaxed);
         }
-        self.pins.fetch_add(1, Ordering::Relaxed);
     }
 
     /// What each client's tenant is allowed, for a shed decision.
@@ -328,8 +335,25 @@ mod tests {
             crate::run::Shutdown::new(),
         );
         assert_eq!(sessions.len(), 1);
-        drop(held);
 
+        // A second, so that the count is a count rather than a constant.
+        // `M17.4`: `len` returning 1 survived every test, because one was the
+        // only number anything asked for, and a node reporting one client
+        // while serving thousands is the number the shed decision divides.
+        let also = sessions.register(
+            conn(2),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            now,
+            16,
+            crate::run::Shutdown::new(),
+        );
+        assert_eq!(sessions.len(), 2);
+        drop(also);
+        assert_eq!(sessions.len(), 1);
+
+        drop(held);
+        assert_eq!(sessions.len(), 0);
         assert!(sessions.is_empty(), "a finished session was still listed");
     }
 
@@ -387,6 +411,12 @@ mod tests {
         sessions.set_pinned(conn(9), "listen");
 
         assert!(sessions.is_empty());
+        // And the counter says so too. `M17.4`: `pins` returning a constant 1
+        // survived because no test ever saw it hold zero, and under it lived
+        // the defect that the increment ran whether or not there was a client
+        // to pin. `sheds` is asserted to stay at zero three lines up in its
+        // own test; this asks the same question of the same shape.
+        assert_eq!(sessions.pins(), 0, "a client that is gone was counted");
     }
 
     #[test]
@@ -505,6 +535,12 @@ mod tests {
 
         // Another tenant's sheds are not this one's.
         assert_eq!(sessions.recent_sheds(&TenantId::new("globex"), start), 0);
+
+        // The window's own edge. `M17.4`: `>` and `>=` were interchangeable
+        // here, because the only two times asked about were the instant of
+        // the shed and a full second past the window. A shed exactly
+        // `SHED_WINDOW` old is still inside a window that long.
+        assert_eq!(sessions.recent_sheds(&acme, start + SHED_WINDOW), 1);
 
         // And the window moves.
         assert_eq!(

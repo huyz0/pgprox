@@ -1883,6 +1883,35 @@ struct Pumping {
     recording: Option<Box<Recording>>,
 }
 
+impl Pumping {
+    /// Whether this frame is a completion the client must not see, taking it
+    /// off the count if it is.
+    ///
+    /// One rule in one place. It was written out twice, once on the streaming
+    /// path and once on the buffering one, and `M17.4` found five mutants
+    /// living across the two copies. Each is a session that desynchronises and
+    /// never recovers: `+=` for `-=` makes the count grow with every
+    /// completion, so every reply after the first is swallowed and the client
+    /// waits forever; `/=` never reaches zero from one, which is the same;
+    /// and `<` for `>` swallows nothing, so the client sees a `ParseComplete`
+    /// it never asked for and reads every answer after it one frame out of
+    /// step.
+    ///
+    /// Consuming rather than a predicate plus a decrement, because the two
+    /// have to happen together: the old shape allowed a caller to ask twice.
+    fn swallow_one(&mut self, tag: pgprox_proto::frame::Tag) -> bool {
+        if matches!(
+            tag,
+            pgprox_proto::frame::Tag::PARSE_COMPLETE | pgprox_proto::frame::Tag::CLOSE_COMPLETE
+        ) && self.swallow > 0
+        {
+            self.swallow -= 1;
+            return true;
+        }
+        false
+    }
+}
+
 /// What the cache path needs while a statement is in flight.
 struct Recording {
     /// Where the answer will be stored.
@@ -1986,13 +2015,8 @@ where
             // The swallowed completions are uninspected too, and both have
             // empty bodies, so this is the same check the buffering path makes
             // and it still has to happen before anything is queued.
-            let swallowed = matches!(
-                tag,
-                pgprox_proto::frame::Tag::PARSE_COMPLETE | pgprox_proto::frame::Tag::CLOSE_COMPLETE
-            ) && pumping.swallow > 0;
-            if swallowed {
-                pumping.swallow -= 1;
-            } else {
+            let swallowed = pumping.swallow_one(tag);
+            if !swallowed {
                 forward_header(wire, tag, header.body_len);
             }
             stream_body(&mut upstream.wire, wire, header.body_len, swallowed).await?;
@@ -2022,12 +2046,7 @@ where
         // The replies to the `Close` and `Parse` this proxy sent on the
         // client's behalf. The client sent neither and must not see their
         // completions, or every reply after them is one out of step.
-        if matches!(
-            tag,
-            pgprox_proto::frame::Tag::PARSE_COMPLETE | pgprox_proto::frame::Tag::CLOSE_COMPLETE
-        ) && pumping.swallow > 0
-        {
-            pumping.swallow -= 1;
+        if pumping.swallow_one(tag) {
             // The tail still has to leave the socket even though nothing will
             // see it, or the next header would be read from inside this body.
             stream_body(&mut upstream.wire, wire, tail, true).await?;
@@ -5910,7 +5929,14 @@ mod tests {
     async fn a_cancel_for_a_held_query_reaches_the_server() {
         // The whole point: the key the proxy issued resolves to the key the
         // server issued, on a fresh connection carrying nothing else.
-        let addr = fake_postgres().await;
+        //
+        // `M17.4`: this asserted only that the session finished, which it does
+        // whether or not anything was cancelled, so replacing `cancel` with
+        // `Ok(())` survived and the test's own name was the thing it did not
+        // check. It now runs against the catcher rather than the fake server,
+        // because a cancel arrives on its own connection carrying no startup
+        // packet and what proves it arrived is the bytes.
+        let (addr, caught) = cancel_catcher().await;
         let context = Arc::new(context_for(addr));
         let backend = grant_for(addr).primary;
         context.connector.learn(&backend);
@@ -5937,6 +5963,16 @@ mod tests {
         client.write_all(&packet).await.unwrap();
 
         served.await.unwrap().unwrap();
+
+        let key = tokio::time::timeout(Duration::from_secs(5), caught)
+            .await
+            .expect("the cancel never reached the server")
+            .unwrap();
+        assert_eq!(
+            key,
+            (4242, 99),
+            "the cancel carried a key the server never issued"
+        );
     }
 
     /// A server that captures the one `CancelRequest` sent to it.
@@ -6098,5 +6134,420 @@ mod tests {
             "a query with rows was answered without a description"
         );
         assert_eq!(answer[answer.len() - 2].0, Tag::COMMAND_COMPLETE);
+    }
+
+    #[test]
+    fn a_static_session_is_told_it_reached_the_proxy_and_not_a_database() {
+        // `M17.4`: all four mutants of this list survived, so it could have
+        // answered a single empty pair, or `xyzzy`, to every admin session.
+        // The version is what a driver reads before deciding which syntax to
+        // use, and the encodings are what it decodes bytes with, so a wrong
+        // answer here is a client that mis-parses everything that follows.
+        // Named `(pgprox)` on purpose: this session has no upstream, and a
+        // version copied from one would name a server it cannot reach.
+        assert_eq!(
+            proxy_parameters(),
+            vec![
+                ("server_version".to_owned(), "17.0 (pgprox)".to_owned()),
+                ("server_encoding".to_owned(), "UTF8".to_owned()),
+                ("client_encoding".to_owned(), "UTF8".to_owned()),
+                ("DateStyle".to_owned(), "ISO, MDY".to_owned()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_context_prints_which_node_it_is_and_no_credential() {
+        // `M17.4`: this `Debug` could return an empty string, because nothing
+        // read it. It holds a resolver, and a resolver holds tokens, so both
+        // halves matter: it must say enough to identify the node in a panic
+        // and it must not say what the node authenticated with.
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let rendered = format!("{:?}", context_for(addr));
+
+        assert!(
+            rendered.contains("Context") && rendered.contains("NodeId"),
+            "the debug output names neither the type nor the node: {rendered}"
+        );
+        assert!(!rendered.to_lowercase().contains("token"), "{rendered}");
+        assert!(!rendered.to_lowercase().contains("good."), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn an_answer_the_server_failed_is_not_stored_however_much_of_it_arrived() {
+        // `M17.4`: `||` for `&&` here stores a recording that carries both a
+        // failure and frames, which is exactly the shape a partial answer has
+        // when the server raised an error partway. Replaying it later serves a
+        // truncated result nobody ever received, with no error attached, and
+        // the cache keeps doing so until the TTL runs out.
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let (context, cache) = context_with_cache(addr);
+        let mut pumping = Pumping {
+            swallow: 0,
+            owed: pgprox_session::flush::Outstanding::new(),
+            recording: None,
+        };
+
+        // Failed, and with bytes already recorded.
+        let mut failed = recording();
+        failed.failed = true;
+        failed.frames = vec![b'D', 0, 0, 0, 4];
+        pumping.recording = Some(Box::new(failed));
+        store_answer(&context, &mut pumping).await;
+        assert_eq!(cache.len(), 0, "a failed answer reached the cache");
+
+        // An answer that carries nothing is not an answer either, whatever it
+        // says about failing.
+        pumping.recording = Some(Box::new(recording()));
+        store_answer(&context, &mut pumping).await;
+        assert_eq!(cache.len(), 0, "an empty answer reached the cache");
+
+        // And the one that is fit to store is stored, so the two assertions
+        // above are about the condition rather than about a path that never
+        // stores anything.
+        let mut good = recording();
+        good.frames = vec![b'D', 0, 0, 0, 4];
+        pumping.recording = Some(Box::new(good));
+        store_answer(&context, &mut pumping).await;
+        assert_eq!(cache.len(), 1, "a complete answer was not stored");
+
+        // Taken whatever happens, so nothing is left for the next statement.
+        assert!(pumping.recording.is_none());
+    }
+
+    #[test]
+    fn a_completion_the_proxy_asked_for_is_swallowed_exactly_once_each() {
+        // `M17.4`. Five mutants lived in the two copies of this rule, and each
+        // desynchronises a session past recovery. The count is what the proxy
+        // is owed: it sent a `Parse` and a `Close` the client never sent, so
+        // it must eat exactly that many completions and no more.
+        let mut pumping = Pumping {
+            swallow: 2,
+            owed: pgprox_session::flush::Outstanding::new(),
+            recording: None,
+        };
+
+        assert!(pumping.swallow_one(Tag::PARSE_COMPLETE));
+        assert_eq!(pumping.swallow, 1, "the count did not come down by one");
+        assert!(pumping.swallow_one(Tag::CLOSE_COMPLETE));
+        assert_eq!(pumping.swallow, 0);
+
+        // The third is the client's own, and swallowing it would leave the
+        // client reading every answer after it one frame out of step.
+        assert!(
+            !pumping.swallow_one(Tag::PARSE_COMPLETE),
+            "a completion the client asked for was eaten"
+        );
+        assert_eq!(pumping.swallow, 0, "the count went below zero");
+
+        // And nothing else is ever swallowed, however much is owed.
+        let mut owing = Pumping {
+            swallow: 5,
+            owed: pgprox_session::flush::Outstanding::new(),
+            recording: None,
+        };
+        for tag in [Tag::ROW_DESCRIPTION, Tag::DATA_ROW, Tag::COMMAND_COMPLETE] {
+            assert!(!owing.swallow_one(tag), "{tag:?} was swallowed");
+        }
+        assert_eq!(owing.swallow, 5, "an unrelated frame moved the count");
+    }
+
+    #[test]
+    fn a_describe_of_a_statement_is_renamed_and_one_of_a_portal_is_not() {
+        // `M17.4`: the `describes_statement` guard could be forced `false`,
+        // which sends the client's own name upstream for a statement this
+        // proxy prepared under a global one. The server answers "prepared
+        // statement does not exist" on a connection the proxy thought was
+        // warm, which is the failure `M15.3` and `M16.7` were both about.
+        //
+        // The two bodies differ in one byte: `S` names a statement, `P` names
+        // a portal. A portal is the client's own name for a result set and
+        // this proxy does not rename it, so forcing the guard `true` is the
+        // opposite failure and equally silent.
+        use pgprox_proto::frontend::FrontendMessage as Message;
+
+        let mut session = pgprox_session::resume::SessionMemory::default();
+        let global = session
+            .statements
+            .parse("s1", "SELECT $1")
+            .as_str()
+            .to_owned();
+        assert_ne!(global, "s1", "the global name is the client's own");
+
+        let describe_statement = Message::Describe {
+            name: "s1",
+            target: pgprox_proto::frontend::Target::Statement,
+        };
+        let mapped = map_statement_name(&describe_statement, b"Ss1\0", &mut session)
+            .expect("a statement this session prepared was not mapped");
+        assert_eq!(
+            mapped,
+            [b"S".as_slice(), global.as_bytes(), b"\0"].concat(),
+            "the client's own name went upstream"
+        );
+
+        // A portal of the same name travels as it arrived.
+        let describe_portal = Message::Describe {
+            name: "s1",
+            target: pgprox_proto::frontend::Target::Portal,
+        };
+        assert_eq!(
+            map_statement_name(&describe_portal, b"Ps1\0", &mut session),
+            Some(b"Ps1\0".to_vec()),
+            "a portal was renamed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bind_larger_than_the_inspect_prefix_announces_its_whole_length() {
+        // `M17.4`. `send_upstream` builds the forwarded header from the part
+        // that is here plus the part still on the client's socket, and `+`
+        // could become `-` with nothing to notice: every test's `Bind` was
+        // small enough to arrive whole, so the tail was always zero and the
+        // two spellings agreed.
+        //
+        // With a tail they do not. A header short by twice the tail makes the
+        // server read a truncated body and then take the next header from
+        // inside the bytes it did not read, which desynchronises the
+        // connection for good. `a_rewritten_prefix_and_its_tail_announce_one_length`
+        // asserts the same rule against `forward_header` directly; this is the
+        // caller that has to get it right, driven end to end.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(256 * 1024);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        // A `Bind` well past the 4 KiB prefix, so `read_client_body` leaves a
+        // tail and `send_upstream` has to account for it.
+        let mut extended = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut extended, "s1", "SELECT $1");
+        let mut bind = Vec::new();
+        pgprox_proto::encode_frontend::bind(&mut bind, "", "s1");
+        let padding = vec![b'v'; 40_000];
+        let body_len = bind.len() - 5 + padding.len();
+        let mut big = vec![Tag::BIND.get()];
+        big.extend_from_slice(&u32::try_from(body_len + 4).expect("fits").to_be_bytes());
+        big.extend_from_slice(&bind[5..]);
+        big.extend_from_slice(&padding);
+        extended.extend_from_slice(&big);
+        pgprox_proto::encode_frontend::sync(&mut extended);
+        client.write_all(&extended).await.unwrap();
+
+        // The session stays in step: the server answered and the answer came
+        // back. Under a short header the fake reads into the next frame and
+        // nothing arrives.
+        let answered = tokio::time::timeout(Duration::from_secs(5), async {
+            expect(&mut client).await;
+            expect(&mut client).await;
+        })
+        .await;
+        assert!(
+            answered.is_ok(),
+            "the connection desynchronised on a bind with a tail"
+        );
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_client_at_the_pool_cap_waits_for_the_deadline_rather_than_being_refused() {
+        // `M17.4`: `now + acquire_timeout` could become `now - acquire_timeout`
+        // and every test passed, because the pool in a test always had room
+        // and `acquire` consults the deadline only when a caller has to wait.
+        // A deadline already in the past refuses every waiting client the
+        // instant it arrives, which turns "wait up to five seconds for a
+        // connection" into "fail immediately whenever the pool is busy". That
+        // is the pool's entire contract with a client under load.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let key = grant_for(addr).primary.pool_key();
+        // One connection for the whole node, so the second client must wait.
+        context.pool.set_limit(&key, 1);
+
+        let gate = Arc::new(Gate::new(10));
+
+        // The first client opens a transaction and keeps it open, so the
+        // connection is not released at a statement boundary.
+        let (first_io, mut first) = tokio::io::duplex(64 * 1024);
+        let held = Arc::clone(&context);
+        let holding = gate.admit().unwrap();
+        let one = tokio::spawn(async move { session(first_io, held.as_ref(), holding).await });
+        first
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut first).await;
+        }
+        let mut begin = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut begin, "BEGIN");
+        first.write_all(&begin).await.unwrap();
+        expect_answer(&mut first).await;
+
+        // The second finds the pool full.
+        let (second_io, mut second) = tokio::io::duplex(64 * 1024);
+        let also = Arc::clone(&context);
+        let waiting = gate.admit().unwrap();
+        let two = tokio::spawn(async move { session(second_io, also.as_ref(), waiting).await });
+        second
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut second).await;
+        }
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
+        second.write_all(&query).await.unwrap();
+
+        // One-sided on purpose. Correct code *cannot* answer here: the only
+        // connection is held and the deadline is five seconds away, so
+        // nothing arrives however slow the machine is. A deadline in the past
+        // answers with a refusal at once, and 300ms is a long time for a
+        // duplex to carry an error that has already been written.
+        let early = tokio::time::timeout(Duration::from_millis(300), expect(&mut second)).await;
+        assert!(
+            early.is_err(),
+            "a client at the cap was refused instead of waiting: {early:?}"
+        );
+
+        // And it is served once the first client lets go, which is what makes
+        // the assertion above about the deadline rather than about a hang.
+        let mut commit = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut commit, "COMMIT");
+        first.write_all(&commit).await.unwrap();
+        expect_answer(&mut first).await;
+
+        let answer = tokio::time::timeout(Duration::from_secs(5), expect_answer(&mut second))
+            .await
+            .expect("the waiting client was never served");
+        assert_eq!(
+            answer.first().map(|frame| frame.0),
+            Some(Tag::ROW_DESCRIPTION),
+            "the waiting client got something other than its answer"
+        );
+
+        drop(first);
+        drop(second);
+        let _ = one.await;
+        let _ = two.await;
+    }
+
+    #[tokio::test]
+    async fn a_volatile_statement_in_the_extended_protocol_is_never_held() {
+        // `M17.4`: `may_begin`'s `&&` could become `||`, and the simple-query
+        // test that covers the same rule cannot see it. `facts_for` returns
+        // nothing at all for a `Query`, because only a `Parse` carries SQL and
+        // only a `Bind` names a statement the session prepared, so
+        // `a_statement_the_rule_refuses_is_never_stored` exercises a path
+        // where the condition is never reached.
+        //
+        // With `||`, a session holding no connection begins a sequence for
+        // *any* statement, including one the cacheability rule refuses. What
+        // gets stored is then a volatile answer that will be served to the
+        // next caller as though it were stable, which is the one failure ADR
+        // 0022's entry condition exists to prevent.
+        let addr = fake_postgres().await;
+        let (context, cache) = context_with_cache(addr);
+        let context = Arc::new(context);
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(64 * 1024);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut extended = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut extended, "s1", "SELECT random()");
+        pgprox_proto::encode_frontend::bind(&mut extended, "", "s1");
+        pgprox_proto::encode_frontend::execute(&mut extended, "");
+        pgprox_proto::encode_frontend::sync(&mut extended);
+        client.write_all(&extended).await.unwrap();
+
+        // Drained rather than counted: what the fake answers with is not the
+        // point, only that the exchange completed before the cache is read.
+        let drained = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if expect(&mut client).await.0 == Tag::READY_FOR_QUERY {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(drained.is_ok(), "the extended sequence never finished");
+
+        assert_eq!(
+            cache.len(),
+            0,
+            "a volatile statement was held and stored through the extended protocol"
+        );
+
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_peer_asking_this_node_for_its_clients_gets_them() {
+        // `M17.4`, and a correction: the baseline entry accepting the *trait
+        // default* for `CancelSink::clients` claimed this override "is a
+        // separate mutant and is caught". It was not. Returning an empty list
+        // here makes `SHOW CLIENTS` at cluster scope report every peer's
+        // sessions and none of this node's, which reads as a node serving
+        // nobody while it serves thousands.
+        use crate::gossip::CancelSink as _;
+
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let context = context_for(addr);
+        assert!(
+            context.clients().is_empty(),
+            "a node serving nobody listed somebody"
+        );
+
+        let now = context.clock.now();
+        let _held = context.sessions.register(
+            ConnId::new(NodeId::new(1), 1),
+            pgprox_core::ids::TenantId::new("acme"),
+            NodeId::new(1),
+            now,
+            16,
+            crate::run::Shutdown::new(),
+        );
+        let _also = context.sessions.register(
+            ConnId::new(NodeId::new(1), 2),
+            pgprox_core::ids::TenantId::new("globex"),
+            NodeId::new(1),
+            now,
+            16,
+            crate::run::Shutdown::new(),
+        );
+
+        let listed = context.clients();
+        assert_eq!(listed.len(), 2, "a peer was told this node serves nobody");
+        assert!(
+            listed
+                .iter()
+                .any(|view| view.tenant == pgprox_core::ids::TenantId::new("acme"))
+        );
     }
 }

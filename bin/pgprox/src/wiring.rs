@@ -519,6 +519,60 @@ mod tests {
         let rendered = format!("{:?}", deps(config()));
         assert!(!rendered.to_lowercase().contains("token"), "{rendered}");
         assert!(!rendered.to_lowercase().contains("password"), "{rendered}");
+
+        // And prints something. `M17.4`: this whole `Debug` could return an
+        // empty string and every assertion above would pass, because all
+        // three are about what is absent. A redaction that redacts everything
+        // is not a redaction, and this is the type an operator sees in a
+        // startup panic.
+        assert!(
+            rendered.contains("Deps") && rendered.contains("pgprox-1"),
+            "the debug output names neither the type nor the node: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_sizes_derived_at_build_are_the_configured_ones() {
+        // `M17.4`. Three survivors lived here, and all three are a number
+        // reaching production wrong with nothing to say so: the slab's
+        // divisor, and the per-pool cap's whole field.
+        let app = App::build(deps(config())).await.unwrap();
+
+        // A tenth of the client ceiling, which is 10,000 by default. `* 10`
+        // and `% 10` both survived: one asks for a slab forty times the size
+        // intended, the other collapses to the floor and makes every
+        // connection past the 256th wait for a buffer.
+        assert_eq!(app.slab.capacity(), 1_000);
+
+        // And the per-pool cap is the configured one clamped to 50, not
+        // `PoolConfig::default()`'s 20. Deleting the field survived because
+        // nothing asked a pool what it was allowed to reach. `set_limit`
+        // creates the pool and clamps to `max_size`, so asking for more than
+        // any cap reports the cap itself.
+        let key = pgprox_core::ids::PoolKey::new(ServerId::new("db-1", 5432), "acme", "acme_app");
+        app.pool.set_limit(&key, u32::MAX);
+        assert_eq!(
+            pgprox_core::pool::UpstreamPool::stats(app.pool.as_ref(), &key).limit,
+            50
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_says_whether_a_static_user_could_authenticate() {
+        // `M17.4`: both `true` and `false` survived, so this could have
+        // answered either way for every node. It gates whether the admin
+        // console accepts a password at all, and a node answering `true` with
+        // no static user configured offers a login nothing can satisfy.
+        let plain = App::build(deps(config())).await.unwrap();
+        assert!(!plain.has_static_users());
+
+        let mut with_user = deps(config());
+        with_user.statics = Some(Arc::new(
+            crate::admin::StaticAdmin::new("pgprox_admin", "hunter2", b"salt".to_vec())
+                .expect("the crypto provider derives keys"),
+        ));
+        let configured = App::build(with_user).await.unwrap();
+        assert!(configured.has_static_users());
     }
 
     #[tokio::test]

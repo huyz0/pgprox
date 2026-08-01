@@ -414,6 +414,18 @@ mod tests {
             frames.last().map(|(tag, _)| *tag),
             Some(Tag::READY_FOR_QUERY)
         );
+
+        // The code, not just the tag. `M17.4`: deleting the `Handled::Relay`
+        // arm survived, because the catch-all below it also answers with an
+        // error and nothing looked further than the tag. That arm exists for a
+        // variant added later and reports an internal fault; a mistyped
+        // command is a protocol violation, and a driver reading `XX000` for
+        // one has been told the proxy broke.
+        let (_, body) = frames.first().unwrap();
+        assert!(
+            String::from_utf8_lossy(body).contains("08P01"),
+            "a statement with no upstream to relay to was reported as a fault"
+        );
     }
 
     #[tokio::test]

@@ -5380,34 +5380,88 @@ Streaming removes both.
   per chunk produces the same bytes either way, so what had to be stated is
   that a peer with a window smaller than the body still receives it, which
   queue-then-flush cannot do.
-- [ ] `M17.4` **In progress: 29 of 86 killed, 80 remain** (the count moved by
-  more than 29 because the run also re-tested what `M17.3` fixed). The rest of
-  `bin/pgprox`: originally 86 survivors across `run.rs`,
-  `observatory.rs`, `metrics.rs`, `gossip.rs`, `entry.rs`, `wiring.rs`,
-  `sessions.rs`, `replicas.rs`, `admin.rs`, `http.rs`, `drain.rs`, `dial.rs`,
-  `logging.rs` and `main.rs`. Pre-existing, and untouched by this review.
-  What has been done is the `M14` move: pure decisions extracted out of async
+- [ ] `M17.4` **In progress. 80 survivors remained after the first round; 6 are
+  now argued in the baseline and 1 is open.** Stated that way rather than as a
+  running total against the original 86, because the two figures do not add:
+  each run re-tests what the previous one fixed, and a mutant that was never
+  reached is absent from a missed list exactly as a caught one is. The rest of
+  `bin/pgprox`: originally 86 survivors across `run.rs`, `observatory.rs`,
+  `metrics.rs`, `gossip.rs`, `entry.rs`, `wiring.rs`, `sessions.rs`,
+  `replicas.rs`, `admin.rs`, `http.rs`, `drain.rs`, `dial.rs`, `logging.rs` and
+  `main.rs`. Pre-existing, and untouched by this review.
+  The first round did the `M14` move: pure decisions extracted out of async
   orchestration so they can be tested at all. `run.rs` gave up
-  `descriptors_are_short`, `wants_more_quota` and `share_per_key`; the quota
-  arithmetic is the one that mattered, because guaranteed plus leased never
-  exceeding the cap is `M3`'s headline safety claim and five mutants of it lived
-  inside a function nothing could call without a cluster. `metrics.rs` gave up
-  `count_by_state` and `count_by_tenant`, where eight survived because the only
-  test drove the writer and read its text rather than the numbers in it.
-  What is left is different in kind. The remaining survivors are conditions
-  inside `ticker`, `follow_drain`, `run_with_peers`, `dial` and `entry`: async
-  orchestration whose branches need fakes for a cluster, a socket and a clock
-  before anything can assert on them. That is scaffolding to build, not an
-  extraction to make, and it is why this stays open rather than being finished
-  by pushing harder at the same technique.
+  `descriptors_are_short`, `wants_more_quota` and `share_per_key`; `metrics.rs`
+  gave up `count_by_state` and `count_by_tenant`.
+  The second round is the same move at scale, plus the scaffolding this entry
+  used to say was needed. `run.rs` gave up `pools_for`, `drain_step`,
+  `tenants_to_forget`, `parse_descriptor_limit` and two log-gate predicates;
+  `observatory.rs` gave up `local_in_use`, and four open-coded `active + idle`
+  became `PoolStats::total`, which is the arithmetic core already owns and
+  already tests; `serve.rs` gave up `Pumping::swallow_one`, one rule that had
+  been written out twice with five mutants living across the two copies;
+  `entry.rs` gave up `static_admin_from`, for the reason `parse_descriptor_limit`
+  was split, an environment read this workspace cannot fake.
+  **Two defects rather than missing tests.** `Sessions::set_pinned` incremented
+  its counter outside the `if let`, so a pin was counted for a client that had
+  already gone: `pgprox_pin_total` could climb while `SHOW CLIENTS` showed
+  nothing pinned. Its sibling `shed` has had a test asserting the opposite since
+  it was written, and nothing had ever asked `pins` the same question. And
+  `apply_quota` locked, cloned and filtered the whole pool map twice for every
+  configured server, every tick; folding both loops into `pools_for` made that
+  one read, which was not the goal and is the better outcome.
+  **Three tests that did not test what they are named.**
+  `a_cancel_for_a_held_query_reaches_the_server` asserted only that the session
+  finished, which it does whether or not anything is cancelled, so replacing
+  `cancel` with `Ok(())` survived; it now runs against the catcher and asserts
+  the key arrives. `a_server_name_tls_cannot_verify_is_refused_before_dialling`
+  asserted the error kind and not the reason, so deleting the arm that resolves
+  the name before connecting survived: the dial still failed, later and for a
+  different reason. And every `TlsMode::Verified` test in `dial.rs` asserted a
+  *failure*, so nothing had ever proved an upstream TLS connection can succeed
+  and the arm that performs the handshake could be deleted whole.
+  **A flaky test caught before it landed, not after.** The new test for the peer
+  table took the first connection its listener accepted, and the node's own
+  gossip round dials that address once a tick: it failed about one run in eight
+  with a digest where the cancel should have been. Found by running it twelve
+  times rather than once, which is the habit `M17.5` earned.
+  **A claim of mine that the final run falsified.** The baseline entry accepting
+  the *trait default* for `CancelSink::clients` said the overriding
+  implementation on `Context` "is a separate mutant and is caught". It was not:
+  the full run reported it missed, and returning an empty list there makes
+  `SHOW CLIENTS` at cluster scope report every peer's sessions and none of this
+  node's. Fixed rather than reworded, so the entry is true now. Writing "and
+  the other one is caught" into a baseline entry is asserting a measurement,
+  and this one had not been taken.
+  **What is argued rather than tested**, in `product/mutants-baseline.txt`:
+  `main`, which cannot be called from a unit test; `CancelSink::clients`, whose
+  mutant is textually the trait default; `read_client_body`'s `>` against `>=`,
+  which differ only at `tail == 0` where both return `Ok(0)`; `Drain::settled`'s
+  `<` against `<=`, which differ only when a real monotonic clock reads exactly
+  the deadline and even then only by one extra poll, and which survived ten
+  hand-run passes of the whole suite; `terminated`,
+  which needs a real signal delivered to the test process; and
+  `Options::static_admin`, whose only distinguishing input is an environment
+  variable this workspace cannot set without `unsafe`.
+  **What is left is one thing and it is scaffolding.** `reset_pool` deleting
+  `idle_timeout: Duration::ZERO` needs a pool holding a real idle upstream
+  connection, which needs a backend that completes the Postgres handshake. That
+  fake exists, in `serve.rs`'s own test module, where nothing else can reach it.
+  Moving it to a shared `#[cfg(test)]` module is the task, and it is a move
+  rather than a new fake, which is why it is worth doing rather than
+  duplicating fifty lines into `observatory.rs`.
   **A consequence to state rather than leave to be discovered.** `M17.2` put
   both binaries in `scripts/mutants.sh`, and CI's nightly `mutants` job runs it
-  with no arguments, so that job is red until this task and `M17.5` close. That
-  is the correct state: they were absent, the absence was the defect, and a
-  nightly reporting 105 untested decisions is worth more than one reporting
-  nothing. `M11` ran a gate under `continue-on-error` while its milestone was
-  open and `M12` called that a gate that cannot fail, so hiding this behind a
-  flag is the one option that is not available.
+  with no arguments, so that job is red until this task closes. That is the
+  correct state: they were absent, the absence was the defect, and a nightly
+  reporting untested decisions is worth more than one reporting nothing. `M11`
+  ran a gate under `continue-on-error` while its milestone was open and `M12`
+  called that a gate that cannot fail, so hiding this behind a flag is the one
+  option that is not available. `M17.7` is the separate finding this round's
+  measurement produced, and the final full run confirms its diagnosis from the
+  other side: 568 mutants at `--timeout 300 --jobs 4`, **zero timeouts**, and
+  all nine `pools_for` mutants that the sixty-second run called timeouts came
+  back caught.
 - [x] `M17.5` `pgload`: 25 survivors, mostly in `run.rs`. The load generator,
   whose numbers `M7` and `M11` drew conclusions from.
   Eighteen killed, seven argued. The kills came from two directions. Pure
@@ -5473,3 +5527,56 @@ Streaming removes both.
   container the run started rather than the last one assigned, and a check that
   a completed run leaves none behind. The last part is the one that would have
   caught this, because the leak was invisible from inside a passing run.
+- [ ] `M17.7` A mutant reported as a timeout is not a mutant that survived.
+  `M17.4` measured seven files and got back twelve missed and **three
+  timeouts**, in `pools_for`. `scripts/mutants.sh` counts a timeout as a
+  survivor, which is correct in principle: a run that was abandoned proved
+  nothing. So all three would have needed a test or a baseline entry.
+  All three are caught, and each fails a test in **four milliseconds**. Applied
+  by hand, one at a time, against the whole suite: `==` to `!=` and `+=` to
+  `-=` both fail `a_servers_pools_are_its_own_and_its_count_includes_the_waiters`,
+  and returning `(vec![], 0)` fails `the_pools_are_held_to_what_the_cluster_layer_allows`.
+  What ran out was the *whole-suite* budget, `MUTANTS_TIMEOUT`, which is 60
+  seconds. That number was chosen in `M10.13` against "a suite whose slowest
+  test is 0.207s and whose whole run is 0.321s across the four mutated crates".
+  `bin/pgprox` is 242 tests and 2.9 seconds on an idle machine, and this run had
+  six mutation jobs building and testing in parallel at a load average of 23.
+  Sixty seconds is no longer forty-eight times the slowest honest test. It is
+  about twenty times the honest *suite*, before contention.
+  **The per-test cap is what detects a hang, and it still works.** `M10.13` put
+  `slow-timeout = { period = "5s", terminate-after = 2 }` in
+  `.config/nextest.toml` precisely so a hung test is killed at ten seconds and
+  counted as a failure, which catches the mutant and names the test. Given that,
+  the whole-suite budget is only reached when nextest itself wedges, so it is a
+  backstop rather than a detector, and a tight backstop converts machine load
+  into false survivors. A generous one costs nothing when nothing hangs, because
+  the budget is only consumed by a hang.
+  This is the same defect `M10.13` found, in the same file, from the other
+  direction: that task raised a per-test cap because timeouts were hiding real
+  kills, and this one is timeouts *inventing* survivors. Both make a timeout
+  mean something other than what the baseline file's entries claim it means.
+  **And there is a third face, which is worse than either.** Closing `M17.4`
+  turned up `drain.rs`'s `Drain::settled` reporting `< -> <=` as **caught** in
+  one full run and **missed** in a targeted one, on identical code. Run against
+  the whole suite ten times by hand, the mutant survived ten times. So the kill
+  was the anomaly, and the mechanism is the per-test cap doing its job on the
+  wrong input: under six-way mutation load an honest test exceeds ten seconds,
+  nextest terminates it and reports a failure, and cargo-mutants reads any
+  failure as the mutant having been caught. A timeout that invents a survivor
+  makes the gate cry wolf. A cap that invents a *kill* makes the gate report
+  success for a mutant nothing detected, which is the failure `M12` spent a
+  milestone on and the one this whole file exists to prevent.
+  That raises the stakes on the fix: the per-test cap cannot simply be raised
+  either, because a genuinely hung test then costs the whole-suite budget
+  again. What the two numbers have to be is derived from a measured suite under
+  the parallelism the run actually uses, and neither of the current two is.
+  **Confirmed from the other side while `M17.4` was closing.** A full run of the
+  same crate at `--timeout 300 --jobs 4` tested 568 mutants with zero timeouts,
+  and all nine `pools_for` mutants came back caught. The only variables were the
+  budget and the parallelism, so the timeouts were the budget.
+  Acceptance: the three `pools_for` mutants are reported caught rather than
+  timed out on this machine under the same parallelism; `Drain::settled`'s `<=`
+  reports missed rather than flipping between runs; the new budget is
+  argued from the measured suite rather than picked; and `M10.13`'s comment in
+  `.config/nextest.toml` is updated, because it currently cites a suite that is
+  four crates and 0.321s and is quoted as the reason the sixty seconds is safe.

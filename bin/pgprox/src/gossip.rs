@@ -744,6 +744,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_digest_from_a_node_homing_thousands_of_tenants_still_fits() {
+        // `M17.4`: `MAX_INCOMING`'s `1024 * 1024` could become `1024 + 1024`
+        // and no test noticed, because every digest crossing the wire in a
+        // test is a few hundred bytes. A 2 KiB cap truncates the line, the
+        // JSON no longer parses, and the peer is answered with a digest while
+        // its own is silently dropped: the failure detector then reports a
+        // node that is talking to it as one that has gone. The comment above
+        // the constant says a node homes at most a few thousand tenants, so
+        // that is what this sends.
+        let (one, two) = (coordinator(1), coordinator(2));
+        let tenants: Vec<(TenantId, u32)> = (0..2_000)
+            .map(|i| (TenantId::new(format!("tenant-{i:06}")), 1))
+            .collect();
+        one.report(5, Vec::new());
+        one.report_tenants(tenants);
+        assert!(
+            encode(&Message::Digest(DigestWire::from(&one.outgoing()))).len() > 4 * 1024,
+            "the test's digest is not large enough to prove anything"
+        );
+
+        let (theirs, ours) = tokio::io::duplex(1024 * 1024);
+        let serving = tokio::spawn({
+            let two = Arc::clone(&two);
+            async move { answer(theirs, &two, &NoCancels).await }
+        });
+        speak(ours, &one).await.unwrap();
+
+        assert_eq!(
+            two.digests()
+                .iter()
+                .find(|digest| digest.node == NodeId::new(1))
+                .map(|digest| digest.tenant_usage.len()),
+            Some(2_000),
+            "a large digest was truncated rather than read"
+        );
+        drop(serving);
+    }
+
+    #[tokio::test]
     async fn a_stale_digest_does_not_overwrite_a_newer_one() {
         // Gossip reorders. A node that applied whatever arrived last would
         // flap between two states forever.
@@ -974,6 +1013,12 @@ mod tests {
             }
         }
 
+        // One of each state. `M17.4`: both halves of the `waiting` arm, the
+        // encode and the decode, survived because the only client that ever
+        // crossed the wire was active, so `waiting` could have been dropped to
+        // `idle` in both directions and this test would still pass. Waiting is
+        // the state an operator looks for when the pool is exhausted, which is
+        // the one moment the client list is worth asking a peer for.
         let view = ClientView {
             conn: ConnId::new(NodeId::new(2), 9),
             tenant: TenantId::new("acme"),
@@ -982,6 +1027,19 @@ mod tests {
             since: Duration::from_millis(1500),
             pinned: Some("listen".to_owned()),
         };
+        let waiting = ClientView {
+            conn: ConnId::new(NodeId::new(2), 10),
+            state: ClientState::Waiting,
+            pinned: None,
+            ..view.clone()
+        };
+        let idle = ClientView {
+            conn: ConnId::new(NodeId::new(2), 11),
+            state: ClientState::Idle,
+            pinned: None,
+            ..view.clone()
+        };
+        let served = vec![view.clone(), waiting.clone(), idle.clone()];
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -989,7 +1047,7 @@ mod tests {
         let serving = tokio::spawn(serve(
             listener,
             coordinator(2),
-            Arc::new(Serving(vec![view.clone()])),
+            Arc::new(Serving(served.clone())),
             async {
                 let _ = stopped.await;
             },
@@ -997,8 +1055,7 @@ mod tests {
 
         let answered = clients_of(&addr.to_string()).await.unwrap();
 
-        assert_eq!(answered.len(), 1);
-        assert_eq!(answered[0], view, "a client changed shape on the wire");
+        assert_eq!(answered, served, "a client changed shape on the wire");
 
         stop.send(()).unwrap();
         serving.await.unwrap().unwrap();
@@ -1046,5 +1103,79 @@ mod tests {
             "a node that sent something unrecognised got no digest back"
         );
         drop(serving);
+    }
+
+    #[tokio::test]
+    async fn a_server_at_its_cap_is_told_apart_from_a_fleet_with_no_leader() {
+        // `M17.4`: the `reason == "exhausted"` guard could be `false` and no
+        // test noticed, which collapses both refusals into `NoLeader`. They
+        // are opposite diagnoses. `Exhausted` means the database is at the cap
+        // an operator configured and the fix is more capacity; `NoLeader`
+        // means gossip is broken and the fix is the network. A node reporting
+        // the second while the first is happening sends an operator looking
+        // for a partition that is not there.
+        let (leader, _clock) = leading();
+        let server = ServerId::new("db-1", 5432);
+
+        let (theirs, ours) = tokio::io::duplex(64 * 1024);
+        let serving = tokio::spawn({
+            let leader = Arc::clone(&leader);
+            async move { answer(theirs, &leader, &NoCancels).await }
+        });
+
+        // The free pool is granted down to nothing first: a request larger
+        // than what is left is clamped to what is there rather than refused,
+        // so exhaustion is the *second* ask, not a large one.
+        let taken = request_over(ours, &server, NodeId::new(2), 10_000)
+            .await
+            .expect("nothing came back")
+            .expect("the leader refused a request it had room for");
+        assert!(taken.nominal_count() > 0);
+        drop(serving);
+
+        let (theirs, ours) = tokio::io::duplex(64 * 1024);
+        let serving = tokio::spawn({
+            let leader = Arc::clone(&leader);
+            async move { answer(theirs, &leader, &NoCancels).await }
+        });
+        let answered = request_over(ours, &server, NodeId::new(3), 1)
+            .await
+            .expect("nothing came back");
+        assert_eq!(answered, Err(QuotaError::Exhausted { server }));
+        drop(serving);
+    }
+
+    #[tokio::test]
+    async fn a_lease_is_asked_for_over_a_real_socket() {
+        // `M17.4`: `ask_over` returning `None` survived, because every quota
+        // test drove `request_over` over a duplex and nothing ever opened the
+        // connection. `None` is what the caller reads as "no leader", so a
+        // node whose dial silently failed would sit on its guaranteed share
+        // with the free pool unreachable, which is the exact defect `M6.16`
+        // left and this transport exists to fix.
+        let (leader, _clock) = leading();
+        let server = ServerId::new("db-1", 5432);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let serving = tokio::spawn(serve(
+            listener,
+            Arc::clone(&leader),
+            Arc::new(NoCancels),
+            async {
+                let _ = stopped.await;
+            },
+        ));
+
+        let lease = ask_over(&addr.to_string(), &server, NodeId::new(2), 3)
+            .await
+            .expect("the dial produced nothing at all")
+            .expect("the leader refused a request it had room for");
+        assert_eq!(lease.server(), &server);
+        assert_eq!(lease.nominal_count(), 3);
+
+        stop.send(()).unwrap();
+        serving.await.unwrap().unwrap();
     }
 }

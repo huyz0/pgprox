@@ -315,6 +315,21 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, PoolError::ConnectFailed { .. }));
+
+        // The reason, which is what makes the name of this test true.
+        // `M17.4`: deleting the `Verified` arm that resolves the name survived,
+        // because without it the dial fails anyway, just later and for a
+        // different reason. "Before dialling" is the whole point: a name TLS
+        // cannot verify cannot be verified after connecting either, so waiting
+        // out a connection attempt buys nothing, and on a host that blackholes
+        // rather than refuses that wait is minutes long.
+        let PoolError::ConnectFailed { reason, .. } = &err else {
+            unreachable!("the assertion above")
+        };
+        assert!(
+            reason.contains("not a valid server name"),
+            "the dial failed for the wrong reason: {reason}"
+        );
     }
 
     #[test]
@@ -495,5 +510,60 @@ mod tests {
         let mut second = dialer.scram();
 
         assert_ne!(first.client_first("u"), second.client_first("u"));
+    }
+
+    #[tokio::test]
+    async fn a_verified_backend_is_dialled_over_tls() {
+        // `M17.4`. Every `TlsMode::Verified` test in this file asserted a
+        // *failure*: a name TLS cannot verify, and a server that answers the
+        // ClientHello with nonsense. Nothing had ever proved the path works,
+        // so deleting the arm that performs the handshake survived, and what
+        // that leaves is a proxy that refuses every verified backend with "an
+        // upstream TLS mode this build does not know" while the mode is one it
+        // has known since M1.
+        //
+        // The certificate is generated here and trusted here, which is the
+        // whole point: a client config that trusts nothing, which is what the
+        // rest of this module uses, cannot complete a handshake and so cannot
+        // tell a working path from a missing one.
+        let generated = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert =
+            tokio_rustls::rustls::pki_types::CertificateDer::from(generated.cert.der().to_vec());
+        let key = tokio_rustls::rustls::pki_types::PrivateKeyDer::try_from(
+            generated.signing_key.serialize_der(),
+        )
+        .expect("the generated key is a valid DER private key");
+
+        let mut roots = RootCertStore::empty();
+        roots
+            .add(cert.clone())
+            .expect("the generated cert is valid");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(
+            pgprox_tls::server_config(vec![cert], key).expect("a valid server config"),
+        );
+        tokio::spawn(async move {
+            if let Ok((socket, _)) = listener.accept().await {
+                // Held rather than dropped: the handshake completes on this
+                // side before the dialler's future resolves.
+                let _ = acceptor.accept(socket).await;
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
+
+        let dialler = TcpUpstream::new(pgprox_tls::client_config(roots).unwrap());
+        let stream = dialler
+            .dial(&backend(
+                TlsMode::Verified,
+                ServerId::new("localhost", addr.port()),
+            ))
+            .await
+            .expect("a verified backend with a trusted certificate was refused");
+        assert!(
+            matches!(stream, Stream::Tls(_)),
+            "a verified backend was given a plaintext socket"
+        );
     }
 }

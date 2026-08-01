@@ -449,4 +449,51 @@ mod tests {
             "draining is not a reason to restart the process"
         );
     }
+
+    #[tokio::test]
+    async fn a_loop_that_stops_beating_fails_liveness_and_one_that_beats_does_not() {
+        // `M17.4`: `beat` replaced with nothing survived, so a wedged node
+        // would have passed `/healthz` forever. Liveness is the only probe a
+        // restart is the answer to, and it fails on exactly one thing: the run
+        // loop stopped. Before the first beat there is nothing to have
+        // stopped, which is why this beats first.
+        let clock = Arc::new(FakeClock::new());
+        let health: SharedHealth = Arc::new(Mutex::new(Health::new(HealthConfig::default())));
+        lock(&health).started();
+        let probes = Arc::new(Probes::new(
+            health,
+            Arc::new(Mutex::new(DrainState::new(
+                "pgprox-1",
+                DrainConfig::default(),
+            ))),
+            FakeConfigSource::new(Config::default()).unwrap(),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        ));
+
+        probes.beat();
+        let router = probe_routes(Arc::clone(&probes));
+        assert_eq!(get(&router, "/healthz").await, (200, "ok".to_owned()));
+
+        // Past the timeout with no further beat.
+        clock
+            .advance(HealthConfig::default().heartbeat_timeout + std::time::Duration::from_secs(1));
+        let (status, body) = get(&router, "/healthz").await;
+        assert_eq!(status, 503, "a wedged loop still reported alive");
+        assert_eq!(body, Reason::Stuck.as_str());
+
+        // And a beat brings it back, which is what makes the assertion above
+        // about the heartbeat rather than about the clock.
+        probes.beat();
+        assert_eq!(get(&router, "/healthz").await, (200, "ok".to_owned()));
+    }
+
+    #[test]
+    fn probes_print_which_type_they_are() {
+        // `M17.4`: this `Debug` could return an empty string. It is what an
+        // operator reads in a panic from the HTTP task, and a blank there
+        // names nothing at all.
+        let (probes, _drain, _source) = probes_over(Config::default());
+        let rendered = format!("{probes:?}");
+        assert!(rendered.contains("Probes"), "{rendered}");
+    }
 }

@@ -263,6 +263,10 @@ mod tests {
 
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(sets.len(), 1);
+        // `M17.4`: `is_empty` returning true survived, because the two tests
+        // that call it both hold an empty registry. A registry that always
+        // claims to be empty reports no replica polling on a node doing it.
+        assert!(!sets.is_empty());
     }
 
     #[tokio::test]

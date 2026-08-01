@@ -223,6 +223,35 @@ fn wants_more_quota(held: u32, guaranteed: u32, leased: u32) -> Option<u32> {
     (held >= guaranteed + leased).then(|| held.saturating_sub(guaranteed) + 1)
 }
 
+/// This node's pools for one server, and the connections they account for.
+///
+/// The count includes waiters, which is why it is not [`PoolStats::total`]: a
+/// caller queued for a connection is demand this node has to ask the leader
+/// about, and a quota decision that ignored it would leave a node asking for
+/// nothing while clients waited behind a cap.
+///
+/// Extracted by `M17.4`. Five mutants lived in the two loops this replaces:
+/// both `==` filters could become `!=`, and both `+` in the sum could become
+/// `-` or `*`, with nothing able to tell. A node that counted another server's
+/// connections against this one would ask the leader for capacity on the wrong
+/// server, which is the one mistake the cap has no tolerance for.
+///
+/// Also one read of the pool map rather than two per configured server: it was
+/// locked, cloned and filtered twice for every server, every tick.
+fn pools_for(
+    all: &[(pgprox_core::ids::PoolKey, pgprox_core::pool::PoolStats)],
+    server: &pgprox_core::ids::ServerId,
+) -> (Vec<pgprox_core::ids::PoolKey>, u32) {
+    let mine = all.iter().filter(|(key, _)| &key.server == server);
+    let mut keys = Vec::new();
+    let mut held = 0;
+    for (key, stats) in mine {
+        keys.push(key.clone());
+        held += stats.active + stats.idle + stats.waiting;
+    }
+    (keys, held)
+}
+
 /// The per-pool limit an allowance divides into.
 ///
 /// At least one, because a node holding an allowance it cannot spend on any
@@ -240,7 +269,17 @@ fn share_per_key(guaranteed: u32, leased: u32, keys: usize) -> u32 {
 /// connection path. Returns `None` where the file is absent, which is every
 /// platform that is not Linux and is not a reason to fail.
 fn descriptor_limit() -> Option<u64> {
-    let limits = std::fs::read_to_string("/proc/self/limits").ok()?;
+    parse_descriptor_limit(&std::fs::read_to_string("/proc/self/limits").ok()?)
+}
+
+/// The soft limit out of the text `/proc/self/limits` holds.
+///
+/// Split from the read by `M17.4`, so the column arithmetic has something to
+/// assert against. The soft limit is the fourth whitespace-separated field of
+/// the `Max open files` line, and the hard limit is the fifth: reading the
+/// wrong one reports a ceiling this process cannot actually reach, which turns
+/// the warning this feeds into the opposite of a warning.
+fn parse_descriptor_limit(limits: &str) -> Option<u64> {
     limits
         .lines()
         .find(|line| line.starts_with("Max open files"))
@@ -544,15 +583,10 @@ fn shed_pass(app: &App, sessions: &Arc<Sessions>) -> usize {
 /// server sets nothing: there is nothing to hold.
 async fn apply_quota(app: &App) {
     let config = app.deps.config.watch().borrow().clone();
+    let all = app.pool.all_stats();
 
     for server in &config.servers {
-        let keys: Vec<pgprox_core::ids::PoolKey> = app
-            .pool
-            .all_stats()
-            .into_iter()
-            .map(|(key, _)| key)
-            .filter(|key| key.server == server.server)
-            .collect();
+        let (keys, held) = pools_for(&all, &server.server);
         if keys.is_empty() {
             continue;
         }
@@ -561,13 +595,6 @@ async fn apply_quota(app: &App) {
         // The guaranteed share needs no coordination. More than that is the
         // leader's to grant, and a refusal leaves the node on its share, which
         // is the direction that cannot breach the cap.
-        let held: u32 = app
-            .pool
-            .all_stats()
-            .into_iter()
-            .filter(|(key, _)| key.server == server.server)
-            .map(|(_, stats)| stats.active + stats.idle + stats.waiting)
-            .sum();
         if let Some(want) = wants_more_quota(held, allowance.guaranteed, allowance.leased) {
             // Logged either way. The result used to be discarded with
             // `.is_ok()`, so a node pinned at its guaranteed share while
@@ -612,6 +639,78 @@ async fn apply_quota(app: &App) {
     }
 }
 
+/// The tenants tracked last tick that this node no longer serves.
+///
+/// Extracted by `M17.4`, which found the `!` deletable and the `==` flippable
+/// with nothing to notice. Both invert the loop into forgetting exactly the
+/// tenants this node *is* serving, which drops their reservations while their
+/// clients are still connected, and the symptom is a peer opening connections
+/// this node had promised to hold.
+fn tenants_to_forget(
+    tracked: &[pgprox_core::ids::TenantId],
+    serving: &[(pgprox_core::ids::TenantId, u32)],
+) -> Vec<pgprox_core::ids::TenantId> {
+    tracked
+        .iter()
+        .filter(|tenant| !serving.iter().any(|(seen, _)| seen == *tenant))
+        .cloned()
+        .collect()
+}
+
+/// Whether a gossip round left a peer unanswered.
+///
+/// A predicate rather than the comparison inline, for the reason
+/// [`descriptors_are_short`] is one: `M17.4` found `<` interchangeable with
+/// `>`, `==` and `<=` here, and a log line is still behaviour. `<=` warns
+/// every round of a healthy fleet, which trains an operator to ignore the one
+/// round that mattered; `>` never warns at all, and a node that has lost sight
+/// of its peers falls back to its guaranteed share with nothing said.
+const fn peers_went_unanswered(reached: usize, peers: usize) -> bool {
+    reached < peers
+}
+
+/// Whether a shed pass did anything worth a line.
+///
+/// Same shape and same reason: `>=` reports "shed 0 clients" once a second on
+/// every node in the fleet, and `<` never reports a shed at all, which is the
+/// event an operator is looking for when a tenant's clients move.
+const fn something_happened(shed: usize) -> bool {
+    shed > 0
+}
+
+/// Moves clients toward their home nodes, unless this node is draining.
+///
+/// Never while draining: a draining node's clients are leaving anyway, and
+/// shedding them toward a home node would move work twice, which is the one
+/// thing a drain is supposed to avoid doing to a client that is already going.
+///
+/// The guard sits here rather than around the call, because `M17.4` found the
+/// `!` deletable inside the tick with nothing to notice, and what that leaves
+/// is the exact inversion: a draining node that sheds and a healthy one that
+/// never does. Beside the operation it guards, it has something to assert.
+fn shed_pass_unless_draining(app: &App, sessions: &Arc<Sessions>, draining: bool) -> usize {
+    if draining {
+        return 0;
+    }
+    shed_pass(app, sessions)
+}
+
+/// Says so when the document in force is not the one on disk.
+///
+/// A node serving a stale document looks exactly like one serving the current
+/// document, which is when an operator most needs to be told which they have.
+/// Every tick, because the condition persists until somebody fixes the file,
+/// and a single line at the moment it broke would have scrolled away.
+///
+/// A function for the reason [`warn_about_descriptors`] is one: `M17.4` found
+/// the `!` deletable, and the inversion warns on every healthy tick and stays
+/// silent on the one that matters.
+fn warn_about_stale_config(healthy: bool) {
+    if !healthy {
+        tracing::warn!("the configuration could not be re-read: serving the last good one");
+    }
+}
+
 /// What the tick needs to start or reverse a drain.
 struct Drainer<'a> {
     context: &'a Arc<Context>,
@@ -627,11 +726,40 @@ struct Drainer<'a> {
 /// arrive three ways: the admin API, the configuration document, and a drain
 /// TTL expiring underneath both. One place that notices the state changed is
 /// what stops those three paths behaving differently.
-async fn follow_drain(app: &App, probes: &Arc<Probes>, drainer: &Drainer<'_>) {
-    let draining = probes.is_draining();
-    let signalled = drainer.context.draining.fired();
+/// What a tick should do about the drain state, if anything.
+///
+/// Two facts and four combinations, and only the two where they disagree do
+/// anything: the sequence runs when the node has been told to drain and has
+/// not yet been, and reverses when it has been drained and no longer should
+/// be. The other two are a node that is already in the state it should be in.
+///
+/// Extracted by `M17.4`. All three mutants of the conditions survived, and
+/// each is a fleet-level failure with no local symptom: `||` for `&&` reruns
+/// the whole drain sequence every tick of a draining node, and dropping the
+/// `!` never starts it at all, so a node told to drain keeps taking traffic
+/// while the operator watches for it to go quiet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DrainStep {
+    /// Run the drain sequence.
+    Start,
+    /// Undo one that ran.
+    Reverse,
+    /// The node is already where it should be.
+    Nothing,
+}
 
-    if draining && !signalled {
+const fn drain_step(draining: bool, signalled: bool) -> DrainStep {
+    match (draining, signalled) {
+        (true, false) => DrainStep::Start,
+        (false, true) => DrainStep::Reverse,
+        _ => DrainStep::Nothing,
+    }
+}
+
+async fn follow_drain(app: &App, probes: &Arc<Probes>, drainer: &Drainer<'_>) {
+    let step = drain_step(probes.is_draining(), drainer.context.draining.fired());
+
+    if matches!(step, DrainStep::Start) {
         tracing::warn!(node_id = app.deps.node.get(), "draining");
         let steps = crate::drain::Drain {
             cluster: &app.cluster,
@@ -647,7 +775,7 @@ async fn follow_drain(app: &App, probes: &Arc<Probes>, drainer: &Drainer<'_>) {
         // line carries: an operator reading it afterwards can see whether the
         // fleet was told before anyone was closed.
         tracing::info!(steps = ?steps, "drained");
-    } else if !draining && signalled {
+    } else if matches!(step, DrainStep::Reverse) {
         tracing::info!(node_id = app.deps.node.get(), "undraining");
         crate::drain::undrain(
             &app.cluster,
@@ -696,7 +824,7 @@ async fn ticker(
             app.pool
                 .all_stats()
                 .into_iter()
-                .map(|(key, stats)| (key.server, stats.active + stats.idle))
+                .map(|(key, stats)| (key.server, stats.total()))
                 .collect(),
         );
         let per_tenant = app.sessions.per_tenant();
@@ -706,21 +834,13 @@ async fn ticker(
         // for. Without this the tracked set only ever grows, which in a proxy
         // built for five thousand tenants is a leak with a slow fuse, and the
         // reservations it holds are capacity peers could have used.
-        for tenant in tracked.drain(..) {
-            if !per_tenant.iter().any(|(seen, _)| seen == &tenant) {
-                app.cluster.forget_tenant(&tenant);
-            }
+        for tenant in tenants_to_forget(&tracked, &per_tenant) {
+            app.cluster.forget_tenant(&tenant);
         }
+        tracked.clear();
         tracked.extend(per_tenant.into_iter().map(|(tenant, _)| tenant));
 
-        // A node serving a stale document looks exactly like one serving the
-        // current document, which is when an operator most needs to be told
-        // which they have. Every tick, because the condition persists until
-        // somebody fixes the file, and a single line at the moment it broke
-        // would have scrolled away.
-        if !app.deps.config.is_healthy() {
-            tracing::warn!("the configuration could not be re-read: serving the last good one");
-        }
+        warn_about_stale_config(app.deps.config.is_healthy());
 
         // Before the reap, so a limit that just dropped is what the reaper
         // measures against.
@@ -737,7 +857,7 @@ async fn ticker(
         // than a tick would otherwise pile up one task per second against a
         // peer that is already too slow to answer.
         let reached = crate::gossip::round(peers, &app.cluster).await;
-        if reached < peers.len() {
+        if peers_went_unanswered(reached, peers.len()) {
             // A node that cannot see its peers falls back to its guaranteed
             // share and stops being able to lead, which shows up as capacity
             // that has gone missing. Saying so once a second is noisy; saying
@@ -749,13 +869,9 @@ async fn ticker(
             );
         }
 
-        // Never while draining: a draining node's clients are leaving anyway,
-        // and shedding them toward a home node would move work twice.
-        if !probes.is_draining() {
-            let shed = shed_pass(app, &app.sessions);
-            if shed > 0 {
-                tracing::info!(shed, "shed clients toward their home nodes");
-            }
+        let shed = shed_pass_unless_draining(app, &app.sessions, probes.is_draining());
+        if something_happened(shed) {
+            tracing::info!(shed, "shed clients toward their home nodes");
         }
 
         // Last, so a node that has just been told to drain has already
@@ -797,6 +913,94 @@ mod tests {
         );
     }
 
+    /// What one call writes to the log.
+    ///
+    /// `M17.4`. Every branch in this crate whose only effect is a log line was
+    /// untestable, so each one's mutants survived and the argument for
+    /// accepting them would have been "it only logs" — which
+    /// `standards/observability.md` does not allow, because the line is the
+    /// contract. A scoped subscriber is thread-local, so it captures the
+    /// calling thread's events and leaves the process-wide one alone.
+    fn logged(f: impl FnOnce()) -> String {
+        use std::sync::Mutex;
+
+        #[derive(Clone)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Sink {
+            type Writer = Self;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(Sink(Arc::clone(&buffer)))
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+
+        let held = buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        String::from_utf8_lossy(&held).into_owned()
+    }
+
+    #[test]
+    fn a_ceiling_the_process_cannot_reach_is_warned_about_and_a_reachable_one_is_not() {
+        // `M17.4`: replacing this whole function with nothing survived. What
+        // it does is emit one line at startup, and that line is the only
+        // thing standing between an operator and a node that fails at
+        // `accept` for a reason that reads as a network fault.
+        let noisy = logged(|| warn_about_descriptors(u32::MAX));
+        assert!(
+            noisy.contains("file descriptor limit"),
+            "a ceiling of four billion clients said nothing: {noisy}"
+        );
+        // The numbers an operator acts on, not just the prose.
+        assert!(noisy.contains("max_client_conns"), "{noisy}");
+        assert!(noisy.contains("needed"), "{noisy}");
+
+        // And a ceiling this process can serve says nothing at all. A warning
+        // that fires either way is one an operator learns to ignore.
+        let quiet = logged(|| warn_about_descriptors(1));
+        assert!(quiet.is_empty(), "a ceiling of one client warned: {quiet}");
+    }
+
+    #[test]
+    fn a_node_serving_a_stale_document_says_so_and_one_serving_the_current_one_does_not() {
+        // `M17.4`: the `!` on this was deletable inside the tick, and the
+        // inversion warns on every healthy tick of every node in the fleet
+        // while staying silent on the one node that is serving a document
+        // somebody thought they had replaced. A stale node looks exactly like
+        // a current one, which is why the line exists at all.
+        let stale = logged(|| warn_about_stale_config(false));
+        assert!(
+            stale.contains("could not be re-read"),
+            "a stale document said nothing: {stale}"
+        );
+
+        let current = logged(|| warn_about_stale_config(true));
+        assert!(
+            current.is_empty(),
+            "a node serving the current document warned: {current}"
+        );
+    }
+
     #[test]
     fn a_node_asks_for_quota_only_once_it_is_at_its_allowance() {
         // The guaranteed share needs no coordination, so asking below it would
@@ -832,6 +1036,115 @@ mod tests {
         );
         assert_eq!(share_per_key(0, 0, 1), 1);
     }
+
+    #[test]
+    fn a_servers_pools_are_its_own_and_its_count_includes_the_waiters() {
+        // `M17.4`. Both loops inside `apply_quota` were untestable, and five
+        // mutants lived there: either `==` filter could become `!=`, and
+        // either `+` in the sum could become `-` or `*`.
+        let stats = |active, idle, waiting| pgprox_core::pool::PoolStats {
+            active,
+            idle,
+            waiting,
+            limit: 50,
+        };
+        let key = |server, database| pgprox_core::ids::PoolKey::new(server, database, "acme_app");
+        let db1 = pgprox_core::ids::ServerId::new("db-1", 5432);
+        let db2 = pgprox_core::ids::ServerId::new("db-2", 5432);
+        let all = vec![
+            (key(db1.clone(), "acme"), stats(3, 4, 5)),
+            (key(db2.clone(), "globex"), stats(90, 90, 90)),
+            (key(db1.clone(), "initech"), stats(2, 0, 1)),
+        ];
+
+        let (keys, held) = pools_for(&all, &db1);
+        assert_eq!(keys.len(), 2, "the other server's pool was counted");
+        assert!(keys.iter().all(|key| key.server == db1));
+        // Three, four and five, then two and one. Waiters included: a caller
+        // queued behind the cap is demand the leader has to hear about.
+        assert_eq!(held, 15);
+
+        let (keys, held) = pools_for(&all, &db2);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(held, 270);
+
+        // A server this node holds nothing for asks for nothing.
+        let (keys, held) = pools_for(&all, &pgprox_core::ids::ServerId::new("db-3", 5432));
+        assert!(keys.is_empty());
+        assert_eq!(held, 0);
+    }
+
+    #[test]
+    fn a_drain_step_is_taken_only_when_the_two_facts_disagree() {
+        // `M17.4`: three mutants of the conditions this replaces survived.
+        assert_eq!(drain_step(true, false), DrainStep::Start);
+        assert_eq!(drain_step(false, true), DrainStep::Reverse);
+
+        // Already there, both ways. Rerunning the sequence every tick is what
+        // `||` for `&&` does, and the sequence tells the fleet and closes
+        // clients.
+        assert_eq!(drain_step(true, true), DrainStep::Nothing);
+        assert_eq!(drain_step(false, false), DrainStep::Nothing);
+    }
+
+    #[test]
+    fn a_tenant_that_has_gone_is_forgotten_and_one_still_here_is_not() {
+        // `M17.4`. The inverted forms of this forget every tenant the node is
+        // serving, which drops the reservations holding capacity for their
+        // clients while those clients are still connected.
+        let tenant = pgprox_core::ids::TenantId::new;
+        let tracked = vec![tenant("acme"), tenant("globex"), tenant("initech")];
+        let serving = vec![(tenant("globex"), 4)];
+
+        assert_eq!(
+            tenants_to_forget(&tracked, &serving),
+            vec![tenant("acme"), tenant("initech")]
+        );
+
+        // Nothing tracked, nothing to forget, whatever is being served.
+        assert!(tenants_to_forget(&[], &serving).is_empty());
+        // And a node still serving all of them forgets none.
+        let all_served: Vec<_> = tracked.iter().cloned().map(|t| (t, 1)).collect();
+        assert!(tenants_to_forget(&tracked, &all_served).is_empty());
+    }
+
+    #[test]
+    fn the_ticks_two_log_gates_fire_on_the_event_and_not_on_the_quiet_case() {
+        // `M17.4`: six mutants, every relational operator interchangeable with
+        // every other, because a log line is invisible to a test that does not
+        // read logs. A gate that fires on the quiet case is a line a second
+        // per node, and one that never fires loses the event.
+        assert!(peers_went_unanswered(0, 1));
+        assert!(peers_went_unanswered(2, 3));
+        assert!(!peers_went_unanswered(3, 3), "a full round warned");
+        assert!(!peers_went_unanswered(0, 0), "a node alone warned");
+
+        assert!(something_happened(1));
+        assert!(something_happened(9));
+        assert!(!something_happened(0), "a pass that shed nothing spoke");
+    }
+
+    #[test]
+    fn the_soft_descriptor_limit_is_the_fourth_column_and_not_the_hard_one() {
+        // `M17.4`: `descriptor_limit` returning `Some(1)` survived, because
+        // nothing had ever parsed a `/proc/self/limits` at all. The line's
+        // shape is what matters: name, then soft, then hard, then units, and
+        // reading the hard limit would report a ceiling this process cannot
+        // reach, which turns the warning it feeds into the opposite of one.
+        let limits = "Limit                     Soft Limit           Hard Limit           Units\n\
+             Max open files            1024                 524288               files\n\
+             Max locked memory         8388608              8388608              bytes\n";
+        assert_eq!(parse_descriptor_limit(limits), Some(1024));
+
+        // `unlimited` does not parse as a number, and a limit that cannot be
+        // read is `None` rather than a guess.
+        let unlimited =
+            "Max open files            unlimited            unlimited            files\n";
+        assert_eq!(parse_descriptor_limit(unlimited), None);
+        assert_eq!(parse_descriptor_limit(""), None);
+        assert_eq!(parse_descriptor_limit("Max open files\n"), None);
+    }
+
     use super::*;
     use crate::wiring::Deps;
     use pgprox_core::auth::FakeCredentialResolver;
@@ -1101,7 +1414,11 @@ mod tests {
         // `accept`, and that failure reads as a network fault. The check has
         // to see a real number for the warning to mean anything.
         let limit = descriptor_limit().expect("no /proc/self/limits on this machine");
-        assert!(limit > 0, "the soft limit read as zero");
+        // `M17.4`: `> 0` let `descriptor_limit -> Some(1)` survive, and a
+        // ceiling of one descriptor would warn on every node in the fleet
+        // forever. Loose on purpose: what is asserted is that a real number
+        // came back, not which one. No supported target sets this below 64.
+        assert!(limit >= 64, "an implausible soft limit: {limit}");
 
         // Neither of these asserts a log line; they assert the arithmetic runs
         // on both sides of the comparison without panicking.
@@ -1465,7 +1782,21 @@ mod tests {
 
         let view = app.sessions.views(app.deps.clock.now()).remove(0);
         let placement = app.cluster.placement(&view.tenant, 1);
-        let shed = shed_pass(&app, &app.sessions);
+
+        // A draining node leaves it alone, and this is the only place the two
+        // can be compared: the same client, the same instant, the same
+        // placement. `M17.4` found the `!` on this guard deletable inside the
+        // tick, and the inversion is a draining node shedding clients that
+        // were already leaving while a healthy one moves nobody.
+        assert_eq!(
+            shed_pass_unless_draining(&app, &app.sessions, true),
+            0,
+            "a draining node shed a client that was on its way out anyway"
+        );
+        assert!(!close.fired(), "a draining node asked a client to leave");
+        assert_eq!(app.sessions.sheds(), 0);
+
+        let shed = shed_pass_unless_draining(&app, &app.sessions, false);
 
         assert_eq!(
             shed, 1,
@@ -1529,5 +1860,86 @@ mod tests {
         assert!(Arc::ptr_eq(&context.pool, &app.pool));
         assert!(Arc::ptr_eq(&context.connector, &app.connector));
         assert!(Arc::ptr_eq(&context.sessions, &app.sessions));
+    }
+
+    #[tokio::test]
+    async fn a_cancel_for_a_peers_connection_is_forwarded_from_a_running_node() {
+        // `M17.4`: deleting `peers` from the `Context` this builds survived.
+        // The peer table reaches three places from here, and two of them are
+        // separate calls that a test could see: the quota transport and the
+        // observatory. The third is this field, and it is the one the serving
+        // path reads, so a node built without it accepts a cancel for another
+        // pod and drops it. Cancelling a query then works one time in N, which
+        // is the exact defect `M6.30` fixed and nothing would have caught its
+        // return.
+        //
+        // The peer is a plain listener rather than a second node: what is
+        // under test is that this node forwards at all, and the forwarded
+        // message is a line on the gossip socket.
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let peer = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let peer_at = peer.local_addr().unwrap();
+        // Every connection, not the first. The node's own gossip round dials
+        // this same address once a tick, so the first thing to arrive is
+        // whichever of the two the scheduler ran: taking one connection and
+        // asserting on one line made this test fail about one run in eight,
+        // with a digest where the cancel should have been. `M17.5` is the
+        // reason that was checked rather than shipped.
+        let (caught, catch) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = peer.accept().await {
+                let caught = caught.clone();
+                tokio::spawn(async move {
+                    let mut lines = BufReader::new(socket).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        if caught.send(line).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+
+        let app = App::build(deps()).await.unwrap();
+        let listeners = Listeners::bind(loopback()).await.unwrap();
+        let addrs = listeners.addrs().unwrap();
+        let shutdown = Shutdown::new();
+        let running = tokio::spawn(run_with_peers(
+            app,
+            listeners,
+            BTreeMap::from([(NodeId::new(2), peer_at.to_string())]),
+            shutdown.clone(),
+        ));
+
+        // A key node 2 issued, arriving at node 1. A `CancelRequest` carries
+        // no startup packet and gets no answer, so the socket is all it is.
+        let conn = pgprox_core::ids::ConnId::new(NodeId::new(2), 0x00AB_CDEF);
+        let (process_id, secret) = pgprox_proto::backend::key_from_conn_id(conn);
+        let mut packet = Vec::new();
+        pgprox_proto::encode_frontend::cancel_request(&mut packet, process_id, secret);
+
+        let mut client = tokio::net::TcpStream::connect(addrs.client).await.unwrap();
+        client.write_all(&packet).await.unwrap();
+
+        let mut catch = catch;
+        let forwarded = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(line) = catch.recv().await {
+                if line.contains(r#""kind":"cancel""#) {
+                    return line;
+                }
+            }
+            unreachable!("the peer listener stopped before the cancel arrived")
+        })
+        .await
+        .expect("the cancel was never forwarded to the peer");
+
+        assert_eq!(
+            forwarded, r#"{"kind":"cancel","node":2,"secret":11259375}"#,
+            "the forwarded cancel named the wrong connection"
+        );
+
+        shutdown.fire();
+        let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
     }
 }

@@ -29,7 +29,7 @@ use pgprox_core::admin::{
 use pgprox_core::clock::Clock;
 use pgprox_core::cluster::{ClusterCoordinator, NodeMode};
 use pgprox_core::config::{Config, ConfigSource};
-use pgprox_core::ids::{NodeId, PoolKey, TenantId};
+use pgprox_core::ids::{NodeId, PoolKey, ServerId, TenantId};
 use pgprox_core::pool::PoolStats;
 use pgprox_pool::reap::ReapConfig;
 
@@ -134,6 +134,23 @@ impl NodeObservatory {
         self.peers.set(peers).is_ok()
     }
 
+    /// What this node holds against one server, across its own pools.
+    ///
+    /// A free function rather than a closure inside `servers`, because it is
+    /// the one decision that function makes and it was untestable where it
+    /// was: `M17.4` found `==` and `!=` interchangeable in the filter, since
+    /// every test's pool map was either empty or held a single server. A node
+    /// that counted the other servers' connections against this one would
+    /// report headroom on a server that has none, which is the number the
+    /// quota layer is there to keep honest.
+    fn local_in_use(pools: &[PoolView], server: &ServerId) -> u32 {
+        pools
+            .iter()
+            .filter(|pool| &pool.key.server == server)
+            .map(|pool| pool.stats.total())
+            .sum()
+    }
+
     /// The pools this node holds, as views.
     fn local_pools(&self) -> Vec<PoolView> {
         self.pool
@@ -207,11 +224,7 @@ impl Observatory for NodeObservatory {
             .map(|server| {
                 let allowance = self.cluster.allowance(&server.server);
                 let in_use = if matches!(scope, Scope::Local) {
-                    self.local_pools()
-                        .iter()
-                        .filter(|pool| pool.key.server == server.server)
-                        .map(|pool| pool.stats.active + pool.stats.idle)
-                        .sum()
+                    Self::local_in_use(&self.local_pools(), &server.server)
                 } else {
                     self.cluster.cluster_usage(&server.server)
                 };
@@ -270,7 +283,11 @@ impl Observatory for NodeObservatory {
 
     fn stats(&self, scope: Scope) -> Stats {
         let pools = self.local_pools();
-        let local_upstream: u32 = pools.iter().map(|p| p.stats.active + p.stats.idle).sum();
+        // `total()` rather than the sum written out, which is what it is for.
+        // `M17.4`: `active + idle` open-coded here and in `servers` gave four
+        // survivors, all of them the same arithmetic core already owns and
+        // already tests.
+        let local_upstream: u32 = pools.iter().map(|p| p.stats.total()).sum();
 
         Stats {
             client_conns: match scope {
@@ -603,6 +620,89 @@ mod tests {
     }
 
     #[test]
+    fn a_local_server_count_is_that_servers_pools_and_no_others() {
+        // `M17.4`. The filter inside `servers` was untestable through the
+        // observatory, because a node's pool map in a unit test is either
+        // empty or one server's, so `==` and `!=` gave the same answer. The
+        // decision is now its own function and this asks it directly, with two
+        // servers and connections that are neither zero nor one.
+        let held = |server: ServerId, active: u32, idle: u32| PoolView {
+            node: NodeId::new(1),
+            key: PoolKey::new(server, "acme", "acme_app"),
+            stats: PoolStats {
+                active,
+                idle,
+                ..PoolStats::default()
+            },
+        };
+        let pools = vec![
+            held(server(), 3, 4),
+            held(ServerId::new("db-2", 5432), 9, 9),
+            held(server(), 2, 0),
+        ];
+
+        assert_eq!(NodeObservatory::local_in_use(&pools, &server()), 9);
+        assert_eq!(
+            NodeObservatory::local_in_use(&pools, &ServerId::new("db-2", 5432)),
+            18
+        );
+        assert_eq!(
+            NodeObservatory::local_in_use(&pools, &ServerId::new("db-3", 5432)),
+            0,
+            "a server this node holds no pools for counted something"
+        );
+    }
+
+    #[test]
+    fn whether_the_configuration_is_current_is_the_sources_answer() {
+        // `M17.4`: both `true` and `false` survived, so this could have
+        // reported either for every node in the fleet. It is the one thing
+        // that distinguishes a node serving the document an operator just
+        // pushed from one serving what it booted with, and a node that always
+        // says "current" makes a failed reload invisible.
+        #[derive(Debug)]
+        struct Stale(Arc<FakeConfigSource>);
+
+        #[async_trait::async_trait]
+        impl ConfigSource for Stale {
+            fn is_healthy(&self) -> bool {
+                false
+            }
+            async fn load(&self) -> Result<Config, pgprox_core::config::ConfigError> {
+                self.0.load().await
+            }
+            fn watch(&self) -> tokio::sync::watch::Receiver<Arc<Config>> {
+                self.0.watch()
+            }
+        }
+
+        let fresh = fixture(config());
+        assert!(fresh.observatory.config_is_current());
+
+        let stale = fixture(config());
+        let observatory = NodeObservatory::new(NodeParts {
+            node: NodeId::new(1),
+            clock: Arc::new(FakeClock::new()),
+            config: Arc::new(Stale(Arc::clone(&stale.source))) as Arc<dyn ConfigSource>,
+            cluster: GossipCoordinator::new(
+                NodeId::new(1),
+                CoordinatorConfig::default(),
+                Arc::new(FakeClock::new()),
+            ),
+            pool: Arc::clone(&stale.pool),
+            sessions: Arc::clone(&stale.sessions),
+            drain: Arc::new(std::sync::Mutex::new(
+                pgprox_config::drain::DrainState::new(
+                    "pgprox-1",
+                    pgprox_config::drain::DrainConfig::default(),
+                ),
+            )),
+            cache: Arc::clone(&stale.cache),
+        });
+        assert!(!observatory.config_is_current());
+    }
+
+    #[test]
     fn a_tenant_carries_its_client_and_upstream_counts_and_its_home() {
         let fixture = fixture(config());
         let now = Instant::now();
@@ -693,6 +793,43 @@ mod tests {
             fixture.observatory.stats(Scope::Cluster).client_conns,
             3,
             "the cluster count did not come from gossip"
+        );
+
+        // And the upstream count scopes the same way. `M17.4`: deleting the
+        // `Scope::Local` arm of that match survived, because nothing ever
+        // asked a local-scoped read for it, so a `?scope=local` answer could
+        // have been reporting the whole fleet's upstream connections against
+        // one node. This node holds no pools; its two gossiping peers report
+        // two and four.
+        assert_eq!(fixture.observatory.stats(Scope::Local).upstream_conns, 0);
+        assert_eq!(
+            fixture.observatory.stats(Scope::Cluster).upstream_conns,
+            6,
+            "the cluster count did not come from gossip"
+        );
+    }
+
+    #[test]
+    fn a_local_tenant_read_counts_this_nodes_digest_and_not_its_peers() {
+        // `M17.4`: `!=` and `==` were interchangeable in the scope filter,
+        // which is the difference between "this node's tenants" and "every
+        // node's except this one". Only `tenant()` read this, and it reads at
+        // cluster scope, so the local branch had no test at all. The fixture
+        // gossips one upstream connection for `acme` from node 1 and two from
+        // node 2.
+        let fixture = fixture(config());
+
+        let local = fixture.observatory.tenants(Scope::Local);
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].tenant, TenantId::new("acme"));
+        assert_eq!(
+            local[0].upstream_conns, 1,
+            "a local read counted a peer's connections"
+        );
+
+        assert_eq!(
+            fixture.observatory.tenants(Scope::Cluster)[0].upstream_conns,
+            3
         );
     }
 

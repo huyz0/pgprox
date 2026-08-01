@@ -229,16 +229,36 @@ impl Options {
     /// when the keys cannot be derived. A node that started without them would
     /// answer every SCRAM client with a refusal for a reason nobody could see.
     pub fn static_admin(&self) -> Result<Option<Arc<crate::admin::StaticAdmin>>, StartupError> {
-        let Some(user) = &self.admin_user else {
+        Self::static_admin_from(
+            self.admin_user.as_deref(),
+            std::env::var(crate::admin::PASSWORD_VAR).ok(),
+        )
+    }
+
+    /// The same decision, with the environment already read.
+    ///
+    /// Split from the read by `M17.4`, for the reason `parse_descriptor_limit`
+    /// is: a process-global environment variable is not something a test in
+    /// this workspace can set, because setting one is `unsafe` in edition 2024
+    /// and `unsafe_code` is forbidden workspace-wide. Everything above this
+    /// line is therefore untestable, and everything below it is exactly the
+    /// decision that matters: which of the three combinations a node started
+    /// with, and what each one means.
+    fn static_admin_from(
+        user: Option<&str>,
+        password: Option<String>,
+    ) -> Result<Option<Arc<crate::admin::StaticAdmin>>, StartupError> {
+        let Some(user) = user else {
             return Ok(None);
         };
-        let password =
-            std::env::var(crate::admin::PASSWORD_VAR).map_err(|_| StartupError::Arguments {
+        let Some(password) = password else {
+            return Err(StartupError::Arguments {
                 detail: format!(
                     "--admin-user needs {} in the environment",
                     crate::admin::PASSWORD_VAR
                 ),
-            })?;
+            });
+        };
 
         // A per-node salt, so two nodes with the same password store different
         // keys and a stolen verifier from one is useless against the other.
@@ -796,6 +816,156 @@ mod tests {
         assert!(
             matches!(err, StartupError::Sidecar { .. }),
             "an unreachable sidecar was reported as something else: {err}"
+        );
+    }
+
+    #[test]
+    fn a_certificate_and_key_together_build_a_listener_config() {
+        // `M17.4`: deleting this arm survived, and what it leaves is a node
+        // told to serve TLS refusing to start with "--tls-cert and --tls-key
+        // go together" while both were given. The three other combinations
+        // were tested and the working one was not.
+        let dir = tempfile::tempdir().unwrap();
+        let generated = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        std::fs::write(&cert, generated.cert.pem()).unwrap();
+        std::fs::write(&key, generated.signing_key.serialize_pem()).unwrap();
+
+        let options = Options {
+            tls_cert: Some(cert),
+            tls_key: Some(key),
+            ..Options::default()
+        };
+        assert!(
+            options.tls().unwrap().is_some(),
+            "a node given both halves got no listener configuration"
+        );
+
+        // And each half alone is still refused, which is what the arm above
+        // is distinguished from.
+        for half in [
+            Options {
+                tls_cert: Some(PathBuf::from("/nonexistent/cert.pem")),
+                ..Options::default()
+            },
+            Options {
+                tls_key: Some(PathBuf::from("/nonexistent/key.pem")),
+                ..Options::default()
+            },
+        ] {
+            assert!(matches!(half.tls(), Err(StartupError::Arguments { .. })));
+        }
+
+        // Neither is no TLS rather than an error: a node without a
+        // certificate serves plaintext, which is the default deployment.
+        assert!(Options::default().tls().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_node_told_to_accept_a_static_user_builds_one_and_refuses_without_a_password() {
+        // `M17.4`: `static_admin` returning `Ok(None)` survived, because
+        // nothing had ever called it with a user. A node given `--admin-user`
+        // that silently started with none refuses every SCRAM client for a
+        // reason nobody can see, which is what the doc comment above warns
+        // about and what nothing checked.
+        let built = Options::static_admin_from(Some("pgprox_admin"), Some("hunter2".to_owned()))
+            .expect("a user and a password is a valid pair")
+            .expect("a node told to accept a static user got none");
+        assert_eq!(built.user(), "pgprox_admin");
+
+        // A user with no password stops the start rather than starting an
+        // admin surface nobody can log into.
+        let err = Options::static_admin_from(Some("pgprox_admin"), None).unwrap_err();
+        assert!(
+            err.to_string().contains(crate::admin::PASSWORD_VAR),
+            "the refusal does not say what is missing: {err}"
+        );
+
+        // And a node that was never told to accept one has none, whatever is
+        // in the environment. That is the default deployment, so a password
+        // left behind in a shell must not turn the admin surface on.
+        assert!(
+            Options::static_admin_from(None, Some("hunter2".to_owned()))
+                .unwrap()
+                .is_none()
+        );
+        assert!(Options::static_admin_from(None, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn two_nodes_with_one_password_derive_different_keys() {
+        use pgprox_session::auth::StaticCredentials as _;
+
+        // The salt is per node and drawn from entropy, so a verifier stolen
+        // from one node is useless against another. Asserted here because the
+        // salt is generated inside the function and there is no other seam.
+        let one = Options::static_admin_from(Some("a"), Some("hunter2".to_owned()))
+            .unwrap()
+            .unwrap();
+        let two = Options::static_admin_from(Some("a"), Some("hunter2".to_owned()))
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            one.challenge("a").expect("the user is known").salt,
+            two.challenge("a").expect("the user is known").salt,
+            "two nodes with the same password share a salt"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_grant_cache_is_bounded_by_the_document_rather_than_the_default() {
+        use pgprox_core::auth::{AuthRequest, CredentialResolver};
+
+        // `M17.4`: deleting `max_ttl` from the `CacheConfig` this builds
+        // survived, which leaves the grant cache on its own 300-second default
+        // whatever the document says. The field's whole purpose is that an
+        // operator who shortens it "is saying how long a revoked token may keep
+        // working", so ignoring it is a security setting that silently does
+        // nothing.
+        //
+        // A cap of zero rather than a short one and a sleep: `effective_ttl`
+        // takes the minimum of the sidecar's TTL and this cap, so zero expires
+        // every entry at once and the sidecar is asked again every time. The
+        // real clock is what `start_with` wires in, and this is the one cap
+        // value that can be observed without waiting on it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, format!("{}grant_ttl_cap: 0s\n", document())).unwrap();
+
+        let token = format!(
+            "{}.{}.not-a-signature",
+            encode_part(br#"{"alg":"RS256","typ":"JWT"}"#),
+            encode_part(br#"{"sub":"acme"}"#),
+        );
+        let inner = Arc::new(
+            pgprox_core::auth::FakeCredentialResolver::new().with_grant(token.clone(), a_grant()),
+        );
+        let app = start_with(
+            Options {
+                config: path.clone(),
+                ..Options::default()
+            },
+            FileSource::new(FileConfig::at(&path)).unwrap(),
+            Arc::clone(&inner) as Arc<dyn CredentialResolver>,
+        )
+        .await
+        .unwrap();
+
+        let request = || AuthRequest {
+            token: pgprox_core::secret::SecretString::new(token.clone()),
+            startup_database: "tenant_acme".to_owned(),
+            startup_user: "acme_app".to_owned(),
+            client_addr: "10.0.0.1".parse().unwrap(),
+        };
+        for _ in 0..8 {
+            app.deps.resolver.resolve(request()).await.unwrap();
+        }
+
+        assert_eq!(
+            inner.call_count(),
+            8,
+            "a cap of zero still cached, so the document's cap is not the one in force"
         );
     }
 }

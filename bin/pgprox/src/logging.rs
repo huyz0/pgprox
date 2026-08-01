@@ -125,8 +125,14 @@ mod tests {
         let first = init();
         let second = init();
         assert!(!second, "the second install was not refused");
-        // Whether the first succeeded depends on test ordering, which is the
-        // point: neither call may fail.
-        let _ = first;
+
+        // And the first did install. `M17.4`: `init` returning a constant
+        // `false` survived, because this used to leave `first` unasserted on
+        // the grounds that test ordering decided it. It does not: this is the
+        // only caller of `init` in the test binary, so within this process the
+        // first call is the first call whether the suite runs one test per
+        // process or many per thread. A node whose subscriber never installs
+        // starts and serves in complete silence.
+        assert!(first, "the first install was refused");
     }
 }
