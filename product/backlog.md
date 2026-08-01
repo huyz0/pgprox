@@ -5340,3 +5340,19 @@ Streaming removes both.
   forwarded intact after recording gives up.
   Found by checking an assumption I wrote into a commit message rather than by
   reading the code again.
+- [ ] `M17.2` The binaries mutation testing never reached. `scripts/mutants.sh`
+  lists the fourteen crates under `crates/`. `bin/pgprox` and `bin/pgload` are
+  packages with their own lib targets, they are held to the same 95% coverage
+  gate, and no mutant has ever been run at either.
+  This is `M14`'s subject one level out, and it got worse during `M16` rather
+  than better: `wanted_body`, `client_body_wanted`, `read_client_body`,
+  `record_frame`, `stream_body`, `forward_header` and `MAX_RECORDED_ANSWER` are
+  the decisions that milestone turned on, and every one of them is in
+  `bin/pgprox/src/serve.rs`. Three mutation runs during that work tested
+  `pgprox-proto` and `pgprox-session` and found seven survivors between them,
+  which is the reason to think the untested half is not clean either.
+  `M14.4` settled which crates stay out of the list and wrote down why. The
+  binaries were never in that argument; they were not considered.
+  Acceptance: both binaries in the list, the survivors killed or argued, and
+  `m14-complete.sh`'s check that the list matches its own criterion updated to
+  cover them, since it currently walks `crates/*/` and would not notice.
