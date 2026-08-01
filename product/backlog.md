@@ -5176,3 +5176,22 @@ Streaming removes both.
   Filed rather than guessed at, and `check-wired.sh` will not let it be
   forgotten: the marker naming this task is what keeps that check green, and it
   fails the moment the marker stops matching reality in either direction.
+- [x] `M16.11` The pump buffers an inspected body against the relay cap.
+  `M16.3` streams every uninspected message, which is the bulk. What it left is
+  the other half of the same sentence: for a message something *does* read, the
+  pump still does `read_body_into(&mut body, header.body_len)`, and
+  `header.body_len` is bounded by `DEFAULT_MAX_FRAME`, which is 1 GiB.
+  `inspect_policy` says how much is actually wanted, and it is 8 KiB for an
+  `ErrorResponse` and one byte for a `ReadyForQuery`.
+  This is `M15.1` again, one layer up. `FrameRelay` was given the cap and the
+  pump was not, because the pump does not use `FrameRelay`, which is `M16.10`.
+  Reachable from a server rather than from a client, so it needs a compromised
+  or hostile upstream rather than anyone who can open a socket. Worth fixing
+  because the whole point of two caps is that the parsed one is small.
+  Acceptance: the buffered part is bounded by the inspect policy and by
+  `DEFAULT_MAX_INSPECT`, and the rest of the body is streamed like any other
+  tail, so the bytes forwarded are unchanged.
+  A recording session is the exception and keeps reading whole: a truncated
+  cache entry is a wrong answer rather than a smaller one. That the cache has a
+  bound of its own is assumed here and not checked, which is a separate task if
+  it turns out to be false.

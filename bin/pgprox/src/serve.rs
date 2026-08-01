@@ -1983,10 +1983,10 @@ where
             continue;
         }
 
-        upstream
-            .wire
-            .read_body_into(&mut body, header.body_len)
-            .await?;
+        let wanted = wanted_body(tag, header.body_len, pumping.recording.is_some());
+        let tail = header.body_len - wanted;
+
+        upstream.wire.read_body_into(&mut body, wanted).await?;
         let frame = Frame::new(tag, &body);
         let decoded = backend::decode(&frame).unwrap_or(BackendMessage::Opaque(tag));
         let server = relay.on_server(&decoded);
@@ -2003,10 +2003,18 @@ where
         ) && pumping.swallow > 0
         {
             pumping.swallow -= 1;
+            // The tail still has to leave the socket even though nothing will
+            // see it, or the next header would be read from inside this body.
+            stream_body(&mut upstream.wire, wire, tail, true).await?;
             continue;
         }
 
-        forward(wire, tag, &body);
+        // The header from what the header said, then the part that was read,
+        // then whatever was not. The bytes on the wire are the same either way;
+        // only where they were held differs.
+        forward_header(wire, tag, header.body_len);
+        wire.queue(|out| out.extend_from_slice(&body));
+        stream_body(&mut upstream.wire, wire, tail, false).await?;
 
         // The same bytes, kept for the cache, filtered to the ones that answer
         // the statement rather than the client's framing. A `ReadyForQuery`
@@ -2121,6 +2129,30 @@ where
         upstream.wire.flush().await?;
         return Ok(());
     }
+}
+
+/// How much of a server message the pump actually reads.
+///
+/// `inspect_policy` is the answer, and it is small: eight kilobytes for an
+/// `ErrorResponse`, one byte for a `ReadyForQuery`. Reading `body_len` instead
+/// bounded it by `DEFAULT_MAX_FRAME`, which is a gigabyte, and that is
+/// `M15.1`'s defect one layer up: the relay was given the inspect cap and the
+/// pump was not, because the pump does not use the relay.
+///
+/// A recording session reads whole and is the exception. A truncated cache
+/// entry is a wrong answer rather than a smaller one.
+fn wanted_body(tag: pgprox_proto::frame::Tag, body_len: usize, recording: bool) -> usize {
+    use pgprox_proto::frame::{DEFAULT_MAX_INSPECT, Direction, Inspect, inspect_policy};
+
+    if recording {
+        return body_len;
+    }
+    match inspect_policy(Direction::Backend, tag) {
+        Inspect::None => 0,
+        Inspect::Prefix(n) => n.min(body_len),
+        Inspect::Whole => body_len,
+    }
+    .min(DEFAULT_MAX_INSPECT)
 }
 
 /// Queues a message header, with the body still to come.
@@ -2378,6 +2410,45 @@ mod tests {
     }
     use super::*;
     use pgprox_proto::frame::Tag;
+
+    #[test]
+    fn an_inspected_body_is_bounded_by_the_inspect_cap_not_the_relay_cap() {
+        // `M16.11`. The pump read every inspected body whole, and whole means
+        // whatever the peer declared, up to DEFAULT_MAX_FRAME. That is a
+        // gigabyte, and inspect_policy wants eight kilobytes of an
+        // ErrorResponse and one byte of a ReadyForQuery.
+        use pgprox_proto::frame::{DEFAULT_MAX_FRAME, DEFAULT_MAX_INSPECT};
+
+        // A server declaring a gigabyte for a message that is one byte long.
+        assert_eq!(
+            wanted_body(Tag::READY_FOR_QUERY, DEFAULT_MAX_FRAME, false),
+            DEFAULT_MAX_INSPECT,
+            "a Whole-policy body was read against the relay cap"
+        );
+
+        // A prefix is the policy's number, not the body's, whichever is smaller.
+        assert_eq!(
+            wanted_body(Tag::ERROR_RESPONSE, DEFAULT_MAX_FRAME, false),
+            8192
+        );
+        assert_eq!(wanted_body(Tag::ERROR_RESPONSE, 100, false), 100);
+
+        // The ordinary cases are untouched, which is what says the cap costs
+        // nothing where it is not needed.
+        assert_eq!(wanted_body(Tag::READY_FOR_QUERY, 1, false), 1);
+        assert_eq!(wanted_body(Tag::COMMAND_COMPLETE, 9, false), 9);
+
+        // Uninspected messages read nothing at all: that is M16.3's path.
+        assert_eq!(wanted_body(Tag::DATA_ROW, DEFAULT_MAX_FRAME, false), 0);
+
+        // And a recording session reads whole, because a truncated cache entry
+        // is a wrong answer rather than a smaller one.
+        assert_eq!(
+            wanted_body(Tag::DATA_ROW, 50_000_000, true),
+            50_000_000,
+            "a recorded frame was truncated, which corrupts the entry"
+        );
+    }
 
     #[tokio::test]
     async fn a_body_streams_across_without_being_held() {
