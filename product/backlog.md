@@ -5224,7 +5224,7 @@ Streaming removes both.
 
 ## M17: the assumptions the last two milestones wrote down
 
-- [ ] `M17.1` A recording session holds the whole answer, unbounded. `M16.11`
+- [x] `M17.1` A recording session holds the whole answer, unbounded. `M16.11`
   let a session recording for the query cache keep reading whole bodies, on the
   stated assumption that the cache bounds its own entries. The assumption is
   true where it was checked and false where it matters: `Store::put` rejects an

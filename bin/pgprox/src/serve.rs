@@ -2025,17 +2025,7 @@ where
         //
         // `belongs_in_payload` is the assembler's own list. Two lists here
         // would drift, and the one nobody remembers to fix is always the second.
-        if let Some(recording) = pumping.recording.as_mut() {
-            if pgprox_session::sequence::belongs_in_payload(tag) {
-                recording.frames.push(tag.get());
-                let len = u32::try_from(body.len() + 4).unwrap_or(u32::MAX);
-                recording.frames.extend_from_slice(&len.to_be_bytes());
-                recording.frames.extend_from_slice(&body);
-            }
-            if tag == pgprox_proto::frame::Tag::ERROR_RESPONSE {
-                recording.failed = true;
-            }
-        }
+        record_frame(&mut pumping.recording, tag, &body);
 
         // A copy reverses the direction the conversation is going in, and this
         // loop is one-way. Everything else the proxy relays is a request the
@@ -2130,6 +2120,58 @@ where
         return Ok(());
     }
 }
+
+/// Keeps one frame of an answer, and gives up if the answer gets too big.
+///
+/// `belongs_in_payload` is the assembler's own list. Two lists here would
+/// drift, and the one nobody remembers to fix is always the second.
+///
+/// Giving up means dropping the recording, not truncating it. A partial
+/// recording stored would be a wrong answer served later, and there is no half
+/// measure between keeping all of an answer and keeping none. The rest of the
+/// answer then takes the streaming path, because `wanted_body` and the pump's
+/// streaming branch both key off whether a recording is live, so giving up here
+/// gives up the buffering with it.
+fn record_frame(
+    recording: &mut Option<Box<Recording>>,
+    tag: pgprox_proto::frame::Tag,
+    body: &[u8],
+) {
+    let Some(live) = recording.as_mut() else {
+        return;
+    };
+
+    if pgprox_session::sequence::belongs_in_payload(tag) {
+        live.frames.push(tag.get());
+        let len = u32::try_from(body.len() + 4).unwrap_or(u32::MAX);
+        live.frames.extend_from_slice(&len.to_be_bytes());
+        live.frames.extend_from_slice(body);
+    }
+    if tag == pgprox_proto::frame::Tag::ERROR_RESPONSE {
+        live.failed = true;
+    }
+    if live.frames.len() > MAX_RECORDED_ANSWER {
+        *recording = None;
+    }
+}
+
+/// The largest answer this proxy will hold on the chance it is cacheable.
+///
+/// The query cache rejects an entry bigger than its budget, and that guard is
+/// at `put`, which is the end. The pump accumulates the whole answer first, so
+/// until `M17.1` a 500 MB result was 500 MB held and then thrown away: the
+/// cache's guard protected the cache and nothing protected the proxy.
+///
+/// Not the cache's budget, and deliberately not asked for. That is one global
+/// figure for a store. This is per session, spent while an answer is in
+/// flight, and multiplied by however many sessions are recording at once,
+/// which is the same arithmetic that makes `DEFAULT_MAX_INSPECT` small. Two
+/// resources, two guards.
+///
+/// A megabyte because the cache is for small repeated reads: ADR 0007's case
+/// is a point select answered thousands of times, and an answer that does not
+/// fit here was never going to earn its place in a shared budget.
+const MAX_RECORDED_ANSWER: usize = 1024 * 1024;
 
 /// How much of a server message the pump actually reads.
 ///
@@ -2410,6 +2452,95 @@ mod tests {
     }
     use super::*;
     use pgprox_proto::frame::Tag;
+
+    /// A recording armed for an answer, with a key nothing here reads.
+    fn recording() -> Recording {
+        Recording {
+            key: pgprox_core::cache::CacheKey {
+                tenant: pgprox_core::ids::TenantId::new("acme"),
+                normalized_sql: std::sync::Arc::from("select $1"),
+                params: std::sync::Arc::from(&b""[..]),
+                search_path: std::sync::Arc::from("public"),
+            },
+            frames: Vec::new(),
+            failed: false,
+        }
+    }
+
+    #[test]
+    fn an_answer_too_big_to_cache_is_dropped_rather_than_held() {
+        // `M17.1`. The cache rejects an oversized entry at `put`, which is the
+        // end of the answer. Until this existed the pump accumulated the whole
+        // thing first, so a large result was held in full and then thrown away:
+        // the cache's guard protected the cache and nothing protected the
+        // proxy.
+        let mut held = Some(Box::new(recording()));
+
+        // Rows until it gives up. Each is 64 KiB, so this is bounded.
+        let row = vec![b'x'; 64 * 1024];
+        for _ in 0..64 {
+            record_frame(&mut held, Tag::DATA_ROW, &row);
+            if held.is_none() {
+                break;
+            }
+        }
+
+        assert!(
+            held.is_none(),
+            "the pump kept accumulating past {MAX_RECORDED_ANSWER} bytes"
+        );
+    }
+
+    #[test]
+    fn an_answer_that_fits_is_kept_whole() {
+        // The cost side. Giving up too eagerly would make the cache miss
+        // everything, which is worse than not having one: the work is done and
+        // the entry is thrown away.
+        let mut held = Some(Box::new(recording()));
+        let row = vec![b'x'; 1024];
+        for _ in 0..16 {
+            record_frame(&mut held, Tag::DATA_ROW, &row);
+        }
+
+        let kept = held.expect("an answer well under the bound was dropped");
+        // Each frame is a tag, a four-byte length and the body.
+        assert_eq!(kept.frames.len(), 16 * (1 + 4 + 1024));
+        assert!(!kept.failed);
+    }
+
+    #[test]
+    fn only_the_frames_that_answer_the_statement_are_kept() {
+        // `belongs_in_payload` decides, and a `ReadyForQuery` arrives once per
+        // simple query and once per `Sync`, so an entry carrying one could only
+        // serve the protocol that filled it.
+        let mut held = Some(Box::new(recording()));
+        record_frame(&mut held, Tag::DATA_ROW, b"row");
+        record_frame(&mut held, Tag::READY_FOR_QUERY, b"I");
+        record_frame(&mut held, Tag::PARAMETER_STATUS, b"x\0y\0");
+
+        let kept = held.expect("nothing here should have dropped the recording");
+        assert_eq!(kept.frames.len(), 1 + 4 + 3, "a framing message was kept");
+    }
+
+    #[test]
+    fn an_error_marks_the_recording_failed_rather_than_dropping_it() {
+        // The distinction the storing side needs: a failed answer is one that
+        // must not be stored, and it is not the same as no answer at all.
+        let mut held = Some(Box::new(recording()));
+        record_frame(&mut held, Tag::ERROR_RESPONSE, b"SERROR\0\0");
+
+        let kept = held.expect("an error should not drop the recording here");
+        assert!(kept.failed);
+    }
+
+    #[test]
+    fn recording_nothing_stays_nothing() {
+        // A session with no recording armed must not acquire one by being fed
+        // frames, which is what the pump does for every uncached statement.
+        let mut none: Option<Box<Recording>> = None;
+        record_frame(&mut none, Tag::DATA_ROW, b"row");
+        assert!(none.is_none());
+    }
 
     #[test]
     fn an_inspected_body_is_bounded_by_the_inspect_cap_not_the_relay_cap() {
