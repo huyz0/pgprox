@@ -5221,3 +5221,27 @@ Streaming removes both.
   bytes for a 200-byte body and eats the next frame's header.
   Verified by applying the mutation by hand and watching the test fail, rather
   than by inferring it from coverage.
+
+## M17: the assumptions the last two milestones wrote down
+
+- [ ] `M17.1` A recording session holds the whole answer, unbounded. `M16.11`
+  let a session recording for the query cache keep reading whole bodies, on the
+  stated assumption that the cache bounds its own entries. The assumption is
+  true where it was checked and false where it matters: `Store::put` rejects an
+  entry larger than the budget, but the pump accumulates every frame into
+  `recording.frames` for the entire answer and only offers it at the end. A
+  500 MB result is 500 MB held and then thrown away.
+  So the cache's guard protects the cache and nothing protects the proxy, which
+  is the same shape as `M15.1`, where a documented bound guarded a structure
+  nothing used.
+  The pump cannot ask the cache for its budget: it holds
+  `Arc<dyn QueryCache>` and the trait has `get` and `put`. Adding to that trait
+  is a core-contract change, and it is also the wrong answer. The number wanted
+  here is not the cache's budget, which is one global figure for a store; it is
+  how much this session is willing to hold speculatively, which is spent per
+  connection and multiplied by a hundred thousand. Two resources, two guards.
+  Acceptance: recording stops at a bound and the session falls back to the
+  streaming path for the rest of the answer, with a test that a large answer is
+  forwarded intact after recording gives up.
+  Found by checking an assumption I wrote into a commit message rather than by
+  reading the code again.
