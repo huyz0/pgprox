@@ -5195,3 +5195,18 @@ Streaming removes both.
   cache entry is a wrong answer rather than a smaller one. That the cache has a
   bound of its own is assumed here and not checked, which is a separate task if
   it turns out to be false.
+- [ ] `M16.12` The two primitives `M16.2` added are barely tested. A mutation
+  run over `pgprox-session` after the pump rewrite: 440 mutants, seven new
+  survivors, all seven in `Wire::read_header` and `Wire::read_body_into`.
+  Six are in `read_body_into`, including one that replaces its whole body with
+  `Ok(())`. A function whose body can be deleted without a test noticing has no
+  test. It is reached from the pump, which is in `bin/` and is not mutated, and
+  from nothing in its own crate.
+  The seventh is `read_header`'s `1 + LEN_PREFIX` becoming `1 * LEN_PREFIX`,
+  four rather than five, which consumes one byte too few and starts every body
+  one byte late. `M10.7` found the same mutant in `FrameRelay` and a test was
+  written for it there; the new copy of the logic did not get one.
+  That is the milestone's own subject twice over: a thing written and not
+  reached, and a lesson learned in one place and not carried to the next.
+  Acceptance: tests in the crate that owns them, killing all seven or arguing
+  each survivor.
