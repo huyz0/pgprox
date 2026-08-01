@@ -2184,17 +2184,16 @@ const MAX_RECORDED_ANSWER: usize = 1024 * 1024;
 /// A recording session reads whole and is the exception. A truncated cache
 /// entry is a wrong answer rather than a smaller one.
 fn wanted_body(tag: pgprox_proto::frame::Tag, body_len: usize, recording: bool) -> usize {
-    use pgprox_proto::frame::{DEFAULT_MAX_INSPECT, Direction, Inspect, inspect_policy};
+    use pgprox_proto::frame::{DEFAULT_MAX_INSPECT, Direction};
 
     if recording {
         return body_len;
     }
-    match inspect_policy(Direction::Backend, tag) {
-        Inspect::None => 0,
-        Inspect::Prefix(n) => n.min(body_len),
-        Inspect::Whole => body_len,
-    }
-    .min(DEFAULT_MAX_INSPECT)
+    // The rule lives in pgprox-proto, next to the policy it reads and the relay
+    // that applies it to a byte stream. It was written out here as well until
+    // `M16.10`, which is one edit away from a proxy that buffers more than the
+    // component documenting the bound.
+    pgprox_proto::relay::inspect_budget(Direction::Backend, tag, body_len, DEFAULT_MAX_INSPECT)
 }
 
 /// Queues a message header, with the body still to come.

@@ -50,6 +50,35 @@ pub struct RelayOutcome {
     pub completed: Option<Completed>,
 }
 
+/// How many bytes of a message's body must be buffered to read it.
+///
+/// The rule, in one place, because two consumers apply it: [`FrameRelay`] here,
+/// and the proxy's own relay loop, which does its framing against a socket and
+/// cannot use a push-based state machine without copying bytes it currently
+/// hands out as borrowed slices.
+///
+/// `M16.10` is why this exists. The two had the rule written out separately,
+/// which is one edit away from a proxy that buffers more than the component
+/// that documents the bound. Neither implementation was wrong; having two was.
+///
+/// `max_inspect` is a parameter rather than the constant because a relay may be
+/// built with a tighter one, and because a caller that passed the wrong thing
+/// should have to say so.
+#[must_use]
+pub fn inspect_budget(
+    direction: Direction,
+    tag: crate::frame::Tag,
+    body_len: usize,
+    max_inspect: usize,
+) -> usize {
+    match inspect_policy(direction, tag) {
+        Inspect::None => 0,
+        Inspect::Prefix(n) => n.min(body_len),
+        Inspect::Whole => body_len,
+    }
+    .min(max_inspect)
+}
+
 /// Inspection capacity a relay keeps between messages.
 ///
 /// Capping the peak is only half of bounding memory. `Vec::clear` keeps its
@@ -241,12 +270,12 @@ impl FrameRelay {
         // Without this line a `Sync` declaring a gigabyte is a gigabyte held,
         // and `Sync` is one of four frontend tags a client can send before it
         // has authenticated.
-        self.want_inspect = match inspect_policy(self.direction, header.tag) {
-            Inspect::None => 0,
-            Inspect::Prefix(n) => n.min(header.body_len),
-            Inspect::Whole => header.body_len,
-        }
-        .min(self.max_inspect);
+        self.want_inspect = inspect_budget(
+            self.direction,
+            header.tag,
+            header.body_len,
+            self.max_inspect,
+        );
 
         // Cleared here rather than at the end of the previous message, because
         // `inspected()` is documented as valid until the next push and a caller
@@ -630,6 +659,84 @@ mod tests {
                 relay.inspected().len()
             );
         }
+    }
+
+    #[test]
+    fn the_budget_is_the_policy_capped_by_the_ceiling() {
+        // The rule both consumers apply, stated once. `M16.10` found it written
+        // out twice, here and in the proxy's own relay loop, which is one edit
+        // away from a proxy that buffers more than the component documenting
+        // the bound.
+        let big = 64 * 1024 * 1024;
+
+        // Uninspected reads nothing at all, whatever the body claims.
+        assert_eq!(
+            inspect_budget(Direction::Backend, Tag::DATA_ROW, big, DEFAULT_MAX_INSPECT),
+            0
+        );
+        // A prefix is the smaller of the policy's number and the body's.
+        assert_eq!(
+            inspect_budget(
+                Direction::Backend,
+                Tag::ERROR_RESPONSE,
+                big,
+                DEFAULT_MAX_INSPECT
+            ),
+            8192
+        );
+        assert_eq!(
+            inspect_budget(
+                Direction::Backend,
+                Tag::ERROR_RESPONSE,
+                40,
+                DEFAULT_MAX_INSPECT
+            ),
+            40
+        );
+        // Whole means the body, and the body is a number the peer chose, so the
+        // ceiling is what stops it.
+        assert_eq!(
+            inspect_budget(Direction::Frontend, Tag::SYNC, big, DEFAULT_MAX_INSPECT),
+            DEFAULT_MAX_INSPECT
+        );
+        assert_eq!(
+            inspect_budget(
+                Direction::Backend,
+                Tag::READY_FOR_QUERY,
+                1,
+                DEFAULT_MAX_INSPECT
+            ),
+            1
+        );
+        // A tighter ceiling binds where the policy would not.
+        assert_eq!(
+            inspect_budget(Direction::Backend, Tag::ERROR_RESPONSE, big, 64),
+            64
+        );
+    }
+
+    #[test]
+    fn the_relay_budgets_itself_with_the_shared_rule() {
+        // The half that says the extraction actually took: what the relay holds
+        // is what the rule says, not merely something under the cap. Asserted
+        // through the relay rather than by reading it, so a relay that stopped
+        // calling the rule would fail here.
+        let body = vec![b'v'; 40 * 1024];
+        let bytes = wire(Tag::ERROR_RESPONSE, &body);
+
+        let mut relay = FrameRelay::new(Direction::Backend);
+        drive(&mut relay, &bytes, 4096);
+
+        assert_eq!(
+            relay.inspected().len(),
+            inspect_budget(
+                Direction::Backend,
+                Tag::ERROR_RESPONSE,
+                body.len(),
+                DEFAULT_MAX_INSPECT
+            ),
+            "the relay and the rule disagree about how much to hold"
+        );
     }
 
     #[test]

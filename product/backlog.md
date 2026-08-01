@@ -5162,7 +5162,7 @@ Streaming removes both.
   `M16.3`, because that task solved streaming with `Wire::read_header` and
   `take_body` in the I/O shell rather than with the type built for it. Recorded
   with the marker rather than hidden, and `M16.10` settles it.
-- [ ] `M16.10` Two implementations of one idea, and only one is used.
+- [x] `M16.10` Two implementations of one idea, and only one is used.
   `FrameRelay` reads a header, applies `inspect_policy`, and forwards the rest.
   `Wire::read_header` and `Wire::take_body` now do the same job in the I/O shell
   and are what the proxy calls. The first is sans-I/O and tested and
@@ -5176,6 +5176,24 @@ Streaming removes both.
   Filed rather than guessed at, and `check-wired.sh` will not let it be
   forgotten: the marker naming this task is what keeps that check green, and it
   fails the moment the marker stops matching reality in either direction.
+  **Decided: `FrameRelay` stays, and stays unwired.** Surveying it rather than
+  assuming changed the answer. It has four consumers, all tests, and one of
+  them is `conformance_client`, which relays real Postgres responses through it
+  byte for byte against Postgres 17 and 18. `budgets.rs` holds it to zero
+  allocations and `hot_paths` benchmarks it. That is a reference implementation
+  and a test oracle, not rot.
+  And it cannot be the production path. `Wire` frames against a socket and
+  hands out borrowed slices; `FrameRelay` is push-based and copies what it
+  inspects into its own buffer. Routing the pump through it would reintroduce
+  the copy `M15.5` removed and the buffering `M16.3` removed.
+  **What was actually wrong was the rule being written out twice**, once in
+  `FrameRelay::push_header` and once in `wanted_body`, which is one edit away
+  from a proxy that buffers more than the component documenting the bound.
+  `inspect_budget` is now that rule, in `pgprox-proto` beside the policy it
+  reads, and both call it. Two tests: what the rule says, and that the relay's
+  own buffering matches it rather than merely staying under the cap.
+  The `check-wired.sh` entry is rewritten from a deferred decision into a
+  standing argument, which is what that marker is for.
 - [x] `M16.11` The pump buffers an inspected body against the relay cap.
   `M16.3` streams every uninspected message, which is the bulk. What it left is
   the other half of the same sentence: for a message something *does* read, the

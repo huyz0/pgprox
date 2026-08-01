@@ -7,7 +7,7 @@
 # wire it in is a defect rather than a choice.
 #
 # pattern	defining file	what it exists to do
-?FrameRelay	crates/pgprox-proto/src/relay.rs	stream a large message instead of holding it. Still reached from nowhere after M16.3, which solved streaming with Wire::read_header and take_body in the I/O shell rather than with this. Two implementations of one idea, and M16.10 decides which survives
+?FrameRelay	crates/pgprox-proto/src/relay.rs	be the sans-I/O reference for the streaming rule and the oracle that checks it. M16.10 decided it stays and stays unwired: the proxy's loop frames against a socket and hands out borrowed slices, and a push-based state machine would copy every inspected byte, undoing M15.5 and M16.3. It is not dead: conformance_client relays real Postgres responses through it byte for byte, budgets.rs holds it to zero allocations, and hot_paths benchmarks it. The duplication that made this look like rot was the rule written out twice, and that is now inspect_budget, which both call
 DEFAULT_MAX_INSPECT	crates/pgprox-proto/src/frame.rs	bound what one message may buffer, which nothing read until M15.1
 close_all	crates/pgprox-pool/src/statements.rs	forget a session's statements after DISCARD ALL
 forget_all	crates/pgprox-pool/src/statements.rs	forget a connection's statements after DISCARD ALL
