@@ -5169,6 +5169,34 @@ Streaming removes both.
   machine contention rather than a regression. Chased rather than assumed,
   because a 17% drop on the main path would have mattered.
 
+- [x] `M16.5` Re-measure. **16,777,216 bytes held becomes 512**, for the same
+  16 MiB `DataRow` through the pair the pump now uses. 512 is `FIRST_READ`, the
+  stack chunk a quiet connection reads into, so the largest piece held is a read
+  rather than a message; a busy connection reads into the 16 KiB borrowed buffer
+  instead, which is the same answer with a different constant.
+  `M16.1`'s original comparison is kept alongside it rather than replaced,
+  because it is what says the gap was real.
+  The 100k half is not done and is blocked on the same three machines and real
+  network as `M7`'s full run. It is named in the roadmap as such rather than
+  claimed. `e2e.sh` reported 160.5 tps before and 174.8 after, which is worth
+  almost nothing as a performance claim on one machine with pgbench's tiny rows,
+  and is quoted only because it is the run that says nothing broke.
+- [x] `M16.7` `M15.3`'s fix has no caller. `resume::observe_statement` clears
+  both statement maps when a client runs `DISCARD ALL`, it has tests, and
+  nothing in the proxy calls it. The desync `M15.3` set out to close is still
+  there.
+  Found while reading `serve.rs` for `M16.6`, which is the point: this
+  milestone exists because `FrameRelay` had no caller, `M15.1` because
+  `DEFAULT_MAX_INSPECT` had none, and `M15.3` because two clearing functions
+  had none. The fix for the third added a fourth, in the same session, by the
+  same hand, after writing the sentence "a streaming primitive with no caller
+  is the defect this milestone exists to fix".
+  Writing the rule down is not the same as following it. That is the finding,
+  and it is worth more than the bug.
+  Acceptance: called from the relay loop, with the connection map that the
+  statement will actually run on, and a check that says so rather than a test
+  of the function in isolation. Its signature takes the two memory structs and
+  the proxy holds the two maps, which is part of why it did not fit anywhere.
 - [x] `M16.8` A test in `pgprox-tls` fails about one run in three.
   `test_cert` builds its directory from the process id alone, and every test in
   a binary shares one process, so all of them write `cert.pem` and `key.pem` to
