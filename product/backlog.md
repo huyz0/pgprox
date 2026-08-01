@@ -5195,7 +5195,7 @@ Streaming removes both.
   cache entry is a wrong answer rather than a smaller one. That the cache has a
   bound of its own is assumed here and not checked, which is a separate task if
   it turns out to be false.
-- [ ] `M16.12` The two primitives `M16.2` added are barely tested. A mutation
+- [x] `M16.12` The two primitives `M16.2` added are barely tested. A mutation
   run over `pgprox-session` after the pump rewrite: 440 mutants, seven new
   survivors, all seven in `Wire::read_header` and `Wire::read_body_into`.
   Six are in `read_body_into`, including one that replaces its whole body with
@@ -5210,3 +5210,14 @@ Streaming removes both.
   reached, and a lesson learned in one place and not carried to the next.
   Acceptance: tests in the crate that owns them, killing all seven or arguing
   each survivor.
+  **All seven killed. 440 mutants, 2 surviving, both pre-existing and argued.**
+  The last one took three attempts and the reason is the finding underneath the
+  finding. `n - body.len()` and `n + body.len()` are the same number on the
+  first pass, because `body.len()` is zero, so they can only disagree on a
+  second one: the first read has to come up short *and* the second has to have
+  more waiting than is still wanted. Two tests passed without producing that
+  and proved nothing. Sizing the duplex to exactly the first piece forces the
+  writer to block and the reader to come back, and the mutant then takes 206
+  bytes for a 200-byte body and eats the next frame's header.
+  Verified by applying the mutation by hand and watching the test fail, rather
+  than by inferring it from coverage.

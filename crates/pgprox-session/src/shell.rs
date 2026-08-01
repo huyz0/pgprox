@@ -800,6 +800,202 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_header_and_its_body_are_read_as_a_pair() {
+        // `M16.12`. `read_header` and `read_body_into` are the pair the pump
+        // uses, and a mutation run found seven survivors between them because
+        // nothing in this crate called either one. Six were in
+        // `read_body_into`, including a mutant that replaced its whole body
+        // with `Ok(())`.
+        //
+        // The body content is asserted, not just its length, because that is
+        // what catches a header consuming four bytes instead of five: the body
+        // would still be the right size and would start one byte early.
+        // `M10.7` found exactly that mutant in `FrameRelay` and this logic is
+        // its second copy.
+        let slab = test_slab();
+        let (server, client) = duplex(4096);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+
+        let mut frame = vec![Tag::COMMAND_COMPLETE.get()];
+        frame.extend_from_slice(&14_u32.to_be_bytes());
+        frame.extend_from_slice(b"SELECT 42\0");
+        peer.send(&frame).await;
+
+        let header = wire
+            .read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .await
+            .unwrap();
+        assert_eq!(header.tag, Tag::COMMAND_COMPLETE);
+        assert_eq!(header.body_len, 10);
+
+        let mut body = Vec::new();
+        wire.read_body_into(&mut body, header.body_len)
+            .await
+            .unwrap();
+        assert_eq!(body, b"SELECT 42\0", "the body started at the wrong offset");
+        assert!(!wire.is_buffered(), "bytes were left behind the frame");
+    }
+
+    #[tokio::test]
+    async fn a_body_split_across_reads_is_reassembled() {
+        // The property the pump depends on and the one that made six mutants
+        // survive: `read_body_into` loops until it has all of `n`, so a body
+        // that arrives in pieces is still one body. A version that read once
+        // and returned would pass a test that sent everything at once.
+        let slab = test_slab();
+        let (server, client) = duplex(4096);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+
+        let mut header_bytes = vec![Tag::DATA_ROW.get()];
+        header_bytes.extend_from_slice(&(4_u32 + 300).to_be_bytes());
+        peer.send(&header_bytes).await;
+
+        let header = wire
+            .read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .await
+            .unwrap();
+        assert_eq!(header.body_len, 300);
+
+        // Three writes, so the reader has to come back for more twice.
+        let body_bytes: Vec<u8> = (0..300).map(|i| u8::try_from(i % 251).unwrap()).collect();
+        let writer = tokio::spawn(async move {
+            for piece in body_bytes.chunks(100) {
+                peer.send(piece).await;
+            }
+            peer
+        });
+
+        let mut body = Vec::new();
+        wire.read_body_into(&mut body, header.body_len)
+            .await
+            .unwrap();
+        drop(writer.await.unwrap());
+
+        assert_eq!(body.len(), 300, "a split body came back short");
+        let expected: Vec<u8> = (0..300).map(|i| u8::try_from(i % 251).unwrap()).collect();
+        assert_eq!(body, expected, "a split body came back scrambled");
+    }
+
+    #[tokio::test]
+    async fn a_split_body_does_not_eat_the_frame_behind_it() {
+        // The hazard this crate's own header calls the one that has already
+        // bitten twice: a read pulls in bytes past the stage you are in.
+        //
+        // `read_body_into` asks for `n - body.len()`, and `take_body` hands
+        // back whatever is buffered up to that. Ask for too much and a body
+        // that finished mid-buffer swallows the start of the next message. A
+        // mutation run made the point: `n - body.len()` became
+        // `n + body.len()` and every test here stayed green.
+        //
+        // Two earlier versions of this test stayed green, and that is the part
+        // worth keeping. The first sent the body in two writes and assumed the
+        // reader would see them separately; both landed before the read began.
+        // The second used a duplex large enough to hold everything, so the
+        // first `take_body` satisfied the whole body at once.
+        //
+        // The reason either could pass is the same, and it is the thing to
+        // understand before touching this: on the first pass `body.len()` is
+        // zero, so `n - 0` and `n + 0` are the same number. The two
+        // expressions can only disagree on a *second* pass, which means the
+        // first read has to come up short and the second has to have more
+        // available than is still wanted.
+        //
+        // Hence 120: the duplex holds exactly the first piece and no more, so
+        // the writer blocks and the reader is forced to come back for a second
+        // pass with a full pipe behind it. With `n + body.len()` this takes
+        // 206 bytes for a 200-byte body and eats the next frame's header.
+        let slab = test_slab();
+        let (server, client) = duplex(120);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+
+        let mut first = vec![Tag::COMMAND_COMPLETE.get()];
+        first.extend_from_slice(&(4_u32 + 200).to_be_bytes());
+        peer.send(&first).await;
+
+        let header = wire
+            .read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .await
+            .unwrap();
+        assert_eq!(header.body_len, 200);
+
+        // The rest of the body and a whole second frame behind it, from a task
+        // that cannot finish until the reader makes room.
+        let writer = tokio::spawn(async move {
+            peer.send(&[b'a'; 120]).await;
+            let mut rest = vec![b'a'; 80];
+            rest.push(Tag::READY_FOR_QUERY.get());
+            rest.extend_from_slice(&5_u32.to_be_bytes());
+            rest.push(b'I');
+            peer.send(&rest).await;
+            peer
+        });
+
+        let mut body = Vec::new();
+        wire.read_body_into(&mut body, header.body_len)
+            .await
+            .unwrap();
+        assert_eq!(body.len(), 200, "the body took bytes that were not its own");
+        assert!(body.iter().all(|byte| *byte == b'a'));
+
+        // And the frame behind it is intact, which is the half that says the
+        // bytes were left rather than merely counted.
+        let next = wire
+            .read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .await
+            .unwrap();
+        assert_eq!(next.tag, Tag::READY_FOR_QUERY);
+        let mut status = Vec::new();
+        wire.read_body_into(&mut status, next.body_len)
+            .await
+            .unwrap();
+        assert_eq!(status, b"I");
+        drop(writer.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn reading_a_body_replaces_what_was_there_and_an_empty_one_is_legal() {
+        // The buffer is reused across frames by every caller, so a read that
+        // appended instead of replacing would grow it without bound and hand
+        // the second frame the first one's bytes as well.
+        let slab = test_slab();
+        let (server, client) = duplex(4096);
+        let mut wire = Wire::new(server, Arc::clone(&slab));
+        let mut peer = Client(client);
+
+        let mut two = vec![Tag::COMMAND_COMPLETE.get()];
+        two.extend_from_slice(&12_u32.to_be_bytes());
+        two.extend_from_slice(b"ROLLBACK");
+        // Then a Sync, which carries nothing at all.
+        two.push(Tag::SYNC.get());
+        two.extend_from_slice(&4_u32.to_be_bytes());
+        peer.send(&two).await;
+
+        let mut body = vec![b'l', b'e', b'f', b't', b'o', b'v', b'e', b'r'];
+        let first = wire
+            .read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .await
+            .unwrap();
+        wire.read_body_into(&mut body, first.body_len)
+            .await
+            .unwrap();
+        assert_eq!(body, b"ROLLBACK", "the previous contents survived the read");
+
+        let second = wire
+            .read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME)
+            .await
+            .unwrap();
+        assert_eq!(second.tag, Tag::SYNC);
+        assert_eq!(second.body_len, 0);
+        wire.read_body_into(&mut body, second.body_len)
+            .await
+            .unwrap();
+        assert!(body.is_empty(), "a body-less message left bytes behind");
+    }
+
+    #[tokio::test]
     async fn an_oversized_handshake_message_is_refused_before_it_is_read() {
         // The finding. A startup packet is the first thing a client sends and
         // it was read against DEFAULT_MAX_FRAME, a gigabyte, because that is
