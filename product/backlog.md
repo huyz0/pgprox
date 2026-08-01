@@ -5386,7 +5386,7 @@ Streaming removes both.
   `logging.rs` and `main.rs`. Pre-existing, and untouched by this review.
 - [ ] `M17.5` `pgload`: 25 survivors, mostly in `run.rs`. The load generator,
   whose numbers `M7` and `M11` drew conclusions from.
-- [ ] `M17.6` `conformance.sh` leaks every container it starts. 548 Postgres
+- [x] `M17.6` `conformance.sh` leaks every container it starts. 548 Postgres
   containers were running when this was found, all named
   `pgprox-conformance-*`, all started in the preceding two hours, load average
   above eight on an otherwise idle machine.
@@ -5400,12 +5400,22 @@ Streaming removes both.
   `M12.6` is the same family: a `fail` called inside a pipeline subshell,
   reported and discarded. `check-drift.sh` gained a lint for that shape and it
   looks for `fail`, not for a lost assignment.
-  **This corrupted every performance number taken today.** `e2e.sh` reported
-  146 tps once and I re-ran it twice, got 181 and 179, and called the low
-  reading contention. It was contention, and the contention was mine. Later
-  readings of 104, 104 and 102 were three runs deep into 548 idle Postgres
-  servers. The 16 MiB and 4 KiB memory figures are unaffected, since those are
-  counted rather than timed, which is the argument `bench.sh` opens with.
+  **A correction, because the first version of this entry overstated it.** It
+  said the leak corrupted every performance number taken today. That was a
+  guess dressed as a conclusion, and removing all 548 containers refuted it:
+  tps stayed at 101 and 102 across two clean runs. The machine is running work
+  that has nothing to do with this repo, several `java` processes at about half
+  the CPU between them and another project's MySQL, and that is the larger term.
+  What can be said is narrower and still worth saying. The leak is real, 548
+  idle Postgres servers is real, and it contributed. What cannot be said is how
+  much, or that it explains the 146 reading I chased earlier and attributed to
+  contention. The honest conclusion is that **wall-clock tps from `e2e.sh` on
+  this machine is not a measurement**, and every number quoted from it in this
+  session should be read as "the run completed", not as throughput.
+  The memory figures are unaffected and this is why they were chosen: 16 MiB to
+  512 bytes and 100 MB to 4 KiB are counted, not timed. `bench.sh` opens with
+  that argument, callgrind over wall clock, and this is the second time in one
+  session that argument has earned its place.
   Acceptance: the container name survives the call, the trap removes every
   container the run started rather than the last one assigned, and a check that
   a completed run leaves none behind. The last part is the one that would have

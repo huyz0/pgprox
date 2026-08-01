@@ -59,7 +59,19 @@ done
 # own process, so tests starting their own would mean one container per test and
 # a name collision between them.
 PG_CONTAINER=""
+PG_PORT=""
 
+# Sets `PG_CONTAINER` and `PG_PORT` rather than printing the port.
+#
+# It printed the port until `M17.6`, and the caller read it with
+# `PG_PORT="$(start_postgres "$version")"`. A command substitution is a
+# subshell, so the `PG_CONTAINER=` below was assigned in a child and lost, the
+# parent's copy stayed empty, and both `stop_postgres` and the trap then had
+# nothing to remove. 548 Postgres containers were running when that was noticed.
+#
+# `M12.6` is the same family: a `fail` called inside a pipeline subshell,
+# reported and thrown away. The lesson generalises past `fail`, which is why
+# nothing here returns a value through a subshell any more.
 start_postgres() {
   local major="$1"
   PG_CONTAINER="pgprox-conformance-$major-$$"
@@ -68,12 +80,23 @@ start_postgres() {
     -e POSTGRES_HOST_AUTH_METHOD=trust \
     -e POSTGRES_DB=conformance \
     -P "postgres:$major-alpine" >/dev/null || return 1
-  docker port "$PG_CONTAINER" 5432/tcp | head -1 | sed 's/.*://'
+  PG_PORT="$(docker port "$PG_CONTAINER" 5432/tcp | head -1 | sed 's/.*://')"
+  [[ -n "$PG_PORT" ]]
 }
 
+# Removes every container this run started, not the last one named.
+#
+# By pattern rather than by variable, because one variable held one name while
+# the loop below starts one container per version, so even with the assignment
+# reaching the parent the first version's container would have been orphaned by
+# the second. `$$` scopes it to this run, so a concurrent one is left alone.
 stop_postgres() {
-  [[ -n "$PG_CONTAINER" ]] && docker rm -f "$PG_CONTAINER" >/dev/null 2>&1
+  local leaked
+  leaked="$(docker ps -aq --filter "name=pgprox-conformance-.*-$$" 2>/dev/null)"
+  [[ -n "$leaked" ]] && docker rm -f $leaked >/dev/null 2>&1
   PG_CONTAINER=""
+  PG_PORT=""
+  return 0
 }
 
 # Containers must not outlive a failed or interrupted run.
@@ -81,7 +104,7 @@ trap stop_postgres EXIT INT TERM
 
 # --- client side: our codec against real Postgres ----------------------------
 for version in "${VERSIONS[@]}"; do
-  if ! PG_PORT="$(start_postgres "$version")" || [[ -z "$PG_PORT" ]]; then
+  if ! start_postgres "$version"; then
     fail "could not start Postgres $version"
     continue
   fi
@@ -136,6 +159,23 @@ if (( ${#SKIPPED[@]} > 0 )); then
   echo
   warn "${#SKIPPED[@]} of ${#DRIVERS[@]} drivers were skipped: ${SKIPPED[*]}"
   warn "coverage is partial; install the toolchains or run this in CI"
+fi
+
+# --- the run leaves nothing running ------------------------------------------
+#
+# The check that would have caught `M17.6`, and the reason it is here rather
+# than in a comment: the leak was invisible from inside a passing run. Every
+# assertion above was green while 548 Postgres containers accumulated behind
+# them, and the only symptom was other measurements getting slower.
+#
+# Before `finish`, so it reports like any other check, and scoped to this run's
+# PID so a developer with a second one open is not told about theirs.
+leaked_now="$(docker ps -aq --filter "name=pgprox-conformance-.*-$$" 2>/dev/null | wc -l | tr -d ' ')"
+if [[ "$leaked_now" == "0" ]]; then
+  ok "no container outlived the run"
+else
+  fail "$leaked_now container(s) from this run are still up"
+  printf '       docker ps --filter name=pgprox-conformance\n'
 fi
 
 finish

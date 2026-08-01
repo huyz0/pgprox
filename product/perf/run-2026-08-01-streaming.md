@@ -87,12 +87,19 @@ and a cache entry is the bytes. The cache has its own bound.
 | before | 160.5 |
 | after | 178.2 |
 
-Worth almost nothing as a performance claim. pgbench rows are tiny, so this
-change does not touch that path, and a single run of a compose stack on one
-machine is not a measurement of throughput. It is quoted because it is the run
-that says the rewrite did not break anything: pgbench clean with prepared
-statements, a drain with zero failed transactions, 25 write-then-read rounds
-with none served stale, and no token in any log.
+Worth almost nothing as a performance claim, and `M17.6` later showed it is
+worth less than that. Two things were wrong with the machine: `conformance.sh`
+had leaked 548 Postgres containers, and the host was running unrelated work at
+about half its CPU. Later runs of the same unchanged code reported 101 and 102.
+
+So these two numbers are not a before and after. They are two runs that
+completed, and the checks either side of them are what the run is for: pgbench
+clean with prepared statements, a drain with zero failed transactions, 25
+write-then-read rounds with none served stale, and no token in any log.
+
+Wall-clock throughput from `e2e.sh` on a developer machine is not a
+measurement. That is the argument `scripts/bench.sh` opens with, and it is why
+the claim this milestone makes is counted rather than timed.
 
 The claim this milestone makes is about memory, and it is 16,777,216 against
 512.
