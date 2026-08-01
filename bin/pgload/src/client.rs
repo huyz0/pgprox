@@ -352,6 +352,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
+
+    #[test]
+    fn the_frame_cap_is_the_size_it_says() {
+        // `M17.5` found `64 * 1024 * 1024` able to become `64 + 1024 + 1024`
+        // unnoticed, which is 65 KiB and would make this client refuse results
+        // the proxy relays fine. It matches the proxy's own relay limit by
+        // intent, so it is asserted rather than described.
+        assert_eq!(MAX_FRAME, 64 * 1024 * 1024);
+    }
     use super::*;
     use pgprox_core::error::ClientError;
     use pgprox_load::sampler::Planned;

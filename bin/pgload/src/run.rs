@@ -100,6 +100,35 @@ enum Refused {
     Server(crate::client::SessionError),
 }
 
+/// How long connection `index` waits before it opens.
+///
+/// The ramp spreads connections over the window rather than opening all of
+/// them at once, so a run measures connections rather than the stampede of
+/// their arrival. Connection zero waits nothing and the last waits almost the
+/// whole window.
+///
+/// Extracted by `M17.5`, which found five mutants of this arithmetic surviving:
+/// it lived inside a spawned task, and nothing that could be called from a test
+/// computed it.
+fn ramp_delay(ramp_secs: u64, index: u32, connections: u32) -> Duration {
+    if ramp_secs == 0 || connections == 0 {
+        return Duration::ZERO;
+    }
+    Duration::from_secs(ramp_secs).mul_f64(f64::from(index) / f64::from(connections))
+}
+
+/// The seed connection `index` samples from.
+///
+/// Derived from the run seed so the whole run reproduces, and shifted by the
+/// index so no two connections send the same stream. The shift is what makes
+/// them differ in the high bits rather than in one: `seed ^ index` would give
+/// adjacent connections adjacent seeds, and `SplitMix64` mixes those into
+/// streams that are not obviously related but were never chosen to be
+/// independent.
+fn connection_seed(seed: u64, index: u32) -> u64 {
+    seed ^ (u64::from(index) << 17)
+}
+
 impl Refused {
     /// Whether this is a node sending the client elsewhere.
     fn is_relocation(&self) -> bool {
@@ -192,9 +221,8 @@ pub async fn run(options: &Options) -> Result<Report, LoadError> {
         tasks.push(tokio::spawn(async move {
             // Spread over the ramp, so the run measures connections rather
             // than the stampede of all of them arriving together.
-            if options.ramp_secs > 0 {
-                let spread = Duration::from_secs(options.ramp_secs);
-                let share = spread.mul_f64(f64::from(index) / f64::from(options.connections));
+            let share = ramp_delay(options.ramp_secs, index, options.connections);
+            if !share.is_zero() {
                 tokio::time::sleep(share).await;
             }
             let tally = one_connection(&options, &workload, index, deadline).await;
@@ -223,7 +251,7 @@ async fn one_connection(
 ) -> Tally {
     // Seeded from the run seed and the connection index, so the whole run is
     // reproducible while no two connections send the same stream.
-    let mut sampler = Sampler::new(workload, options.seed ^ (u64::from(index) << 17));
+    let mut sampler = Sampler::new(workload, connection_seed(options.seed, index));
     let churn = sampler.transactions_per_connection();
     let mut tally = Tally::default();
 
@@ -465,6 +493,128 @@ pub fn write_report(report: &Report, path: &Path) -> Result<(), LoadError> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
+
+    #[test]
+    fn a_summary_adds_the_tallies_rather_than_any_other_operation() {
+        // `M17.5`. `transactions += tally.transactions` could become `*=` and
+        // the whole file stayed green, because every test here drove a real
+        // run against a fake server and read the report's shape rather than
+        // its arithmetic.
+        //
+        // Distinct non-zero numbers on both sides, so a fold that multiplied,
+        // subtracted or took only the last one is visible.
+        let tallies = vec![
+            Tally {
+                transactions: 7,
+                errors: 2,
+                relocations: 1,
+                ..Tally::default()
+            },
+            Tally {
+                transactions: 11,
+                errors: 3,
+                relocations: 5,
+                ..Tally::default()
+            },
+        ];
+
+        // The shipped document rather than a hand-rolled one, which is what
+        // `pgprox_load::sampler`'s own tests do. A fixture invented here would
+        // drift from the schema and prove only that the invention parses.
+        let Ok(workload) = Workload::parse(include_str!("../../../product/perf/workload.yaml"))
+        else {
+            unreachable!("the shipped workload parses")
+        };
+
+        let report = summarise(
+            &Options::default(),
+            &workload,
+            &tallies,
+            Duration::from_secs(1),
+        )
+        .unwrap_or_else(|error| unreachable!("a summary of two tallies: {error}"));
+
+        assert_eq!(report.transactions, 18);
+        assert_eq!(report.errors, 5);
+        assert_eq!(report.relocations, 6);
+    }
+
+    #[test]
+    fn the_ramp_spreads_connections_across_its_window() {
+        // `M17.5`. Five mutants of this survived, because it lived inside a
+        // spawned task and nothing a test could call computed it.
+        //
+        // The first connection waits nothing and the last waits almost the
+        // whole window: that is what makes a run measure connections rather
+        // than the stampede of all of them arriving together.
+        assert_eq!(ramp_delay(10, 0, 100), Duration::ZERO);
+        assert_eq!(ramp_delay(10, 50, 100), Duration::from_secs(5));
+        assert_eq!(ramp_delay(10, 100, 100), Duration::from_secs(10));
+        assert_eq!(ramp_delay(10, 25, 100), Duration::from_millis(2500));
+
+        // No ramp means no wait, which is the default and the fast path.
+        assert_eq!(ramp_delay(0, 50, 100), Duration::ZERO);
+        // And a run with no connections must not divide by their count.
+        assert_eq!(ramp_delay(10, 0, 0), Duration::ZERO);
+    }
+
+    #[test]
+    fn every_connection_samples_a_different_stream_from_one_seed() {
+        // Reproducible across a run and distinct within it, which is the pair
+        // the whole generator rests on: a run that cannot be repeated is not a
+        // measurement, and connections that send identical streams are one
+        // connection measured many times.
+        let seed = 0x2545_F491_4F6C_DD1D;
+
+        assert_eq!(connection_seed(seed, 0), seed, "connection zero moved");
+        let seeds: std::collections::HashSet<u64> =
+            (0..64).map(|index| connection_seed(seed, index)).collect();
+        assert_eq!(seeds.len(), 64, "two connections drew the same stream");
+
+        // The shift is why they differ in the high bits. Without it adjacent
+        // connections get adjacent seeds, which is a weaker thing to hand a
+        // sampler than it looks.
+        assert_ne!(
+            connection_seed(seed, 1) ^ seed,
+            1,
+            "the index reached the seed unshifted"
+        );
+        assert_eq!(connection_seed(seed, 1) ^ seed, 1 << 17);
+
+        // A different run seed gives a different stream for the same index.
+        assert_ne!(connection_seed(seed, 7), connection_seed(seed + 1, 7));
+    }
+
+    #[test]
+    fn a_drain_is_counted_as_a_relocation_and_everything_else_as_an_error() {
+        // The distinction the whole report rests on: `57P01` on a connection
+        // between transactions is a node asking a client to leave, and a run
+        // that counted it as an error would report a clean rolling restart as
+        // a failure.
+        let drained = Refused::Server(crate::client::SessionError::Server {
+            code: crate::client::ADMIN_SHUTDOWN.to_owned(),
+            message: "the node is draining".to_owned(),
+        });
+        assert!(drained.is_relocation());
+        let (code, message) = drained.told();
+        assert_eq!(code, crate::client::ADMIN_SHUTDOWN);
+        assert_eq!(message, "the node is draining");
+
+        // A server error that is not a drain.
+        let refused = Refused::Server(crate::client::SessionError::Server {
+            code: "53300".to_owned(),
+            message: "too many connections".to_owned(),
+        });
+        assert!(!refused.is_relocation());
+        assert_eq!(refused.told().0, "53300");
+
+        // And a local failure, which has no SQLSTATE because no server sent it.
+        let local = Refused::Local("connection refused".to_owned());
+        assert!(!local.is_relocation());
+        let (code, message) = local.told();
+        assert_eq!(code, NO_SQLSTATE);
+        assert_eq!(message, "connection refused");
+    }
     use super::*;
     use pgprox_proto::backend::TxStatus;
     use pgprox_proto::encode;
@@ -479,6 +629,26 @@ mod tests {
         Working,
         /// Refuses at startup, with the code a draining node sends.
         Refusing,
+        /// Refuses the first connection it sees, then answers everything.
+        ///
+        /// `M17.5`. The connect-failure counters in `one_connection` were
+        /// reached by no test: `Refusing` refuses every connection, so the run
+        /// ends in `NoConnection` with no report to read, and `Working` never
+        /// refuses at all. A run needs both to have happened to say whether a
+        /// refusal was counted.
+        RefusingOnce {
+            /// Whether that first refusal is a drain, which is a relocation,
+            /// or anything else, which is an error.
+            draining: bool,
+        },
+        /// Answers, then fails every other statement with a `57P01`.
+        ///
+        /// `M17.5`. A drain does not only refuse new connections: a node
+        /// draining under load sends `57P01` to a client that is already
+        /// connected and between transactions, which is the relocation counter
+        /// on the transaction path. No fake produced one, so that counter had
+        /// no observable effect.
+        DrainingEveryOtherStatement,
         /// Answers, then fails every other statement with a `53300`.
         ///
         /// Every other rather than every one, because a run in which nothing
@@ -493,6 +663,23 @@ mod tests {
     /// The point of running the load client against something real here is
     /// that the socket, the task fan-out and the tally are what these tests
     /// are about, and a duplex stream would not exercise any of them.
+    /// What a refusing fake sends: a drain, or anything else.
+    ///
+    /// The two are the whole point of `RefusingOnce`: `57P01` is a node asking
+    /// this client to go elsewhere and is counted as a relocation, and every
+    /// other code is an error. Split out because `fake_server` is held to a
+    /// hundred lines.
+    fn refusal(draining: bool) -> pgprox_core::error::ClientError {
+        if draining {
+            pgprox_core::error::ClientError::Draining
+        } else {
+            pgprox_core::error::ClientError::UpstreamAtCap {
+                server: pgprox_core::ids::ServerId::new("primary", 5432),
+                cap: 60,
+            }
+        }
+    }
+
     async fn fake_server(mode: Fake) -> std::net::SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -506,7 +693,18 @@ mod tests {
                 let Ok((mut socket, _)) = listener.accept().await else {
                     return;
                 };
-                let refuse = matches!(mode, Fake::Refusing);
+                // `RefusingOnce` turns itself off after the first connection,
+                // which is what makes a run contain both a refusal and a
+                // report.
+                let refuse = match mode {
+                    Fake::Refusing => Some(true),
+                    Fake::RefusingOnce { draining }
+                        if served.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 =>
+                    {
+                        Some(draining)
+                    }
+                    _ => None,
+                };
                 let served = Arc::clone(&served);
                 tokio::spawn(async move {
                     // The startup packet: an untagged length and the rest.
@@ -521,11 +719,8 @@ mod tests {
                     }
 
                     let mut out = Vec::new();
-                    if refuse {
-                        encode::error_response(
-                            &mut out,
-                            &pgprox_core::error::ClientError::Draining,
-                        );
+                    if let Some(draining) = refuse {
+                        encode::error_response(&mut out, &refusal(draining));
                         let _ = socket.write_all(&out).await;
                         return;
                     }
@@ -556,8 +751,21 @@ mod tests {
                         }
 
                         let mut out = Vec::new();
-                        let full = matches!(mode, Fake::FullEveryOtherStatement)
-                            && served.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 2 == 1;
+                        let every_other =
+                            matches!(
+                                mode,
+                                Fake::FullEveryOtherStatement | Fake::DrainingEveryOtherStatement
+                            ) && served.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 2 == 1;
+                        if every_other && matches!(mode, Fake::DrainingEveryOtherStatement) {
+                            encode::error_response(
+                                &mut out,
+                                &pgprox_core::error::ClientError::Draining,
+                            );
+                            encode::ready_for_query(&mut out, TxStatus::Idle);
+                            let _ = socket.write_all(&out).await;
+                            continue;
+                        }
+                        let full = every_other;
                         if full {
                             // The message a full upstream pool sends, named
                             // server and all, because what this test is about
@@ -643,6 +851,83 @@ mod tests {
             !json.contains("first_error"),
             "a clean run should not carry an error field: {json}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_refused_connection_is_counted_as_what_it_was_told() {
+        // `M17.5`. The connect-failure counters were reached by no test:
+        // `Refusing` refuses everything, so the run ends in `NoConnection`
+        // with no report to read, and `Working` never refuses. Both had to
+        // happen in one run for the count to be observable.
+        //
+        // A drain first. `57P01` on a connection that never opened is a node
+        // asking this client to go elsewhere, and a run that scored it as an
+        // error would report a clean rolling restart as a failure.
+        let addr = fake_server(Fake::RefusingOnce { draining: true }).await;
+        let report = run(&options(addr)).await.unwrap();
+
+        assert!(report.transactions > 0, "nothing ran: {report:?}");
+        assert_eq!(
+            report.relocations, 1,
+            "the refusal was not counted as a relocation: {report:?}"
+        );
+        assert_eq!(report.errors, 0, "a drain was counted as an error");
+        assert!(report.first_error.is_none());
+
+        // And the same refusal under any other code is an error, counted
+        // separately, with the run still producing a report.
+        let addr = fake_server(Fake::RefusingOnce { draining: false }).await;
+        let report = run(&options(addr)).await.unwrap();
+
+        assert!(report.transactions > 0, "nothing ran: {report:?}");
+        assert_eq!(report.errors, 1, "the refusal was not counted as an error");
+        assert_eq!(
+            report.relocations, 0,
+            "an error was counted as a relocation"
+        );
+        assert!(
+            report.first_error.is_some(),
+            "a run with an error said nothing about it: {report:?}"
+        );
+
+        // Everything a client was told is in the breakdown, which is the
+        // invariant the whole document rests on.
+        assert_eq!(report.outcomes.total(), report.errors + report.relocations);
+    }
+
+    #[tokio::test]
+    async fn a_drain_mid_run_is_a_relocation_rather_than_an_error() {
+        // `M17.5`. The relocation counter on the transaction path had no test:
+        // every fake either refused at connect or failed statements with
+        // `53300`, so a `57P01` on an already-connected client never happened
+        // and `tally.relocations += 1` could have been anything.
+        //
+        // It is the shape a rolling restart makes. A node draining under load
+        // tells its connected clients to go elsewhere between transactions, and
+        // a run that scored those as errors would report a clean restart as a
+        // failure, which is the number `M11` drew conclusions from.
+        let addr = fake_server(Fake::DrainingEveryOtherStatement).await;
+        let report = run(&options(addr)).await.unwrap();
+
+        assert!(report.transactions > 0, "nothing succeeded: {report:?}");
+        assert!(report.relocations > 0, "nothing relocated: {report:?}");
+        assert_eq!(
+            report.errors, 0,
+            "a drain was counted as an error: {report:?}"
+        );
+        assert!(
+            report.first_error.is_none(),
+            "a run of pure relocations reported a failure: {report:?}"
+        );
+
+        // And it is in the breakdown under its own code, so the document says
+        // which of the two things happened rather than only how many.
+        let told = report
+            .outcomes
+            .get(crate::client::ADMIN_SHUTDOWN)
+            .unwrap_or_else(|| panic!("no 57P01 in {:?}", report.outcomes));
+        assert_eq!(told.count, report.relocations);
+        assert_eq!(report.outcomes.total(), report.errors + report.relocations);
     }
 
     #[tokio::test]

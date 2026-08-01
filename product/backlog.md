@@ -5408,8 +5408,37 @@ Streaming removes both.
   nothing. `M11` ran a gate under `continue-on-error` while its milestone was
   open and `M12` called that a gate that cannot fail, so hiding this behind a
   flag is the one option that is not available.
-- [ ] `M17.5` `pgload`: 25 survivors, mostly in `run.rs`. The load generator,
+- [x] `M17.5` `pgload`: 25 survivors, mostly in `run.rs`. The load generator,
   whose numbers `M7` and `M11` drew conclusions from.
+  Eighteen killed, seven argued. The kills came from two directions. Pure
+  decisions came out of a spawned task: `ramp_delay`, `connection_seed`,
+  `Refused::is_relocation` and `Refused::told` are functions with their own
+  tests now, and the seed one matters because reproducible across a run and
+  distinct within it is the pair the whole generator rests on.
+  The other direction was fakes that did not exist, and that is the part worth
+  keeping. `Fake::Refusing` refuses every connection, so a run against it ends
+  in `NoConnection` with no report to read, and `Fake::Working` never refuses.
+  Neither could produce a run containing both a refusal and a report, so the
+  connect-failure counters had no observable effect at all. `RefusingOnce`
+  closes that. Separately, every fake failed statements with `53300`, so a
+  `57P01` on an already-connected client never happened, and that is the shape a
+  rolling restart makes: `DrainingEveryOtherStatement` closes that one.
+  **The real finding is that this crate's mutation results are not
+  deterministic.** Its tests drive real sockets, real sleeps and real deadlines,
+  fourteen uses of `TcpListener`, `tokio::time::sleep` and `Instant::now` in one
+  file, so a mutant that perturbs timing is caught or missed depending on
+  machine load. Three consecutive runs of an unchanged tree caught and missed a
+  different subset each time; the ramp guard was missed, then caught, then
+  missed again.
+  I read the first of those samples as fact and wrote two baseline arguments
+  that the second run contradicted. The arguments were not wrong, the
+  measurement was, and reading one sample as a result is the mistake worth
+  recording. The seven entries now say so, and what they cover is a branch
+  around arithmetic that is itself tested.
+  A limitation of the harness, found the same way: `mutants.sh` reports a
+  baseline entry as "now caught" when it is absent from the missed set, and a
+  mutant that was never tested is also absent from it. One run tested 123 of
+  124. The warning is weaker than it reads.
 - [x] `M17.6` `conformance.sh` leaks every container it starts. 548 Postgres
   containers were running when this was found, all named
   `pgprox-conformance-*`, all started in the preceding two hours, load average

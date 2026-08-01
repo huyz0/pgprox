@@ -89,3 +89,31 @@ pgprox-load|crates/pgprox-load/src/workload.rs|Workload::validate_tenants|>=	equ
 
 # --- pgprox (the binary) ---
 pgprox|bin/pgprox/src/serve.rs|read_client_body|>=	equivalent. `tail > 0` becomes `tail >= 0`, and `tail` is a `usize`, so the left half is always true and the guard collapses to the decode check alone. What then differs is a call to `append_body(body, 0)`, whose loop body never runs, and returning `Ok(0)` where the original returns `Ok(tail)` with `tail` already zero. The other three mutants of this same line are killed: `> ==` and `> <` stop the top-up happening and fail `a_name_past_the_prefix_is_topped_up_rather_than_refused`, and `&& ||` tops up a message that decoded fine and fails `a_bind_whose_names_fit_keeps_its_tail_on_the_wire`. Re-triage if `append_body` ever does something on a zero-length read, or if the guard grows a third term.
+
+# --- pgload (the load generator) ---
+
+# --- pgload ---
+#
+# `M17.5`. Everything below is in `bin/pgload/src/run.rs` or reached from it,
+# and the crate's tests drive real sockets, real sleeps and real deadlines:
+# fourteen uses of `TcpListener`, `tokio::time::sleep` and `Instant::now` in one
+# file. That makes mutation results on its timing guards non-deterministic, and
+# not as a theory. Three consecutive runs of the same tree caught and missed a
+# different subset each time: the ramp guard was missed, then caught, then
+# missed again.
+#
+# A mutant whose detection depends on machine load is not detected. Recording
+# them as caught would be recording a coin flip, so they are here, and the
+# instability is the argument rather than an excuse for it.
+#
+# The arithmetic these guards protect is not in the same position. `M17.5`
+# extracted `ramp_delay`, `connection_seed`, `Refused::is_relocation` and
+# `Refused::told` into pure functions with their own tests, so what is left
+# here is the branch around a computation that is itself constrained.
+pgload|bin/pgload/src/main.rs|main|Ok(())	equivalent for any test that can exist. `fn main` cannot be called from a unit test, and this one delegates in a single line to `pgload_app::run_with`. The file's own header says it is deliberately almost empty and excluded from coverage for exactly this reason, so the mutant reports the design. Re-triage if `main` ever grows a decision, which is the moment that decision belongs in the library instead
+pgload|bin/pgload/src/lib.rs|init_logging|()	equivalent to what a test can observe. It installs a process-global `tracing` subscriber, which is set-once, so a test asserting it happened would fix the subscriber for every other test in the binary, and the second call is already documented as ignored. What it configures is `tracing_subscriber`'s to honour. Re-triage if it ever returns whether it took, the way `bin/pgprox`'s does, since that is a value a caller could act on
+pgload|bin/pgload/src/run.rs|run|	timing-dependent, not equivalent. `if !share.is_zero()` becomes `if share.is_zero()`, which skips the ramp spread. Whether a test notices depends on which connection reaches the fake server first, and that is a race the machine decides: this mutant was missed, then caught, then missed again across three runs of an unchanged tree. `ramp_delay` is a pure function with its own test, so the spread itself is constrained. Re-triage when the suite can assert on a paused clock without asserting on sleep durations
+pgload|bin/pgload/src/run.rs|one_connection|<=	timing-dependent, and unreachable besides. `while Instant::now() < deadline` becomes `<=`, so the two differ only when a monotonic nanosecond clock reads exactly the deadline. Re-triage if the deadline becomes a tick count rather than an `Instant`, where equality is reachable
+pgload|bin/pgload/src/run.rs|one_connection|<	timing-dependent. The deadline check inside the transaction loop, whose branch depends on how long the fake server took to answer. Same family and same re-triage condition as the entry above
+pgload|bin/pgload/src/run.rs|one_connection|	timing-dependent. `if !settled` becomes `if settled`, moving the one think-time pause from the first transaction to every one after it. What that changes is how many transactions fit before the deadline, which is a number the machine decides
+pgload|bin/pgload/src/client.rs|Session<S>::until_ready|true	timing-dependent. The guard is `failure.is_some()`, which turns a bare disconnect into the server error that preceded it, and reaching it needs the server to close after sending an error rather than instead of one. The `RefusingOnce` fake produces that ordering, and whether the close lands before or after the read is the machine's to decide
