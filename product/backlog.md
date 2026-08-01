@@ -5386,3 +5386,27 @@ Streaming removes both.
   `logging.rs` and `main.rs`. Pre-existing, and untouched by this review.
 - [ ] `M17.5` `pgload`: 25 survivors, mostly in `run.rs`. The load generator,
   whose numbers `M7` and `M11` drew conclusions from.
+- [ ] `M17.6` `conformance.sh` leaks every container it starts. 548 Postgres
+  containers were running when this was found, all named
+  `pgprox-conformance-*`, all started in the preceding two hours, load average
+  above eight on an otherwise idle machine.
+  The cause is a subshell, which is this project's most repeated shell mistake.
+  `PG_PORT="$(start_postgres "$version")"` runs the function inside a command
+  substitution, so the `PG_CONTAINER=` it assigns is set in a child and lost.
+  The parent's copy stays empty, and both the explicit `stop_postgres` and the
+  `trap ... EXIT INT TERM` then have nothing to remove. The comment above the
+  trap says "Containers must not outlive a failed or interrupted run", and none
+  of them were being removed even on a clean one.
+  `M12.6` is the same family: a `fail` called inside a pipeline subshell,
+  reported and discarded. `check-drift.sh` gained a lint for that shape and it
+  looks for `fail`, not for a lost assignment.
+  **This corrupted every performance number taken today.** `e2e.sh` reported
+  146 tps once and I re-ran it twice, got 181 and 179, and called the low
+  reading contention. It was contention, and the contention was mine. Later
+  readings of 104, 104 and 102 were three runs deep into 548 idle Postgres
+  servers. The 16 MiB and 4 KiB memory figures are unaffected, since those are
+  counted rather than timed, which is the argument `bench.sh` opens with.
+  Acceptance: the container name survives the call, the trap removes every
+  container the run started rather than the last one assigned, and a check that
+  a completed run leaves none behind. The last part is the one that would have
+  caught this, because the leak was invisible from inside a passing run.
