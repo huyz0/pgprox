@@ -219,6 +219,25 @@ mod tests {
         )
     }
 
+    #[test]
+    fn an_empty_set_registry_counts_zero_and_says_so() {
+        // `M17.4`. `len` returning 1 and `is_empty` returning true both
+        // survived: nothing asked either question of an empty registry, and a
+        // registry that always claims to hold one set would start a poll loop
+        // for replicas nobody configured.
+        let sets = sets();
+        assert_eq!(sets.len(), 0);
+        assert!(sets.is_empty());
+
+        // And `Debug` says how many rather than returning nothing, which is
+        // what an operator reading a panic message needs.
+        let rendered = format!("{sets:?}");
+        assert!(
+            rendered.contains("ReplicaSets"),
+            "the debug output names nothing: {rendered}"
+        );
+    }
+
     #[tokio::test]
     async fn a_grant_with_no_replicas_gets_no_watch() {
         // Which is most grants. A watch with nothing in it would still cost a

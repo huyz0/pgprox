@@ -231,6 +231,19 @@ pub const fn not_configured() -> ClientError {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
 
+    #[test]
+    fn the_static_admin_reports_the_user_it_was_built_with() {
+        // `M17.4` found `user` able to return "" or "xyzzy" unnoticed. It is
+        // what an admin connection is checked against, so a constant here
+        // accepts the wrong name or no name at all.
+        let admin = StaticAdmin::new("operator", "secret", vec![1, 2, 3, 4]).expect("keys derive");
+        assert_eq!(admin.user(), "operator");
+
+        let other =
+            StaticAdmin::new("someone-else", "secret", vec![1, 2, 3, 4]).expect("keys derive");
+        assert_eq!(other.user(), "someone-else");
+    }
+
     /// A slab for a test wire.
     ///
     /// Sized for one connection's worth of borrowing, which is what a test

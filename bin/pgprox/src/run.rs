@@ -184,12 +184,22 @@ const DESCRIPTOR_HEADROOM: u64 = 256;
 /// promise, and a node that serves nine hundred clients under a limit of 1024
 /// is working. Refusing to start would take a running deployment down on a
 /// configuration change that had not hurt it yet.
+/// How many descriptors a node with this ceiling needs, and whether it has them.
+///
+/// Separated from the warning so the arithmetic can be tested. `M17.4` found
+/// every mutant of it surviving, including replacing the whole function with
+/// nothing: a warning is invisible to a test that does not read logs, so the
+/// decision had to stop being wrapped in one.
+fn descriptors_are_short(limit: u64, ceiling: u32) -> Option<u64> {
+    let needed = u64::from(ceiling) + DESCRIPTOR_HEADROOM;
+    (limit < needed).then_some(needed)
+}
+
 fn warn_about_descriptors(ceiling: u32) {
     let Some(limit) = descriptor_limit() else {
         return;
     };
-    let needed = u64::from(ceiling) + DESCRIPTOR_HEADROOM;
-    if limit < needed {
+    if let Some(needed) = descriptors_are_short(limit, ceiling) {
         tracing::warn!(
             soft_limit = limit,
             max_client_conns = ceiling,
@@ -198,6 +208,29 @@ fn warn_about_descriptors(ceiling: u32) {
              connections past it will fail at accept, which reads as a network fault"
         );
     }
+}
+
+/// How much more quota to ask for, or `None` when this node is inside its own.
+///
+/// The guaranteed share needs no coordination; more than that is the leader's
+/// to grant. Asking for one past what is held is deliberate: it is the smallest
+/// request that changes anything, and a refusal leaves the node on its share,
+/// which is the direction that cannot breach the cap.
+///
+/// Extracted by `M17.4`, which found five mutants of this arithmetic surviving
+/// inside an async function nothing could call without a cluster.
+fn wants_more_quota(held: u32, guaranteed: u32, leased: u32) -> Option<u32> {
+    (held >= guaranteed + leased).then(|| held.saturating_sub(guaranteed) + 1)
+}
+
+/// The per-pool limit an allowance divides into.
+///
+/// At least one, because a node holding an allowance it cannot spend on any
+/// pool is a node that refuses every client while the cluster believes it is
+/// serving them.
+fn share_per_key(guaranteed: u32, leased: u32, keys: usize) -> u32 {
+    let total = guaranteed + leased;
+    (total / u32::try_from(keys).unwrap_or(u32::MAX)).max(1)
 }
 
 /// The process's soft descriptor limit, if it can be read.
@@ -535,8 +568,7 @@ async fn apply_quota(app: &App) {
             .filter(|(key, _)| key.server == server.server)
             .map(|(_, stats)| stats.active + stats.idle + stats.waiting)
             .sum();
-        if held >= allowance.guaranteed + allowance.leased {
-            let want = held.saturating_sub(allowance.guaranteed) + 1;
+        if let Some(want) = wants_more_quota(held, allowance.guaranteed, allowance.leased) {
             // Logged either way. The result used to be discarded with
             // `.is_ok()`, so a node pinned at its guaranteed share while
             // clients queued behind it looked exactly like a node that had
@@ -573,8 +605,7 @@ async fn apply_quota(app: &App) {
             }
         }
 
-        let total = allowance.guaranteed + allowance.leased;
-        let each = (total / u32::try_from(keys.len()).unwrap_or(u32::MAX)).max(1);
+        let each = share_per_key(allowance.guaranteed, allowance.leased, keys.len());
         for key in keys {
             app.pool.set_limit(&key, each);
         }
@@ -736,6 +767,71 @@ async fn ticker(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+
+    #[test]
+    fn a_ceiling_above_the_descriptor_limit_is_reported_with_what_it_needs() {
+        // `M17.4`. Every mutant of this survived, including replacing the whole
+        // function with nothing, because a warning is invisible to a test that
+        // does not read logs. The decision is separate from the warning now, so
+        // there is something to assert.
+        //
+        // The headroom is the point: a node does not need one descriptor per
+        // client, it needs those plus what the process already holds, so a
+        // ceiling exactly equal to the limit is already short.
+        assert_eq!(
+            descriptors_are_short(1024, 1024),
+            Some(1024 + DESCRIPTOR_HEADROOM),
+            "a ceiling equal to the limit was called sufficient"
+        );
+        assert_eq!(
+            descriptors_are_short(1024, 900),
+            Some(900 + DESCRIPTOR_HEADROOM)
+        );
+
+        // And a limit with room to spare says nothing.
+        assert_eq!(descriptors_are_short(65_536, 1024), None);
+        assert_eq!(
+            descriptors_are_short(1024 + DESCRIPTOR_HEADROOM, 1024),
+            None,
+            "exactly enough was reported as short"
+        );
+    }
+
+    #[test]
+    fn a_node_asks_for_quota_only_once_it_is_at_its_allowance() {
+        // The guaranteed share needs no coordination, so asking below it would
+        // be a round trip for capacity the node already has.
+        assert_eq!(wants_more_quota(3, 10, 0), None);
+        assert_eq!(wants_more_quota(9, 10, 0), None);
+
+        // At the allowance, and past it, it asks for one more than it holds
+        // beyond its guarantee. One, because that is the smallest request that
+        // changes anything.
+        assert_eq!(wants_more_quota(10, 10, 0), Some(1));
+        assert_eq!(wants_more_quota(14, 10, 0), Some(5));
+
+        // A lease already granted counts toward the allowance, so a node that
+        // has been given room does not immediately ask for more.
+        assert_eq!(wants_more_quota(10, 10, 5), None);
+        assert_eq!(wants_more_quota(15, 10, 5), Some(6));
+    }
+
+    #[test]
+    fn an_allowance_divides_across_pools_and_never_reaches_zero() {
+        assert_eq!(share_per_key(10, 0, 1), 10);
+        assert_eq!(share_per_key(10, 10, 2), 10);
+        assert_eq!(share_per_key(9, 0, 2), 4);
+
+        // The floor. A node holding an allowance it cannot spend on any pool
+        // refuses every client while the cluster believes it is serving them,
+        // which is worse than overshooting a division by one.
+        assert_eq!(
+            share_per_key(1, 0, 8),
+            1,
+            "a pool was given a limit of zero"
+        );
+        assert_eq!(share_per_key(0, 0, 1), 1);
+    }
     use super::*;
     use crate::wiring::Deps;
     use pgprox_core::auth::FakeCredentialResolver;

@@ -5380,10 +5380,34 @@ Streaming removes both.
   per chunk produces the same bytes either way, so what had to be stated is
   that a peer with a window smaller than the body still receives it, which
   queue-then-flush cannot do.
-- [ ] `M17.4` The rest of `bin/pgprox`: 86 survivors across `run.rs`,
+- [ ] `M17.4` **In progress: 29 of 86 killed, 80 remain** (the count moved by
+  more than 29 because the run also re-tested what `M17.3` fixed). The rest of
+  `bin/pgprox`: originally 86 survivors across `run.rs`,
   `observatory.rs`, `metrics.rs`, `gossip.rs`, `entry.rs`, `wiring.rs`,
   `sessions.rs`, `replicas.rs`, `admin.rs`, `http.rs`, `drain.rs`, `dial.rs`,
   `logging.rs` and `main.rs`. Pre-existing, and untouched by this review.
+  What has been done is the `M14` move: pure decisions extracted out of async
+  orchestration so they can be tested at all. `run.rs` gave up
+  `descriptors_are_short`, `wants_more_quota` and `share_per_key`; the quota
+  arithmetic is the one that mattered, because guaranteed plus leased never
+  exceeding the cap is `M3`'s headline safety claim and five mutants of it lived
+  inside a function nothing could call without a cluster. `metrics.rs` gave up
+  `count_by_state` and `count_by_tenant`, where eight survived because the only
+  test drove the writer and read its text rather than the numbers in it.
+  What is left is different in kind. The remaining survivors are conditions
+  inside `ticker`, `follow_drain`, `run_with_peers`, `dial` and `entry`: async
+  orchestration whose branches need fakes for a cluster, a socket and a clock
+  before anything can assert on them. That is scaffolding to build, not an
+  extraction to make, and it is why this stays open rather than being finished
+  by pushing harder at the same technique.
+  **A consequence to state rather than leave to be discovered.** `M17.2` put
+  both binaries in `scripts/mutants.sh`, and CI's nightly `mutants` job runs it
+  with no arguments, so that job is red until this task and `M17.5` close. That
+  is the correct state: they were absent, the absence was the defect, and a
+  nightly reporting 105 untested decisions is worth more than one reporting
+  nothing. `M11` ran a gate under `continue-on-error` while its milestone was
+  open and `M12` called that a gate that cannot fail, so hiding this behind a
+  flag is the one option that is not available.
 - [ ] `M17.5` `pgload`: 25 survivors, mostly in `run.rs`. The load generator,
   whose numbers `M7` and `M11` drew conclusions from.
 - [x] `M17.6` `conformance.sh` leaks every container it starts. 548 Postgres

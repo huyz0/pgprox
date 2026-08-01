@@ -95,6 +95,46 @@ pub async fn render(
 /// only for the tenants an operator asked to see: a `tenant` label taken from
 /// the data is one series per tenant, which is the unbounded label the
 /// registry's own cardinality test names as the example of what not to do.
+/// Clients by state: idle, active, waiting, in that order.
+///
+/// Split out by `M17.4`, which found eight surviving mutants in this counting.
+/// Every `+= 1` could become `*= 1` or `-= 1` and the whole file stayed green,
+/// because the only test drove the writer and looked at its text rather than
+/// at the numbers in it. An array rather than three returns so a caller cannot
+/// take them in the wrong order without saying so.
+fn count_by_state(clients: &[pgprox_core::admin::ClientView]) -> [u32; 3] {
+    use pgprox_core::admin::ClientState;
+
+    let mut counts = [0_u32; 3];
+    for view in clients {
+        let at = match view.state {
+            ClientState::Active => 1,
+            ClientState::Waiting => 2,
+            _ => 0,
+        };
+        counts[at] += 1;
+    }
+    counts
+}
+
+/// Clients per tenant label, in label order.
+///
+/// The allowlist decides the label, so everything outside it collapses into one
+/// entry rather than becoming a series per tenant. That is the cardinality
+/// bound, and it is why this counts labels and not tenants.
+fn count_by_tenant<'a>(
+    clients: &'a [pgprox_core::admin::ClientView],
+    tenants: &'a TenantAllowlist,
+) -> std::collections::BTreeMap<&'a str, u32> {
+    let mut per_tenant: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+    for view in clients {
+        *per_tenant
+            .entry(tenants.label_for(&view.tenant))
+            .or_default() += 1;
+    }
+    per_tenant
+}
+
 fn client_samples(
     out: &mut String,
     metric: &Metric,
@@ -102,18 +142,7 @@ fn client_samples(
     node: &str,
     tenants: &TenantAllowlist,
 ) {
-    use pgprox_core::admin::ClientState;
-
-    let mut idle = 0_u32;
-    let mut active = 0_u32;
-    let mut waiting = 0_u32;
-    for view in clients {
-        match view.state {
-            ClientState::Active => active += 1,
-            ClientState::Waiting => waiting += 1,
-            _ => idle += 1,
-        }
-    }
+    let [idle, active, waiting] = count_by_state(clients);
     for (state, count) in [("idle", idle), ("active", active), ("waiting", waiting)] {
         let _ = writeln!(
             out,
@@ -122,12 +151,7 @@ fn client_samples(
         );
     }
 
-    let mut per_tenant: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
-    for view in clients {
-        *per_tenant
-            .entry(tenants.label_for(&view.tenant))
-            .or_default() += 1;
-    }
+    let per_tenant = count_by_tenant(clients, tenants);
     for (tenant, count) in per_tenant {
         let _ = writeln!(
             out,
@@ -354,6 +378,76 @@ fn samples(out: &mut String, metric: &Metric, from: &Sources<'_>) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+
+    /// A client view with only the two fields these counters read.
+    fn client(
+        tenant: &str,
+        state: pgprox_core::admin::ClientState,
+    ) -> pgprox_core::admin::ClientView {
+        pgprox_core::admin::ClientView {
+            conn: pgprox_core::ids::ConnId::new(NodeId::new(1), 7),
+            tenant: pgprox_core::ids::TenantId::new(tenant),
+            node: NodeId::new(1),
+            state,
+            since: std::time::Duration::from_secs(1),
+            pinned: None,
+        }
+    }
+
+    #[test]
+    fn clients_are_counted_by_state_and_the_counts_are_the_counts() {
+        // `M17.4`. Eight mutants survived here: every `+= 1` could become
+        // `*= 1` or `-= 1` and nothing noticed, because the only test drove the
+        // writer and read its text rather than the numbers in it.
+        use pgprox_core::admin::{ClientState, ClientView};
+
+        fn view(state: ClientState) -> ClientView {
+            client("acme", state)
+        }
+
+        let clients = vec![
+            view(ClientState::Active),
+            view(ClientState::Active),
+            view(ClientState::Waiting),
+            view(ClientState::Idle),
+            view(ClientState::Idle),
+            view(ClientState::Idle),
+        ];
+
+        // idle, active, waiting, and all three distinct so a swapped index is
+        // visible rather than hidden by two equal numbers.
+        assert_eq!(count_by_state(&clients), [3, 2, 1]);
+        assert_eq!(count_by_state(&[]), [0, 0, 0]);
+
+        // One of each state on its own, so no arm can be deleted without a
+        // count moving.
+        assert_eq!(count_by_state(&[view(ClientState::Active)]), [0, 1, 0]);
+        assert_eq!(count_by_state(&[view(ClientState::Waiting)]), [0, 0, 1]);
+        assert_eq!(count_by_state(&[view(ClientState::Idle)]), [1, 0, 0]);
+    }
+
+    #[test]
+    fn clients_outside_the_allowlist_collapse_into_one_label() {
+        // The cardinality bound, which is why this counts labels rather than
+        // tenants: a series per tenant at five thousand tenants is the metric
+        // surface `pgprox-observe` exists to keep bounded.
+        use pgprox_core::admin::{ClientState, ClientView};
+
+        let allowed = TenantAllowlist::from_configured([pgprox_core::ids::TenantId::new("acme")])
+            .expect("a one-tenant allowlist is within the cap");
+        let clients: Vec<ClientView> = ["acme", "acme", "other", "third"]
+            .into_iter()
+            .map(|tenant| client(tenant, ClientState::Idle))
+            .collect();
+
+        let counted = count_by_tenant(&clients, &allowed);
+        assert_eq!(counted.get("acme").copied(), Some(2));
+        assert_eq!(
+            counted.len(),
+            2,
+            "two unlisted tenants became two series: {counted:?}"
+        );
+    }
 
     /// A slab for the exporter's tests, with a bound the assertions can name.
     fn test_slab() -> std::sync::Arc<pgprox_core::buf::BufferSlab> {
