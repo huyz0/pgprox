@@ -5629,3 +5629,70 @@ Streaming removes both.
   The stale sentence in `standards/testing.md` went with it: it named "the four
   sans-I/O crates" as what the nightly mutates, which has been wrong since
   `M14` added ten and `M17.2` added the binaries.
+
+## M18: what the deployment story assumes
+
+- [x] `M18.0` Plan M18. `M17` closed the last survivor and the backlog went dry.
+  What surfaced was not more code but three claims about deployment that nothing
+  checks, found by answering a question about replacing gossip with the
+  Kubernetes API for membership.
+  Filed as three tasks and one blocked note. The ADR reconciliation goes first
+  because the other two are read against it: a spec written against a document
+  that describes a system nobody built would inherit the error.
+  `M16` and `M17` also get their roadmap rows here, which they never had. That
+  is not bookkeeping: `M10.17` established that a milestone whose completion
+  condition does not exist cannot be closed, and both closed without one.
+- [ ] `M18.1` ADR 0004 describes a system that was not built. It says "SWIM
+  gossip over UDP using `foca`, seeded from headless Service DNS. One-second
+  protocol period, sub-second failure detection." `bin/pgprox/src/gossip.rs` is
+  TCP carrying newline-delimited JSON, addressed by a peer list passed as
+  `--peer node=host:port`, with `PEER_TIMEOUT` at two seconds and a 1 MiB read
+  cap. There is no `foca` in any `Cargo.toml` and no `UdpSocket` anywhere in the
+  workspace.
+  Everything the ADR decided *above* the transport is intact and is what the
+  property tests hold: the guaranteed share divided by a configured fleet size
+  rather than a live count, the free pool leased by the lowest active node, the
+  majority requirement, the `ttl + suspect_after` takeover wait. Only the
+  transport paragraph is fiction. So this is a correction, not a reversal, and
+  the ADR keeps its number and status.
+  Acceptance: ADR 0004 describes the transport that exists, with the round shape
+  and the two constants; the sentence that made the claim carries a note saying
+  what it used to say and that no code ever matched it, because an ADR that
+  quietly changes is worse than one that is wrong; and a check that the names it
+  cites can be found, so the next drift is caught rather than read.
+- [ ] `M18.2` Nothing separates finding peers from trusting them. The peer table
+  is `--peer` flags rendered by a shell loop in the StatefulSet template, and
+  membership is derived from digest arrivals. Both are correct and neither is
+  swappable, so a deployment that wants the Kubernetes API to supply peers has
+  nowhere to put it.
+  The seam is discovery, not membership, and the distinction is the whole task.
+  Liveness must stay first-party: `membership.rs` counts a peer alive from
+  digests that *arrived*, which is what makes a one-way network failure safe,
+  and an API server is a third party that would tell a partitioned leader the
+  fleet is healthy. That is the two-leaders case ADR 0004's majority rule exists
+  to prevent, and `pgprox-cluster`'s stated invariant is that partitions cause
+  under-subscription and never over-subscription.
+  A spec rather than an implementation, because this crosses `pgprox-core`,
+  `pgprox-cluster` and the binary, and non-negotiable 6 puts a trait change and
+  every implementor in one commit. Writing it out first is also what `M16.6`
+  credits with finding five hazards before any code existed.
+  Acceptance: a spec directory with the trait, its default static implementation,
+  what a Kubernetes implementation may and may not influence, and an ordered task
+  list whose entries each leave the tree green. It must state the one rule that
+  keeps the swap safe: an external source may mark a node draining sooner than
+  gossip would, and may never mark one alive that gossip has not heard from.
+- [ ] `M18.3` A milestone can close with no completion condition.
+  `check-drift.sh` walks `scripts/m*-complete.sh` and requires each to be named
+  in CI, which is the wrong direction: it checks that existing gates run, not
+  that every milestone has one. `M16` has a prose condition in the roadmap and
+  no script. `M17` has neither and closed anyway, across seven tasks and three
+  commits, with nothing objecting.
+  `M10.17` found that a milestone whose completion condition does not exist
+  cannot be closed, and `M12` spent a milestone on gates that cannot fail. This
+  is both at once: the gate exists, it passes, and the thing it was supposed to
+  prevent happened underneath it.
+  Acceptance: `check-drift.sh` fails when a milestone in the roadmap's status
+  table has no `scripts/mNN-complete.sh`; the failure is planted in
+  `tests/gates/negative.sh`, because a gate nobody has watched fail is a claim;
+  and `M16` and `M17` get the scripts they never had, with `M16`'s recording the
+  half that is blocked rather than asserting it passes.

@@ -32,6 +32,9 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M13 | The non-negotiables that nothing enforces | complete; six of the seven rules have a script and the seventh is marked as having none, which is the honest half of the answer |
 | M14 | The crates mutation testing never reached | complete; 2,926 mutants across all fourteen crates, 155 survivors, 137 killed and 18 argued |
 | M15 | The protocol crate under a second reading | complete; thirteen findings, of which three are memory bounds a peer controlled, two are connection state that never came back, and one is a mutant in a test this milestone wrote after writing about that exact mistake |
+| M16 | The streaming relay nothing streams through | the two directions are done and 16,777,216 bytes held becomes 512; the 100k run with a large result set needs three machines and is blocked |
+| M17 | The binaries mutation testing never reached | complete; 571 mutants in `pgprox` and 124 in `pgload`, every survivor argued, and the two timeout constants re-derived from a measured suite |
+| M18 | What the deployment story assumes | open |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -912,3 +915,42 @@ both would have passed while the defect was live. Those are planted in
 
 The 100k run with a large result set is the other half of the completion
 condition and needs the three machines `M7`'s full run needed.
+
+## M18: what the deployment story assumes
+
+`M17` closed the last mutation survivor and the backlog went dry, which is when
+the questions that were never tasks become visible. Three of them are about the
+gap between what this project's documents say it does and what it does, in the
+one area no test covers because it is not code: how the fleet is deployed and
+how nodes find each other.
+
+The trigger was a question about running this behind the Kubernetes API for
+membership rather than gossip. Answering it meant reading `pgprox-cluster`
+against ADR 0004, and the ADR describes a system that was never built.
+
+**ADR 0004 says SWIM over UDP using `foca`, seeded from headless Service DNS,
+with sub-second failure detection.** The implementation is TCP carrying
+newline-delimited JSON over a peer list passed as `--peer` flags, with a
+two-second peer timeout. There is no `foca` dependency and no `UdpSocket` in the
+workspace. That is not a small drift: the ADR is the document a reader consults
+before changing any of this, and it would send them looking for a gossip library
+that is not there.
+
+**Membership and load are one message, and only one of them is membership.**
+A digest carries mode, client counts, upstream counts per server and per-tenant
+usage for homed tenants; liveness is derived from when digests arrive. An
+external membership source can supply who exists. It cannot supply what each
+node is holding, which is what quota, shedding and reservations run on. Any
+pluggable-membership design has to say which half it replaces, and the answer is
+at most one of them.
+
+**A milestone can close with no completion condition, and the gate that should
+have caught that only checks the other direction.** `check-drift.sh` walks
+`scripts/m*-complete.sh` and requires each to be named in CI. Nothing requires a
+milestone to have one. `M16` has a prose condition and no script; `M17` has
+neither, and it closed anyway. `M10.17` established that a milestone whose
+completion condition does not exist cannot be closed, and this is that rule with
+nothing enforcing it.
+
+Completion condition: `scripts/m18-complete.sh`, which is itself part of the
+milestone rather than an afterthought, for the reason above.
