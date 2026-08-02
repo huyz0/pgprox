@@ -43,4 +43,6 @@ pub use sequence::{Facts, Held, HeldSequence, Unservable, assemble_simple, belon
 pub use shell::{
     Handoff, ShellError, Wire, accept, authenticate_scram, authenticate_token, negotiate,
 };
-pub use state::{Action, Credential, Handshake, HandshakeConfig, Reply, StartupInfo, TlsPosture};
+pub use state::{
+    Action, Credential, Handshake, HandshakeConfig, Negotiation, Reply, StartupInfo, TlsPosture,
+};

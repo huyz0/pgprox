@@ -56,4 +56,4 @@ pub use frontend::{FrontendMessage, Target};
 pub use read::{FieldError, Reader};
 pub use relay::{Completed, FrameRelay, RelayOutcome, inspect_budget};
 pub use session::{CopyDirection, HoldReason, SessionState};
-pub use startup::{Startup, VersionResponse, negotiate_version};
+pub use startup::{Startup, VersionResponse, negotiate};

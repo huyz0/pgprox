@@ -132,7 +132,9 @@ fn serve_startup(sock: &mut TcpStream, conn: ConnId, buf: &mut Vec<u8>) -> std::
     };
 
     let mut out = Vec::new();
-    match startup::negotiate_version(version) {
+    // No extensions: this server answers a harness rather than a client,
+    // and the harness sends none. See `negotiate`'s own note.
+    match startup::negotiate(version, false) {
         VersionResponse::Accept => {}
         VersionResponse::Negotiate { minor } => {
             encode::negotiate_protocol_version(&mut out, minor, &[]);

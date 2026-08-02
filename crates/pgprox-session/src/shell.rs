@@ -564,8 +564,15 @@ pub async fn negotiate<S: AsyncRead + AsyncWrite + Unpin>(
         let message = startup::decode(&body)?;
         let reply = handshake.on_startup(&message);
 
-        if let Some(minor) = reply.negotiate {
-            wire.queue(|out| encode::negotiate_protocol_version(out, minor, &[]));
+        if let Some(negotiation) = &reply.negotiate {
+            // Every `_pq_.` parameter the client sent, by name. `M20.3`: this
+            // was an empty slice, so a client asking for an extension was told
+            // nothing about it, and silence is how the protocol says yes.
+            let unsupported: Vec<&str> =
+                negotiation.unsupported.iter().map(String::as_str).collect();
+            wire.queue(|out| {
+                encode::negotiate_protocol_version(out, negotiation.minor, &unsupported);
+            });
         }
 
         match reply.action {
@@ -1347,8 +1354,16 @@ mod tests {
     }
 
     fn startup_packet(user: &str, database: &str) -> Vec<u8> {
+        startup_packet_with(user, database, &[])
+    }
+
+    /// The same, plus whatever extra parameters the client sent.
+    fn startup_packet_with(user: &str, database: &str, extra: &[(&str, &str)]) -> Vec<u8> {
         let mut body = 196_608_i32.to_be_bytes().to_vec();
-        for (name, value) in [("user", user), ("database", database)] {
+        for (name, value) in [("user", user), ("database", database)]
+            .iter()
+            .chain(extra.iter())
+        {
             body.extend_from_slice(name.as_bytes());
             body.push(0);
             body.extend_from_slice(value.as_bytes());
@@ -1438,6 +1453,45 @@ mod tests {
         let handoff = negotiate(&mut wire, &mut handshake).await.unwrap();
         assert_eq!(client.read_bytes(1).await, b"N");
         assert_eq!(handoff, Handoff::Ask(Credential::Jwt));
+    }
+
+    #[tokio::test]
+    async fn a_protocol_extension_is_declined_on_the_wire_by_name() {
+        // `M20.3`. The whole path, because the two halves that were wrong were
+        // in different crates: the handshake decided from the version alone,
+        // and the one caller of the encoder passed an empty list. Either one
+        // left alone still tells a client its extension was accepted.
+        let (mut wire, mut client) = pair();
+        let mut handshake = optional_tls();
+
+        client
+            .send(&startup_packet_with(
+                "acme_app",
+                "acme",
+                &[("_pq_.some_extension", "1")],
+            ))
+            .await;
+        let handoff = negotiate(&mut wire, &mut handshake).await.unwrap();
+
+        // The message itself: newest minor, then a count, then the names.
+        let (tag, body) = client.expect().await;
+        assert_eq!(tag, Tag::NEGOTIATE_PROTOCOL_VERSION);
+        assert_eq!(i32::from_be_bytes(body[0..4].try_into().unwrap()), 0);
+        assert_eq!(
+            i32::from_be_bytes(body[4..8].try_into().unwrap()),
+            1,
+            "the count did not say one option was unrecognised: {body:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&body[8..body.len() - 1]),
+            "_pq_.some_extension",
+            "the client was not told which option it did not get"
+        );
+
+        // And the connection carries on. The extension was declined, not the
+        // client.
+        assert_eq!(handoff, Handoff::Ask(Credential::Jwt));
+        assert_eq!(client.expect_auth().await, AuthRequest::CleartextPassword);
     }
 
     #[tokio::test]

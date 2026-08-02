@@ -24,7 +24,7 @@
 
 use pgprox_core::error::ClientError;
 use pgprox_core::ids::ConnId;
-use pgprox_proto::startup::{Startup, VersionResponse, negotiate_version};
+use pgprox_proto::startup::{Startup, VersionResponse, negotiate};
 
 /// Whether this listener offers, requires, or refuses TLS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,8 +76,8 @@ pub enum Action {
 /// nothing, which is a hang rather than an error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reply {
-    /// Send `NegotiateProtocolVersion` offering this minor version first.
-    pub negotiate: Option<i32>,
+    /// Send `NegotiateProtocolVersion` first, saying this.
+    pub negotiate: Option<Negotiation>,
     /// Then this.
     pub action: Action,
 }
@@ -90,6 +90,21 @@ impl Reply {
             action,
         }
     }
+}
+
+/// What a `NegotiateProtocolVersion` has to say.
+///
+/// Both halves, because the message carries both and a client reads both: the
+/// newest minor version this proxy speaks, and every protocol extension it did
+/// not recognise. `M20.3`: the second was always empty, so a client asking for
+/// an extension was answered with silence, which the protocol defines as
+/// agreement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Negotiation {
+    /// The newest minor version this proxy speaks.
+    pub minor: i32,
+    /// The `_pq_.` parameters the client sent, none of which are implemented.
+    pub unsupported: Vec<String>,
 }
 
 /// How far the handshake has got.
@@ -248,9 +263,10 @@ impl Handshake {
             return self.fail(ClientError::TlsRequired);
         }
 
-        let negotiate = match negotiate_version(version) {
+        let unsupported: Vec<String> = message.extensions().map(str::to_owned).collect();
+        let negotiated = match negotiate(version, !unsupported.is_empty()) {
             VersionResponse::Accept => None,
-            VersionResponse::Negotiate { minor } => Some(minor),
+            VersionResponse::Negotiate { minor } => Some(Negotiation { minor, unsupported }),
             // Unsupported, and anything a later version of the codec adds.
             // Refusing an unknown answer is the safe default: proceeding would
             // mean speaking a framing this crate does not implement.
@@ -278,7 +294,7 @@ impl Handshake {
         self.stage = Stage::Asked;
 
         Reply {
-            negotiate,
+            negotiate: negotiated,
             action: Action::Ask(credential),
         }
     }
@@ -462,8 +478,82 @@ mod tests {
         let params = login();
         let reply = hs.on_startup(&message(196_610, &params));
 
-        assert_eq!(reply.negotiate, Some(0));
+        assert_eq!(
+            reply.negotiate,
+            Some(Negotiation {
+                minor: 0,
+                unsupported: Vec::new()
+            })
+        );
         assert_eq!(reply.action, Action::Ask(Credential::Jwt));
+    }
+
+    #[test]
+    fn a_protocol_extension_is_answered_even_at_a_version_that_needs_no_answer() {
+        // `M20.3`. A `_pq_.` parameter is a request this proxy implements none
+        // of, and `NegotiateProtocolVersion` is the only message that says a
+        // request was not recognised. Saying nothing is how the protocol says
+        // yes, so a client asking for one used to be told it had it.
+        let mut hs = encrypted(HandshakeConfig::default());
+        let mut params = login();
+        params.push(StartupParam {
+            name: "_pq_.some_extension",
+            value: "1",
+        });
+        let reply = hs.on_startup(&message(196_608, &params));
+
+        assert_eq!(
+            reply.negotiate,
+            Some(Negotiation {
+                minor: 0,
+                unsupported: vec!["_pq_.some_extension".to_owned()]
+            }),
+            "an unimplemented extension was accepted by silence"
+        );
+        // And the handshake still goes on: the extension was declined, not the
+        // connection.
+        assert_eq!(reply.action, Action::Ask(Credential::Jwt));
+    }
+
+    #[test]
+    fn an_extension_and_a_newer_minor_are_answered_in_one_message() {
+        // One `NegotiateProtocolVersion` carries both, and a client reads both
+        // from it. Two would be a protocol violation.
+        let mut hs = encrypted(HandshakeConfig::default());
+        let mut params = login();
+        params.push(StartupParam {
+            name: "_pq_.a",
+            value: "1",
+        });
+        params.push(StartupParam {
+            name: "_pq_.b",
+            value: "2",
+        });
+        let reply = hs.on_startup(&message(196_610, &params));
+
+        assert_eq!(
+            reply.negotiate,
+            Some(Negotiation {
+                minor: 0,
+                unsupported: vec!["_pq_.a".to_owned(), "_pq_.b".to_owned()]
+            })
+        );
+    }
+
+    #[test]
+    fn an_ordinary_startup_parameter_is_not_read_as_an_extension() {
+        // The prefix is the whole test. A parameter merely containing `_pq_.`
+        // is not one, and reporting it would tell a client its `search_path`
+        // was an unrecognised protocol option.
+        let mut hs = encrypted(HandshakeConfig::default());
+        let mut params = login();
+        params.push(StartupParam {
+            name: "options",
+            value: "-c search_path=_pq_.x",
+        });
+        let reply = hs.on_startup(&message(196_608, &params));
+
+        assert_eq!(reply.negotiate, None);
     }
 
     #[test]

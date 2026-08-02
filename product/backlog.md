@@ -6064,7 +6064,7 @@ Streaming removes both.
   threshold did not move: the settings are a boxed slice, moved into the relay
   rather than borrowed by it, and dropped before the loop, which is what keeps
   them out of every one of a hundred thousand connections.
-- [ ] `M20.3` **A `_pq_.` protocol extension is accepted by saying nothing.**
+- [x] `M20.3` **A `_pq_.` protocol extension is accepted by saying nothing.**
   `encode::negotiate_protocol_version` takes an `unrecognized` list, and every
   caller outside the fuzz seed corpus passes `&[]`. `negotiate_version` decides
   from the version integer alone, so a client that asks for 3.0 plus
@@ -6076,6 +6076,18 @@ Streaming removes both.
   the protocol actually specifies.
   Acceptance: an unrecognised `_pq_.` parameter produces a
   `NegotiateProtocolVersion` naming it, at any accepted version.
+  Done. `Startup::extensions` reads them by their reserved prefix, `negotiate`
+  takes whether there were any, and `Reply::negotiate` carries a `Negotiation`
+  with both the minor and the names so the encoder's `unrecognized` argument
+  finally has something in it.
+  Both halves were wrong and each was checked separately: with the decision
+  made from the version alone, the handshake test and the wire test fail; with
+  the encoder handed an empty list again, the wire test fails. Either fix on
+  its own still tells a client its extension was accepted.
+  `negotiate_version` is gone rather than kept as a one-argument wrapper. It
+  would have been a default argument wearing a function name, and the only
+  caller that wanted it is the conformance server, which answers a harness that
+  sends no extensions and can say so itself.
 - [ ] `M20.4` **Nothing says goodbye to an upstream connection.**
   `encode_frontend::terminate` exists and its only callers are tests. A reaped
   connection is dropped, so Postgres sees the socket close rather than a

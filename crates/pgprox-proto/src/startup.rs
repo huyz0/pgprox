@@ -18,6 +18,13 @@ pub const GSSENC_REQUEST_CODE: i32 = 80_877_104;
 /// Magic code for a cancellation request.
 pub const CANCEL_REQUEST_CODE: i32 = 80_877_102;
 
+/// The prefix Postgres reserves for protocol extension parameters.
+///
+/// A client asking for one expects to be told if it did not get it, and the
+/// only way a server says so is `NegotiateProtocolVersion`, which lists every
+/// option it did not recognise. Silence means yes.
+pub const EXTENSION_PREFIX: &str = "_pq_.";
+
 /// A parameter from the startup packet.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StartupParam<'a> {
@@ -157,6 +164,23 @@ impl Startup<'_> {
         }
     }
 
+    /// The protocol extensions this client asked for.
+    ///
+    /// This proxy implements none, so every one of these is unrecognised and
+    /// belongs in the `NegotiateProtocolVersion` it is answered with. `M20.3`:
+    /// none of them were, so a client asking for one was told nothing, which
+    /// the protocol defines as "you got it".
+    pub fn extensions(&self) -> impl Iterator<Item = &str> {
+        let params: &[StartupParam<'_>] = match self {
+            Self::StartupMessage { params, .. } => params,
+            _ => &[],
+        };
+        params
+            .iter()
+            .map(|p| p.name)
+            .filter(|name| name.starts_with(EXTENSION_PREFIX))
+    }
+
     /// Looks up a startup parameter.
     #[must_use]
     pub fn param(&self, name: &str) -> Option<&str> {
@@ -190,15 +214,30 @@ pub enum VersionResponse {
 /// is offered 3.0 through `NegotiateProtocolVersion`, and every 3.2-capable
 /// driver handles that by design. Anything outside major version 3 is refused,
 /// since the message framing itself would differ.
+/// `M20.3` gave this its second argument, and there is no one-argument form.
+/// The version is not the only thing that makes an answer necessary: a client
+/// that sends a `_pq_.` parameter has to be told it was not recognised, and
+/// `NegotiateProtocolVersion` is the only message that says so, so one is owed
+/// even at a version this proxy accepts outright. pgbouncer sends one when the
+/// version is unsupported *or* the extension list is non-empty, which is the
+/// condition the protocol states.
+///
+/// A `negotiate_version(requested)` wrapper passing `false` existed for one
+/// commit and was removed: it is a default argument wearing a function name,
+/// and the caller that wants it is the one caller who has no client to ask.
+///
+/// The minor offered is this proxy's newest, which is what the field means. It
+/// is not a rejection of the version the client asked for when that version was
+/// acceptable.
 #[must_use]
-pub fn negotiate_version(requested: i32) -> VersionResponse {
+pub fn negotiate(requested: i32, unrecognised_extension: bool) -> VersionResponse {
     let major = requested >> 16;
     let minor = requested & 0xFFFF;
 
     if major != 3 {
         return VersionResponse::Unsupported;
     }
-    if minor == 0 {
+    if minor == 0 && !unrecognised_extension {
         return VersionResponse::Accept;
     }
     VersionResponse::Negotiate { minor: 0 }
@@ -310,6 +349,65 @@ mod tests {
     fn a_truncated_cancel_request_is_an_error() {
         let body = CANCEL_REQUEST_CODE.to_be_bytes();
         assert!(decode(&body).is_err());
+    }
+
+    #[test]
+    fn an_extension_is_recognised_by_its_prefix_and_nothing_else() {
+        // `M20.3`. The prefix is reserved, and everything carrying it is a
+        // request this proxy does not implement. Everything else is an ordinary
+        // parameter and must not be reported as an unrecognised option.
+        let body = startup_body(
+            PROTOCOL_3_0,
+            &[
+                ("user", "acme_app"),
+                ("_pq_.first", "1"),
+                ("options", "-c search_path=_pq_.not_one"),
+                ("_pq_.second", "2"),
+            ],
+        );
+        let parsed = decode(&body).unwrap();
+
+        assert_eq!(
+            parsed.extensions().collect::<Vec<_>>(),
+            vec!["_pq_.first", "_pq_.second"]
+        );
+    }
+
+    #[test]
+    fn a_client_that_asked_for_nothing_extra_is_told_nothing() {
+        let body = startup_body(PROTOCOL_3_0, &[("user", "acme_app")]);
+        assert_eq!(decode(&body).unwrap().extensions().count(), 0);
+        assert_eq!(negotiate(PROTOCOL_3_0, false), VersionResponse::Accept);
+    }
+
+    #[test]
+    fn an_extension_makes_an_answer_owed_at_a_version_that_needs_none() {
+        // 3.0 is accepted outright, and an unrecognised extension still has to
+        // be reported: `NegotiateProtocolVersion` is the only message that
+        // says a request was not honoured, so silence means it was. pgbouncer
+        // sends one when the version is unsupported *or* the extension list is
+        // non-empty, which is the condition the protocol states.
+        assert_eq!(
+            negotiate(PROTOCOL_3_0, true),
+            VersionResponse::Negotiate { minor: 0 },
+            "an extension at an accepted version was answered with silence"
+        );
+
+        // And the major version still decides first: a client this codec
+        // cannot frame for is refused rather than negotiated with.
+        assert_eq!(negotiate(2 << 16, true), VersionResponse::Unsupported);
+    }
+
+    #[test]
+    fn only_a_startup_message_carries_extensions() {
+        // A cancel request and an SSL request have no parameters at all, and
+        // asking either for its extensions must be empty rather than a panic.
+        for body in [
+            SSL_REQUEST_CODE.to_be_bytes().to_vec(),
+            GSSENC_REQUEST_CODE.to_be_bytes().to_vec(),
+        ] {
+            assert_eq!(decode(&body).unwrap().extensions().count(), 0);
+        }
     }
 
     #[test]
@@ -478,7 +576,7 @@ mod tests {
 
     #[test]
     fn version_3_0_is_accepted() {
-        assert_eq!(negotiate_version(PROTOCOL_3_0), VersionResponse::Accept);
+        assert_eq!(negotiate(PROTOCOL_3_0, false), VersionResponse::Accept);
     }
 
     #[test]
@@ -487,7 +585,7 @@ mod tests {
         // NegotiateProtocolVersion by design, which is what makes speaking only
         // 3.0 safe.
         assert_eq!(
-            negotiate_version(PROTOCOL_3_2),
+            negotiate(PROTOCOL_3_2, false),
             VersionResponse::Negotiate { minor: 0 }
         );
     }
@@ -497,7 +595,7 @@ mod tests {
         // A future 3.7 must be answered, not rejected. Refusing would break
         // clients that would have been perfectly happy at 3.0.
         assert_eq!(
-            negotiate_version((3 << 16) | 7),
+            negotiate((3 << 16) | 7, false),
             VersionResponse::Negotiate { minor: 0 }
         );
     }
@@ -507,7 +605,7 @@ mod tests {
         // Major 2 framed messages differently, so there is nothing to negotiate.
         for major in [1, 2, 4] {
             assert_eq!(
-                negotiate_version(major << 16),
+                negotiate(major << 16, false),
                 VersionResponse::Unsupported,
                 "major {major}"
             );

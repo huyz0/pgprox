@@ -76,4 +76,16 @@ run_test pgprox-session "relay::tests::a_startup_setting_outside_the_allowlist_p
 run_test pgprox-session "relay::tests::one_pin_is_reported_once_however_many_settings_caused_it" \
   "two unreplayable settings are one pin, counted once"
 
+# --- M20.3: an extension nobody implements is declined out loud --------------
+#
+# The wire test is the one that matters, and it is the whole path on purpose:
+# the two halves that were wrong lived in different crates, and either one left
+# alone still tells a client its extension was accepted.
+run_test pgprox-session "shell::tests::a_protocol_extension_is_declined_on_the_wire_by_name" \
+  "an unimplemented _pq_ extension is declined by name on the wire"
+run_test pgprox-proto "startup::tests::an_extension_makes_an_answer_owed_at_a_version_that_needs_none" \
+  "an extension makes an answer owed even at a version that needs none"
+run_test pgprox-proto "startup::tests::an_extension_is_recognised_by_its_prefix_and_nothing_else" \
+  "an ordinary parameter is not reported as an unrecognised option"
+
 finish
