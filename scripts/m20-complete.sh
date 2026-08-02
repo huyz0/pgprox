@@ -96,4 +96,13 @@ run_test pgprox-proto "startup::tests::an_extension_is_recognised_by_its_prefix_
 run_test pgprox "serve::tests::a_reaped_connection_says_goodbye_rather_than_vanishing" \
   "a reaped connection sends Terminate before its socket goes"
 
+# --- M20.5: a connection nobody watched is checked before it is lent ---------
+#
+# The fake dies while the connection is idle, which is what a
+# `pg_terminate_backend`, an `idle_session_timeout` or a restart leaves behind.
+# Without the check the client does not get an error, it gets its socket closed,
+# which is the shape this was reported as being better than.
+run_test pgprox "serve::tests::a_connection_that_died_while_idle_is_not_handed_to_a_client" \
+  "a connection that died while idle is not handed to a client"
+
 finish

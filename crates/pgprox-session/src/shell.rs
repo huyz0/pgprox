@@ -502,6 +502,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
         }
     }
 
+    /// The stream underneath, for the two checks that need the socket itself.
+    ///
+    /// Deliberately narrow: everything else goes through the framing above, and
+    /// a caller reaching past it would be reading bytes the buffers are meant
+    /// to own. `Upstreamed::unfit` polls it for readability and nothing else.
+    pub fn io_mut(&mut self) -> &mut S {
+        &mut self.io
+    }
+
     /// Sends everything queued.
     ///
     /// # Errors

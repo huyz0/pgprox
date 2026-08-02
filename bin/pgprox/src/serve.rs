@@ -1482,15 +1482,7 @@ async fn borrow(
 
     // The refusal travels back to the caller, which holds the wire and tells
     // the client. This function has no wire on purpose: it is about the pool.
-    let guard = context
-        .pool
-        .acquire(&backend.pool_key(), deadline)
-        .await
-        .map_err(|err| ShellError::Refused(err.into()))?;
-    let taken = context
-        .pool
-        .take_connection(guard.key(), guard.id())
-        .ok_or(ShellError::Disconnected)?;
+    let (guard, taken) = fit_connection(context, &backend.pool_key(), deadline).await?;
 
     // Registered while it is held and only while it is held: cancelling a
     // connection that has gone back to the pool cancels a stranger's query.
@@ -1507,6 +1499,63 @@ async fn borrow(
         .set_state(conn, ClientState::Active, context.clock.now());
 
     Ok((guard, taken))
+}
+
+/// Takes connections from the pool until one is fit to use.
+///
+/// `M20.5`. Nothing reads a pooled connection while it is idle, so a server
+/// that went away between borrowers is discovered here or not at all. Without
+/// this, the client's own query was what discovered it, and what the client saw
+/// was its statement failing on a connection that was already dead when it
+/// arrived.
+///
+/// A connection that fails the check is dropped rather than returned:
+/// `UpstreamGuard` discards unless `release_clean` was called, so letting it go
+/// is what closes it.
+///
+/// # Why more than one attempt
+///
+/// The condition that produces one dead connection produces all of them. A
+/// database restart or a failover leaves the whole warm pool stale, and a
+/// client that got one retry would meet the second corpse. The bound exists
+/// because a pool that is somehow always unfit must become a refusal the client
+/// is told about rather than a loop, and because `acquire` already has the
+/// deadline that makes waiting finite.
+const FITNESS_ATTEMPTS: usize = 4;
+
+async fn fit_connection(
+    context: &Context,
+    key: &pgprox_core::ids::PoolKey,
+    deadline: std::time::Instant,
+) -> Result<(UpstreamGuard, Upstreamed<crate::dial::Stream>), ShellError> {
+    for attempt in 0..FITNESS_ATTEMPTS {
+        let guard = context
+            .pool
+            .acquire(key, deadline)
+            .await
+            .map_err(|err| ShellError::Refused(err.into()))?;
+        let mut taken = context
+            .pool
+            .take_connection(guard.key(), guard.id())
+            .ok_or(ShellError::Disconnected)?;
+
+        if !taken.unfit().await {
+            return Ok((guard, taken));
+        }
+
+        // Dropped in this order for the reason `release` has one: the payload
+        // is the socket and the guard is the pool's accounting for it, and a
+        // slot freed before its socket is a slot another session can fill while
+        // the upstream is still counting the old one.
+        drop(taken);
+        drop(guard);
+        tracing::debug!(
+            attempt,
+            "an idle upstream connection had unread bytes or had closed, taking another"
+        );
+    }
+
+    Err(ShellError::Refused(ClientError::UpstreamClosed))
 }
 
 /// What a client is told when the relay reached a frame with nothing to send
@@ -5117,6 +5166,137 @@ mod tests {
         assert_eq!(tag, Tag::ERROR_RESPONSE);
         assert!(String::from_utf8_lossy(&body).contains("08P01"));
         assert!(served.await.unwrap().is_err());
+    }
+
+    /// A fake that answers one statement per connection and then goes away.
+    ///
+    /// The shape a `pg_terminate_backend`, an `idle_session_timeout` or a
+    /// database restart leaves behind: the connection the pool is holding is
+    /// dead, and nothing on this side has looked at it since it went idle.
+    async fn fake_postgres_that_dies_when_idle() -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut len = [0_u8; 4];
+                    if socket.read_exact(&mut len).await.is_err() {
+                        return;
+                    }
+                    let mut body = vec![0; u32::from_be_bytes(len) as usize - 4];
+                    let _ = socket.read_exact(&mut body).await;
+
+                    let mut out = Vec::new();
+                    encode::authentication_ok(&mut out);
+                    encode::parameter_status(&mut out, "server_version", "17.2");
+                    encode::backend_key_data(&mut out, ConnId::new(NodeId::new(9), 0x00AB_CDEF));
+                    encode::ready_for_query(&mut out, TxStatus::Idle);
+                    let _ = socket.write_all(&out).await;
+
+                    // One statement, answered, and then the backend is gone.
+                    let mut header = [0_u8; 5];
+                    if socket.read_exact(&mut header).await.is_err() {
+                        return;
+                    }
+                    let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+                    let mut body = vec![0; len - 4];
+                    if socket.read_exact(&mut body).await.is_err() {
+                        return;
+                    }
+                    crate::fakepg::record(
+                        addr,
+                        String::from_utf8_lossy(&body)
+                            .trim_end_matches('\0')
+                            .to_owned(),
+                    );
+
+                    let mut out = Vec::new();
+                    out.extend_from_slice(&crate::fakepg::row_description());
+                    out.push(Tag::COMMAND_COMPLETE.get());
+                    let text = b"SELECT 1\0";
+                    out.extend_from_slice(&u32::try_from(text.len() + 4).unwrap().to_be_bytes());
+                    out.extend_from_slice(text);
+                    encode::ready_for_query(&mut out, TxStatus::Idle);
+                    let _ = socket.write_all(&out).await;
+                });
+            }
+        });
+
+        addr
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_died_while_idle_is_not_handed_to_a_client() {
+        // `M20.5`. Nothing reads a pooled connection while it is idle: the pool
+        // holds them in a `VecDeque` and no task polls it. So a server that
+        // went away between borrowers was discovered by the next client's own
+        // query, and what that client saw was its statement failing on a
+        // connection that was already dead when it arrived.
+        let addr = fake_postgres_that_dies_when_idle().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
+        client.write_all(&query).await.unwrap();
+        loop {
+            if expect(&mut client).await.0 == Tag::READY_FOR_QUERY {
+                break;
+            }
+        }
+        assert_eq!(
+            context.pool.all_stats()[0].1.idle,
+            1,
+            "the connection did not go back to the pool"
+        );
+
+        // The backend goes while the connection sits in the pool. Parked on
+        // rather than yielded to: the close has to reach this process's I/O
+        // driver, and on a current-thread runtime that only runs when the
+        // runtime parks. See the note in
+        // `a_reaped_connection_says_goodbye_rather_than_vanishing`.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // The second statement. It must be answered, from a fresh connection.
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 2");
+        client.write_all(&query).await.unwrap();
+        let mut saw = Vec::new();
+        loop {
+            let (tag, body) = expect(&mut client).await;
+            saw.push((tag, String::from_utf8_lossy(&body).into_owned()));
+            if tag == Tag::READY_FOR_QUERY {
+                break;
+            }
+        }
+        assert!(
+            !saw.iter().any(|(tag, _)| *tag == Tag::ERROR_RESPONSE),
+            "a client was handed a connection that had already died: {saw:?}"
+        );
+
+        // And it really did run, on a connection this fake opened for it.
+        assert!(
+            crate::fakepg::statements_seen(addr).contains(&"SELECT 2".to_owned()),
+            "the second statement never reached a server: {:?}",
+            crate::fakepg::statements_seen(addr)
+        );
+
+        drop(client);
+        let _ = served.await;
     }
 
     #[tokio::test]

@@ -292,6 +292,56 @@ pub struct Upstreamed<S> {
 }
 
 impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> Upstreamed<S> {
+    /// Whether this connection is unfit to hand to another session.
+    ///
+    /// `M20.5`. Nothing reads a pooled connection while it is idle: `Pool::idle`
+    /// is a `VecDeque` and no task polls it. So whatever the server sent
+    /// between borrowers is still in the socket, and the next session to be
+    /// handed the connection reads it as the answer to its own frame.
+    ///
+    /// Two things arrive that way. An asynchronous message: `NoticeResponse`,
+    /// `ParameterStatus`, `NotificationResponse`. And the end of the
+    /// connection: `pg_terminate_backend`, `idle_session_timeout`, a failover,
+    /// a restart. The second is the common one, and what a client saw was its
+    /// query failing on a connection that was already dead when it arrived.
+    ///
+    /// # Readable means unfit, whatever it turned out to be
+    ///
+    /// A healthy idle connection has nothing to say, so nothing is readable and
+    /// this answers false without a syscall. Anything readable is either the
+    /// close or a message this session did not ask for, and neither is
+    /// something to hand on: a connection with bytes in it is one whose state
+    /// the proxy does not know. Deciding which of the two it is would mean
+    /// reading, and the answer would be "discard it" either way.
+    ///
+    /// This is why the check is not "is the socket closed". Distinguishing
+    /// costs a parse and buys nothing.
+    ///
+    /// pgbouncer instead runs its packet loop on servers in `SV_IDLE`, which
+    /// keeps the connection by consuming what arrived. That is the better
+    /// answer for a proxy with an event loop over every server; this one holds
+    /// idle connections in a map with nothing watching them, and a check on
+    /// borrow is the cheap half of the same guarantee.
+    ///
+    /// Destructive when it says yes: the poll may consume a byte. That is
+    /// deliberate and safe, because a caller that gets `true` closes the
+    /// connection rather than using it.
+    pub async fn unfit(&mut self) -> bool {
+        std::future::poll_fn(|cx| {
+            let mut byte = [0_u8; 1];
+            let mut buf = tokio::io::ReadBuf::new(&mut byte);
+            // Ready either way: this future never suspends. `Pending` from the
+            // socket is the answer rather than a reason to wait, because it
+            // means the server has said nothing, which is what an idle
+            // connection should look like.
+            std::task::Poll::Ready(!matches!(
+                std::pin::Pin::new(self.wire.io_mut()).poll_read(cx, &mut buf),
+                std::task::Poll::Pending
+            ))
+        })
+        .await
+    }
+
     /// Says goodbye before the socket goes.
     ///
     /// `M20.4`. Postgres logs a client that vanishes without a `Terminate`, and

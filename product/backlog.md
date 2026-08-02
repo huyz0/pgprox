@@ -6124,7 +6124,7 @@ Streaming removes both.
   the runtime parks, so a yield loop never delivers the read. The interval is
   what a failure costs, not what a pass waits for, and widening it would fix
   nothing.
-- [ ] `M20.5` **An idle pooled connection is never read.** `Pool::idle` is a
+- [x] `M20.5` **An idle pooled connection is never read.** `Pool::idle` is a
   `VecDeque<Connection>` and nothing polls it: every `tokio::spawn` in
   `pgprox-pool` is in a test. So anything the server sends on a connection
   between borrowers stays in the socket for whoever borrows it next, which will
@@ -6144,6 +6144,25 @@ Streaming removes both.
   Acceptance: a connection the server closed while it was idle is not handed to
   a client, and an async message that arrived while idle is consumed rather
   than delivered as somebody's reply.
+  Done, and the second half is answered by discarding rather than by consuming.
+  `Upstreamed::unfit` polls the socket for readability at the moment the pool
+  hands it over: a healthy idle connection has nothing to say, so this costs
+  nothing in the common case, and anything readable is either the close or a
+  message nobody asked for. Which of the two it is would cost a parse and the
+  answer is "discard it" either way, so it is not asked. `fit_connection` takes
+  another, up to four times, because the condition that kills one connection
+  kills the whole warm pool and a client with one retry meets the second corpse.
+  pgbouncer keeps such a connection instead, by running its packet loop on
+  servers in `SV_IDLE`. That is the better answer for a proxy with an event loop
+  over every server; this one holds idle connections in a map with nothing
+  watching them, and a check on borrow is the cheap half of the same guarantee.
+  It was reported as costing a client a failed query. It is worse than that:
+  with the check disabled the client does not get an `ErrorResponse`, it gets
+  its socket closed with `UnexpectedEof`, which every driver reports as a
+  network fault against the proxy.
+  Not covered: the branch that gives up after four attempts. It is a bounded
+  loop's backstop and reaching it needs four stale connections queued in one
+  pool, which the harness cannot arrange without the timing being the test.
 - [ ] `M20.6` **The unnamed prepared statement is turned into a named one.**
   `map_statement_name` rewrites every `Parse` to `pgprox_<hash of sql>`,
   including `Parse` of the unnamed statement. The unnamed statement's contract
