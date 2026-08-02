@@ -1638,7 +1638,7 @@ mod tests {
             &crate::state::StartupInfo {
                 user: "acme_app".to_owned(),
                 database: "acme".to_owned(),
-                options: Vec::new(),
+                settings: Vec::new(),
             },
             IpAddr::V4(Ipv4Addr::LOCALHOST),
         );

@@ -520,7 +520,10 @@ where
             // Kept before the token exchange consumes it. These are the
             // client's own runtime settings, and until `M20.2` this was the
             // last place they existed.
-            let settings: Box<[(String, String)]> = startup.options.clone().into();
+            // Already in the order they apply: `StartupInfo::settings` puts the
+            // plain parameters first and the ones from `options` after them, so
+            // replaying in order is what makes `options` win. `M20.7`.
+            let settings: Box<[(String, String)]> = startup.settings.clone().into();
             let mut auth = TokenAuth::new(&startup, std::net::IpAddr::from([0, 0, 0, 0]));
             let grant = until(
                 deadline,
@@ -3654,7 +3657,14 @@ mod tests {
     /// The same, with runtime settings packed into `options` the way libpq
     /// packs a connection string's `options=` into the startup packet.
     fn startup_with_options(token: &str, options: Option<&str>) -> Vec<u8> {
+        startup_with(token, options, &[])
+    }
+
+    /// The same, plus plain startup parameters the way libpq sends
+    /// `client_encoding` and `application_name`.
+    fn startup_with(token: &str, options: Option<&str>, extra: &[(&str, &str)]) -> Vec<u8> {
         let mut params = vec![("user", "acme_app"), ("database", "acme")];
+        params.extend_from_slice(extra);
         if let Some(options) = options {
             params.push(("options", options));
         }
@@ -5551,6 +5561,60 @@ mod tests {
             seen.contains(&crate::fakepg::TERMINATED.to_owned()),
             "the socket was dropped without a Terminate: {seen:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_plain_startup_parameter_reaches_the_server_too() {
+        // `M20.7`. `M20.2` did the `options` half. libpq sends
+        // `client_encoding` and `application_name` as plain parameters, and
+        // `StartupInfo` did not even carry them: the upstream startup packet
+        // was `user`, `database` and a hard-coded `application_name=pgprox`.
+        //
+        // The client's `application_name` is honoured, which reverses what the
+        // proxy used to put on the connection. A connection actively serving a
+        // tenant showing that tenant's application is the more useful of the
+        // two facts available to a DBA, and which node holds it is already in
+        // the pool key. `probe.rs`'s separate rule stands: `pgprox` is still
+        // not reported back to the client as its own application name.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_with(
+                "good.token",
+                None,
+                &[("application_name", "reporting")],
+            ))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        // The client sends no `SET`, so anything naming it came from the
+        // startup packet.
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
+        client.write_all(&query).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        assert!(
+            statements_seen(addr)
+                .iter()
+                .any(|sql| sql.contains("application_name") && sql.contains("reporting")),
+            "a plain startup parameter never reached the server: {:?}",
+            statements_seen(addr)
+        );
+
+        drop(client);
+        let _ = served.await;
     }
 
     #[tokio::test]

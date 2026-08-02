@@ -115,4 +115,17 @@ run_test pgprox "serve::tests::an_unnamed_parse_keeps_its_name_and_a_named_one_d
 run_test pgprox-pool "statements::tests::the_unnamed_statement_is_tracked_apart_from_the_ones_that_are_held" \
   "the unnamed statement does not occupy a slot under the per-connection cap"
 
+# --- M20.7: the other half of what a client asks for at connect --------------
+#
+# The precedence test is the one worth keeping. Both forms carry the same
+# settings, so the only thing that decides a disagreement is the order they are
+# replayed in, and that order is a field's contents rather than a rule anyone
+# can read from the call site.
+run_test pgprox "serve::tests::a_plain_startup_parameter_reaches_the_server_too" \
+  "a plain startup parameter reaches the server"
+run_test pgprox-session "state::tests::options_wins_where_a_client_asked_for_the_same_setting_both_ways" \
+  "options wins over a plain parameter naming the same setting"
+run_test pgprox-proto "startup::tests::a_plain_startup_parameter_is_a_setting_and_the_four_special_ones_are_not" \
+  "user, database, options and replication are not runtime settings"
+
 finish

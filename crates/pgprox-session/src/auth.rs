@@ -478,7 +478,7 @@ mod tests {
         StartupInfo {
             user: "acme_app".to_owned(),
             database: "acme".to_owned(),
-            options: Vec::new(),
+            settings: Vec::new(),
         }
     }
 

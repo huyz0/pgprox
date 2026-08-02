@@ -18,6 +18,13 @@ pub const GSSENC_REQUEST_CODE: i32 = 80_877_104;
 /// Magic code for a cancellation request.
 pub const CANCEL_REQUEST_CODE: i32 = 80_877_102;
 
+/// Startup parameters that are not runtime settings.
+///
+/// Each has a meaning the protocol gives it rather than a value a session
+/// carries. `replication` is here because it changes what the connection *is*
+/// rather than how it behaves, and is answered separately: see `M20.8`.
+const NOT_A_SETTING: [&str; 4] = ["user", "database", "options", "replication"];
+
 /// The prefix Postgres reserves for protocol extension parameters.
 ///
 /// A client asking for one expects to be told if it did not get it, and the
@@ -162,6 +169,28 @@ impl Startup<'_> {
                 return;
             }
         }
+    }
+
+    /// The runtime settings this client sent as plain startup parameters.
+    ///
+    /// Everything except the four the protocol gives a meaning of their own and
+    /// the reserved extension prefix. libpq puts `client_encoding`, `DateStyle`,
+    /// `TimeZone`, `application_name` and `extra_float_digits` here, and a
+    /// client that names one has asked for it as plainly as a `SET` would.
+    ///
+    /// `M20.7`. `StartupInfo` carried only `user`, `database` and `options`, so
+    /// these were dropped before anything could look at them, and the upstream
+    /// startup packet was three hard-coded parameters.
+    pub fn settings(&self) -> impl Iterator<Item = (&str, &str)> {
+        let params: &[StartupParam<'_>] = match self {
+            Self::StartupMessage { params, .. } => params,
+            _ => &[],
+        };
+        params
+            .iter()
+            .filter(|p| !NOT_A_SETTING.contains(&p.name))
+            .filter(|p| !p.name.starts_with(EXTENSION_PREFIX))
+            .map(|p| (p.name, p.value))
     }
 
     /// The protocol extensions this client asked for.
@@ -349,6 +378,53 @@ mod tests {
     fn a_truncated_cancel_request_is_an_error() {
         let body = CANCEL_REQUEST_CODE.to_be_bytes();
         assert!(decode(&body).is_err());
+    }
+
+    #[test]
+    fn a_plain_startup_parameter_is_a_setting_and_the_four_special_ones_are_not() {
+        // `M20.7`. libpq sends `client_encoding`, `application_name` and the
+        // rest as plain parameters, and a client that names one has asked for
+        // it as plainly as a `SET` would. The four excluded ones have meanings
+        // the protocol gives them rather than values a session carries.
+        let body = startup_body(
+            PROTOCOL_3_0,
+            &[
+                ("user", "acme_app"),
+                ("database", "acme"),
+                ("client_encoding", "UTF8"),
+                ("application_name", "reporting"),
+                ("options", "-c search_path=tenant_acme"),
+                ("replication", "database"),
+                ("_pq_.thing", "1"),
+                ("TimeZone", "UTC"),
+            ],
+        );
+        let parsed = decode(&body).unwrap();
+
+        assert_eq!(
+            parsed.settings().collect::<Vec<_>>(),
+            vec![
+                ("client_encoding", "UTF8"),
+                ("application_name", "reporting"),
+                ("TimeZone", "UTC"),
+            ],
+            "the wrong parameters were read as runtime settings"
+        );
+    }
+
+    #[test]
+    fn a_message_with_no_parameters_has_no_settings() {
+        for body in [
+            SSL_REQUEST_CODE.to_be_bytes().to_vec(),
+            CANCEL_REQUEST_CODE
+                .to_be_bytes()
+                .iter()
+                .chain(&[0; 8])
+                .copied()
+                .collect(),
+        ] {
+            assert_eq!(decode(&body).unwrap().settings().count(), 0);
+        }
     }
 
     #[test]

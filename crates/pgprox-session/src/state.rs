@@ -130,8 +130,18 @@ pub struct StartupInfo {
     pub user: String,
     /// The `database` parameter, defaulting to the user name as Postgres does.
     pub database: String,
-    /// Runtime settings packed into `options`, notably `search_path`.
-    pub options: Vec<(String, String)>,
+    /// Every runtime setting this client asked for, in the order they apply.
+    ///
+    /// Plain startup parameters first, then the ones packed into `options`, so
+    /// `options` wins where a client sent the same setting both ways: `-c
+    /// name=value` is the more deliberate of the two, and a caller replaying
+    /// these in order overwrites as it goes.
+    ///
+    /// One field rather than two because they are one question, and because two
+    /// cost twenty-four bytes of session future that
+    /// `one_session_costs_less_than_the_slab_buffer_it_no_longer_holds` did not
+    /// have. `M20.2` carried `options` alone; `M20.7` added the rest.
+    pub settings: Vec<(String, String)>,
 }
 
 /// How the handshake behaves.
@@ -289,7 +299,11 @@ impl Handshake {
         self.startup = Some(StartupInfo {
             user: user.to_owned(),
             database: database.to_owned(),
-            options: message.options(),
+            settings: message
+                .settings()
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .chain(message.options())
+                .collect(),
         });
         self.stage = Stage::Asked;
 
@@ -489,6 +503,34 @@ mod tests {
     }
 
     #[test]
+    fn options_wins_where_a_client_asked_for_the_same_setting_both_ways() {
+        // `M20.7`. The two forms are one question, and the order in `settings`
+        // is the whole of the answer: a caller replaying them in order
+        // overwrites as it goes, so the last one wins and `-c name=value` is
+        // the more deliberate of the two.
+        let mut hs = encrypted(HandshakeConfig::default());
+        let mut params = login();
+        params.push(StartupParam {
+            name: "application_name",
+            value: "from_the_packet",
+        });
+        params.push(StartupParam {
+            name: "options",
+            value: "-c application_name=from_options",
+        });
+        hs.on_startup(&message(196_608, &params));
+
+        assert_eq!(
+            hs.startup().unwrap().settings,
+            vec![
+                ("application_name".to_owned(), "from_the_packet".to_owned()),
+                ("application_name".to_owned(), "from_options".to_owned()),
+            ],
+            "the plain parameter did not come first, so options would not win"
+        );
+    }
+
+    #[test]
     fn a_protocol_extension_is_answered_even_at_a_version_that_needs_no_answer() {
         // `M20.3`. A `_pq_.` parameter is a request this proxy implements none
         // of, and `NegotiateProtocolVersion` is the only message that says a
@@ -606,7 +648,7 @@ mod tests {
         ];
         hs.on_startup(&message(196_608, &params));
         assert_eq!(
-            hs.startup().unwrap().options,
+            hs.startup().unwrap().settings,
             vec![("search_path".to_owned(), "tenant".to_owned())]
         );
     }

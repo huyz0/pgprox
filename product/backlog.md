@@ -6196,7 +6196,7 @@ Streaming removes both.
   behaviours produce a working sequence, and the difference is which name left
   this process.
 
-- [ ] `M20.7` **Plain startup parameters are accepted and forwarded nowhere.**
+- [x] `M20.7` **Plain startup parameters are accepted and forwarded nowhere.**
   `M20.2` did the `options` half, which is where `search_path` lives and where
   the correctness case is. The other half is the parameters a client sends
   directly in the startup packet: `client_encoding`, `DateStyle`, `TimeZone`,
@@ -6218,6 +6218,21 @@ Streaming removes both.
   Acceptance: the question above is answered in the commit rather than
   implied, `StartupInfo` carries what the client sent, and a client's
   `client_encoding` either reaches the server or pins.
+  Done, and the answer is that the client's `application_name` wins. A
+  connection actively serving a tenant showing that tenant's application is the
+  more useful of the two facts available to a DBA, and which node holds a
+  connection is already in the pool key. pgbouncer honours it too. `probe.rs`'s
+  separate rule stands and is a different rule: `pgprox` is still not reported
+  back to a client as its own application name, and the upstream startup packet
+  still says `pgprox` for a connection nobody has claimed.
+  `StartupInfo::options` became `StartupInfo::settings`, one field holding both
+  forms in the order they apply: plain parameters first, then the ones from
+  `options`, so `options` wins a disagreement. One field rather than two
+  because they are one question, and because two cost twenty-four bytes of
+  session future that were not there.
+  The excluded four are `user`, `database`, `options` and `replication`, each of
+  which has a meaning the protocol gives it rather than a value a session
+  carries, plus the reserved `_pq_.` prefix that `M20.3` answers.
 - [ ] `M20.8` **`replication` is ignored rather than answered.** A client
   asking for a replication connection gets an ordinary one, and finds out when
   `IDENTIFY_SYSTEM` fails oddly. pgbouncer checks the parameter before anything
