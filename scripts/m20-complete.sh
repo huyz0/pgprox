@@ -105,4 +105,14 @@ run_test pgprox "serve::tests::a_reaped_connection_says_goodbye_rather_than_vani
 run_test pgprox "serve::tests::a_connection_that_died_while_idle_is_not_handed_to_a_client" \
   "a connection that died while idle is not handed to a client"
 
+# --- M20.6: the unnamed statement is still the unnamed statement -------------
+#
+# The assertion is about which name left this process, which is why it is a unit
+# test on the rewrite rather than a sequence: both behaviours produce a working
+# sequence, and only one of them produces a statement the server keeps.
+run_test pgprox "serve::tests::an_unnamed_parse_keeps_its_name_and_a_named_one_does_not" \
+  "an unnamed Parse is not renamed and a named one still is"
+run_test pgprox-pool "statements::tests::the_unnamed_statement_is_tracked_apart_from_the_ones_that_are_held" \
+  "the unnamed statement does not occupy a slot under the per-connection cap"
+
 finish

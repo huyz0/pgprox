@@ -6163,7 +6163,7 @@ Streaming removes both.
   Not covered: the branch that gives up after four attempts. It is a bounded
   loop's backstop and reaching it needs four stale connections queued in one
   pool, which the harness cannot arrange without the timing being the test.
-- [ ] `M20.6` **The unnamed prepared statement is turned into a named one.**
+- [x] `M20.6` **The unnamed prepared statement is turned into a named one.**
   `map_statement_name` rewrites every `Parse` to `pgprox_<hash of sql>`,
   including `Parse` of the unnamed statement. The unnamed statement's contract
   is that the next `Parse` of it replaces it and that it does not persist; the
@@ -6176,6 +6176,25 @@ Streaming removes both.
   excludes those from its rewriting for this reason.
   Acceptance: an unnamed `Parse` is forwarded as unnamed, and the tests say
   what the connection holds afterwards.
+  Done. An unnamed `Parse`, `Bind`, `Describe` and `Close` all travel with the
+  name they arrived with, and the session still records the SQL so a `Bind` of
+  it landing on a connection whose unnamed statement is something else gets a
+  `Parse` first. Re-parsing is always legal for this one: it replaces rather
+  than collides, so there is no `42P05` to avoid the way there is for a name.
+  The connection tracks it outside `held`, because putting it there would let
+  something the server does not keep evict something it does, and because
+  `per_connection_cap` is counting persistent statements.
+  It is a hash rather than the SQL, and that is not an optimisation. This
+  struct lives inside `Upstreamed`, which the session holds across every await
+  in the relay loop, so a `String`'s twenty-four bytes are twenty-four bytes per
+  connection at a hundred thousand of them:
+  `one_session_costs_less_than_the_slab_buffer_it_no_longer_holds` failed by 56
+  and there were 16. Zero means "nothing here", and SQL that hashes to zero
+  reads as absent, which sends a `Parse` that was not needed rather than
+  skipping one that was.
+  The test that matters is the unit one on the rewrite, not the sequence: both
+  behaviours produce a working sequence, and the difference is which name left
+  this process.
 
 - [ ] `M20.7` **Plain startup parameters are accepted and forwarded nowhere.**
   `M20.2` did the `options` half, which is where `search_path` lives and where

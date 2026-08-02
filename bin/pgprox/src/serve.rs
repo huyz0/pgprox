@@ -1706,6 +1706,32 @@ fn ready_statement(
 ) -> Statement {
     use pgprox_proto::frontend::FrontendMessage as Message;
 
+    // The unnamed statement, which has no global name and is not one of the
+    // statements the connection holds. `M20.6`. It belongs to whichever
+    // connection last parsed it, and a session that moved between the `Parse`
+    // and the `Bind` has to have it parsed again on the new one.
+    if let Some(sql) = unnamed_statement(message, session) {
+        return match message {
+            // The client's own `Parse` is about to go, so the connection ends
+            // up with it either way and nothing is owed.
+            Message::Parse { .. } => {
+                upstream.statements.note_unnamed(sql);
+                Statement::Nothing
+            }
+            _ if upstream.statements.holds_unnamed(sql) => Statement::Nothing,
+            // Re-parsed rather than refused, and legal: a `Parse` of the
+            // unnamed statement replaces whatever was there, so unlike a named
+            // one it cannot collide with itself.
+            _ => {
+                upstream.wire.queue(|out| {
+                    pgprox_proto::encode_frontend::parse(out, "", sql);
+                });
+                upstream.statements.note_unnamed(sql);
+                Statement::Prepared(1)
+            }
+        };
+    }
+
     let Some((global, sql)) = statement_of(message, session) else {
         return Statement::Nothing;
     };
@@ -1729,6 +1755,33 @@ fn ready_statement(
         pgprox_proto::encode_frontend::parse(out, global.as_str(), &sql);
     });
     Statement::Prepared(swallow)
+}
+
+/// The SQL of the unnamed statement, when this message is about it.
+///
+/// `M20.6`. Separated from [`statement_of`] because the unnamed statement has no
+/// global name and is not one of the statements a connection holds: it is
+/// replaced rather than added to, and asking the `held` map about it would put
+/// something the server does not keep under a cap that decides what it evicts.
+fn unnamed_statement<'a>(
+    message: &pgprox_proto::frontend::FrontendMessage<'_>,
+    session: &'a pgprox_session::resume::SessionMemory,
+) -> Option<&'a str> {
+    use pgprox_proto::frontend::FrontendMessage as Message;
+
+    let (Message::Parse {
+        statement: name, ..
+    }
+    | Message::Bind {
+        statement: name, ..
+    }) = message
+    else {
+        return None;
+    };
+    if !name.is_empty() {
+        return None;
+    }
+    session.statements.get("").map(|held| held.sql.as_str())
 }
 
 /// The statement a `Parse` or a `Bind` names, as this proxy calls it.
@@ -1878,13 +1931,40 @@ fn map_statement_name(
     use pgprox_proto::rewrite;
 
     match message {
+        // The unnamed statement keeps its own name, which is no name. `M20.6`:
+        // renaming it made it a named one, and the two are different things.
+        // The unnamed statement is replaced by the next `Parse` of it and does
+        // not survive a `Close`; a named one persists until it is closed, so
+        // every one-shot query a driver sent through the unnamed statement
+        // became a permanent entry under `per_connection_cap`, evicting real
+        // statements and paying a `Close` round trip to do it. pgcat carries an
+        // `anonymous()` on four message types for the same reason.
+        //
+        // The session still records the SQL: a `Bind` of it may land on a
+        // connection whose unnamed statement is something else, and
+        // `ready_statement` needs to know what to re-parse.
+        Message::Parse {
+            statement: statement @ "",
+            sql,
+        } => {
+            session.statements.parse(statement, sql);
+            Some(body.to_vec())
+        }
         Message::Parse { statement, sql } => {
             let global = session.statements.parse(statement, sql);
             rewrite::parse_statement(body, global.as_str())
         }
+        // And every other message naming it travels as it arrived, for the same
+        // reason: the name it uses is the one the server knows it by.
+        Message::Bind { statement: "", .. } => Some(body.to_vec()),
         Message::Bind { statement, .. } => {
             let prepared = session.statements.get(statement)?;
             rewrite::bind_statement(body, prepared.global.as_str())
+        }
+        Message::Describe { name, .. } | Message::Close { name, .. }
+            if name.is_empty() && rewrite::describes_statement(body) =>
+        {
+            Some(body.to_vec())
         }
         Message::Describe { name, .. } | Message::Close { name, .. }
             if rewrite::describes_statement(body) =>
@@ -4522,6 +4602,107 @@ mod tests {
             );
         }
         tags
+    }
+
+    #[test]
+    fn an_unnamed_parse_keeps_its_name_and_a_named_one_does_not() {
+        // `M20.6`, and the assertion the end-to-end test below cannot make: it
+        // is about which name left this process, and both behaviours produce a
+        // working sequence.
+        let mut session = pgprox_session::resume::SessionMemory::default();
+
+        let mut named = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut named, "s1", "SELECT $1");
+        let body = named[5..].to_vec();
+        let frame = Frame::new(Tag::PARSE, &body);
+        let message = pgprox_proto::frontend::decode(&frame).unwrap();
+        let mapped = map_statement_name(&message, &body, &mut session).unwrap();
+        assert!(
+            mapped.starts_with(b"pgprox_"),
+            "a named statement was not rewritten: {:?}",
+            String::from_utf8_lossy(&mapped)
+        );
+
+        // The unnamed one goes as it arrived. Renaming it would make it a named
+        // statement, which persists until it is closed, occupies a slot under
+        // `per_connection_cap` and costs a `Close` round trip to evict.
+        let mut unnamed = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut unnamed, "", "SELECT $1");
+        let body = unnamed[5..].to_vec();
+        let frame = Frame::new(Tag::PARSE, &body);
+        let message = pgprox_proto::frontend::decode(&frame).unwrap();
+        let mapped = map_statement_name(&message, &body, &mut session).unwrap();
+        assert_eq!(
+            mapped, body,
+            "the unnamed statement was given a name, which makes it a different statement"
+        );
+
+        // And the session still knows its SQL, which is what lets a `Bind` of
+        // it be re-parsed on a connection that has something else unnamed.
+        assert_eq!(
+            session.statements.get("").map(|held| held.sql.as_str()),
+            Some("SELECT $1")
+        );
+    }
+
+    #[test]
+    fn a_bind_of_the_unnamed_statement_keeps_its_name_too() {
+        let mut session = pgprox_session::resume::SessionMemory::default();
+        session.statements.parse("", "SELECT $1");
+
+        let mut out = Vec::new();
+        pgprox_proto::encode_frontend::bind(&mut out, "", "");
+        let body = out[5..].to_vec();
+        let frame = Frame::new(Tag::BIND, &body);
+        let message = pgprox_proto::frontend::decode(&frame).unwrap();
+
+        assert_eq!(
+            map_statement_name(&message, &body, &mut session).unwrap(),
+            body,
+            "a bind of the unnamed statement was pointed at a global name"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_unnamed_statement_stays_unnamed_on_the_wire() {
+        // `M20.6`. The unnamed statement and a named one are different things.
+        // The unnamed one is replaced by the next `Parse` of it and does not
+        // survive a `Close`; a named one persists until it is closed. Renaming
+        // it made every one-shot query a driver sent through it a permanent
+        // entry under `per_connection_cap`, evicting real statements and paying
+        // a `Close` round trip to do it. pgcat excludes anonymous statements
+        // from its own rewriting for the same reason.
+        let addr = fake_postgres_extended().await;
+        let context = Arc::new(context_for(addr));
+        let (mut client, served) = extended_client(&context).await;
+
+        let mut out = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut out, "", "SELECT $1");
+        pgprox_proto::encode_frontend::bind_with_parameters(
+            &mut out,
+            "",
+            "",
+            &[Some(b"1".as_slice())],
+        );
+        pgprox_proto::encode_frontend::execute(&mut out, "");
+        pgprox_proto::encode_frontend::sync(&mut out);
+        client.write_all(&out).await.unwrap();
+
+        let mut saw = Vec::new();
+        loop {
+            let (tag, body) = expect(&mut client).await;
+            saw.push((tag, String::from_utf8_lossy(&body).into_owned()));
+            if tag == Tag::READY_FOR_QUERY {
+                break;
+            }
+        }
+        assert!(
+            !saw.iter().any(|(tag, _)| *tag == Tag::ERROR_RESPONSE),
+            "the unnamed sequence failed: {saw:?}"
+        );
+
+        drop(client);
+        let _ = served.await;
     }
 
     #[tokio::test]

@@ -261,6 +261,24 @@ pub struct ConnectionStatements {
     config: StatementConfig,
     /// Global name to the tick it was last used at.
     held: HashMap<GlobalName, u64>,
+    /// A hash of the SQL this connection's unnamed statement currently holds,
+    /// or zero for none.
+    ///
+    /// Outside `held` on purpose: the unnamed statement has no name to be held
+    /// under, the next `Parse` of it replaces it rather than adding to it, and
+    /// it is not what `per_connection_cap` is counting. See `note_unnamed`.
+    ///
+    /// A hash rather than the SQL, and eight bytes rather than a `String`'s
+    /// twenty-four, because this struct is inside `Upstreamed`, which the
+    /// session holds across every await in the relay loop. The `String` cost 56
+    /// bytes of session future and there were 16;
+    /// `one_session_costs_less_than_the_slab_buffer_it_no_longer_holds` said so.
+    ///
+    /// The sentinel is safe in the direction it can be wrong. SQL that happens
+    /// to hash to zero reads as "nothing here", which sends a `Parse` that was
+    /// not needed, and a `Parse` of the unnamed statement is always legal
+    /// because it replaces rather than collides.
+    unnamed: u64,
     /// A logical clock, incremented on every use.
     ///
     /// Not a timestamp: LRU only needs an order, and a counter cannot go
@@ -291,8 +309,31 @@ impl ConnectionStatements {
         Self {
             config,
             held: HashMap::new(),
+            unnamed: 0,
             tick: 0,
         }
+    }
+
+    /// Records that this connection's unnamed statement is now this SQL.
+    ///
+    /// `M20.6`. The unnamed statement is not one of `held`, and must not be:
+    /// it has no name to be held under, it is replaced by the next `Parse` of
+    /// it rather than coexisting, and it does not survive being closed the way
+    /// a named one does. Counting it against `per_connection_cap` would evict
+    /// real statements to make room for something the server does not keep.
+    pub fn note_unnamed(&mut self, sql: &str) {
+        self.unnamed = stable_hash(sql.as_bytes());
+    }
+
+    /// Whether this connection's unnamed statement is already this SQL.
+    ///
+    /// False on a connection this session has not used for it yet, which is the
+    /// case a `Bind` of the unnamed statement after a change of connection has
+    /// to be told about.
+    #[must_use]
+    pub fn holds_unnamed(&self, sql: &str) -> bool {
+        let hash = stable_hash(sql.as_bytes());
+        hash != 0 && self.unnamed == hash
     }
 
     /// Whether this connection holds a statement.
@@ -365,6 +406,10 @@ impl ConnectionStatements {
     /// Forgets everything, as `DISCARD ALL` on this connection does.
     pub fn forget_all(&mut self) {
         self.held.clear();
+        // `DISCARD ALL` takes the unnamed statement with the rest, and a
+        // connection that went on believing in it would skip the `Parse` the
+        // next `Bind` of it needs.
+        self.unnamed = 0;
     }
 }
 
@@ -825,5 +870,45 @@ mod tests {
         // The same session, moved to the same connection later, finds it warm.
         let bound = session.get("S_1").unwrap().global.clone();
         assert_eq!(conn.prepare_for(&bound), Preparation::AlreadyHeld);
+    }
+
+    #[test]
+    fn the_unnamed_statement_is_tracked_apart_from_the_ones_that_are_held() {
+        // `M20.6`. The unnamed statement has no name to be held under, is
+        // replaced by the next `Parse` of it rather than added to, and does not
+        // survive a `Close`. Putting it in `held` would let it evict a real
+        // statement to make room for something the server does not keep.
+        let mut conn = ConnectionStatements::new(config(1));
+
+        assert!(
+            !conn.holds_unnamed("SELECT 1"),
+            "a fresh connection has none"
+        );
+        conn.note_unnamed("SELECT 1");
+        assert!(conn.holds_unnamed("SELECT 1"));
+        assert!(
+            !conn.holds_unnamed("SELECT 2"),
+            "a different statement read as the same one"
+        );
+
+        // The cap is untouched: one named statement still fits beside it.
+        assert!(conn.is_empty(), "the unnamed statement took a held slot");
+        assert_eq!(conn.len(), 0);
+
+        // Replaced rather than accumulated, which is the whole of what makes it
+        // the unnamed statement.
+        conn.note_unnamed("SELECT 2");
+        assert!(!conn.holds_unnamed("SELECT 1"));
+        assert!(conn.holds_unnamed("SELECT 2"));
+    }
+
+    #[test]
+    fn discard_all_takes_the_unnamed_statement_with_the_rest() {
+        // A connection that went on believing in it would skip the `Parse` the
+        // next `Bind` of it needs, which is `M20.1`'s failure in a new place.
+        let mut conn = ConnectionStatements::new(config(4));
+        conn.note_unnamed("SELECT 1");
+        conn.forget_all();
+        assert!(!conn.holds_unnamed("SELECT 1"));
     }
 }
