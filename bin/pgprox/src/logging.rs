@@ -128,11 +128,26 @@ mod tests {
 
         // And the first did install. `M17.4`: `init` returning a constant
         // `false` survived, because this used to leave `first` unasserted on
-        // the grounds that test ordering decided it. It does not: this is the
-        // only caller of `init` in the test binary, so within this process the
-        // first call is the first call whether the suite runs one test per
-        // process or many per thread. A node whose subscriber never installs
-        // starts and serves in complete silence.
-        assert!(first, "the first install was refused");
+        // the grounds that test ordering decided it. A node whose subscriber
+        // never installs starts and serves in complete silence.
+        //
+        // `M19.7`. That assertion needs this to be the only call to `init` in
+        // the test binary, and for two milestones it was not: `entry::serve`
+        // called it, and `entry::tests::
+        // a_bad_configuration_path_fails_before_the_runtime_does_anything`
+        // calls `run_with`, which reaches `serve`. Whichever of the two ran
+        // first won, so `cargo test -p pgprox --lib` failed here eight runs out
+        // of eight while the gate stayed green: it runs the suite through
+        // nextest, which gives every test its own process and hides the
+        // collision entirely. `init` is called from `main.rs` now and from
+        // nowhere else that a test can reach, which is what makes the sentence
+        // above true rather than merely intended.
+        assert!(
+            first,
+            "init did not report installing. Either it returns false when it \
+             installed, or something else in this test binary called \
+             logging::init before this test did and took the one install a \
+             process gets"
+        );
     }
 }

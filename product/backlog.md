@@ -5919,7 +5919,7 @@ Streaming removes both.
   The production code was right throughout. `M19.5` was the same mistake in the
   other direction, so the two go together: a fake that models the wrong thing
   produces a finding about the system that is really a finding about the fake.
-- [ ] `M19.7` A `pgprox` test passes only because nextest gives it a process.
+- [x] `M19.7` A `pgprox` test passes only because nextest gives it a process.
   `logging::tests::installing_twice_is_not_a_panic` asserts that its own call to
   `logging::init` is the first one in the process, and justifies that with a
   comment saying "this is the only caller of `init` in the test binary". That is
@@ -5945,3 +5945,22 @@ Streaming removes both.
   rather than about which caller came first: `M17.4` added `assert!(first)`
   because `init` returning a constant `false` had survived mutation, and that
   mutant has to stay dead.
+  Done. `crate::logging::init()` moved out of `entry::serve` and into
+  `main.rs`, which is where a process-wide install belongs and which no test
+  can reach, so the test binary has one caller again and the comment is true of
+  the binary rather than of an intention. `cargo test -p pgprox --lib` passed
+  twenty consecutive runs, against eight failures out of eight before.
+  `M17.4`'s mutant was checked rather than assumed: `init` made to return a
+  constant `false` fails this test three runs out of three, deterministically
+  now instead of whenever the ordering allowed it.
+  The gate is `scripts/m19-complete.sh`, and it is the untargeted command on
+  purpose. Every other run of these tests hides this: nextest gives each test
+  its own process, and the gate's own `run_test` uses `--exact`, so both are
+  blind to a second caller by construction. What the gate runs is
+  `cargo test -p pgprox --lib`, whole and in one process, and it returns 1 with
+  the defect put back.
+  The entry test was renamed to
+  `a_bad_configuration_path_is_a_startup_error_through_the_entry_point`. It was
+  called `..._fails_before_the_runtime_does_anything`, and the runtime started
+  and installed logging before that failure. A name that says a thing does not
+  happen is where nobody looks for the thing happening.

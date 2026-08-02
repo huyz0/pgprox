@@ -355,11 +355,16 @@ where
 
 /// Starts a node and runs it until it is told to stop.
 ///
+/// Says nothing about logging. `M19.7`: this used to call
+/// [`crate::logging::init`], which installs a subscriber for the whole process,
+/// and `run_with` is exercised by a test, so the test binary had two callers
+/// racing to be the one that installs. Installing a process-wide anything is
+/// `main`'s job and that is where the call went.
+///
 /// # Errors
 ///
 /// As [`start`], plus a port that cannot be bound.
 pub async fn serve(options: Options) -> Result<(), StartupError> {
-    crate::logging::init();
     let addrs = options.addrs();
     let peers = options.peers.clone();
     let node = options.node;
@@ -660,9 +665,17 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_configuration_path_fails_before_the_runtime_does_anything() {
+    fn a_bad_configuration_path_is_a_startup_error_through_the_entry_point() {
         // Exercises the same entry point main.rs calls, so the one file
-        // excluded from coverage is one line that forwards.
+        // excluded from coverage is two lines that forward.
+        //
+        // `M19.7` renamed this from
+        // `a_bad_configuration_path_fails_before_the_runtime_does_anything`,
+        // which was not what happens: `run_with` builds the runtime and blocks
+        // on `serve`, and the failure comes from `start` reading the file. The
+        // old name was how a process-wide logging install sat inside `serve`
+        // for two milestones without anyone asking what else this test was
+        // starting.
         assert!(matches!(
             run_with(["--config", "/nonexistent/pgprox/config.yaml"]),
             Err(StartupError::Config(_))

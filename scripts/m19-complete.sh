@@ -117,4 +117,22 @@ run_test pgload "run::tests::a_drain_mid_run_is_a_relocation_rather_than_an_erro
 run_test pgload "client::tests::a_shutdown_after_a_statement_has_run_is_a_loss_rather_than_a_relocation" \
   "the same code after a statement has run is the loss it used to produce by luck"
 
+# --- M19.7: one process, one subscriber, and one caller of `init` ------------
+#
+# The whole `pgprox` library suite in a single process, which is the only shape
+# that can see this. Every other run of these tests goes through nextest, which
+# gives each test its own process and so cannot tell one caller of
+# `logging::init` from two. `run_test` above has the same blindness for the
+# opposite reason: `--exact` runs one test alone.
+#
+# So this is deliberately the untargeted command, and what it is checking is not
+# a single test's assertion but the absence of a second caller. It failed eight
+# runs out of eight before `init` moved to `main.rs`.
+if cargo test -p pgprox --lib >"$WORK/single-process.out" 2>>"$WORK/log"; then
+  ok "the pgprox suite passes in one process, so nothing races for the install"
+else
+  fail "cargo test -p pgprox --lib failed: something installs the subscriber twice"
+  grep -E "^(test .* FAILED|thread .* panicked)" "$WORK/single-process.out" | sed 's/^/       /'
+fi
+
 finish
