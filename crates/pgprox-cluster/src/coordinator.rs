@@ -716,11 +716,20 @@ mod tests {
     /// is scaling: `PeerSource` lets a table change under a running node, so
     /// the simulation has to be able to change one.
     ///
-    /// This is the seam's safety argument made executable. Discovery decides
-    /// who a node *talks to*; liveness comes from digests that *arrive*. A peer
-    /// table that grows cannot make a node count anybody alive, because the
-    /// only route into liveness is `gossip`, and this function is the only
-    /// thing that calls it.
+    /// # An exchange is bidirectional, and the first version of this was not
+    ///
+    /// One connection teaches *both* nodes. `gossip::speak` sends this node's
+    /// digest and reads the peer's back; `gossip::answer` merges what arrived
+    /// and replies with its own. `two_nodes_learn_about_each_other_in_one_exchange`
+    /// is that property under test, and its name is the whole of it.
+    ///
+    /// `M19.5` is here because the first version of this function sent one way
+    /// only. That models something the transport cannot do: a node heard by
+    /// nobody while hearing everybody. It duly produced two leaders granting
+    /// from one free pool, which read as a serious defect and was a defect in
+    /// the model. An initiator and its target hear each other or neither does,
+    /// so a peer table cannot make liveness asymmetric, and that is what makes
+    /// discovery safe to hand to a deployment.
     fn gossip_over_peers(
         nodes: &mut [NodeCoordinator],
         network: &mut Network<VersionedDigest>,
@@ -730,6 +739,10 @@ mod tests {
         now: Instant,
     ) {
         let ids: Vec<NodeId> = nodes.iter().map(NodeCoordinator::node).collect();
+        // Every node's digest as it stands at the top of the round, so an
+        // exchange can carry both halves without one node's send depending on
+        // the order the loop happens to run in.
+        let mut outgoing: Vec<VersionedDigest> = Vec::with_capacity(nodes.len());
         for (index, c) in nodes.iter_mut().enumerate() {
             let mut own = VersionedDigest {
                 digest: c.digest(),
@@ -737,10 +750,22 @@ mod tests {
             };
             own.digest.node = ids[index];
             c.gossip(own.clone(), now);
-            for peer in &peers[index] {
-                if *peer != ids[index] {
-                    network.send(ids[index], *peer, own.clone());
+            outgoing.push(own);
+        }
+
+        for (index, table) in peers.iter().enumerate() {
+            for peer in table {
+                if *peer == ids[index] {
+                    continue;
                 }
+                let Some(target) = ids.iter().position(|id| id == peer) else {
+                    continue;
+                };
+                // Both halves of one connection. The initiator's digest goes to
+                // the target and the target's answer comes back, which is what
+                // `speak` and `answer` do between them.
+                network.send(ids[index], *peer, outgoing[index].clone());
+                network.send(*peer, ids[index], outgoing[target].clone());
             }
         }
 
@@ -964,6 +989,163 @@ mod tests {
             alone.request(&server(), node(1), 1, later).is_ok(),
             "a node that has heard from a majority still could not grant"
         );
+    }
+
+    #[test]
+    fn a_peer_table_cannot_make_liveness_one_way() {
+        // `M19.5`. This began as a reduction of a cap breach and is now the
+        // assertion that the breach was a modelling error.
+        //
+        // Node 1 gossips to nobody; everyone else gossips to everyone. In a
+        // model where a send goes one way that isolates node 1 in exactly one
+        // direction: it hears the fleet and the fleet does not hear it, so it
+        // never ages anyone out, never stops believing it leads, and grants
+        // beside the node that replaced it. Two leaders, one free pool.
+        //
+        // The transport cannot do that. One connection carries both digests,
+        // so when node 2 initiates to node 1 they hear each other. A peer table
+        // decides who *starts* an exchange, and an exchange is symmetric, which
+        // is the property that makes discovery safe to hand to a deployment.
+        const STEP: Duration = Duration::from_millis(500);
+
+        let mut now = Instant::now();
+        let mut nodes = cluster(FLEET, now);
+        let ids: Vec<NodeId> = nodes.iter().map(NodeCoordinator::node).collect();
+        let mut network = Network::new(
+            0,
+            NetworkFaults {
+                drop_percent: 0,
+                max_delay_ms: 0,
+                reorder_percent: 0,
+            },
+        );
+
+        let mut tables: Vec<Vec<NodeId>> = ids.iter().map(|_| ids.clone()).collect();
+        tables[0] = Vec::new();
+
+        let mut version = 1_u64;
+        for _ in 0..40 {
+            now += STEP;
+            version += 1;
+            gossip_over_peers(&mut nodes, &mut network, &tables, version, STEP, now);
+        }
+
+        // Node 1 initiated nothing and is still in everyone's view, because
+        // every peer that initiated to it heard its answer.
+        for (index, c) in nodes.iter().enumerate() {
+            assert!(
+                c.membership(now).members().iter().any(|m| m.id == ids[0]),
+                "node {} aged out a node it had been exchanging with",
+                index + 1
+            );
+        }
+
+        // So exactly one node believes it leads, and it is the lowest id.
+        let leaders: Vec<NodeId> = nodes
+            .iter()
+            .filter(|c| c.membership(now).is_leader())
+            .map(NodeCoordinator::node)
+            .collect();
+        assert_eq!(
+            leaders,
+            vec![ids[0]],
+            "more than one node believed it led, which is the breach this test was reduced from"
+        );
+
+        // And greed does not move the cap.
+        for c in &mut nodes {
+            let holder = c.node();
+            if let Ok(lease) = c.request(&server(), holder, 40, now) {
+                c.accept(lease);
+            }
+        }
+        let total = total_permitted(&nodes, now);
+        assert!(total <= CAP, "{total} permitted against a cap of {CAP}");
+    }
+
+    #[test]
+    fn the_cap_holds_while_peer_tables_change_underneath_it() {
+        // `M19.4`. The existing property test gossips to everyone, which models
+        // a fleet whose peer tables are complete and identical. `PeerSource`
+        // means they are neither while the fleet is scaling, so this runs the
+        // same invariant with the tables changing under it: nodes appear in
+        // each other's tables and vanish from them mid-run, on top of the
+        // partitions and restarts the other test already applies.
+        //
+        // What it would catch is a future change that let discovery feed
+        // liveness. A table that grew during a partition would let both sides
+        // reach quorum, and two ledgers would grant from one free pool.
+        const STEP: Duration = Duration::from_millis(500);
+
+        for seed in 0..200_u64 {
+            let mut rng = Rng::new(seed);
+            let mut network = Network::new(
+                seed,
+                NetworkFaults {
+                    drop_percent: 10,
+                    max_delay_ms: 300,
+                    reorder_percent: 15,
+                },
+            );
+            let mut now = Instant::now();
+            let mut nodes = cluster(FLEET, now);
+            let ids: Vec<NodeId> = nodes.iter().map(NodeCoordinator::node).collect();
+            let mut tables: Vec<Vec<NodeId>> = ids.iter().map(|_| ids.clone()).collect();
+            let mut version = 1_u64;
+
+            for _ in 0..60 {
+                now += STEP;
+                version += 1;
+
+                match rng.below(8) {
+                    0 => {
+                        // One node's table shrinks to a random prefix, which is
+                        // what a source reporting fewer peers looks like.
+                        let who = usize::try_from(rng.below(u64::from(FLEET))).unwrap();
+                        let keep = usize::try_from(rng.below(u64::from(FLEET) + 1)).unwrap();
+                        tables[who] = ids[..keep].to_vec();
+                    }
+                    1 => {
+                        // And grows back. A table naming everyone is the state
+                        // the flags produce today.
+                        let who = usize::try_from(rng.below(u64::from(FLEET))).unwrap();
+                        tables[who] = ids.clone();
+                    }
+                    2 => {
+                        let at = usize::try_from(rng.below(u64::from(FLEET) + 1)).unwrap();
+                        network.partition(&ids[..at], &ids[at..]);
+                    }
+                    3 => network.heal(),
+                    4 => {
+                        let count = usize::try_from(rng.below(u64::from(FLEET)) + 1).unwrap();
+                        for index in 0..count {
+                            restart(&mut nodes, index, now);
+                        }
+                    }
+                    _ => {}
+                }
+
+                gossip_over_peers(&mut nodes, &mut network, &tables, version, STEP, now);
+
+                for asker in 0..nodes.len() {
+                    let holder = nodes[asker].node();
+                    let want = u32::try_from(rng.below(60)).unwrap();
+                    for responder in 0..nodes.len() {
+                        if let Ok(lease) = nodes[responder].request(&server(), holder, want, now) {
+                            nodes[asker].accept(lease);
+                            break;
+                        }
+                    }
+                }
+
+                let total = total_permitted(&nodes, now);
+                assert!(
+                    total <= CAP,
+                    "seed {seed}: {total} permitted against a cap of {CAP}, \
+                     with peer tables changing under the fleet"
+                );
+            }
+        }
     }
 
     #[test]

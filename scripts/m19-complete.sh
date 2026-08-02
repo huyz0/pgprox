@@ -89,4 +89,17 @@ run_test pgprox "observatory::tests::the_fan_out_reaches_a_peer_added_after_cons
 run_test pgprox "gossip::tests::a_quota_request_goes_to_a_leader_whose_address_arrived_late" \
   "a quota request reaches a leader whose address arrived late"
 
+# --- M19.4 and M19.5: the simulation, and the claim it corrected -------------
+#
+# The second of these was a reduction of a cap breach until the transport was
+# read. It asserts the opposite now, and it was checked against the one-way
+# model it came from: both it and the property fail there, so neither is
+# passing vacuously.
+run_test pgprox-cluster "coordinator::tests::the_cap_holds_while_peer_tables_change_underneath_it" \
+  "the cap holds while peer tables change under the fleet"
+run_test pgprox-cluster "coordinator::tests::a_peer_table_cannot_make_liveness_one_way" \
+  "a peer table cannot make liveness one-way, because an exchange is not"
+run_test pgprox-cluster "coordinator::tests::a_peer_table_a_node_never_hears_from_moves_no_quorum" \
+  "a peer nothing has gossiped with moves no quorum"
+
 finish
