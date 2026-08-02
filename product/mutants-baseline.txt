@@ -7,6 +7,25 @@
 # crate, the file, the function and the replacement text, with no line number,
 # so editing the lines above a mutant does not invalidate its entry.
 #
+# # Which tree this describes
+#
+# `Sweeps:` below records, per crate, the commit its last sweep ran against.
+# `M22.0` added it because this file is a claim about code and carried no way to
+# tell which code, and four gates read it: `m10`, `m14`, `m15` and `m17` all
+# check its contents and none asks whether the contents are current. It went
+# four milestones out of date and every one of them stayed green.
+#
+# `M21.1` found the same thing in `product/conformance/driver-matrix.md` and
+# this is its answer, in a file more things depend on. A date could never be
+# checked, because nothing knows what the code looked like on it. A commit can.
+#
+# `scripts/m22-complete.sh` reads these and says how far behind each crate is.
+# It reports rather than fails: a sweep is minutes to hours per crate, and a
+# gate that demanded one on every commit would be red until someone ran it and
+# would be routed around by the second week.
+
+# Sweeps: <crate> <commit>, the tree each crate was last swept against.
+
 # # Where this list came from
 #
 # `M10.3` ran the tool for the first time, three milestones after

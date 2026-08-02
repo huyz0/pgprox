@@ -38,6 +38,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M19 | A seam for peer discovery | complete; the seam exists and three consumers read through it, and two of the eight tasks were corrections of claims this milestone made about its own fakes |
 | M20 | The protocol layer against pgbouncer, pgcat and odyssey | complete; eight findings, of which one corrupted a pooled connection for every session after it, three were things a client asked for and was silently not given, and one was found by the hunt rather than by the reading |
 | M21 | The driver matrix does not cover what M20 changed | complete; the suite it proposed building already existed, and three of its four cases were wrong in ways only a reverted build could show |
+| M22 | The mutants nobody has swept since M17 | open |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1260,3 +1261,30 @@ What the four corrections have in common is the shape of the mistake, not the
 subject: a check believed because it passed. Every one of them was caught by
 running the thing it was supposed to catch, against a build with the fix taken
 out. A green probe says nothing until it has been seen to go red.
+
+## M22: the mutants nobody has swept since M17
+
+```bash
+scripts/m22-complete.sh
+```
+
+`product/mutants-baseline.txt` was last written by `M17.4` on 2026-08-01, and
+eighteen commits have landed on the mutated crates since: all of M18, M19, M20
+and M21. Everything those milestones added has never been mutation tested.
+
+Coverage says a line ran. This says the line mattered, and the difference is not
+academic here: M17's sweep of `pgprox` found two real defects, a pin counted for
+a client that had already gone and a lock taken twice per server per tick, and
+neither was visible to any test in the suite.
+
+**And nothing notices the baseline is stale.** Four gates read its contents,
+`m10`, `m14`, `m15` and `m17`, and not one asks whether it describes the tree it
+is a claim about. That is `M21.1`'s finding again, in the file four gates depend
+on, so it gets the same answer: the baseline records the newest commit touching
+the crates it covers, and the gate says how far behind it is.
+
+One crate per commit. A sweep that finds a missing test produces a commit with a
+test in it, and those must not be bundled with a re-baseline.
+
+Completion condition: `scripts/m22-complete.sh`, which exists from this
+milestone's first commit and gains a check as each crate is swept.

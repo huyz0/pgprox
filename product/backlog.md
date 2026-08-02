@@ -6408,3 +6408,58 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the gate passes, the status row says complete, and the section
   records that the milestone began by proposing to build something that already
   existed.
+
+## M22: the mutants nobody has swept since M17
+
+- [x] `M22.0` Plan M22, and give the baseline the provenance the matrix report
+  got in `M21.1`.
+  `product/mutants-baseline.txt` was last written by `M17.4` on 2026-08-01, and
+  eighteen commits have landed on the mutated crates since: all of `M18`,
+  `M19`, `M20` and `M21`. Everything those milestones added has never been
+  mutation tested. `resume::on_close`, `Relay::on_startup_settings`,
+  `startup::negotiate`, `extensions`, `settings` and `replication`,
+  `Upstreamed::unfit` and `goodbye`, `dial::retire`,
+  `ConnectionStatements::note_unnamed` and `holds_unnamed`,
+  `ClientError::Unsupported`, and the whole `PeerSource` seam.
+  **And nothing notices the baseline is stale.** Four gates read its contents,
+  `m10`, `m14`, `m15` and `m17`, and none of them asks whether it describes the
+  tree it is a claim about. That is `M21.1`'s finding in the file four gates
+  depend on, so it gets the same answer: the baseline records the newest commit
+  touching the crates it covers, and the gate reports how far behind it is.
+  Coverage says a line ran; this says the line mattered. `M17`'s sweep of
+  `pgprox` found two real defects, a pin counted for a client that had gone and
+  a lock taken twice per server per tick, and neither was visible to any test.
+- [ ] `M22.1` Sweep `pgprox-session` and argue every survivor.
+  First because it is where `M20`'s real defect lived and where its biggest
+  behaviour change is: `on_close` and `on_startup_settings` are both new
+  decision logic with nothing but line coverage behind them.
+  Acceptance: `scripts/mutants.sh pgprox-session` passes, every accepted
+  survivor carries an argument rather than `untriaged`, and any mutant that
+  turns out to be a missing test gets the test rather than an entry.
+- [ ] `M22.2` Sweep `pgprox-proto`. `M20.3` added `negotiate`, `extensions` and
+  `settings`, and `M20.8` added `replication`, all of which are predicates
+  whose wrong answer is a client told something untrue at connect.
+  Acceptance: as `M22.1`.
+- [ ] `M22.3` Sweep `pgprox-pool`. `M20.6` added `note_unnamed` and
+  `holds_unnamed`, and the second is a comparison with a sentinel, which is the
+  shape a mutant survives most easily.
+  Acceptance: as `M22.1`.
+- [ ] `M22.4` Sweep `pgprox`. The largest of the four and the one `M17.4` spent
+  a milestone on: 571 mutants and eighty minutes then, and `M20` and `M21` have
+  added to `serve.rs` since.
+  Acceptance: as `M22.1`.
+- [ ] `M22.5` Sweep the remaining crates, one commit each: `pgprox-core`,
+  `pgprox-route`, `pgprox-cache`, `pgprox-cluster`, `pgprox-admin`,
+  `pgprox-auth`, `pgprox-config`, `pgprox-observe`, `pgprox-load`,
+  `pgprox-tls`, `pgprox-testkit`, `pgload`.
+  Split per crate rather than done as one sweep, because a sweep that finds a
+  missing test produces a commit with a test in it and those must not be
+  bundled. `M19`'s seam touched `pgprox-core` and `pgprox-cluster`, so those
+  two are the ones with new logic; the rest are re-baselines that should be
+  quiet and are worth running because "should be quiet" is a prediction.
+  Acceptance: as `M22.1`, per crate.
+- [ ] `M22.6` Close M22. Filed as its own task for the reason `M18.4`, `M19.8`,
+  `M20.9` and `M21.5` were.
+  Acceptance: the gate passes, the status row says complete, and the section
+  records what four milestones of unswept code turned out to contain, including
+  if the answer is nothing.
