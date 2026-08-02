@@ -5675,7 +5675,7 @@ Streaming removes both.
   fire on the record of its own finding and the only way to quiet it would be to
   delete the record. All three cases are planted in `tests/gates/negative.sh`,
   including that one, because a gate nobody has watched fail is a claim.
-- [ ] `M18.2` Nothing separates finding peers from trusting them. The peer table
+- [x] `M18.2` Nothing separates finding peers from trusting them. The peer table
   is `--peer` flags rendered by a shell loop in the StatefulSet template, and
   membership is derived from digest arrivals. Both are correct and neither is
   swappable, so a deployment that wants the Kubernetes API to supply peers has
@@ -5696,6 +5696,26 @@ Streaming removes both.
   list whose entries each leave the tree green. It must state the one rule that
   keeps the swap safe: an external source may mark a node draining sooner than
   gossip would, and may never mark one alive that gossip has not heard from.
+  Done, in `specs/2026-08-02-peer-discovery-seam/`. `PeerSource` is shaped like
+  `ConfigSource` deliberately: a watch receiver, an `is_healthy` the `Arc` impl
+  must forward rather than default, and a `run_loop` the composition root starts
+  without knowing which source it holds. A second mechanism for "a thing that
+  changes while a node runs" would be a second set of mistakes, and `M14.34`
+  already found both mutants of that `is_healthy` surviving once.
+  The rule is in the trait's own doc comment, not only in the spec, because the
+  spec is not what somebody reads while changing the code.
+  Three things are out of scope with the reason recorded. `fleet_size` stays
+  configured: ADR 0004 records that a node cut off from its peers would
+  otherwise see `N = 1` and award itself the whole guaranteed total, which is
+  the first correction its property test forced. Liveness stays first-party.
+  And the node id stays the StatefulSet ordinal, which is the real blocker on
+  "pods and a Service" rather than gossip: it is encoded into every `ConnId` so
+  a cancel landing on any pod routes to the owner, and moving to a Deployment
+  changes what clients see on the wire. That is a separate and larger spec, and
+  none of these tasks bring it closer.
+  The task list is not filed in this backlog yet. Filing tasks for unscheduled
+  work puts entries nobody can start, which is what `M11.0` said about the three
+  blocked items.
 - [ ] `M18.3` A milestone can close with no completion condition.
   `check-drift.sh` walks `scripts/m*-complete.sh` and requires each to be named
   in CI, which is the wrong direction: it checks that existing gates run, not
