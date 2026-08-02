@@ -14,7 +14,4 @@ forget_all	crates/pgprox-pool/src/statements.rs	forget a connection's statements
 resume::observe_statement	crates/pgprox-session/src/resume.rs	tell both statement maps about a DISCARD ALL, and uncalled until M16.7
 MAX_HANDSHAKE_FRAME	crates/pgprox-session/src/shell.rs	keep an unauthenticated client off the gigabyte relay cap
 take_body	crates/pgprox-session/src/shell.rs	move a body without holding it, which is what M16 is
-# `M19.1` adds the trait with nothing consuming it, which is exactly the shape
-# `check-wired.sh` exists to catch, so it carries the marker rather than being
-# left out until it is wired.
-?PeerSource	crates/pgprox-core/src/cluster.rs	let a deployment supply peers without letting it supply liveness. Unwired until M19.2, which changes run_with_peers to take one; the marker goes with that commit
+PeerSource	crates/pgprox-core/src/cluster.rs	let a deployment supply peers without letting it supply liveness. Carried the unwired marker for exactly one commit, M19.1 to M19.2

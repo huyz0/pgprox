@@ -5798,7 +5798,7 @@ Streaming removes both.
   waker, so this matches it rather than inventing a second answer, which is the
   same reasoning that made `PeerSource` look like `ConfigSource` in the first
   place.
-- [ ] `M19.2` `run_with_peers` takes the source, and `entry.rs` builds a
+- [x] `M19.2` `run_with_peers` takes the source, and `entry.rs` builds a
   `StaticPeers` from the `--peer` flags. The signature changes and the three
   consumers still read the table once, at the top of the function, so nothing
   behaves differently.
@@ -5807,6 +5807,12 @@ Streaming removes both.
   change.
   Acceptance: every existing test passes unchanged, and `wired.txt`'s `?`
   marker for `PeerSource` goes.
+  Done. All 254 `pgprox` tests pass with no edit to any of them beyond the three
+  call sites that construct a node, which is what "nothing behaves differently"
+  had to mean. The read still happens once, at the top of `run_with_peers`, with
+  a comment saying so and naming `M19.3`: the point of splitting was to keep the
+  widest diff away from the semantic change, and leaving the temporary read
+  unmarked would have made the next commit look smaller than it is.
 - [ ] `M19.3` The three consumers read the current table rather than a copy.
   `GossipTransport`, `NodeObservatory` and `Context`. The `OnceLock` on
   `set_peers` goes, and its doc comment is replaced rather than deleted: it says

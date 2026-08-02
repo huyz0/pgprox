@@ -393,7 +393,12 @@ pub async fn serve(options: Options) -> Result<(), StartupError> {
         "serving"
     );
 
-    crate::run::run_with_peers(app, listeners, peers, shutdown)
+    // The flags become a source rather than being passed as a table. Static,
+    // because that is what a flag is: `M19` adds the seam, and a source that
+    // discovers peers while the node runs is a later task and an opt-in.
+    let source = pgprox_core::cluster::StaticPeers::new(peers);
+
+    crate::run::run_with_peers(app, listeners, source, shutdown)
         .await
         .map_err(|err| StartupError::Arguments {
             detail: format!("the node stopped serving: {err}"),

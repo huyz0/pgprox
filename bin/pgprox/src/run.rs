@@ -388,7 +388,13 @@ pub fn probes(app: &App) -> Arc<Probes> {
 /// Fails when a listening socket does, which means there is nothing left to
 /// serve. A failure serving one client is that client's and never reaches here.
 pub async fn run(app: App, listeners: Listeners, shutdown: Shutdown) -> std::io::Result<()> {
-    run_with_peers(app, listeners, BTreeMap::new(), shutdown).await
+    run_with_peers(
+        app,
+        listeners,
+        pgprox_core::cluster::StaticPeers::new(BTreeMap::new()),
+        shutdown,
+    )
+    .await
 }
 
 /// Runs the node, gossiping to `peers`, until the signal fires.
@@ -399,12 +405,19 @@ pub async fn run(app: App, listeners: Listeners, shutdown: Shutdown) -> std::io:
 pub async fn run_with_peers(
     app: App,
     listeners: Listeners,
-    peers: BTreeMap<pgprox_core::ids::NodeId, String>,
+    source: Arc<dyn pgprox_core::cluster::PeerSource>,
     shutdown: Shutdown,
 ) -> std::io::Result<()> {
     // Set here rather than at build time: the peer table is a deployment fact
     // and `App::build` opens no sockets. A node with no peers keeps the
     // fallback it had, which is its guaranteed share.
+    // Read once here, which is deliberate and temporary. `M19.2` changes the
+    // signature and nothing else, so the three consumers below still receive a
+    // table taken at startup; `M19.3` is the task that makes them read the
+    // current one. Splitting it that way keeps the widest diff away from the
+    // semantic change.
+    let peers = (*source.peers()).clone();
+
     app.cluster
         .set_transport(Arc::new(crate::gossip::GossipTransport::new(peers.clone())));
     // The same table, to the one read that fans out.
@@ -1304,13 +1317,19 @@ mod tests {
         let running = tokio::spawn(run_with_peers(
             first,
             one,
-            BTreeMap::from([(NodeId::new(2), two_at.gossip.to_string())]),
+            pgprox_core::cluster::StaticPeers::new(BTreeMap::from([(
+                NodeId::new(2),
+                two_at.gossip.to_string(),
+            )])),
             shutdown.clone(),
         ));
         let peer = tokio::spawn(run_with_peers(
             second,
             two,
-            BTreeMap::from([(NodeId::new(1), one_at.gossip.to_string())]),
+            pgprox_core::cluster::StaticPeers::new(BTreeMap::from([(
+                NodeId::new(1),
+                one_at.gossip.to_string(),
+            )])),
             shutdown.clone(),
         ));
 
@@ -1921,7 +1940,10 @@ mod tests {
         let running = tokio::spawn(run_with_peers(
             app,
             listeners,
-            BTreeMap::from([(NodeId::new(2), peer_at.to_string())]),
+            pgprox_core::cluster::StaticPeers::new(BTreeMap::from([(
+                NodeId::new(2),
+                peer_at.to_string(),
+            )])),
             shutdown.clone(),
         ));
 
