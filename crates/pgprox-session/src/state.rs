@@ -283,6 +283,24 @@ impl Handshake {
             _ => return self.violation("unsupported protocol major version"),
         };
 
+        // `M20.8`. A replication connection is a session by definition: it holds
+        // one backend, streams over `CopyBoth` and never returns it between
+        // transactions. Nothing here could pool one, and until this existed the
+        // parameter was ignored, so a client asking for replication got an
+        // ordinary connection and discovered it when `IDENTIFY_SYSTEM` failed a
+        // long way from the cause.
+        //
+        // Refused rather than pinned, which is the other honest answer. Pinning
+        // would make it half-work: the connection this proxy opens upstream has
+        // no `replication` parameter of its own, so the backend on the far side
+        // is not a walsender whatever this side does with it. Saying no is the
+        // only answer that is true.
+        if message.replication() {
+            return self.fail(ClientError::Unsupported(
+                "replication connections are not proxied: connect to the database directly",
+            ));
+        }
+
         let Some(user) = message.user() else {
             return self.violation("startup packet has no user parameter");
         };
@@ -499,6 +517,49 @@ mod tests {
                 unsupported: Vec::new()
             })
         );
+        assert_eq!(reply.action, Action::Ask(Credential::Jwt));
+    }
+
+    #[test]
+    fn a_replication_connection_is_refused_at_connect_and_told_why() {
+        // `M20.8`. It was ignored, so the client got an ordinary connection and
+        // found out when `IDENTIFY_SYSTEM` failed. The refusal is
+        // `feature_not_supported` rather than a protocol violation: the client
+        // is right and this proxy is unable, which is a different thing and
+        // tells it whether to fix its request or its expectations.
+        let mut hs = encrypted(HandshakeConfig::default());
+        let mut params = login();
+        params.push(StartupParam {
+            name: "replication",
+            value: "database",
+        });
+        let reply = hs.on_startup(&message(196_608, &params));
+
+        let Action::Fail(error) = reply.action else {
+            panic!("a replication connection was accepted: {:?}", reply.action);
+        };
+        assert_eq!(
+            error.sqlstate(),
+            pgprox_core::error::SqlState::FEATURE_NOT_SUPPORTED
+        );
+        assert!(
+            error.client_message().contains("replication"),
+            "the client was not told what it could not have: {}",
+            error.client_message()
+        );
+    }
+
+    #[test]
+    fn a_client_that_said_replication_is_off_is_an_ordinary_client() {
+        // The parameter being present is not the question; its value is.
+        let mut hs = encrypted(HandshakeConfig::default());
+        let mut params = login();
+        params.push(StartupParam {
+            name: "replication",
+            value: "false",
+        });
+        let reply = hs.on_startup(&message(196_608, &params));
+
         assert_eq!(reply.action, Action::Ask(Credential::Jwt));
     }
 

@@ -44,6 +44,10 @@ impl SqlState {
     /// a real code would send every operator reading it to the wrong place.
     pub const INTERNAL_ERROR: Self = Self("XX000");
 
+    /// `feature_not_supported`. Something the client asked for that this proxy
+    /// does not do, as opposed to something it got wrong.
+    pub const FEATURE_NOT_SUPPORTED: Self = Self("0A000");
+
     /// The code as it appears in the `ErrorResponse` message.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -142,6 +146,21 @@ pub enum ClientError {
     #[error("the database connection closed while serving this session")]
     UpstreamClosed,
 
+    /// The client asked for something this proxy does not implement.
+    ///
+    /// Distinct from a protocol violation, which is the client being wrong.
+    /// This is the client being right and the proxy being unable, and a client
+    /// told the difference knows whether to fix its request or its
+    /// expectations.
+    ///
+    /// The detail is `&'static str` and reaches the client, unlike every other
+    /// detail here. That is safe because it is this proxy's own statement about
+    /// its own capabilities rather than anything derived from a credential, a
+    /// tenant or an upstream: there is nothing in it a client could not have
+    /// worked out by trying.
+    #[error("unsupported: {0}")]
+    Unsupported(&'static str),
+
     /// The proxy could not do its job, for a reason that is its own.
     ///
     /// The detail is for the operator and never reaches the client. The one
@@ -166,6 +185,7 @@ impl ClientError {
             Self::AuthRefused(_) | Self::TlsRequired => SqlState::INVALID_AUTHORIZATION,
             Self::SidecarUnavailable | Self::UpstreamClosed => SqlState::CONNECTION_FAILURE,
             Self::ProtocolViolation(_) => SqlState::PROTOCOL_VIOLATION,
+            Self::Unsupported(_) => SqlState::FEATURE_NOT_SUPPORTED,
             Self::Internal(_) => SqlState::INTERNAL_ERROR,
         }
     }
@@ -193,6 +213,8 @@ impl ClientError {
             // on, and that is what this message should make it do.
             Self::UpstreamClosed => "the database connection was closed, please retry",
             Self::ProtocolViolation(_) => "protocol violation",
+            // The one detail that travels. See the variant's own note.
+            Self::Unsupported(what) => what,
             // Vague on purpose, like the rest: which internal condition failed
             // is an operator's business and a prober's gift.
             Self::Internal(_) => "internal error",
@@ -278,6 +300,7 @@ mod tests {
             ClientError::TlsRequired,
             ClientError::SidecarUnavailable,
             ClientError::ProtocolViolation("unexpected message after Sync"),
+            ClientError::Unsupported("replication connections are not proxied"),
             ClientError::Internal("the system entropy source failed"),
         ]
     }

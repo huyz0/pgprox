@@ -128,4 +128,16 @@ run_test pgprox-session "state::tests::options_wins_where_a_client_asked_for_the
 run_test pgprox-proto "startup::tests::a_plain_startup_parameter_is_a_setting_and_the_four_special_ones_are_not" \
   "user, database, options and replication are not runtime settings"
 
+# --- M20.8: a connection this proxy cannot serve is refused, not ignored ------
+#
+# Both halves, because the parameter being present is not the question and its
+# value is: a client that said `replication=false` is an ordinary client and
+# must not be refused for having mentioned it.
+run_test pgprox-session "state::tests::a_replication_connection_is_refused_at_connect_and_told_why" \
+  "a replication connection is refused at connect and told why"
+run_test pgprox-session "state::tests::a_client_that_said_replication_is_off_is_an_ordinary_client" \
+  "replication=false is an ordinary client"
+run_test pgprox-proto "startup::tests::replication_is_read_the_way_postgres_reads_it" \
+  "replication is read the way Postgres reads it"
+
 finish

@@ -6233,7 +6233,7 @@ Streaming removes both.
   The excluded four are `user`, `database`, `options` and `replication`, each of
   which has a meaning the protocol gives it rather than a value a session
   carries, plus the reserved `_pq_.` prefix that `M20.3` answers.
-- [ ] `M20.8` **`replication` is ignored rather than answered.** A client
+- [x] `M20.8` **`replication` is ignored rather than answered.** A client
   asking for a replication connection gets an ordinary one, and finds out when
   `IDENTIFY_SYSTEM` fails oddly. pgbouncer checks the parameter before anything
   else and routes the connection differently.
@@ -6243,6 +6243,23 @@ Streaming removes both.
   one that produces a confusing failure a long way from its cause.
   Acceptance: a client that asks for replication is told something true at
   connect.
+  Done, and it is refused rather than pinned. Pinning was the other candidate
+  and it would make the thing half-work: the connection this proxy opens
+  upstream carries no `replication` parameter of its own, so the backend on the
+  far side is not a walsender whatever this side does with the session. Saying
+  no is the only answer that is true.
+  `ClientError::Unsupported` is a new variant and `0A000
+  feature_not_supported` a new code in `standards/error-handling.md`. It is the
+  client being right and the proxy being unable, which is a different thing
+  from `08P01`, where the client is wrong, and a client told the difference
+  knows whether to fix its request or its expectations. It is also the one
+  error whose detail reaches the client: what it carries is this proxy's own
+  statement about its own capabilities, not anything derived from a credential,
+  a tenant or an upstream, so the rule about what an error must not contain is
+  not bent by it.
+  The value is the question rather than the parameter's presence: `false`,
+  `off` and `0` are ordinary clients, and `true`, `on`, `1` and `database` are
+  not, which is how Postgres reads it and what libpq sends.
 
 ### What was checked and found sound
 

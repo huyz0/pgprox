@@ -57,6 +57,14 @@ real SQLSTATE, never a generic internal error. The mapping is one function in
 | The upstream connection closed mid-session | `08006` | `connection_failure` |
 | Acquire timeout | `57014` | `query_canceled` |
 | A failure that is the proxy's own, such as no system entropy | `XX000` | `internal_error` |
+| Something the client asked for that this proxy does not do | `0A000` | `feature_not_supported` |
+
+`0A000` is the client being right and the proxy being unable, which is a
+different thing from `08P01`, where the client is wrong. A client told the
+difference knows whether to fix its request or its expectations, and it is the
+one error whose detail reaches the client: what it carries is this proxy's own
+statement about its own capabilities, not anything derived from a credential, a
+tenant or an upstream.
 
 `57P01` is chosen deliberately for shedding: every mainstream driver treats it
 as a clean server-initiated close and reconnects, which is the entire point of

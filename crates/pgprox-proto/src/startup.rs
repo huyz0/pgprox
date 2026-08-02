@@ -171,6 +171,20 @@ impl Startup<'_> {
         }
     }
 
+    /// Whether this client asked for a replication connection.
+    ///
+    /// Postgres accepts `true`, `on`, `1` and `database` as yes, and `false`,
+    /// `off` and `0` as no; libpq only sends the parameter when it was asked
+    /// to. Absent is no.
+    ///
+    /// `M20.8`. Nothing read this, so a client asking for replication got an
+    /// ordinary connection and found out when `IDENTIFY_SYSTEM` failed a long
+    /// way from the cause.
+    pub fn replication(&self) -> bool {
+        self.param("replication")
+            .is_some_and(|value| !matches!(value, "false" | "off" | "0" | ""))
+    }
+
     /// The runtime settings this client sent as plain startup parameters.
     ///
     /// Everything except the four the protocol gives a meaning of their own and
@@ -378,6 +392,30 @@ mod tests {
     fn a_truncated_cancel_request_is_an_error() {
         let body = CANCEL_REQUEST_CODE.to_be_bytes();
         assert!(decode(&body).is_err());
+    }
+
+    #[test]
+    fn replication_is_read_the_way_postgres_reads_it() {
+        // `true`, `on`, `1` and `database` are yes; `false`, `off` and `0` are
+        // no; absent is no. libpq sends `database` for logical replication and
+        // `true` for physical, which are the two that matter.
+        for value in ["true", "on", "1", "database"] {
+            let body = startup_body(PROTOCOL_3_0, &[("user", "u"), ("replication", value)]);
+            assert!(
+                decode(&body).unwrap().replication(),
+                "{value} was not read as asking for replication"
+            );
+        }
+        for value in ["false", "off", "0", ""] {
+            let body = startup_body(PROTOCOL_3_0, &[("user", "u"), ("replication", value)]);
+            assert!(
+                !decode(&body).unwrap().replication(),
+                "{value} was read as asking for replication"
+            );
+        }
+
+        let body = startup_body(PROTOCOL_3_0, &[("user", "u")]);
+        assert!(!decode(&body).unwrap().replication(), "absent is not a yes");
     }
 
     #[test]
