@@ -6338,13 +6338,29 @@ recognised so it can be refused rather than read as a version.
   knows what the code looked like on it; a commit can.
   Named rather than counted alone: "three commits behind" is a number, and
   "behind M20.4 and M20.6" is what says whether it matters.
-- [ ] `M21.2` The statement-cache rotation, in every driver that has one.
+- [x] `M21.2` The statement-cache rotation, in every driver that has one.
   A protocol `Close` followed by re-preparing the same SQL is `M20.1`'s exact
   reduction, and pgx, JDBC and npgsql all produce it when their caches evict.
   Verified by hand against pgx during `M21.0`: prepare, `DeallocateAll`,
   prepare again, which passes. Nothing runs it.
   Acceptance: the probe for each driver that keeps a server-side statement
   cache rotates it, and the case fails against the tree before `M20.1`.
+  Done, and the acceptance criterion earned its keep. The first version used
+  pgx's `DeallocateAll` and npgsql's `UnprepareAll`, and **both passed with
+  `M20.1` reverted**: those send `DEALLOCATE ALL` as SQL, which the proxy has
+  handled through `deallocates_everything` since `M15.3`. Two of the three
+  probes were testing a fix from five milestones ago while claiming to test
+  this one. Only JDBC fired, because its case is a cache eviction and that is a
+  real protocol `Close`.
+  So pgx deallocates one statement by name and npgsql unprepares one command,
+  and all three now fail against a proxy built without `M20.1`: pgx reports
+  `26000 prepared statement "pgprox_7aed9f0df11d4c23" does not exist`, npgsql
+  aborts inside `FetchPreparedStatement`, and JDBC says the statement does not
+  exist. All three pass with it.
+  The JDBC case is the one worth keeping for its shape: nobody calls anything.
+  `preparedStatementCacheQueries=2` and three distinct statements make the
+  cache evict on the third, which is how a real application produces this
+  sequence.
 - [ ] `M21.3` The unnamed statement, in the drivers that use it.
   pgx reaches it through `QueryExecModeExec` and asyncpg through its own
   one-shot path. `M20.6` changed what goes on the wire for it and the only

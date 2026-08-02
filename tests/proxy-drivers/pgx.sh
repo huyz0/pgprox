@@ -71,6 +71,42 @@ func main() {
 		}
 	}
 
+	// PGPROX_DEPTH_STATEMENT_ROTATION. `M20.1`, from the driver that produces
+	// it in the wild: a protocol `Close` of a prepared statement, then the
+	// same SQL again.
+	//
+	// The proxy rewrites the `Close` to its own global name and forwards it,
+	// so the server really does deallocate the statement. Until `M20.1`
+	// neither of its two maps heard about that, and the connection went on
+	// claiming to hold what it had just dropped, so this second `Bind` named
+	// something that was gone: `26000 prepared statement "pgprox_..." does
+	// not exist`. It outlived the session that caused it, because the
+	// connection went back to the pool still mis-recorded.
+	//
+	// An explicitly named statement, deallocated by name. `DeallocateAll` is
+	// not this: pgx sends `DEALLOCATE ALL` as SQL for it, which the proxy
+	// already handles through `deallocates_everything` since `M15.3`, so a
+	// probe built on it passes with `M20.1` reverted. Checked, not assumed.
+	if _, err := conn.Prepare(ctx, "rotating", "SELECT $1::int + 11"); err != nil {
+		die("prepare by name", err)
+	}
+	if err := conn.QueryRow(ctx, "rotating", 7).Scan(&n); err != nil {
+		die("named statement", err)
+	}
+	if err := conn.Deallocate(ctx, "rotating"); err != nil {
+		die("deallocate by name", err)
+	}
+	if _, err := conn.Prepare(ctx, "rotating", "SELECT $1::int + 11"); err != nil {
+		die("re-prepare by name", err)
+	}
+	if err := conn.QueryRow(ctx, "rotating", 7).Scan(&n); err != nil {
+		die("re-prepare after a protocol Close", err)
+	}
+	if n != 18 {
+		fmt.Fprintf(os.Stderr, "pgx: re-prepare gave %d\n", n)
+		os.Exit(1)
+	}
+
 	// PGPROX_DEPTH_LARGE_RESULT.
 	rows, err := conn.Query(ctx, "SELECT generate_series(1, 5000)")
 	if err != nil {

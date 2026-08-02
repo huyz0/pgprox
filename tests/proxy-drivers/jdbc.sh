@@ -33,7 +33,14 @@ public class JdbcProxy {
             // self-signed and made at start. Without it this would be a trust
             // test rather than a protocol one.
             + "?ssl=true&sslmode=require"
-            + "&sslfactory=org.postgresql.ssl.NonValidatingFactory";
+            + "&sslfactory=org.postgresql.ssl.NonValidatingFactory"
+            // `M21.2`. pgjdbc keeps a cache of server-side statements and
+            // sends a protocol `Close` when one is evicted, which is how a
+            // real JDBC application produces `M20.1`'s sequence: nobody calls
+            // anything, the cache simply fills. Two entries and a threshold of
+            // one make eviction happen on the third distinct statement rather
+            // than after the default 256, so it is a case rather than a wait.
+            + "&preparedStatementCacheQueries=2&prepareThreshold=1";
 
         try (Connection conn = DriverManager.getConnection(
                 url, System.getenv("PGPROX_USER"), System.getenv("PGPROX_TOKEN"))) {
@@ -53,6 +60,35 @@ public class JdbcProxy {
                     ps.setInt(1, 41);
                     try (ResultSet rs = ps.executeQuery()) {
                         if (!rs.next() || rs.getInt(1) != 42) die("prepared reuse gave the wrong answer");
+                    }
+                }
+            }
+
+            // PGPROX_DEPTH_STATEMENT_ROTATION. `M20.1`, arrived at the way an
+            // application does: three distinct statements through a cache that
+            // holds two, so the first is closed on the wire, then that first
+            // one again.
+            //
+            // The proxy rewrites the `Close` to its own global name and
+            // forwards it, so the server really does deallocate. Until
+            // `M20.1` neither of its two maps heard, and the connection went
+            // on claiming to hold what it had dropped, so the next `Bind` of
+            // that SQL named something gone: `26000 prepared statement
+            // "pgprox_..." does not exist`. It outlived the session, because
+            // the connection went back to the pool still mis-recorded.
+            String[] rotation = {
+                "SELECT ?::int + 100", "SELECT ?::int + 200", "SELECT ?::int + 300",
+            };
+            for (int round = 0; round < 2; round++) {
+                for (int i = 0; i < rotation.length; i++) {
+                    try (PreparedStatement ps = conn.prepareStatement(rotation[i])) {
+                        ps.setInt(1, 1);
+                        try (ResultSet rs = ps.executeQuery()) {
+                            int want = 100 * (i + 1) + 1;
+                            if (!rs.next() || rs.getInt(1) != want) {
+                                die("statement rotation gave the wrong answer");
+                            }
+                        }
                     }
                 }
             }

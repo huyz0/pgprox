@@ -67,6 +67,31 @@ await using (var cmd = new NpgsqlCommand("SELECT $1::int", conn))
     }
 }
 
+// PGPROX_DEPTH_STATEMENT_ROTATION. `M20.1`, from a driver that keeps its own
+// server-side statements and gives them back with a protocol `Close`.
+//
+// The proxy rewrites that `Close` to its own global name and forwards it, so
+// the server really does deallocate. Until `M20.1` neither of its two maps
+// heard, and the connection went on claiming to hold what it had dropped, so
+// the next `Bind` of that SQL named something gone: `26000 prepared statement
+// "pgprox_..." does not exist`. It outlived the session, because the
+// connection went back to the pool still mis-recorded.
+// One command unprepared by itself, not `UnprepareAll`: npgsql sends
+// `DEALLOCATE ALL` as SQL for that, which the proxy has handled through
+// `deallocates_everything` since `M15.3`, so a probe built on it passes with
+// `M20.1` reverted. Checked, not assumed.
+await using (var cmd = new NpgsqlCommand("SELECT $1::int + 11", conn))
+{
+    cmd.Parameters.Add(new NpgsqlParameter { Value = 7 });
+    await cmd.PrepareAsync();
+    if (Convert.ToInt32(await cmd.ExecuteScalarAsync()) != 18)
+        Die("a named statement came back wrong");
+    cmd.Unprepare();
+    await cmd.PrepareAsync();
+    if (Convert.ToInt32(await cmd.ExecuteScalarAsync()) != 18)
+        Die("re-prepare after a protocol Close came back wrong");
+}
+
 // PGPROX_DEPTH_LARGE_RESULT.
 await using (var cmd = new NpgsqlCommand("SELECT generate_series(1, 5000)", conn))
 await using (var reader = await cmd.ExecuteReaderAsync())
