@@ -6277,3 +6277,14 @@ connection is discarded rather than returned, because `UpstreamGuard` defaults
 to `Discard` and only a transaction boundary marks it clean, so a `LISTEN`
 registration cannot outlive the session that made it. `GSSENCRequest` is
 recognised so it can be refused rather than read as a version.
+- [x] `M20.9` Close M20. The gate exists and passes, so the status row can stop
+  saying open and the section can say where it got to.
+  Filed as its own task for the reason `M15.8`, `M18.4` and `M19.8` were:
+  closing a milestone is a claim about the whole of it, and bundling that claim
+  into the last piece of work makes it look like a side effect of that piece
+  rather than a judgement about all of them.
+  Acceptance: `scripts/m20-complete.sh` passes, the status row says complete,
+  and the section records what the reading found rather than what it planned.
+  In particular it records which of the findings came from reading a second and
+  third implementation and which came from the hunt for the first one, because
+  those are different arguments for doing this again.

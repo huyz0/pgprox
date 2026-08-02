@@ -36,7 +36,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M17 | The binaries mutation testing never reached | complete; 571 mutants in `pgprox` and 124 in `pgload`, every survivor argued, and the two timeout constants re-derived from a measured suite |
 | M18 | What the deployment story assumes | complete; an ADR that described a transport nobody built, a seam specified rather than guessed, and a rule that a milestone cannot close with nothing to run |
 | M19 | A seam for peer discovery | complete; the seam exists and three consumers read through it, and two of the eight tasks were corrections of claims this milestone made about its own fakes |
-| M20 | The protocol layer against pgbouncer, pgcat and odyssey | open |
+| M20 | The protocol layer against pgbouncer, pgcat and odyssey | complete; eight findings, of which one corrupted a pooled connection for every session after it, three were things a client asked for and was silently not given, and one was found by the hunt rather than by the reading |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1105,7 +1105,7 @@ its own process, so the gate had been green over it throughout. That is the
 part worth carrying forward. A gate that isolates every test cannot see a
 collision between two of them, and this project's gate does exactly that.
 
-## M20: the protocol layer against pgbouncer, pgcat and odyssey
+## M20: the protocol layer against pgbouncer, pgcat and odyssey (complete)
 
 ```bash
 scripts/m20-complete.sh
@@ -1133,3 +1133,57 @@ other two halves.
 
 Completion condition: `scripts/m20-complete.sh`, which exists from this
 milestone's first commit and gains a check as each task lands.
+
+### Where it got to
+
+Eight findings, all fixed.
+
+**One was a live defect.** A client's protocol `Close` of a prepared statement
+was rewritten and forwarded, the server deallocated the statement, and neither
+of this proxy's maps heard about it, so the next `Bind` of that SQL named
+something that was gone. It outlived the session that caused it: the connection
+went back to the pool still mis-recorded, so the next session to bind that SQL
+failed the same way. It reproduced on the first attempt from a sequence every
+driver with a statement cache sends.
+
+**Three were things a client asked for and was silently not given.** A
+`search_path` in the connection string, a runtime setting sent as a plain
+startup parameter, and a `_pq_.` protocol extension. All three were parsed,
+some were stored, and none reached anything. The extension is the sharpest of
+them: `NegotiateProtocolVersion` is the only message that says a request was
+not recognised, so saying nothing is how the protocol says yes.
+
+**Two were the pool not looking at its own sockets.** Nothing said `Terminate`
+to a connection it was closing, in a design where reaping at thirty seconds is
+the steady state, so every routine close was a line on the database that read
+like a crash. And nothing read an idle connection at all, so a server that went
+away between borrowers was discovered by the next client's query. That one was
+worse than it was reported as: the client did not get an error, it got its
+socket closed.
+
+**One was a semantic difference nobody would have noticed.** The unnamed
+prepared statement was rewritten into a named one, so every one-shot query a
+driver sent through it became a permanent entry under the per-connection cap.
+
+The eighth is `replication`, which was ignored rather than answered.
+
+**Where they came from is the argument for doing this again.** `M15` read this
+code against pgbouncer and found thirteen things; this read it against three
+implementations and found eight more, and the ones that needed a second opinion
+were the ones about what a client is owed rather than what the code does.
+pgcat's `anonymous()` is what named the unnamed-statement finding. pgbouncer's
+`disconnect_server` is what named the missing `Terminate` and its `SV_IDLE`
+handling is what named the unread idle connection.
+
+But `M20.7`, the plain startup parameters, came from scoping `M20.2` honestly
+rather than from any of them. And the process-wide logging collision `M19.7`
+fixed came from running the suite the wrong way while hunting something else.
+Reading another implementation finds what you were not looking for; running
+your own code differently finds what your gate cannot see.
+
+**Three representations in this milestone were decided by a memory budget.**
+`one_session_costs_less_than_the_slab_buffer_it_no_longer_holds` failed three
+times: on the startup settings, on the unnamed statement's SQL, and on carrying
+two lists where one would do. Each time the threshold stayed where it was and
+the code got smaller. A future is the union of what is alive across its awaits,
+and the relay loop is nothing else.
