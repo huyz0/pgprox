@@ -298,3 +298,6 @@ jobs:
       # schedule.
       - name: M19
         run: scripts/m19-complete.sh
+      # M20 is open, for the same reason and on the same terms as M19 above.
+      - name: M20
+        run: scripts/m20-complete.sh

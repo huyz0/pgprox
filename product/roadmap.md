@@ -36,6 +36,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M17 | The binaries mutation testing never reached | complete; 571 mutants in `pgprox` and 124 in `pgload`, every survivor argued, and the two timeout constants re-derived from a measured suite |
 | M18 | What the deployment story assumes | complete; an ADR that described a transport nobody built, a seam specified rather than guessed, and a rule that a milestone cannot close with nothing to run |
 | M19 | A seam for peer discovery | complete; the seam exists and three consumers read through it, and two of the eight tasks were corrections of claims this milestone made about its own fakes |
+| M20 | The protocol layer against pgbouncer, pgcat and odyssey | open |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1103,3 +1104,32 @@ one binary raced for the one install a process gets. Nextest gives every test
 its own process, so the gate had been green over it throughout. That is the
 part worth carrying forward. A gate that isolates every test cannot see a
 collision between two of them, and this project's gate does exactly that.
+
+## M20: the protocol layer against pgbouncer, pgcat and odyssey
+
+```bash
+scripts/m20-complete.sh
+```
+
+`M15` read `pgprox-proto` against its own header and against `pgbouncer`, and
+found thirteen things. This reads the whole path a frame travels rather than
+one crate: the codec, `pgprox-session`, and the relay in `bin/pgprox`. It adds
+`pgcat` and `odyssey` because two readings against one outside implementation
+is one opinion consulted twice.
+
+**The first finding is why the milestone exists.** A client's protocol `Close`
+of a prepared statement is rewritten and forwarded, the server deallocates the
+statement, and neither of this proxy's two maps hears about it. The next `Bind`
+of that SQL names something that is gone, and the connection stays wrong after
+the session that closed it has left. It reproduced on the first attempt, from a
+sequence every driver with a statement cache sends.
+
+It is the same finding as `M15.3`'s `DISCARD ALL`, through the one door that
+fix left open, and it survived four readings because the fake answered `Close`
+as though it were a simple query. `M9.24` had already written, next to the arm
+it added for `Parse`, that "the proxy's record of what a connection holds is
+only correct if something notices when it is not". Nothing noticed for the
+other two halves.
+
+Completion condition: `scripts/m20-complete.sh`, which exists from this
+milestone's first commit and gains a check as each task lands.

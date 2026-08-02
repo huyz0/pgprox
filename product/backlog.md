@@ -5975,3 +5975,141 @@ Streaming removes both.
   In particular it records that two of the eight tasks were corrections of
   claims this milestone itself made, because a section that reads as seven clean
   steps would be the same fiction `M18.1` deleted from ADR 0004.
+
+## M20: the protocol layer against pgbouncer, pgcat and odyssey
+
+- [x] `M20.0` Plan M20, and give it a gate that passes from this commit.
+  A fourth reading of the protocol layer, against three implementations rather
+  than against the crate's own header. `M15` read `pgprox-proto` against its
+  rules and against `pgbouncer`; this reads the whole path a frame travels,
+  including `pgprox-session` and the relay in `bin/pgprox`, and adds `pgcat`
+  and `odyssey` because the first two readings only ever had one outside
+  opinion to check against.
+  Same rule as `M19.0`: the gate exists from the first commit and gains a check
+  as each task lands.
+- [ ] `M20.1` **A client `Close` of a prepared statement poisons the pooled
+  connection.** A protocol `Close` is rewritten to this proxy's global name and
+  forwarded, so the server really does deallocate the statement. Neither map
+  hears about it. `ConnectionStatements` goes on claiming the connection holds
+  it, so the next `Bind` of that SQL takes the already-prepared path and names
+  a statement that is gone.
+  Reproduced before it was reported: `26000 prepared statement
+  "pgprox_533e5fdc2f41216f" does not exist`, from a client that did nothing
+  unusual. `Parse`, `Bind`, `Execute`, `Sync`, `Close`, then the same statement
+  again is what every driver with a statement cache does when it rotates one.
+  **It outlives the session that caused it.** The connection goes back to the
+  pool still mis-recorded, so the next session to bind that SQL on it fails the
+  same way, until the connection is reaped or the entry evicted.
+  This is `M15.3`'s finding through the door that fix left open. That task
+  wired `DISCARD ALL` into both maps and wrote that under-clearing produces
+  "prepared statement does not exist on a connection the proxy thought was
+  warm". The protocol form of the same operation was never wired.
+  Why four readings missed it: the extended-protocol fake answered `Close` from
+  its `_ =>` arm, as though it were a simple query, and answered every `Bind`
+  with `BindComplete` without checking. `M9.24` added the `42P05` arm for
+  `Parse` with the note that "the proxy's record of what a connection holds is
+  only correct if something notices when it is not", and left the other two
+  halves unmodelled.
+  Acceptance: the fake models `Close` and refuses a `Bind` for a statement it
+  does not hold, and both new tests fail without the fix.
+- [ ] `M20.2` **`options` from the startup packet is parsed, stored, and
+  dropped.** `Startup::options` splits `-c name=value` out of the startup
+  packet, `StartupInfo::options` carries the result, and its only reader in the
+  workspace is the test beside it. Nothing applies it to the upstream
+  connection and nothing puts it in the cache key.
+  So a client connecting with `options=-c search_path=tenant_acme` runs every
+  statement under whatever `search_path` the pooled connection happens to
+  carry. `SessionParams` would replay it, and only ever learns of a
+  `search_path` set by a `SET` the client sent afterwards.
+  `startup.rs` says of this parameter: "That makes this correctness-relevant
+  rather than cosmetic: `search_path` is part of the query cache key, because
+  the same SQL resolves to different tables under different paths. See ADR 0007
+  and the cache module." The key is built from `session.params`, which this
+  never reaches.
+  pgbouncer's answer is the loud one and worth copying rather than the quiet
+  one: `set_startup_options` refuses the connection outright with "unsupported
+  startup parameter in options: %s" unless the parameter is tracked or listed
+  in `ignore_startup_parameters`. It would rather drop the client than let it
+  believe its `search_path` took effect. The same is true of plain startup
+  parameters, which this proxy also accepts and forwards none of: only `user`,
+  `database` and a hard-coded `application_name=pgprox` go upstream.
+  Acceptance: a client that sets a runtime parameter at connect either gets it,
+  or is refused and told which parameter. Silently ignoring it is the one
+  option this task exists to remove.
+- [ ] `M20.3` **A `_pq_.` protocol extension is accepted by saying nothing.**
+  `encode::negotiate_protocol_version` takes an `unrecognized` list, and every
+  caller outside the fuzz seed corpus passes `&[]`. `negotiate_version` decides
+  from the version integer alone, so a client that asks for 3.0 plus
+  `_pq_.something` gets no `NegotiateProtocolVersion` at all and is entitled to
+  conclude the extension was accepted. It is not: the parameter is not
+  forwarded upstream either.
+  pgbouncer sends `NegotiateProtocolVersion` when the version is unsupported
+  **or** when any `_pq_.` parameter was not recognised, which is the condition
+  the protocol actually specifies.
+  Acceptance: an unrecognised `_pq_.` parameter produces a
+  `NegotiateProtocolVersion` naming it, at any accepted version.
+- [ ] `M20.4` **Nothing says goodbye to an upstream connection.**
+  `encode_frontend::terminate` exists and its only callers are tests. A reaped
+  connection is dropped, so Postgres sees the socket close rather than a
+  `Terminate`, and logs it.
+  This matters here more than it would elsewhere: `min_pool` is 0 and the idle
+  timeout is 30 seconds, on purpose, so reaping is the steady state rather than
+  an exception. Every reap is a log line on the database that looks like a
+  client that crashed.
+  pgbouncer sends `{PqMsg_Terminate, 0, 0, 0, 4}` from `disconnect_server`.
+  This project's own load client already does the same thing and says why:
+  "a proxy that saw every churned connection as an abrupt disconnect would be
+  measured on its error path rather than on its close path". The proxy does not
+  extend its own courtesy to the database.
+  Acceptance: a connection closed by the reaper, by `max_lifetime`, or by a
+  drain sends `Terminate` first.
+- [ ] `M20.5` **An idle pooled connection is never read.** `Pool::idle` is a
+  `VecDeque<Connection>` and nothing polls it: every `tokio::spawn` in
+  `pgprox-pool` is in a test. So anything the server sends on a connection
+  between borrowers stays in the socket for whoever borrows it next, which will
+  read it as the answer to its own frame.
+  Two things arrive that way. An asynchronous message: `NoticeResponse`,
+  `ParameterStatus`, `NotificationResponse`. And the end of the connection:
+  `pg_terminate_backend`, `idle_session_timeout`, a failover, a restart. The
+  second is the common one, and what a client sees is its query failing for a
+  connection that was already dead when it was handed over.
+  pgbouncer runs its packet loop on servers in `SV_IDLE` for exactly this, and
+  `release_server` will not hand over a server with anything outstanding.
+  Verified structurally rather than measured: what was checked is that no such
+  poller exists, not what a client sees when it happens. The task should start
+  by making it happen.
+  The 30-second idle reap bounds the window, which is why this is filed below
+  the ones that need no window at all.
+  Acceptance: a connection the server closed while it was idle is not handed to
+  a client, and an async message that arrived while idle is consumed rather
+  than delivered as somebody's reply.
+- [ ] `M20.6` **The unnamed prepared statement is turned into a named one.**
+  `map_statement_name` rewrites every `Parse` to `pgprox_<hash of sql>`,
+  including `Parse` of the unnamed statement. The unnamed statement's contract
+  is that the next `Parse` of it replaces it and that it does not persist; the
+  rewritten one persists until it is closed or evicted.
+  So a driver using the unnamed statement for one-shot queries, which is what
+  it is for, has each distinct query become a named statement on the pooled
+  connection, occupying a slot under `per_connection_cap` and costing a `Close`
+  round trip when the LRU evicts it.
+  pgcat carries an `anonymous()` on `Parse`, `Bind`, `Describe` and `Close` and
+  excludes those from its rewriting for this reason.
+  Acceptance: an unnamed `Parse` is forwarded as unnamed, and the tests say
+  what the connection holds afterwards.
+
+### What was checked and found sound
+
+Recorded because a review that only lists what is wrong reads as a list of
+everything that was looked at, and this was not.
+
+`SessionState`'s release rule against `pgbouncer`'s `server->ready`: sound, and
+`Outstanding` is the same idea as pgbouncer's `outstanding_requests` list,
+arrived at independently and covering `Flush`, which is the case that hangs.
+SCRAM channel binding: `SCRAM-SHA-256-PLUS` is refused by name with the right
+argument, which is that this proxy terminates TLS and the binding a client
+would verify is to the proxy. A duplicate `Parse` under a name the connection
+holds is answered locally rather than provoking `42P05`. A pinned session's
+connection is discarded rather than returned, because `UpstreamGuard` defaults
+to `Discard` and only a transaction boundary marks it clean, so a `LISTEN`
+registration cannot outlive the session that made it. `GSSENCRequest` is
+recognised so it can be refused rather than read as a version.
