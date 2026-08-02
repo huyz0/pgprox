@@ -5757,3 +5757,11 @@ Streaming removes both.
   is the trade `M16`'s gate makes for its blocked half. The milestone job's
   whole argument is that sixteen gates cost less than the coverage job, and a
   tool install for one listing works against it.
+- [x] `M18.4` Close M18. The gate exists and passes, so the status row can stop
+  saying open and the section can say where it got to.
+  Filed as its own task for the reason `M15.8` was: closing a milestone is a
+  claim about the whole of it, and bundling that claim into the last piece of
+  work makes it look like a side effect of that piece rather than a judgement
+  about all of them.
+  Acceptance: `scripts/m18-complete.sh` passes, the status row says complete,
+  and the section records what the milestone found rather than what it planned.

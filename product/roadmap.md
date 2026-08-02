@@ -34,7 +34,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M15 | The protocol crate under a second reading | complete; thirteen findings, of which three are memory bounds a peer controlled, two are connection state that never came back, and one is a mutant in a test this milestone wrote after writing about that exact mistake |
 | M16 | The streaming relay nothing streams through | the two directions are done and 16,777,216 bytes held becomes 512; the 100k run with a large result set needs three machines and is blocked |
 | M17 | The binaries mutation testing never reached | complete; 571 mutants in `pgprox` and 124 in `pgload`, every survivor argued, and the two timeout constants re-derived from a measured suite |
-| M18 | What the deployment story assumes | open |
+| M18 | What the deployment story assumes | complete; an ADR that described a transport nobody built, a seam specified rather than guessed, and a rule that a milestone cannot close with nothing to run |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1006,3 +1006,38 @@ nothing enforcing it.
 
 Completion condition: `scripts/m18-complete.sh`, which is itself part of the
 milestone rather than an afterthought, for the reason above.
+
+**Where it got to.** Three findings, and none of them was code.
+
+ADR 0004 described SWIM gossip over UDP using a library this workspace has never
+depended on. The transport is TCP carrying newline-delimited JSON over a peer
+list passed as flags, and the failure detector is three and ten seconds rather
+than sub-second. Everything the ADR decided above the transport was intact and
+is what the property tests hold, so the fix was a correction rather than a
+reversal. The old sentence is quoted rather than deleted, because an ADR that
+quietly changes is worse than one that is wrong.
+
+The question that found it was whether the Kubernetes API could supply
+membership instead of gossip. It cannot, and the answer is now a spec rather
+than a conversation. A gossip round carries load and liveness in one message:
+the API can say which pods are Ready, and it cannot say what any of them is
+holding, which is what quota and shedding run on. Liveness has to stay
+first-party besides, because a pod partitioned from its peers but still able to
+reach the control plane would be told the fleet is healthy and would keep
+granting from the free pool while the other side elected a replacement. So the
+seam is discovery, and the rule that keeps it safe is in the trait's own doc
+comment rather than only in the spec.
+
+And a milestone could close with nothing to run. `check-drift.sh` required every
+gate that exists to be wired into CI and never asked whether a milestone had
+one, so `M16` closed with a prose condition and `M17` with neither. Six rows
+lacked an `mNN-complete.sh`, not two, and three of those six point at a real
+gate under another name, which is why the rule is about naming a runnable
+command rather than about a filename.
+
+**What this milestone did not do, and deliberately.** It did not implement the
+Kubernetes peer source, and it did not move the fleet off a StatefulSet. The
+node id is the StatefulSet ordinal and it is encoded into every `ConnId` so a
+cancel landing on any pod routes to the owner, which makes "pods behind a
+Service" a change to what clients see on the wire rather than a deployment
+choice. That is a separate spec and a larger one.
