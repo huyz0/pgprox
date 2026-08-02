@@ -5716,7 +5716,7 @@ Streaming removes both.
   The task list is not filed in this backlog yet. Filing tasks for unscheduled
   work puts entries nobody can start, which is what `M11.0` said about the three
   blocked items.
-- [ ] `M18.3` A milestone can close with no completion condition.
+- [x] `M18.3` A milestone can close with no completion condition.
   `check-drift.sh` walks `scripts/m*-complete.sh` and requires each to be named
   in CI, which is the wrong direction: it checks that existing gates run, not
   that every milestone has one. `M16` has a prose condition in the roadmap and
@@ -5726,8 +5726,34 @@ Streaming removes both.
   cannot be closed, and `M12` spent a milestone on gates that cannot fail. This
   is both at once: the gate exists, it passes, and the thing it was supposed to
   prevent happened underneath it.
-  Acceptance: `check-drift.sh` fails when a milestone in the roadmap's status
-  table has no `scripts/mNN-complete.sh`; the failure is planted in
-  `tests/gates/negative.sh`, because a gate nobody has watched fail is a claim;
-  and `M16` and `M17` get the scripts they never had, with `M16`'s recording the
-  half that is blocked rather than asserting it passes.
+  **The acceptance this was filed with was wrong, and the count was too low.**
+  It asked for a rule that every milestone has a `scripts/mNN-complete.sh`.
+  Six rows lack one, not two: `M1`, `M2` and `M8` as well. All three have a
+  completion condition and it is not called that. `M1`'s is
+  `scripts/conformance.sh 17 18`, `M2`'s is a `cargo nextest` invocation
+  against `pgprox-auth`, and `M8`'s is four scripts led by
+  `scripts/release-check.sh`. A rule demanding the naming convention would have
+  failed all three, and `M12.8` says what happens next: a check people route
+  around is worse than no check.
+  So the rule is the one that is actually true. Every milestone in the status
+  table needs a section, that section needs a fenced `bash` block, and every
+  `scripts/...` path inside it has to exist. That last part catches the other
+  direction, a gate renamed out from under the roadmap, which nothing checked
+  either.
+  Acceptance: `check-drift.sh` fails when a milestone in the status table has no
+  section, when its section names no command, and when it names a script that is
+  not there; it does not fail when a milestone points at something other than an
+  `mNN-complete.sh`; all four are planted in `tests/gates/negative.sh`, because
+  a gate nobody has watched fail is a claim; and `M16`, `M17` and `M18` get the
+  gates they never had, with `M16`'s reporting the blocked 100k half rather than
+  asserting it passes.
+  Done. `M17` had no roadmap section at all, so it gained one. `M18`'s own gate
+  is part of the milestone rather than an afterthought, which is what `M18.0`
+  said it would be.
+  One thing the review caught before it shipped: `m17-complete.sh` shelled out
+  to `cargo mutants --list`, and CI installs that tool for the nightly sweep and
+  not for the milestone job, so the gate would have failed in CI while passing
+  here. It now reports the listing as unchecked when the tool is absent, which
+  is the trade `M16`'s gate makes for its blocked half. The milestone job's
+  whole argument is that sixteen gates cost less than the coverage job, and a
+  tool install for one listing works against it.

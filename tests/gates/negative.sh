@@ -238,6 +238,82 @@ case_m1f_adr() {
     env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
 }
 
+# --- check-drift.sh, a milestone with no way to check it, M18.3 ---------------
+#
+# `M16` and `M17` both closed with nothing to run. The rule that should have
+# caught it walked the gates that exist and asked whether CI ran them, which is
+# the opposite question. These plant a roadmap rather than editing the real one.
+case_drift_milestone() {
+  echo
+  echo "  check-drift.sh, a milestone with no way to check it"
+
+  local dir="$WORK/roadmap"
+  rm -rf "$dir"; mkdir -p "$dir"
+
+  # The shape M17 shipped: a row in the table and no section at all.
+  cat > "$dir/roadmap.md" <<'PLANT'
+| Milestone | Name | State |
+| --- | --- | --- |
+| M99 | A milestone with no section | complete |
+PLANT
+  expect_fail "flags a milestone with a table row and no section" \
+    env PGPROX_ROADMAP="$dir/roadmap.md" scripts/check-drift.sh
+
+  # The shape M16 shipped: a section, prose describing the condition, and no
+  # command anybody could run.
+  cat > "$dir/roadmap.md" <<'PLANT'
+| Milestone | Name | State |
+| --- | --- | --- |
+| M99 | A milestone that describes its condition | complete |
+
+## M99: a milestone that describes its condition (complete)
+
+Completion condition: a measurement first, then the two directions.
+PLANT
+  expect_fail "flags a milestone whose condition is prose and not a command" \
+    env PGPROX_ROADMAP="$dir/roadmap.md" scripts/check-drift.sh
+
+  # A gate renamed out from under the roadmap.
+  cat > "$dir/roadmap.md" <<'PLANT'
+| Milestone | Name | State |
+| --- | --- | --- |
+| M99 | A milestone naming a gate that is gone | complete |
+
+## M99: a milestone naming a gate that is gone (complete)
+
+```bash
+scripts/m99-complete.sh
+```
+PLANT
+  expect_fail "flags a milestone naming a script that does not exist" \
+    env PGPROX_ROADMAP="$dir/roadmap.md" scripts/check-drift.sh
+
+  # And the two shapes that must not be flagged. A milestone may point at
+  # something other than an `mNN-complete.sh`: `M1` names `conformance.sh` and
+  # `M2` names a `cargo nextest` invocation. A rule demanding the naming
+  # convention would have failed both and been turned off.
+  cat > "$dir/roadmap.md" <<'PLANT'
+| Milestone | Name | State |
+| --- | --- | --- |
+| M98 | A milestone gated by another script | complete |
+| M99 | A milestone gated by a cargo command | complete |
+
+## M98: a milestone gated by another script (complete)
+
+```bash
+scripts/conformance.sh 17 18
+```
+
+## M99: a milestone gated by a cargo command (complete)
+
+```bash
+cargo nextest run -p pgprox-auth --features integration
+```
+PLANT
+  expect_pass "does not demand the mNN-complete.sh naming convention" \
+    env PGPROX_ROADMAP="$dir/roadmap.md" scripts/check-drift.sh
+}
+
 # --- check-drift.sh, an ADR that names a library nobody depends on, M18.1 -----
 #
 # ADR 0004 said the gossip transport was "SWIM over UDP using `foca`" from M0
@@ -709,6 +785,7 @@ if [[ -z "$WANTED" || "$WANTED" == m11-admission ]]; then case_m11_admission; ra
 if [[ -z "$WANTED" || "$WANTED" == m1f-adr ]]; then case_m1f_adr; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == drift-subshell ]]; then case_drift_subshell; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == drift-adr ]]; then case_drift_adr; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == drift-milestone ]]; then case_drift_milestone; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == every-gate ]]; then case_every_gate; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m15-missing-test ]]; then case_m15_missing_test; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == wired ]]; then case_wired; ran=1; fi

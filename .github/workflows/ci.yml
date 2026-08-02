@@ -280,3 +280,15 @@ jobs:
       # looking for the file it lives in.
       - name: M15
         run: scripts/m15-complete.sh
+      # M16 reports its blocked half rather than asserting it. The 100k run
+      # with a large result set needs three machines, so a gate that dropped it
+      # would turn a milestone that is two thirds done into one reporting green.
+      - name: M16
+        run: scripts/m16-complete.sh
+      - name: M17
+        run: scripts/m17-complete.sh
+      # M18's own gate, and it is part of the milestone rather than an
+      # afterthought for the reason M18.3 is about: until it existed, a
+      # milestone could close with nothing to run and nothing objected.
+      - name: M18
+        run: scripts/m18-complete.sh

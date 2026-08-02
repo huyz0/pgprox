@@ -189,6 +189,64 @@ for f in .github/workflows/ci.yml .pre-commit-config.yaml; do
 done
 (( skip_leaked == 0 )) && ok "the delegated-check skip is not set in CI or pre-commit"
 
+# --- a milestone in the status table can be checked ---------------------------
+#
+# `M18.3`. The rule below this one walks `scripts/m*-complete.sh` and requires
+# each to be named in CI. That is the wrong direction and it is why `M16` and
+# `M17` both closed with nothing to run: it checks that the gates that exist are
+# wired, never that a milestone has one. `M10.17` established that a milestone
+# whose completion condition does not exist cannot be closed, and `M12` spent a
+# milestone on gates that cannot fail. This was both at once, and it passed.
+#
+# What is required is a fenced `bash` block in the milestone's own roadmap
+# section, and that every `scripts/...` path inside it exists. Not an
+# `mNN-complete.sh`: three milestones legitimately point elsewhere. `M1`'s gate
+# is `scripts/conformance.sh 17 18`, `M2`'s is a `cargo nextest` invocation and
+# `M8`'s is four scripts led by `scripts/release-check.sh`. A rule demanding the
+# naming convention would have failed all three and been turned off, which is
+# the failure mode `M12.8` names: a check people route around is worse than no
+# check.
+ROADMAP="${PGPROX_ROADMAP:-product/roadmap.md}"
+
+if [[ -f "$ROADMAP" ]]; then
+  ungated=0
+  # The status table's first column, skipping the header and separator rows.
+  while read -r milestone; do
+    [[ -n "$milestone" ]] || continue
+    # The section, from its heading to the next one. `awk` rather than `sed`
+    # because a milestone id is a regex metacharacter waiting to happen.
+    block="$(awk -v want="## $milestone: " '
+      index($0, want) == 1 { inside = 1; next }
+      inside && /^## / { exit }
+      inside { print }
+    ' "$ROADMAP")"
+
+    if [[ -z "$block" ]]; then
+      fail "$milestone is in the roadmap's status table with no section: nothing says how it would be checked"
+      ungated=1
+      continue
+    fi
+
+    fenced="$(printf '%s\n' "$block" | awk '/^```bash/ { inside = 1; next } inside && /^```/ { inside = 0 } inside { print }')"
+    if [[ -z "$fenced" ]]; then
+      fail "$milestone names no command: a milestone with no completion condition cannot be closed"
+      ungated=1
+      continue
+    fi
+
+    # Any script it points at has to be there. This is the half that catches a
+    # gate renamed out from under the roadmap.
+    while read -r named; do
+      [[ -n "$named" ]] || continue
+      if [[ ! -f "$named" ]]; then
+        fail "$milestone names $named, which does not exist"
+        ungated=1
+      fi
+    done < <(printf '%s\n' "$fenced" | grep -oE '(scripts|tests)/[A-Za-z0-9_./-]+\.sh' | sort -u)
+  done < <(awk -F'|' '/^\| *M[-0-9A-Z.]+ *\|/ { gsub(/ /, "", $2); print $2 }' "$ROADMAP")
+  (( ungated == 0 )) && ok "every milestone in the roadmap names a way to check it"
+fi
+
 # --- a library an ADR says it uses is a library that is depended on ----------
 #
 # `M18.1` found ADR 0004 describing "SWIM gossip over UDP using `foca`". There

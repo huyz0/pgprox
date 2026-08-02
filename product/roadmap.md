@@ -841,6 +841,10 @@ running the check rather than for knowing the rule.
 
 ## M16: the streaming relay nothing streams through
 
+```bash
+scripts/m16-complete.sh
+```
+
 `M15` read `pgprox-proto` three times and did not ask the one question that
 turned out to matter most: who calls this.
 
@@ -916,7 +920,55 @@ both would have passed while the defect was live. Those are planted in
 The 100k run with a large result set is the other half of the completion
 condition and needs the three machines `M7`'s full run needed.
 
+## M17: the binaries mutation testing never reached (complete)
+
+```bash
+scripts/m17-complete.sh
+```
+
+`M14` put every crate under `crates/` into the mutation sweep and `M14.4` wrote
+down which stayed out and why. It never considered the two binaries. They were
+not excluded, they were not thought about, and `scripts/mutants.sh` had no line
+about them either way.
+
+That mattered more after `M16`, which moved seven correctness decisions into
+`bin/pgprox/src/serve.rs`. The code three mutation runs had not touched was the
+code most recently written.
+
+**Where it got to.** 571 mutants in `pgprox` and 124 in `pgload`, with every
+surviving mutant either killed or carrying a written argument.
+
+Two of the survivors were defects rather than missing tests. `Sessions::set_pinned`
+counted a pin for a client that had already gone, so `pgprox_pin_total` could
+climb while `SHOW CLIENTS` showed nothing pinned, and its sibling `shed` had a
+test asserting the opposite since the day it was written. And `apply_quota`
+locked and cloned the whole pool map twice for every configured server, every
+tick.
+
+Three tests did not test what their names said. The sharpest is that every
+`TlsMode::Verified` test in `dial.rs` asserted a *failure*, so nothing had ever
+proved an upstream TLS connection can succeed and the arm performing the
+handshake could be deleted whole.
+
+Two tests were caught being flaky before they landed, both by running them a
+dozen times rather than once. `M17.5` earned that habit by reading one mutation
+sample as fact and writing two baseline arguments the next run contradicted.
+
+**And the measurement turned out to be measuring itself.** `M17.7` found the
+per-test cap and the whole-suite budget had been sized in `M10.13` against a
+suite of 0.321s across four crates, then never re-derived as ten crates and two
+binaries were added. Under the parallelism the sweep actually uses, the worst
+honest test runs 6.66s against a 10s cap. That inflates in both directions: a
+tight budget reports a timeout for a mutant nothing escaped, and a tight cap
+terminates an honest test, which nextest reports as a failure and cargo-mutants
+reads as a **kill for a mutant nothing detected**. Both numbers now carry the
+measurement in the file that sets them.
+
 ## M18: what the deployment story assumes
+
+```bash
+scripts/m18-complete.sh
+```
 
 `M17` closed the last mutation survivor and the backlog went dry, which is when
 the questions that were never tasks become visible. Three of them are about the
