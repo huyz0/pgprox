@@ -189,6 +189,45 @@ for f in .github/workflows/ci.yml .pre-commit-config.yaml; do
 done
 (( skip_leaked == 0 )) && ok "the delegated-check skip is not set in CI or pre-commit"
 
+# --- a library an ADR says it uses is a library that is depended on ----------
+#
+# `M18.1` found ADR 0004 describing "SWIM gossip over UDP using `foca`". There
+# is no `foca` in any `Cargo.toml` and no `UdpSocket` in the workspace: the
+# transport is TCP carrying JSON over a peer list from `--peer`. The ADR had
+# said so since M0 and nothing objected, because an ADR is prose and prose is
+# not checked.
+#
+# The rule is narrow on purpose. It matches the one construction an ADR uses to
+# name a dependency, "using `x`", and asks whether `x` appears as a dependency
+# somewhere. Two ADRs use it: 0003 names `tonic`, which is real, and 0004 named
+# `foca`, which was not. A broader rule over every backticked word would match
+# field names, SQL functions and other crates' internals, and a check that
+# cries wolf is a check people learn to skip.
+#
+# Blockquoted lines are skipped. An ADR that corrects itself quotes what it used
+# to claim, and `0004` quotes the `foca` sentence it was wrong about: matching
+# there would make the check fire on the record of its own finding, and the fix
+# would be to delete the record. A `>` prefix is the Markdown for "this is what
+# was said", which is exactly the thing this rule must not read as a decision.
+# The scan root is a variable for the reason `SHELL_ROOTS` above is one: so a
+# planted case in `tests/gates/negative.sh` never has to write a broken ADR into
+# `product/decisions/` and hope it is cleaned up.
+ADR_ROOTS="${PGPROX_ADR_ROOTS:-product/decisions/*.md}"
+
+adr_named=0
+# shellcheck disable=SC2086
+for adr in $ADR_ROOTS; do
+  [[ -f "$adr" ]] || continue
+  while read -r crate; do
+    [[ -n "$crate" ]] || continue
+    if ! grep -rqE "^(${crate}|${crate} )[[:space:]]*=" Cargo.toml crates/*/Cargo.toml bin/*/Cargo.toml 2>/dev/null; then
+      fail "$adr says it uses \`$crate\`, which is not a dependency of anything: an ADR nobody can check is prose"
+      adr_named=1
+    fi
+  done < <(grep -vE '^[[:space:]]*>' "$adr" | grep -oE 'using `[a-z0-9_-]+`' | sed 's/using `//; s/`//')
+done
+(( adr_named == 0 )) && ok "every library an ADR says it uses is depended on"
+
 # --- every milestone gate is wired into CI -----------------------------------
 #
 # A gate nobody runs is worse than no gate, because the roadmap cites it as

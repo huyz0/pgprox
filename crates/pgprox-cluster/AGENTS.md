@@ -55,5 +55,5 @@ purpose, thousands of times, in milliseconds.
   feeds them. If you add an input to either, check it has a source in the digest
   before assuming a caller can supply it.
 
-See ADR [0004](../../product/decisions/0004-swim-gossip-with-leader-leases.md)
+See ADR [0004](../../product/decisions/0004-pairwise-gossip-with-leader-leases.md)
 and [0005](../../product/decisions/0005-home-node-affinity-by-reservation.md).

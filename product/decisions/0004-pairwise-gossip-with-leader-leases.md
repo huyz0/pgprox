@@ -1,4 +1,10 @@
-# 0004. SWIM gossip for membership, leader leases for quota
+# 0004. Pairwise gossip for membership, leader leases for quota
+
+<!--
+Renamed by `M18.1`, from `0004-swim-gossip-with-leader-leases.md`. The number
+is the identity and does not move; the slug said SWIM and the implementation
+never was. See the note in Decision.
+-->
 
 Status: accepted
 
@@ -14,10 +20,46 @@ and restart, is the hard part of the whole design.
 
 ## Decision
 
-SWIM gossip over UDP using `foca`, seeded from headless Service DNS. One-second
-protocol period, sub-second failure detection. Each message piggybacks a compact
-per-node digest: upstream counts per server, client counts, per-tenant usage for
-homed tenants, and drain mode.
+Pairwise gossip on a one-second period, carrying a compact per-node digest:
+upstream counts per server, client counts, per-tenant usage for homed tenants,
+and drain mode. Liveness is derived from when digests arrive rather than from a
+separate heartbeat, so the message that carries load is the failure detector.
+
+The transport is TCP carrying one newline-delimited JSON object per message.
+Each tick, a node opens a connection to every peer in parallel, sends its own
+digest and reads the peer's back, with a two-second timeout per peer and a 1 MiB
+cap on what one connection may deliver. Peers are addressed by name from a table
+passed as `--peer <id>=<host>:<port>`, which the Helm chart renders from
+`replicaCount` against the headless Service.
+
+A peer is doubted after three seconds of silence and dropped after ten. Those
+are the numbers quorum and leadership actually turn on.
+
+**What this paragraph used to say, and why it is recorded rather than
+overwritten.** Until `M18.1` it read:
+
+> SWIM gossip over UDP using `foca`, seeded from headless Service DNS.
+> One-second protocol period, sub-second failure detection.
+
+No code ever matched it. There is no `foca` dependency in any
+`Cargo.toml` and no `UdpSocket` anywhere in the workspace; the failure detector
+is three and ten seconds, not sub-second; and the peer list is configuration
+rather than discovery. An ADR is the document somebody reads before changing
+this, and that one would have sent them looking for a gossip library that is not
+there. Deleting the sentence would have hidden how long it stood.
+
+Two differences are worth stating rather than leaving to be inferred. **This is
+all-to-all, not SWIM.** SWIM's contribution is O(1) messages per node per round
+through random probing and indirect probes; this sends one message per peer per
+round, which is O(N) per node and O(N²) across the fleet. At the three to five
+pods in the Context that is a handful of small messages a second, and it is the
+reason the number of pods is stated there. A fleet an order of magnitude larger
+would need the real thing. **And discovery is static.** Nothing here learns of a
+node it was not told about, so scaling means changing the peer table, which in
+the chart means changing `replicaCount` and restarting.
+
+Everything decided below this line is intact and is what the property tests
+hold. The transport was wrong in the document; the quota rules were not.
 
 Only *homed* tenants appear in the per-tenant usage, which is what bounds the
 message: a node homes roughly `tenants / nodes` of the fleet, and that is exactly

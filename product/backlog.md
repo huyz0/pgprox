@@ -5642,7 +5642,7 @@ Streaming removes both.
   `M16` and `M17` also get their roadmap rows here, which they never had. That
   is not bookkeeping: `M10.17` established that a milestone whose completion
   condition does not exist cannot be closed, and both closed without one.
-- [ ] `M18.1` ADR 0004 describes a system that was not built. It says "SWIM
+- [x] `M18.1` ADR 0004 describes a system that was not built. It says "SWIM
   gossip over UDP using `foca`, seeded from headless Service DNS. One-second
   protocol period, sub-second failure detection." `bin/pgprox/src/gossip.rs` is
   TCP carrying newline-delimited JSON, addressed by a peer list passed as
@@ -5660,6 +5660,21 @@ Streaming removes both.
   what it used to say and that no code ever matched it, because an ADR that
   quietly changes is worse than one that is wrong; and a check that the names it
   cites can be found, so the next drift is caught rather than read.
+  Done. The file is renamed to `0004-pairwise-gossip-with-leader-leases.md`,
+  because the slug said SWIM too; the number is the identity and does not move,
+  and the one link to it is updated. The old sentence is quoted as a blockquote
+  rather than paraphrased.
+  Two differences got stated rather than left to be inferred: this is all-to-all
+  and not SWIM, which is O(N) messages per node per round against SWIM's O(1),
+  and it is fine only at the three to five pods the Context names; and discovery
+  is static, so nothing learns of a node it was not told about.
+  The check is in `check-drift.sh` and matches one construction, ``using `x` ``,
+  which two ADRs use: `0003` names `tonic` and is right, `0004` named `foca` and
+  was not. It skips blockquoted lines, and that is not a convenience: `0004` now
+  quotes the sentence it was wrong about, so a rule that read blockquotes would
+  fire on the record of its own finding and the only way to quiet it would be to
+  delete the record. All three cases are planted in `tests/gates/negative.sh`,
+  including that one, because a gate nobody has watched fail is a claim.
 - [ ] `M18.2` Nothing separates finding peers from trusting them. The peer table
   is `--peer` flags rendered by a shell loop in the StatefulSet template, and
   membership is derived from digest arrivals. Both are correct and neither is

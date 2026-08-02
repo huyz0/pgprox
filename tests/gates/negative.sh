@@ -238,6 +238,59 @@ case_m1f_adr() {
     env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
 }
 
+# --- check-drift.sh, an ADR that names a library nobody depends on, M18.1 -----
+#
+# ADR 0004 said the gossip transport was "SWIM over UDP using `foca`" from M0
+# until `M18.1`. There was never a `foca` dependency. Prose is not compiled, so
+# the only thing that can catch this is a rule, and a rule nobody has watched
+# fail is a claim.
+case_drift_adr() {
+  echo
+  echo "  check-drift.sh, an ADR naming a library nobody depends on"
+
+  local dir="$WORK/adr"
+  rm -rf "$dir"; mkdir -p "$dir"
+
+  # The exact shape ADR 0004 carried.
+  cat > "$dir/0001-planted.md" <<'PLANT'
+# 0001. A decision about a library that is not here
+
+## Decision
+
+Gossip over UDP using `notacrate`, seeded from DNS.
+PLANT
+  expect_fail "flags an ADR naming a library nothing depends on" \
+    env PGPROX_ADR_ROOTS="$dir/*.md" scripts/check-drift.sh
+
+  # A real dependency must not be flagged, or the rule is useless.
+  cat > "$dir/0001-planted.md" <<'PLANT'
+# 0001. A decision about a library that is here
+
+## Decision
+
+The sidecar client is gRPC using `tonic`.
+PLANT
+  expect_pass "does not flag an ADR naming a real dependency" \
+    env PGPROX_ADR_ROOTS="$dir/*.md" scripts/check-drift.sh
+
+  # And the correction an ADR writes about itself. `0004` quotes the sentence it
+  # was wrong about, so a rule that read blockquotes would fire on the record of
+  # its own finding, and the only way to quiet it would be to delete the record.
+  cat > "$dir/0001-planted.md" <<'PLANT'
+# 0001. A decision that corrects itself
+
+## Decision
+
+The transport is TCP. It used to say:
+
+> Gossip over UDP using `notacrate`, seeded from DNS.
+
+No code ever matched that.
+PLANT
+  expect_pass "does not flag a library named only in a quoted correction" \
+    env PGPROX_ADR_ROOTS="$dir/*.md" scripts/check-drift.sh
+}
+
 # --- check-drift.sh, the gate that cannot fail, M12.6 ------------------------
 #
 # `fail` counts into the parent shell, so calling it from a pipeline's
@@ -655,6 +708,7 @@ if [[ -z "$WANTED" || "$WANTED" == m9-cache ]]; then case_m9_cache; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m11-admission ]]; then case_m11_admission; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m1f-adr ]]; then case_m1f_adr; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == drift-subshell ]]; then case_drift_subshell; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == drift-adr ]]; then case_drift_adr; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == every-gate ]]; then case_every_gate; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m15-missing-test ]]; then case_m15_missing_test; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == wired ]]; then case_wired; ran=1; fi
