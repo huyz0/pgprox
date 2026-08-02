@@ -135,6 +135,50 @@ impl Relay {
         self.holding = false;
     }
 
+    /// Records the runtime settings the client packed into `options`.
+    ///
+    /// libpq puts `-c name=value` there, and `search_path` is the one that
+    /// matters: it decides which schema an unqualified table name resolves to,
+    /// so a session running under the pooled connection's default instead of
+    /// its own reads the wrong tables and says nothing.
+    ///
+    /// `M20.2`. These were parsed into `StartupInfo::options` and read by
+    /// nothing but the test beside it, so a connection-string `search_path` was
+    /// silently dropped.
+    ///
+    /// # Why this pins rather than refusing
+    ///
+    /// pgbouncer refuses the client outright for a startup setting it cannot
+    /// track, and it is right to: it has no way to keep one. This proxy does.
+    /// A setting outside the replayable allowlist arriving here is the same
+    /// thing as the `SET` of one arriving later, and [`PinReason::
+    /// UnreplayableSet`] already covers that: the session keeps one connection
+    /// and gets its setting. Refusing would be giving up a capability the
+    /// design has.
+    ///
+    /// Every setting is recorded, including the ones that pin. Recording is
+    /// what makes them reach the connection at all, and pinning is what makes
+    /// once be enough.
+    pub fn on_startup_settings<'a>(
+        &mut self,
+        settings: impl IntoIterator<Item = (&'a str, &'a str)>,
+        params: &mut pgprox_pool::params::SessionParams,
+    ) -> Option<PinReason> {
+        let mut pinned = None;
+        for (name, value) in settings {
+            params.record(name, value);
+            if !Replayable::DEFAULT.contains(&name.trim().to_ascii_lowercase())
+                && self.pin.pin(PinReason::UnreplayableSet)
+            {
+                pinned = Some(PinReason::UnreplayableSet);
+            }
+        }
+        if pinned.is_some() {
+            self.router.set_pinned(true);
+        }
+        pinned
+    }
+
     /// Feeds in one client frame.
     pub fn on_client(
         &mut self,
@@ -554,5 +598,100 @@ mod tests {
         // that got here.
         let mut relay = Relay::new();
         assert!(!relay.on_server(&ready(TxStatus::Idle)).release);
+    }
+
+    #[test]
+    fn a_search_path_from_the_connection_string_is_replayed_rather_than_dropped() {
+        // `M20.2`. libpq packs `-c search_path=...` into `options`, and until
+        // this existed the proxy parsed it, stored it, and read it nowhere: the
+        // session ran under whatever the pooled connection happened to carry.
+        let mut relay = Relay::new();
+        let mut params = pgprox_pool::params::SessionParams::new();
+
+        assert_eq!(
+            relay.on_startup_settings([("search_path", "tenant_acme")], &mut params),
+            None,
+            "a replayable setting should not pin"
+        );
+        assert_eq!(params.get("search_path"), Some("tenant_acme"));
+        assert!(relay.pin_reason().is_none());
+
+        // And it reaches a connection that does not have it, which is the only
+        // thing recording it was for.
+        assert_eq!(
+            params.replay_onto(&pgprox_pool::params::SessionParams::new()),
+            vec!["SET search_path = tenant_acme".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_startup_setting_outside_the_allowlist_pins_rather_than_being_lost() {
+        // The case pgbouncer refuses the client for. It has no way to keep a
+        // setting it cannot track; this proxy does, and a setting that arrives
+        // at connect is the same thing as the `SET` of one arriving later.
+        let mut relay = Relay::new();
+        let mut params = pgprox_pool::params::SessionParams::new();
+
+        assert_eq!(
+            relay.on_startup_settings([("work_mem", "64MB")], &mut params),
+            Some(PinReason::UnreplayableSet)
+        );
+        assert_eq!(relay.pin_reason(), Some(PinReason::UnreplayableSet));
+
+        // Recorded as well as pinned. Pinning alone would keep the session on
+        // one connection and never put the setting on it.
+        assert_eq!(params.get("work_mem"), Some("64MB"));
+
+        // And the connection stays where it is, however idle the session looks.
+        relay.acquired();
+        assert!(!relay.on_server(&ready(TxStatus::Idle)).release);
+    }
+
+    #[test]
+    fn one_pin_is_reported_once_however_many_settings_caused_it() {
+        // `pgprox_pin_total{reason}` is incremented from this return value, so
+        // a second unreplayable setting reporting again would count one session
+        // twice.
+        let mut relay = Relay::new();
+        let mut params = pgprox_pool::params::SessionParams::new();
+
+        assert_eq!(
+            relay.on_startup_settings([("work_mem", "64MB"), ("temp_buffers", "8MB")], &mut params),
+            Some(PinReason::UnreplayableSet)
+        );
+        assert_eq!(params.get("temp_buffers"), Some("8MB"));
+
+        // A second call on the same session pins nothing new.
+        assert_eq!(
+            relay.on_startup_settings([("seq_page_cost", "1.0")], &mut params),
+            None,
+            "an already pinned session reported a new pin"
+        );
+    }
+
+    #[test]
+    fn a_startup_setting_name_is_matched_however_it_was_cased() {
+        // Postgres parameter names are case-insensitive, and `options` carries
+        // whatever the client typed. `SearchPath` is not a parameter, but
+        // `Search_Path` is the same one as `search_path` and must not pin.
+        let mut relay = Relay::new();
+        let mut params = pgprox_pool::params::SessionParams::new();
+
+        assert_eq!(
+            relay.on_startup_settings([("Search_Path", "tenant_acme")], &mut params),
+            None,
+            "a replayable setting pinned because of its case"
+        );
+        assert_eq!(params.get("search_path"), Some("tenant_acme"));
+    }
+
+    #[test]
+    fn a_client_that_sent_no_options_is_unchanged() {
+        let mut relay = Relay::new();
+        let mut params = pgprox_pool::params::SessionParams::new();
+
+        assert_eq!(relay.on_startup_settings([], &mut params), None);
+        assert!(params.is_empty());
+        assert_eq!(relay.pin_reason(), None);
     }
 }

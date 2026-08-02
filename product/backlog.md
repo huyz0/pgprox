@@ -6023,7 +6023,7 @@ Streaming removes both.
   The fake now removes a closed name and answers `26000` for a `Bind` naming
   something it does not hold. That change alone breaks no other test in the
   file, which is the measure of how blind it was.
-- [ ] `M20.2` **`options` from the startup packet is parsed, stored, and
+- [x] `M20.2` **`options` from the startup packet is parsed, stored, and
   dropped.** `Startup::options` splits `-c name=value` out of the startup
   packet, `StartupInfo::options` carries the result, and its only reader in the
   workspace is the test beside it. Nothing applies it to the upstream
@@ -6047,6 +6047,23 @@ Streaming removes both.
   Acceptance: a client that sets a runtime parameter at connect either gets it,
   or is refused and told which parameter. Silently ignoring it is the one
   option this task exists to remove.
+  Done, and it gets it in both branches, which is better than what was filed.
+  `Relay::on_startup_settings` records every setting so the existing replay puts
+  it on whichever connection the session borrows, and a setting outside the
+  replayable allowlist pins the session with `PinReason::UnreplayableSet`
+  instead of refusing the client. pgbouncer refuses because it has no way to
+  keep a setting it cannot track; this proxy does, and a setting arriving at
+  connect is the same thing as the `SET` of one arriving later. Refusing would
+  have been giving up a capability the design already has.
+  The scope is `options` only. Plain startup parameters raise a question this
+  task should not answer in passing, and are `M20.7`.
+  It cost 72 bytes and there were 72. Carrying the settings as a `Vec` through
+  `Ready::Tenant` and borrowing them across the relay loop put the session
+  future at exactly 5120 bytes against a 5 KiB ceiling, so
+  `one_session_costs_less_than_the_slab_buffer_it_no_longer_holds` failed. The
+  threshold did not move: the settings are a boxed slice, moved into the relay
+  rather than borrowed by it, and dropped before the loop, which is what keeps
+  them out of every one of a hundred thousand connections.
 - [ ] `M20.3` **A `_pq_.` protocol extension is accepted by saying nothing.**
   `encode::negotiate_protocol_version` takes an `unrecognized` list, and every
   caller outside the fuzz seed corpus passes `&[]`. `negotiate_version` decides
@@ -6107,6 +6124,39 @@ Streaming removes both.
   excludes those from its rewriting for this reason.
   Acceptance: an unnamed `Parse` is forwarded as unnamed, and the tests say
   what the connection holds afterwards.
+
+- [ ] `M20.7` **Plain startup parameters are accepted and forwarded nowhere.**
+  `M20.2` did the `options` half, which is where `search_path` lives and where
+  the correctness case is. The other half is the parameters a client sends
+  directly in the startup packet: `client_encoding`, `DateStyle`, `TimeZone`,
+  `application_name`, `extra_float_digits`. `StartupInfo` does not even carry
+  them; `state.rs` keeps `user`, `database` and `options` and drops the rest.
+  The upstream startup packet is `user`, `database` and a hard-coded
+  `application_name=pgprox`.
+  It was left out of `M20.2` because `application_name` is a real question and
+  should not be answered in passing. This proxy sets its own upstream on
+  purpose, so a DBA reading `pg_stat_activity` sees which process holds the
+  connection, and `probe.rs` lists it as the one parameter deliberately not
+  reported back to the client. Honouring a client's `application_name` reverses
+  that. pgbouncer honours it and has `application_name_add_host` for the
+  operability half; this proxy has the tenant and user visible in the pool key
+  already, which may make the trade different here.
+  Note that the two halves disagree until this lands: `options=-c
+  application_name=x` is honoured as of `M20.2` and `application_name=x` is
+  not.
+  Acceptance: the question above is answered in the commit rather than
+  implied, `StartupInfo` carries what the client sent, and a client's
+  `client_encoding` either reaches the server or pins.
+- [ ] `M20.8` **`replication` is ignored rather than answered.** A client
+  asking for a replication connection gets an ordinary one, and finds out when
+  `IDENTIFY_SYSTEM` fails oddly. pgbouncer checks the parameter before anything
+  else and routes the connection differently.
+  Nothing in this proxy could serve one: a replication connection is a session
+  by definition, and `CopyBothResponse` pins, so the honest answers are to
+  refuse it by name or to pin it from the startup packet. Ignoring it is the
+  one that produces a confusing failure a long way from its cause.
+  Acceptance: a client that asks for replication is told something true at
+  connect.
 
 ### What was checked and found sound
 

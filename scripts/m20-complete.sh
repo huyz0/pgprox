@@ -63,4 +63,17 @@ run_test pgprox-session "resume::tests::closing_a_statement_this_session_never_p
 run_test pgprox "serve::tests::a_statement_the_client_closed_is_prepared_again_before_the_next_bind" \
   "a client that closes and re-prepares a statement is not answered 26000"
 
+# --- M20.2: the connection string's settings reach the connection ------------
+#
+# The end-to-end one is the claim: the client sends no `SET` at all, so anything
+# on the wire naming `search_path` got there from the startup packet. The
+# sans-I/O one is the branch it cannot show, which is a setting the allowlist
+# will not replay pinning the session instead of being lost.
+run_test pgprox "serve::tests::a_search_path_from_the_connection_string_reaches_the_server" \
+  "a search_path from the connection string reaches the server"
+run_test pgprox-session "relay::tests::a_startup_setting_outside_the_allowlist_pins_rather_than_being_lost" \
+  "a startup setting that cannot be replayed pins rather than being dropped"
+run_test pgprox-session "relay::tests::one_pin_is_reported_once_however_many_settings_caused_it" \
+  "two unreplayable settings are one pin, counted once"
+
 finish

@@ -387,6 +387,19 @@ enum Ready {
         grant: Box<Grant>,
         /// The cancel key issued for it.
         conn: ConnId,
+        /// The runtime settings the client packed into its `options` startup
+        /// parameter, in the order it sent them.
+        ///
+        /// Carried this far because they belong to the session rather than to
+        /// the handshake, and the session is built after it. `M20.2`.
+        ///
+        /// A boxed slice rather than a `Vec`, and moved into the relay rather
+        /// than borrowed by it, for the reason `grant` beside it is boxed: this
+        /// value is read once, before the first frame, and every byte it
+        /// occupies is occupied for the life of the connection.
+        /// `one_session_costs_less_than_the_slab_buffer_it_no_longer_holds` had
+        /// 72 bytes of headroom when this was written.
+        settings: Box<[(String, String)]>,
     },
     /// A static user on the `SHOW` surface, which reaches no database at all.
     Admin,
@@ -420,7 +433,11 @@ where
             drop(admitted);
             crate::admin::serve(wire, &context.observatory).await
         }
-        Ready::Tenant { grant, conn } => {
+        Ready::Tenant {
+            grant,
+            conn,
+            settings,
+        } => {
             // The signal a shed decision fires. Registered with the session
             // rather than held by it, because the decision is the node's and
             // the session is a task on a socket.
@@ -438,7 +455,7 @@ where
                 grant.pool.max_upstream.unwrap_or(0),
                 shed.clone(),
             );
-            let outcome = relay(wire, context, &grant, conn, &shed).await;
+            let outcome = relay(wire, context, &grant, conn, &shed, settings).await;
             drop(admitted);
             outcome
         }
@@ -459,7 +476,10 @@ async fn authenticate<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let grant = match credential {
+    // The admin arm returns rather than yielding: a static user reaches no
+    // database, so it has no connection to set anything on and no settings to
+    // carry.
+    let (grant, settings) = match credential {
         Credential::Scram => {
             // A static user never reaches a database: it authenticates against
             // this node and gets the `SHOW` surface. An operator credential
@@ -497,8 +517,12 @@ where
         }
         Credential::Jwt => {
             let startup = handshake.startup().ok_or(ShellError::Disconnected)?.clone();
+            // Kept before the token exchange consumes it. These are the
+            // client's own runtime settings, and until `M20.2` this was the
+            // last place they existed.
+            let settings: Box<[(String, String)]> = startup.options.clone().into();
             let mut auth = TokenAuth::new(&startup, std::net::IpAddr::from([0, 0, 0, 0]));
-            until(
+            let grant = until(
                 deadline,
                 Box::pin(authenticate_token(
                     wire,
@@ -507,7 +531,8 @@ where
                     std::time::SystemTime::now(),
                 )),
             )
-            .await?
+            .await?;
+            (grant, settings)
         }
     };
 
@@ -555,7 +580,30 @@ where
     Ok(Ready::Tenant {
         grant: Box::new(grant),
         conn,
+        settings,
     })
+}
+
+/// Puts the client's connection-string settings on the session, before it runs.
+///
+/// Before the first frame, because these are what the session already is rather
+/// than something it does: a `search_path` from the connection string has to be
+/// on the first connection this session borrows, not the second.
+///
+/// Borrows the settings; the caller drops them, so nothing about them is alive
+/// across the relay loop's awaits. See the field's own note.
+fn apply_startup_settings(
+    live: &mut Live,
+    context: &Context,
+    conn: ConnId,
+    settings: &[(String, String)],
+) {
+    if let Some(reason) = live.relay.on_startup_settings(
+        settings.iter().map(|(n, v)| (n.as_str(), v.as_str())),
+        &mut live.session.params,
+    ) {
+        context.sessions.set_pinned(conn, reason.as_str());
+    }
 }
 
 /// Moves frames between a client and the upstream connections it borrows.
@@ -565,12 +613,20 @@ async fn relay<S>(
     grant: &Grant,
     conn: ConnId,
     shed: &crate::run::Shutdown,
+    settings: Box<[(String, String)]>,
 ) -> Result<(), ShellError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut body = Vec::new();
     let mut live = Live::new(context, grant);
+
+    apply_startup_settings(&mut live, context, conn, &settings);
+    // Explicitly, and this is the point rather than tidiness: a future is the
+    // union of everything alive across its awaits, and the loop below is
+    // nothing but awaits. Dropping here is what keeps these bytes out of every
+    // one of a hundred thousand connections.
+    drop(settings);
 
     loop {
         // A session between transactions leaves as soon as the node says it is
@@ -3463,11 +3519,21 @@ mod tests {
     }
 
     fn startup_and_password(token: &str) -> Vec<u8> {
+        startup_with_options(token, None)
+    }
+
+    /// The same, with runtime settings packed into `options` the way libpq
+    /// packs a connection string's `options=` into the startup packet.
+    fn startup_with_options(token: &str, options: Option<&str>) -> Vec<u8> {
+        let mut params = vec![("user", "acme_app"), ("database", "acme")];
+        if let Some(options) = options {
+            params.push(("options", options));
+        }
         let mut out = Vec::new();
         pgprox_proto::encode_frontend::startup_message(
             &mut out,
             pgprox_proto::encode::PROTOCOL_3_0,
-            &[("user", "acme_app"), ("database", "acme")],
+            &params,
         );
         pgprox_proto::encode_frontend::password_message(&mut out, token);
         out
@@ -5051,6 +5117,53 @@ mod tests {
         assert_eq!(tag, Tag::ERROR_RESPONSE);
         assert!(String::from_utf8_lossy(&body).contains("08P01"));
         assert!(served.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_search_path_from_the_connection_string_reaches_the_server() {
+        // `M20.2`. libpq packs `options=-c search_path=...` into the startup
+        // packet, and the proxy parsed it into `StartupInfo::options` and read
+        // it nowhere. So every statement ran under whatever `search_path` the
+        // pooled connection happened to carry, which in a proxy that separates
+        // tenants is the wrong schema and no error.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_with_options(
+                "good.token",
+                Some("-c search_path=tenant_acme"),
+            ))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        // The client never sends a `SET`. Anything on the wire naming
+        // `search_path` came from the startup packet by way of the replay.
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
+        client.write_all(&query).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        assert!(
+            statements_seen(addr)
+                .iter()
+                .any(|sql| sql.contains("search_path") && sql.contains("tenant_acme")),
+            "the connection-string search_path never reached the server: {:?}",
+            statements_seen(addr)
+        );
+
+        drop(client);
+        let _ = served.await;
     }
 
     #[tokio::test]
