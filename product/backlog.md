@@ -5883,7 +5883,7 @@ Streaming removes both.
   now recorded in `gossip_over_peers` beside the model it corrects, because the
   next person to model gossip will reach for one-way sends for the same reason
   this did.
-- [ ] `M19.6` A `pgload` test fails about one run in three, on a clean tree.
+- [x] `M19.6` A `pgload` test fails about one run in three, on a clean tree.
   `run::tests::a_drain_mid_run_is_a_relocation_rather_than_an_error` failed two
   of six consecutive runs with no change to `pgload` or `pgprox-load` in the
   working tree. Tripped over by `M19.4`'s workspace-wide run, which is the only
@@ -5901,3 +5901,47 @@ Streaming removes both.
   deadline that the machine decides, the fix is a paused clock or an assertion
   that does not depend on ordering, not a longer timeout: `M17.7` is what
   happens when a timing constant is widened without deriving it.
+  Done, and it was neither a clock nor a timeout. The fake sent its `57P01` at
+  every other *statement*, counted by one atomic that four connections shared,
+  and twenty percent of the workload's transactions are wrapped in `BEGIN` and
+  `COMMIT`. When the counter landed inside one of those, the client had already
+  had a statement succeed, so `Failed::work_lost` was true, `is_relocation()`
+  was false, and the run counted an error. The test asserting `errors == 0` was
+  therefore asserting something the fake did not guarantee, and the scheduler
+  picked. The fake now refuses only between transactions, which is what a
+  draining node does; the lost-transaction case it used to produce by accident
+  is asserted on purpose by
+  `client::tests::a_shutdown_after_a_statement_has_run_is_a_loss_rather_than_a_relocation`.
+  Measured rather than estimated: at five times the exposure the old fake
+  failed eight runs out of eight and the new one passed eight out of eight, and
+  at the committed one second the test passed twenty consecutive runs and the
+  whole `pgload` suite six.
+  The production code was right throughout. `M19.5` was the same mistake in the
+  other direction, so the two go together: a fake that models the wrong thing
+  produces a finding about the system that is really a finding about the fake.
+- [ ] `M19.7` A `pgprox` test passes only because nextest gives it a process.
+  `logging::tests::installing_twice_is_not_a_panic` asserts that its own call to
+  `logging::init` is the first one in the process, and justifies that with a
+  comment saying "this is the only caller of `init` in the test binary". That is
+  not true. `entry::tests::a_bad_configuration_path_fails_before_the_runtime_does_anything`
+  calls `run_with`, which builds a runtime and blocks on `serve`, and `serve`'s
+  first line is `crate::logging::init()`. Two tests in one binary install the
+  process-wide subscriber and only one of them may win.
+  It is invisible under the gate and deterministic outside it. The tier 1 job
+  runs the suite through `cargo llvm-cov nextest`, which gives every test its
+  own process, so the whole workspace is green and has been. Plain
+  `cargo test -p pgprox --lib` failed eight runs out of eight on this machine,
+  which is what a developer or an agent reaching for the obvious command gets.
+  Found by `M19.6`, which ran the workspace under `cargo test` rather than under
+  nextest while looking for a different flake.
+  The second half is the name. "fails before the runtime does anything" is what
+  the entry test is called, and the runtime does two things before that failure:
+  it starts, and it installs logging for the rest of the process.
+  Acceptance: `cargo test -p pgprox --lib` passes twenty consecutive runs, the
+  comment in `installing_twice_is_not_a_panic` says something that is true of
+  the binary as it stands, and whatever makes it true is not "run it under
+  nextest". Note that `INSTALLED` is already the idempotence the module set out
+  to provide, so the assertion worth keeping is about `init`'s two return values
+  rather than about which caller came first: `M17.4` added `assert!(first)`
+  because `init` returning a constant `false` had survived mutation, and that
+  mutant has to stay dead.

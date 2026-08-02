@@ -641,14 +641,18 @@ mod tests {
             /// or anything else, which is an error.
             draining: bool,
         },
-        /// Answers, then fails every other statement with a `57P01`.
+        /// Answers, and sends `57P01` at every other transaction boundary.
         ///
         /// `M17.5`. A drain does not only refuse new connections: a node
         /// draining under load sends `57P01` to a client that is already
         /// connected and between transactions, which is the relocation counter
         /// on the transaction path. No fake produced one, so that counter had
         /// no observable effect.
-        DrainingEveryOtherStatement,
+        ///
+        /// `M19.6` named it for the boundary rather than for the counter. It
+        /// fired on every other *statement*, which put some of its `57P01`s
+        /// inside a transaction, where the same code means something else.
+        DrainingBetweenTransactions,
         /// Answers, then fails every other statement with a `53300`.
         ///
         /// Every other rather than every one, because a run in which nothing
@@ -677,6 +681,41 @@ mod tests {
                 server: pgprox_core::ids::ServerId::new("primary", 5432),
                 cap: 60,
             }
+        }
+    }
+
+    /// Whether the fake refuses this statement, and with what.
+    ///
+    /// `M19.6`. The drain arm is the reason this is a function rather than two
+    /// conditions inline. A `57P01` means one of two different things depending
+    /// on where in a transaction it lands: between transactions it is a node
+    /// relocating a client and nothing was lost, and after a statement has
+    /// succeeded it is the force-close at the end of `drain_grace` and a
+    /// transaction went with it. That is the distinction `Failed::work_lost`
+    /// exists for.
+    ///
+    /// This fake used to fire on every other *statement*, counted by one atomic
+    /// four connections shared, so which of the two things it produced was
+    /// decided by the scheduler. The test that asserts the first got the second
+    /// about one run in twenty-five. A drain is sent between transactions, so
+    /// that is the only place this sends one, and the lost-transaction side is
+    /// asserted deterministically over a duplex stream by `client::tests::
+    /// a_shutdown_after_a_statement_has_run_is_a_loss_rather_than_a_relocation`.
+    ///
+    /// `53300` needs no such rule: it is an error wherever it lands, so where
+    /// it lands cannot change what the run counts.
+    fn refuses(
+        mode: Fake,
+        in_transaction: bool,
+        served: &std::sync::atomic::AtomicU64,
+    ) -> Option<pgprox_core::error::ClientError> {
+        let every_other = || served.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 2 == 1;
+        match mode {
+            Fake::DrainingBetweenTransactions if !in_transaction && every_other() => {
+                Some(refusal(true))
+            }
+            Fake::FullEveryOtherStatement if every_other() => Some(refusal(false)),
+            _ => None,
         }
     }
 
@@ -728,6 +767,11 @@ mod tests {
                     encode::ready_for_query(&mut out, TxStatus::Idle);
                     let _ = socket.write_all(&out).await;
 
+                    // Whether this connection is between `BEGIN` and `COMMIT`,
+                    // which is the only thing that decides what a `57P01` here
+                    // means. See the drain arm below.
+                    let mut in_transaction = false;
+
                     loop {
                         let mut header = [0_u8; 5];
                         if socket.read_exact(&mut header).await.is_err() {
@@ -750,40 +794,32 @@ mod tests {
                             continue;
                         }
 
+                        // `BEGIN` and `COMMIT` are the only two statements the
+                        // client sends with a fixed text, and both go as simple
+                        // queries, so the transaction boundary is readable from
+                        // the wire without parsing anything else.
+                        let text = String::from_utf8_lossy(&body);
+                        let opens = tag == Tag::QUERY && text.starts_with("BEGIN");
+                        let closes = tag == Tag::QUERY && text.starts_with("COMMIT");
+
+                        let refused = refuses(mode, in_transaction, &served);
                         let mut out = Vec::new();
-                        let every_other =
-                            matches!(
-                                mode,
-                                Fake::FullEveryOtherStatement | Fake::DrainingEveryOtherStatement
-                            ) && served.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 2 == 1;
-                        if every_other && matches!(mode, Fake::DrainingEveryOtherStatement) {
-                            encode::error_response(
-                                &mut out,
-                                &pgprox_core::error::ClientError::Draining,
-                            );
-                            encode::ready_for_query(&mut out, TxStatus::Idle);
-                            let _ = socket.write_all(&out).await;
-                            continue;
+                        match &refused {
+                            Some(error) => encode::error_response(&mut out, error),
+                            None => encode::command_complete(&mut out, "SELECT 1"),
                         }
-                        let full = every_other;
-                        if full {
-                            // The message a full upstream pool sends, named
-                            // server and all, because what this test is about
-                            // is that the message survives to the report.
-                            encode::error_response(
-                                &mut out,
-                                &pgprox_core::error::ClientError::UpstreamAtCap {
-                                    server: pgprox_core::ids::ServerId::new("primary", 5432),
-                                    cap: 60,
-                                },
-                            );
-                            encode::ready_for_query(&mut out, TxStatus::Idle);
-                        } else {
-                            encode::command_complete(&mut out, "SELECT 1");
-                            encode::ready_for_query(&mut out, TxStatus::Idle);
-                        }
+                        encode::ready_for_query(&mut out, TxStatus::Idle);
                         if socket.write_all(&out).await.is_err() {
                             return;
+                        }
+                        // Moved only on the answered path: a `BEGIN` that was
+                        // refused opened nothing.
+                        if refused.is_none() {
+                            if opens {
+                                in_transaction = true;
+                            } else if closes {
+                                in_transaction = false;
+                            }
                         }
                     }
                 });
@@ -906,7 +942,18 @@ mod tests {
         // tells its connected clients to go elsewhere between transactions, and
         // a run that scored those as errors would report a clean restart as a
         // failure, which is the number `M11` drew conclusions from.
-        let addr = fake_server(Fake::DrainingEveryOtherStatement).await;
+        //
+        // `M19.6`. This failed about one run in twenty-five, and the cause was
+        // in the fake rather than in the counter. It sent its `57P01` at every
+        // other *statement*, chosen by one counter shared across four
+        // connections, so on the twenty percent of transactions that are
+        // wrapped in `BEGIN` and `COMMIT` the refusal sometimes landed after a
+        // statement had already succeeded. That is a lost transaction and is
+        // correctly an error, so the fake was producing the case this test
+        // exists to distinguish from and the scheduler was choosing which. The
+        // fake now refuses only between transactions, which is what a drain
+        // does, and `errors == 0` holds by construction rather than by luck.
+        let addr = fake_server(Fake::DrainingBetweenTransactions).await;
         let report = run(&options(addr)).await.unwrap();
 
         assert!(report.transactions > 0, "nothing succeeded: {report:?}");

@@ -102,4 +102,19 @@ run_test pgprox-cluster "coordinator::tests::a_peer_table_cannot_make_liveness_o
 run_test pgprox-cluster "coordinator::tests::a_peer_table_a_node_never_hears_from_moves_no_quorum" \
   "a peer nothing has gossiped with moves no quorum"
 
+# --- M19.6: the drain fake refuses where a drain refuses ---------------------
+#
+# Run once, which is what this gate can honestly claim. The failure it fixed
+# showed about one run in twenty-five, so one pass here is not evidence that it
+# is gone and this line does not say it is: what it catches is the fake losing
+# its boundary rule outright, which is the regression that would put the flake
+# back. The evidence for the flake being gone is in `product/backlog.md` and is
+# eight runs out of eight at five times the exposure, against zero out of eight
+# without the rule, plus twenty consecutive runs at the committed duration.
+# `M16.8` set that shape and added no gate at all.
+run_test pgload "run::tests::a_drain_mid_run_is_a_relocation_rather_than_an_error" \
+  "a drain between transactions is a relocation and not a lost transaction"
+run_test pgload "client::tests::a_shutdown_after_a_statement_has_run_is_a_loss_rather_than_a_relocation" \
+  "the same code after a statement has run is the loss it used to produce by luck"
+
 finish
