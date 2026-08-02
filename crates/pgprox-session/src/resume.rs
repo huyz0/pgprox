@@ -164,6 +164,41 @@ pub fn observe_statement(
     true
 }
 
+/// Records a protocol `Close` of a prepared statement.
+///
+/// Returns whether anything was forgotten, so a caller can count it the way
+/// [`observe_statement`] counts a `DISCARD ALL`.
+///
+/// # The half that was missing
+///
+/// A client's `Close` is rewritten to this proxy's global name and forwarded,
+/// so the server really does deallocate it. Nothing told either map, and the
+/// connection's record went on claiming the statement was held. The next `Bind`
+/// of that SQL therefore took the already-prepared path and named a statement
+/// the server had dropped: `26000 prepared statement "pgprox_..." does not
+/// exist`.
+///
+/// It outlives the session that caused it. The connection goes back to the pool
+/// still mis-recorded, so the next session to bind that SQL on it fails too,
+/// until the connection is reaped or the entry is evicted. That is the same
+/// shape as `M15.3`'s `DISCARD ALL`, in the one path that fixed left open, and
+/// `M16.7`'s note about under-clearing producing "does not exist on a
+/// connection the proxy thought was warm" describes it exactly.
+///
+/// Both maps, for the reasons [`observe_statement`] gives: the client knows it
+/// closed the statement and will re-parse, and the server has dropped it.
+pub fn on_close(
+    session: &mut SessionStatements,
+    connection: &mut ConnectionStatements,
+    client_name: &str,
+) -> bool {
+    let Some(closed) = session.close(client_name) else {
+        return false;
+    };
+    connection.forget(&closed.global);
+    true
+}
+
 /// Makes sure the target connection holds the statement a `Bind` names.
 ///
 /// # Errors
@@ -473,6 +508,68 @@ mod tests {
         assert!(
             before_bind(&session, &mut connection, "S_1").is_err(),
             "a name the client must re-parse was still bindable"
+        );
+    }
+
+    #[test]
+    fn a_protocol_close_makes_both_maps_forget() {
+        // The same desync as `DISCARD ALL`, through the door that fix left
+        // open. The client's `Close` is rewritten to the global name and
+        // forwarded, so the server deallocates it; a connection that went on
+        // claiming to hold it answered the next `Bind` with `26000`.
+        let mut session = SessionMemory::default();
+        let mut connection = capped(10);
+
+        session.statements.parse("S_1", "SELECT $1");
+        before_bind(&session, &mut connection, "S_1").unwrap();
+        assert!(!connection.statements.is_empty(), "nothing was prepared");
+
+        assert!(on_close(
+            &mut session.statements,
+            &mut connection.statements,
+            "S_1"
+        ));
+
+        assert!(
+            connection.statements.is_empty(),
+            "the connection still believes it holds a statement the server dropped"
+        );
+
+        // And the connection is not poisoned for whoever borrows it next: a
+        // session that prepares the same SQL gets a real `Parse` rather than
+        // the already-held path. This is the part that outlives the session
+        // that closed it.
+        let mut next = SessionMemory::default();
+        next.statements.parse("other_name", "SELECT $1");
+        assert!(
+            matches!(
+                before_bind(&next, &mut connection, "other_name")
+                    .unwrap()
+                    .last(),
+                Some(Step::Prepare { .. })
+            ),
+            "the next session to borrow this connection would bind a dropped statement"
+        );
+    }
+
+    #[test]
+    fn closing_a_statement_this_session_never_parsed_forgets_nothing() {
+        // A `Close` of an unknown name is not an error the proxy has to raise:
+        // Postgres itself answers `CloseComplete` for one. What it must not do
+        // is drop something else, and the return value says nothing happened.
+        let mut session = SessionMemory::default();
+        let mut connection = capped(10);
+        session.statements.parse("S_1", "SELECT $1");
+        before_bind(&session, &mut connection, "S_1").unwrap();
+
+        assert!(!on_close(
+            &mut session.statements,
+            &mut connection.statements,
+            "never_parsed"
+        ));
+        assert!(
+            !connection.statements.is_empty(),
+            "an unrelated Close dropped a statement the connection still holds"
         );
     }
 

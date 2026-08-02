@@ -1505,6 +1505,18 @@ where
         );
     }
 
+    // The protocol form of the same thing, and here for the same reason: this
+    // is the first point where the connection the `Close` is about to reach is
+    // known. The name has already been rewritten into `onward` by `observe`, so
+    // dropping the session's entry now cannot leave the frame untranslatable.
+    if let pgprox_proto::frontend::FrontendMessage::Close {
+        target: pgprox_proto::frontend::Target::Statement,
+        name,
+    } = message
+    {
+        pgprox_session::resume::on_close(&mut session.statements, &mut upstream.statements, name);
+    }
+
     // A `Parse` or a `Bind` names a statement the connection this session was
     // just lent may never have seen, or may already hold.
     match ready_statement(upstream, message, session) {
@@ -4219,7 +4231,43 @@ mod tests {
                 out.extend_from_slice(&[b't', 0, 0, 0, 6, 0, 0]);
                 out.extend_from_slice(&[b'n', 0, 0, 0, 4]);
             }
-            b'B' => out.extend_from_slice(&[b'2', 0, 0, 0, 4]),
+            // Close of a statement. The server deallocates it, so this
+            // connection no longer holds it and a later `Bind` naming it must
+            // fail. Modelled because the proxy's record of what a connection
+            // holds is only correct if something notices when it is not, which
+            // is the argument the `42P05` arm above already makes for `Parse`.
+            b'C' if body.first() == Some(&b'S') => {
+                // The target byte, then the name.
+                let rest = &body[1..];
+                let name = String::from_utf8_lossy(
+                    &rest[..rest.iter().position(|b| *b == 0).unwrap_or(0)],
+                )
+                .into_owned();
+                parsed.remove(&name);
+                out.extend_from_slice(&[b'3', 0, 0, 0, 4]);
+            }
+            b'B' => {
+                // The statement name is the second string: the portal comes
+                // first. A `Bind` naming a statement this connection does not
+                // hold is `26000`, which is what Postgres answers and what a
+                // proxy that lost track of a `Close` would provoke.
+                let after_portal = body.iter().position(|b| *b == 0).map_or(0, |at| at + 1);
+                let rest = &body[after_portal..];
+                let name = String::from_utf8_lossy(
+                    &rest[..rest.iter().position(|b| *b == 0).unwrap_or(0)],
+                )
+                .into_owned();
+                if name.is_empty() || parsed.contains(&name) {
+                    out.extend_from_slice(&[b'2', 0, 0, 0, 4]);
+                } else {
+                    let text = format!(
+                        "SERROR\0C26000\0Mprepared statement \"{name}\" does not exist\0\0"
+                    );
+                    out.push(Tag::ERROR_RESPONSE.get());
+                    out.extend_from_slice(&u32::try_from(text.len() + 4).unwrap().to_be_bytes());
+                    out.extend_from_slice(text.as_bytes());
+                }
+            }
             b'E' => completion(&mut out),
             // Sync, and only Sync, produces a ReadyForQuery.
             b'S' => encode::ready_for_query(&mut out, TxStatus::Idle),
@@ -4359,6 +4407,76 @@ mod tests {
             );
         }
         tags
+    }
+
+    #[tokio::test]
+    async fn a_statement_the_client_closed_is_prepared_again_before_the_next_bind() {
+        // A driver rotating its statement cache sends `Close` and then re-uses
+        // the name. The `Close` is rewritten to this proxy's global name and
+        // forwarded, so the server deallocates it; if nothing tells the
+        // connection's record that, the next `Bind` names a statement the
+        // server no longer has.
+        let addr = fake_postgres_extended().await;
+        let context = Arc::new(context_for(addr));
+        let (mut client, served) = extended_client(&context).await;
+
+        let mut first = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut first, "s1", "SELECT $1");
+        pgprox_proto::encode_frontend::bind_with_parameters(
+            &mut first,
+            "",
+            "s1",
+            &[Some(b"1".as_slice())],
+        );
+        pgprox_proto::encode_frontend::execute(&mut first, "");
+        pgprox_proto::encode_frontend::sync(&mut first);
+        client.write_all(&first).await.unwrap();
+        loop {
+            if expect(&mut client).await.0 == Tag::READY_FOR_QUERY {
+                break;
+            }
+        }
+
+        // The client gives the name back.
+        let mut closing = Vec::new();
+        pgprox_proto::encode_frontend::close_statement(&mut closing, "s1");
+        pgprox_proto::encode_frontend::sync(&mut closing);
+        client.write_all(&closing).await.unwrap();
+        loop {
+            if expect(&mut client).await.0 == Tag::READY_FOR_QUERY {
+                break;
+            }
+        }
+
+        // And prepares it again, which is the whole point of having closed it.
+        let mut again = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut again, "s1", "SELECT $1");
+        pgprox_proto::encode_frontend::bind_with_parameters(
+            &mut again,
+            "",
+            "s1",
+            &[Some(b"1".as_slice())],
+        );
+        pgprox_proto::encode_frontend::execute(&mut again, "");
+        pgprox_proto::encode_frontend::sync(&mut again);
+        client.write_all(&again).await.unwrap();
+
+        let mut saw = Vec::new();
+        loop {
+            let (tag, body) = expect(&mut client).await;
+            saw.push((tag, String::from_utf8_lossy(&body).into_owned()));
+            if tag == Tag::READY_FOR_QUERY {
+                break;
+            }
+        }
+        assert!(
+            !saw.iter()
+                .any(|(tag, body)| *tag == Tag::ERROR_RESPONSE && body.contains("26000")),
+            "the bind named a statement the server had deallocated: {saw:?}"
+        );
+
+        drop(client);
+        let _ = served.await;
     }
 
     #[tokio::test]

@@ -49,4 +49,18 @@ run_test pgprox-session "resume::tests::discard_all_makes_both_maps_forget" \
 run_test pgprox-session "resume::tests::a_re_parse_after_discard_all_prepares_again_rather_than_assuming" \
   "a re-parse after DISCARD ALL prepares rather than assuming"
 
+# --- M20.1: and the half that did not ----------------------------------------
+#
+# Two tests for one defect, deliberately. The first is the rule in the layer
+# that owns it, with no socket. The second is the whole path, against a fake
+# that had to learn `Close` before it could show anything: it answered one from
+# its simple-query arm for four milestones, which is why four readings of this
+# code found nothing here.
+run_test pgprox-session "resume::tests::a_protocol_close_makes_both_maps_forget" \
+  "a closed statement is forgotten by the session and by the connection"
+run_test pgprox-session "resume::tests::closing_a_statement_this_session_never_parsed_forgets_nothing" \
+  "a Close of an unknown name drops nothing else"
+run_test pgprox "serve::tests::a_statement_the_client_closed_is_prepared_again_before_the_next_bind" \
+  "a client that closes and re-prepares a statement is not answered 26000"
+
 finish

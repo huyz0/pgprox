@@ -5987,7 +5987,7 @@ Streaming removes both.
   opinion to check against.
   Same rule as `M19.0`: the gate exists from the first commit and gains a check
   as each task lands.
-- [ ] `M20.1` **A client `Close` of a prepared statement poisons the pooled
+- [x] `M20.1` **A client `Close` of a prepared statement poisons the pooled
   connection.** A protocol `Close` is rewritten to this proxy's global name and
   forwarded, so the server really does deallocate the statement. Neither map
   hears about it. `ConnectionStatements` goes on claiming the connection holds
@@ -6012,6 +6012,17 @@ Streaming removes both.
   halves unmodelled.
   Acceptance: the fake models `Close` and refuses a `Bind` for a statement it
   does not hold, and both new tests fail without the fix.
+  Done. `resume::on_close` drops the statement from both maps, called from
+  `send_upstream` for the same reason the `DISCARD ALL` half is called there:
+  it is the first point where the connection the frame is about to reach is
+  known, and the name has already been rewritten into the outgoing frame by
+  then, so dropping the session's entry cannot leave it untranslatable.
+  Checked rather than assumed: with `on_close` made a no-op, the sans-I/O test
+  and the end-to-end one both fail; the guard test for an unknown name passes,
+  as a test asserting that nothing happens should.
+  The fake now removes a closed name and answers `26000` for a `Bind` naming
+  something it does not hold. That change alone breaks no other test in the
+  file, which is the measure of how blind it was.
 - [ ] `M20.2` **`options` from the startup packet is parsed, stored, and
   dropped.** `Startup::options` splits `-c name=value` out of the startup
   packet, `StartupInfo::options` carries the result, and its only reader in the
