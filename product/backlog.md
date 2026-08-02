@@ -5775,7 +5775,7 @@ Streaming removes both.
   condition is part of the milestone, so an open milestone's gate cannot wait
   until the end. It checks what has landed, which today is the spec, and gains
   a check as each task lands. That keeps it green while CI runs it.
-- [ ] `M19.1` `PeerSource`, its static implementation, its fake, and the ADR.
+- [x] `M19.1` `PeerSource`, its static implementation, its fake, and the ADR.
   One commit, because non-negotiable 6 says a `pgprox-core` contract arrives
   whole and `scripts/check-core-contract.sh` refuses the alternative.
   Shaped like `ConfigSource` deliberately: a watch receiver, an `is_healthy`
@@ -5791,6 +5791,13 @@ Streaming removes both.
   can go stale, the `Arc` forwarding impl, and an ADR recording the
   discovery/liveness split. Tier 1 tests per the spec's `tests.md`, including
   the negative `is_healthy` case that mutant survived on `ConfigSource`.
+  Done, as ADR 0023. One thing the spec did not anticipate: `run_loop`'s default
+  could not be tested with a timeout, because this crate depends on tokio only
+  for `sync` and the time driver would be a dependency added for one test.
+  `config.rs` had already solved that by polling the future by hand with a noop
+  waker, so this matches it rather than inventing a second answer, which is the
+  same reasoning that made `PeerSource` look like `ConfigSource` in the first
+  place.
 - [ ] `M19.2` `run_with_peers` takes the source, and `entry.rs` builds a
   `StaticPeers` from the `--peer` flags. The signature changes and the three
   consumers still read the table once, at the top of the function, so nothing

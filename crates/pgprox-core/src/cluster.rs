@@ -10,9 +10,12 @@
 //! Partitions must therefore cause under-subscription, never over-subscription.
 //! Slow beats down.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
+
+use tokio::sync::watch;
 
 use crate::ids::{NodeId, ServerId, TenantId};
 
@@ -287,8 +290,119 @@ impl<T: ClusterCoordinator + ?Sized> ClusterCoordinator for Arc<T> {
     }
 }
 
+/// The peers a node gossips with, by node id, as `host:port`.
+///
+/// Never includes the local node. A node gossiping with itself is a peer that
+/// can never be down, which would make quorum unfalsifiable.
+pub type PeerTable = BTreeMap<NodeId, String>;
+
+/// Where a node learns which peers to gossip with.
+///
+/// Discovery, and deliberately not liveness. A source may cause this node to
+/// gossip with more peers, or to treat one as draining sooner than gossip
+/// would. **It may never cause a node to be counted alive that gossip has not
+/// heard from.**
+///
+/// That rule is the whole reason this is a separate thing from membership.
+/// `pgprox_cluster::membership` counts a peer alive from digests that
+/// *arrived*, which is what makes a one-way network failure safe: a node that
+/// can still send but no longer receives ages its peers out and steps down. A
+/// source backed by an external service is a third party, and a node
+/// partitioned from its peers but still able to reach that service would be
+/// told the fleet is healthy while the other side elected a replacement. That
+/// is the two-leaders case ADR 0004's majority rule exists to prevent, and this
+/// crate's invariant is that partitions cause under-subscription and never the
+/// reverse.
+///
+/// Getting discovery wrong costs a failed dial, which the failure detector
+/// already handles. Getting liveness wrong costs the one property with no
+/// graceful degradation.
+///
+/// Shaped like [`crate::config::ConfigSource`] on purpose. Both answer "a thing
+/// that changes while a node runs", and a second mechanism for that would be a
+/// second set of mistakes.
+///
+/// See ADR 0004 and ADR 0023.
+#[async_trait::async_trait]
+pub trait PeerSource: Send + Sync + fmt::Debug {
+    /// The peers this node should gossip with.
+    fn peers(&self) -> Arc<PeerTable>;
+
+    /// Observes changes. The receiver always holds the latest table.
+    fn watch(&self) -> watch::Receiver<Arc<PeerTable>>;
+
+    /// Whether the last attempt to read the peer table succeeded.
+    ///
+    /// Defaulted to true, because a source with no loop cannot fail between
+    /// reads. A source that can go stale overrides it, for the reason
+    /// [`crate::config::ConfigSource::is_healthy`] exists: a node gossiping
+    /// with a table from twenty minutes ago looks exactly like one gossiping
+    /// with the current table.
+    fn is_healthy(&self) -> bool {
+        true
+    }
+
+    /// Runs whatever loop this source needs to notice a change, until dropped.
+    ///
+    /// Defaulted to never returning, because the static source has no loop. It
+    /// exists so the composition root can start the loop without knowing which
+    /// source it holds.
+    async fn run_loop(self: Arc<Self>) {
+        std::future::pending::<()>().await;
+    }
+}
+
+#[async_trait::async_trait]
+impl<T: PeerSource + ?Sized> PeerSource for Arc<T> {
+    // Forwarded rather than defaulted, and this is the one method where that
+    // matters. An `Arc` around a source that can go stale can go stale, and
+    // taking the default would report every wrapped source as healthy forever.
+    // `M14.34` found both mutants of the identical `ConfigSource` method
+    // surviving, which is why the test for this asserts the false case.
+    fn is_healthy(&self) -> bool {
+        (**self).is_healthy()
+    }
+
+    fn peers(&self) -> Arc<PeerTable> {
+        (**self).peers()
+    }
+
+    fn watch(&self) -> watch::Receiver<Arc<PeerTable>> {
+        (**self).watch()
+    }
+}
+
+/// A fixed peer table, which is what `--peer` flags produce.
+///
+/// The default, and the behaviour the fleet has today. It has no loop, so it
+/// takes both defaults above.
+#[derive(Debug)]
+pub struct StaticPeers {
+    tx: watch::Sender<Arc<PeerTable>>,
+}
+
+impl StaticPeers {
+    /// A source serving this table, forever.
+    #[must_use]
+    pub fn new(peers: PeerTable) -> Arc<Self> {
+        let (tx, _) = watch::channel(Arc::new(peers));
+        Arc::new(Self { tx })
+    }
+}
+
+#[async_trait::async_trait]
+impl PeerSource for StaticPeers {
+    fn peers(&self) -> Arc<PeerTable> {
+        Arc::clone(&self.tx.borrow())
+    }
+
+    fn watch(&self) -> watch::Receiver<Arc<PeerTable>> {
+        self.tx.subscribe()
+    }
+}
+
 #[cfg(any(test, feature = "test-fakes"))]
-pub use fake::FakeClusterCoordinator;
+pub use fake::{FakeClusterCoordinator, FakePeerSource};
 
 #[cfg(any(test, feature = "test-fakes"))]
 mod fake {
@@ -296,10 +410,13 @@ mod fake {
     use std::sync::{Mutex, PoisonError};
     use std::time::Duration;
 
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use super::{
         Arc, ClusterCoordinator, ClusterDigest, MembershipView, NodeMode, QuotaError, QuotaLease,
         ServerId,
     };
+    use super::{PeerSource, PeerTable, watch};
     use crate::clock::{Clock, FakeClock};
 
     /// An in-memory [`ClusterCoordinator`] for tests.
@@ -407,11 +524,144 @@ mod fake {
             }
         }
     }
+
+    /// An in-memory [`PeerSource`] for tests.
+    ///
+    /// It can publish and it can go stale, and both matter. The whole point of
+    /// the seam is a table that changes, so a fake that could not change would
+    /// test only the case the static source already covers; and `is_healthy`
+    /// needs a driver for its false branch, because that is the branch whose
+    /// mutants survived on `ConfigSource` until `M14.34`.
+    #[derive(Debug)]
+    pub struct FakePeerSource {
+        tx: watch::Sender<Arc<PeerTable>>,
+        healthy: AtomicBool,
+    }
+
+    impl FakePeerSource {
+        /// A source serving `initial`.
+        #[must_use]
+        pub fn new(initial: PeerTable) -> Arc<Self> {
+            let (tx, _) = watch::channel(Arc::new(initial));
+            Arc::new(Self {
+                tx,
+                healthy: AtomicBool::new(true),
+            })
+        }
+
+        /// Publishes a new table to every watcher.
+        pub fn publish(&self, next: PeerTable) {
+            self.tx.send_replace(Arc::new(next));
+        }
+
+        /// Makes [`PeerSource::is_healthy`] report false from now on.
+        pub fn go_stale(&self) {
+            self.healthy.store(false, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PeerSource for FakePeerSource {
+        fn peers(&self) -> Arc<PeerTable> {
+            Arc::clone(&self.tx.borrow())
+        }
+
+        fn watch(&self) -> watch::Receiver<Arc<PeerTable>> {
+            self.tx.subscribe()
+        }
+
+        fn is_healthy(&self) -> bool {
+            self.healthy.load(Ordering::SeqCst)
+        }
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    fn table(ids: &[u16]) -> PeerTable {
+        ids.iter()
+            .map(|id| (NodeId::new(*id), format!("pgprox-{id}:6431")))
+            .collect()
+    }
+
+    #[test]
+    fn a_static_source_serves_what_it_was_built_with() {
+        let source = StaticPeers::new(table(&[2, 3]));
+
+        assert_eq!(source.peers().len(), 2);
+        assert_eq!(
+            source.peers().get(&NodeId::new(2)).map(String::as_str),
+            Some("pgprox-2:6431")
+        );
+        // And the watch holds the same table, so a consumer that subscribes
+        // rather than asks sees the same fleet.
+        assert_eq!(*source.watch().borrow(), source.peers());
+    }
+
+    #[tokio::test]
+    async fn a_published_table_reaches_a_receiver_taken_before_it() {
+        // The whole point of the seam. A receiver taken at startup has to see a
+        // table published later, or every consumer is back to a copy.
+        let source = FakePeerSource::new(table(&[2]));
+        let mut watcher = source.watch();
+
+        source.publish(table(&[2, 3, 4]));
+
+        assert!(watcher.changed().await.is_ok());
+        assert_eq!(watcher.borrow_and_update().len(), 3);
+        assert_eq!(source.peers().len(), 3);
+    }
+
+    #[test]
+    fn a_source_that_has_gone_stale_says_so_through_an_arc() {
+        // `M14.34` found both mutants of the identical `ConfigSource` method
+        // surviving: `is_healthy` could be replaced by `true` *and* by `false`.
+        // A method whose mutants both survive is a method nothing asks. The
+        // false case is the one that matters, and it has to survive being
+        // wrapped: an `Arc` around a source that can go stale can go stale, and
+        // a forwarding impl that took the default would report every wrapped
+        // source healthy forever.
+        let source = FakePeerSource::new(table(&[2]));
+        assert!(source.is_healthy());
+
+        let wrapped: Arc<dyn PeerSource> = source.clone();
+        assert!(wrapped.is_healthy());
+
+        source.go_stale();
+        assert!(!source.is_healthy());
+        assert!(
+            !wrapped.is_healthy(),
+            "an Arc reported a stale source as healthy"
+        );
+    }
+
+    #[test]
+    fn a_static_source_is_healthy_and_has_no_loop_to_make_it_otherwise() {
+        // It takes both defaults, and that is the argument for the defaults
+        // existing: a source read from flags cannot fail between reads.
+        let source = StaticPeers::new(table(&[2]));
+        assert!(source.is_healthy());
+    }
+
+    #[test]
+    fn the_default_loop_never_returns() {
+        // The composition root starts this without knowing which source it
+        // holds, so a default that returned immediately would look like a
+        // source that had finished discovering and would never be restarted.
+        //
+        // Polled by hand rather than with a timeout, for the reason
+        // `config.rs`'s identical test gives: this crate depends on tokio only
+        // for `sync`, and pulling in the time driver to assert that a future is
+        // pending would be a dependency added for one test.
+        let mut loop_future = Box::pin(PeerSource::run_loop(StaticPeers::new(table(&[2]))));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            std::future::Future::poll(loop_future.as_mut(), &mut cx).is_pending(),
+            "the default run_loop completed; the composition root would treat that as the loop having ended"
+        );
+    }
+
     use super::*;
     use crate::clock::{Clock, FakeClock};
     use std::collections::HashSet;

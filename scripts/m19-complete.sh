@@ -44,4 +44,34 @@ for part in contracts.md tests.md tasks.md; do
   fi
 done
 
+# --- M19.1: the seam, and the rule it exists to hold -------------------------
+#
+# Each by the test that would fail if the claim came back. `M12.8`: the gate
+# runs the test rather than looking for the file it lives in.
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+run_test() {
+  local crate="$1" name="$2" claim="$3"
+  local out="$WORK/$crate-$RANDOM.out"
+
+  cargo test -p "$crate" --all-targets --features test-fakes -- --exact "$name" \
+    >"$out" 2>>"$WORK/log"
+  if grep -q "^test $name \.\.\. ok$" "$out"; then
+    ok "$claim"
+  else
+    fail "$claim: $crate $name did not run and pass"
+    printf '       a claim this milestone made has no test standing behind it\n'
+  fi
+}
+
+run_test pgprox-core "cluster::tests::a_static_source_serves_what_it_was_built_with" \
+  "a static source serves the table it was built with"
+run_test pgprox-core "cluster::tests::a_published_table_reaches_a_receiver_taken_before_it" \
+  "a table published later reaches a receiver taken at startup"
+run_test pgprox-core "cluster::tests::a_source_that_has_gone_stale_says_so_through_an_arc" \
+  "a stale source is still stale through an Arc"
+run_test pgprox-core "cluster::tests::the_default_loop_never_returns" \
+  "a source with no loop does not look like one that finished"
+
 finish
