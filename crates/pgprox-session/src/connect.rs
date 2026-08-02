@@ -651,6 +651,86 @@ mod tests {
         message(|out| encode::ready_for_query(out, pgprox_proto::backend::TxStatus::Idle))
     }
 
+    /// An `Upstreamed` around a stream a test controls, for the two checks
+    /// that are about the socket rather than about the handshake.
+    fn upstreamed(io: tokio::io::DuplexStream) -> Upstreamed<tokio::io::DuplexStream> {
+        Upstreamed {
+            wire: Wire::new(io, test_slab()),
+            parameters: Vec::new(),
+            backend_key: None,
+            statements: pgprox_pool::statements::ConnectionStatements::new(
+                pgprox_pool::statements::StatementConfig::default(),
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_connection_with_nothing_to_say_is_fit_to_lend() {
+        // `M22.1`. `unfit` had no test in this crate at all: three mutants of
+        // it survived, one per possible answer, because the only thing
+        // exercising it was an end-to-end test in `bin/pgprox`. A function
+        // whose every return value can be replaced without this crate noticing
+        // is a function this crate does not test.
+        let (ours, _theirs) = tokio::io::duplex(64);
+        let mut idle = upstreamed(ours);
+
+        assert!(!idle.unfit().await, "a healthy idle connection was refused");
+    }
+
+    #[tokio::test]
+    async fn a_connection_the_server_has_written_to_is_not_fit_to_lend() {
+        use tokio::io::AsyncWriteExt as _;
+
+        // Whatever those bytes are, they answer nothing this session asked
+        // for, and the next borrower would read them as its own reply. Not a
+        // frame on purpose: this is about the socket having something in it,
+        // and working out what would mean reading it.
+        let (ours, mut theirs) = tokio::io::duplex(64);
+        let mut waiting = upstreamed(ours);
+
+        theirs.write_all(b"anything at all").await.unwrap();
+        theirs.flush().await.unwrap();
+
+        assert!(
+            waiting.unfit().await,
+            "a connection with unread bytes was handed on"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_the_server_closed_is_not_fit_to_lend() {
+        // The common one: `pg_terminate_backend`, `idle_session_timeout`, a
+        // failover, a restart. A closed socket reads as ready-with-nothing,
+        // which is why this asks about readability rather than about bytes.
+        let (ours, theirs) = tokio::io::duplex(64);
+        let mut gone = upstreamed(ours);
+        drop(theirs);
+
+        assert!(gone.unfit().await, "a closed connection was handed on");
+    }
+
+    #[tokio::test]
+    async fn saying_goodbye_puts_a_terminate_on_the_wire() {
+        // `M22.1`. Replacing the whole of `goodbye` with `()` survived: the
+        // only thing asserting a `Terminate` reaches the server is an
+        // end-to-end test in `bin/pgprox`, and this crate is where the bytes
+        // are written.
+        use tokio::io::AsyncReadExt as _;
+
+        let (ours, mut theirs) = tokio::io::duplex(64);
+        let mut leaving = upstreamed(ours);
+
+        leaving.goodbye().await;
+
+        let mut said = [0_u8; 5];
+        theirs.read_exact(&mut said).await.unwrap();
+        assert_eq!(
+            said,
+            [b'X', 0, 0, 0, 4],
+            "the server was not told the connection was going"
+        );
+    }
+
     #[test]
     fn a_trust_connection_reaches_ready_and_harvests_its_parameters() {
         let mut handshake = UpstreamHandshake::new(server());

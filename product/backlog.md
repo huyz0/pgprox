@@ -6429,13 +6429,26 @@ recognised so it can be refused rather than read as a version.
   Coverage says a line ran; this says the line mattered. `M17`'s sweep of
   `pgprox` found two real defects, a pin counted for a client that had gone and
   a lock taken twice per server per tick, and neither was visible to any test.
-- [ ] `M22.1` Sweep `pgprox-session` and argue every survivor.
+- [x] `M22.1` Sweep `pgprox-session` and argue every survivor.
   First because it is where `M20`'s real defect lived and where its biggest
   behaviour change is: `on_close` and `on_startup_settings` are both new
   decision logic with nothing but line coverage behind them.
   Acceptance: `scripts/mutants.sh pgprox-session` passes, every accepted
   survivor carries an argument rather than `untriaged`, and any mutant that
   turns out to be a missing test gets the test rather than an entry.
+  455 mutants, 6 surviving, 4 of them new and every one in code `M20` added
+  five commits earlier. `goodbye` replaced with `()` survived, meaning the
+  `Terminate` write could be deleted; `unfit` survived returning nothing,
+  `false` and `true`, and all three answers surviving is a function with no
+  test at all.
+  Both are exercised end to end by the probes `M20.4` and `M20.5` added, and
+  both of those live in `bin/pgprox`. A cross-crate integration test does not
+  discharge a crate's own obligation, and this crate's `AGENTS.md` is the one
+  that names mutation testing and calls itself the most correctness-critical
+  code here. So four tests, in the crate where the bytes are produced.
+  The two survivors that remain are the pre-existing `sequence.rs` pair, both
+  argued equivalent: the replacement yields a program no test can distinguish.
+  Down to 2 surviving out of 455, coverage 97.75%.
 - [ ] `M22.2` Sweep `pgprox-proto`. `M20.3` added `negotiate`, `extensions` and
   `settings`, and `M20.8` added `replication`, all of which are predicates
   whose wrong answer is a client told something untrue at connect.

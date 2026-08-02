@@ -25,6 +25,12 @@
 # would be routed around by the second week.
 
 # Sweeps: <crate> <commit>, the tree each crate was last swept against.
+#
+# The commit named is the one the sweep ran on top of, so the commit that
+# records a sweep is the one immediately after it. `scripts/m22-complete.sh`
+# does not count a commit that also touched this file, because that commit is
+# the sweep rather than a change since it.
+# Sweeps: pgprox-session 4fac6873ba68131c390eebabb04c55b558ba062b
 
 # # Where this list came from
 #

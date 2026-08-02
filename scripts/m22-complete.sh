@@ -80,7 +80,19 @@ while read -r crate; do
     fail "$BASELINE says $crate was swept against a commit this repository does not have"
     continue
   fi
-  behind="$(git rev-list --count "$commit..HEAD" -- "$(crate_path "$crate")" 2>/dev/null || echo 0)"
+  # Commits that also touched the baseline do not count. A commit that records
+  # a sweep is the sweep: the run happened against that working tree and landed
+  # as that commit, so counting it would report every crate as one behind the
+  # moment it was swept, and a number that is never zero is a number nobody
+  # reads.
+  behind=0
+  while read -r since; do
+    [[ -n "$since" ]] || continue
+    if ! git diff-tree --no-commit-id --name-only -r "$since" \
+        | grep -qx "product/mutants-baseline.txt"; then
+      behind=$((behind + 1))
+    fi
+  done <<<"$(git rev-list "$commit..HEAD" -- "$(crate_path "$crate")" 2>/dev/null || true)"
   if (( behind > 0 )); then
     warn "$crate is $behind commit(s) past its last sweep"
     stale=$((stale + 1))
