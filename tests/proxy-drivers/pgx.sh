@@ -16,6 +16,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -208,6 +209,23 @@ func main() {
 	}
 	if err := conn.QueryRow(ctx, "SELECT 3").Scan(&n); err != nil {
 		die("after an error", err)
+	}
+
+	// PGPROX_DEPTH_REFUSED_AT_CONNECT. `M20.8`, through a second driver,
+	// because a client that cannot start is the one case where every driver
+	// reports differently: psql prints libpq's message, and pgx surfaces the
+	// `ErrorResponse` as a connect error. What has to survive both is the
+	// reason.
+	replCfg, err := pgx.ParseConfig(url + "&replication=database")
+	if err != nil {
+		die("parse for replication", err)
+	}
+	replCfg.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	if _, err := pgx.ConnectConfig(ctx, replCfg); err == nil {
+		fmt.Fprintln(os.Stderr, "pgx: a replication connection was accepted")
+		os.Exit(1)
+	} else if !strings.Contains(err.Error(), "replication connections are not proxied") {
+		die("a replication connection was refused for the wrong reason", err)
 	}
 
 	fmt.Println("pgx: ok")

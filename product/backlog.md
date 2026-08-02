@@ -6385,7 +6385,7 @@ recognised so it can be refused rather than read as a version.
   asyncpg's case stays a behaviour check rather than a count. Its one-shot path
   is the one that deadlocked from M6 to M8, and what is worth asserting there
   is that it still completes.
-- [ ] `M21.4` The startup path, through a driver rather than through psql alone.
+- [x] `M21.4` The startup path, through a driver rather than through psql alone.
   `search_path` from `options`, `application_name` from the startup packet, and
   a `replication` connection refused by name. All three verified by hand during
   `M21.0` and none of them runs.
@@ -6393,6 +6393,16 @@ recognised so it can be refused rather than read as a version.
   packet libpq builds. The refusal deserves a second driver: a client that
   cannot start is the one case where every driver reports differently.
   Acceptance: each of the three fails when its fix is reverted.
+  Done, and all three were checked by building the proxy image with the fixes
+  removed rather than by reasoning. Without them, psql reports `search_path`
+  as `"$user", public`, which is the server default the session used to run
+  under, and pgx reports that a replication connection was accepted.
+  The refusal is asserted on the message rather than only on the failure. From
+  outside, a stack that is down, a token that expired and a feature that is not
+  offered all end as "connection failed", so a case that only checked for an
+  error would pass for two wrong reasons.
+  And both drivers check that an ordinary connection still works afterwards. A
+  proxy refusing everything would satisfy every refusal assertion here.
 - [ ] `M21.5` Close M21. Filed as its own task for the reason `M18.4`, `M19.8`
   and `M20.9` were.
   Acceptance: the gate passes, the status row says complete, and the section
