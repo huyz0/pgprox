@@ -6288,3 +6288,66 @@ recognised so it can be refused rather than read as a version.
   In particular it records which of the findings came from reading a second and
   third implementation and which came from the hunt for the first one, because
   those are different arguments for doing this again.
+
+## M21: the driver matrix does not cover what M20 changed
+
+- [x] `M21.0` Plan M21, from what running the existing suites turned up, and
+  give it a gate that passes from this commit.
+  **`scripts/driver-matrix.sh` already runs all five drivers against
+  `bin/pgprox` over TLS onto a real Postgres.** It has since `M8.13`, and
+  `tests/proxy-drivers/_env.sh` says why: asyncpg deadlocked on its first
+  parameterised query from M6 to M8 and `scripts/conformance.sh` was green
+  throughout, because the harness answers a `Flush` the same wrong way the
+  proxy did.
+  I proposed building that suite before checking whether it existed. It did.
+  The plan named the wrong milestone and this one is what was actually found.
+  Two things, both from running what is here rather than from reading it.
+  **First: the matrix passes and covers none of what `M20` changed.** Its five
+  depths are both wire protocols, a prepared statement reused, a result larger
+  than one segment, a transaction, and an error with a statement after it. The
+  five behaviours `M20` added are a protocol `Close` and a re-prepare, the
+  unnamed statement, a `search_path` from `options`, an `application_name` from
+  the startup packet, and a refused `replication` connection. No driver probes
+  any of them.
+  **Second: the report is committed evidence with a date on it and nothing
+  notices when it rots.** `product/conformance/driver-matrix.md` said
+  "Generated on 2026-07-28" until this commit, thirteen milestones and one
+  wire-behaviour change later. `m1f-complete.sh` checks the script exists and
+  the report exists; neither check would fail on a report that predates
+  everything it is evidence about.
+  The refreshed report is in this commit, and running it is what produced both
+  findings. Every driver still passes: `M20` broke nothing the matrix covers,
+  which is a result about `M20` rather than an absence of one.
+- [ ] `M21.1` A stale matrix report says so. The report carries a date and the
+  repository knows when the proxy last changed, so a report generated before
+  the code it describes is mechanically detectable.
+  Acceptance: a gate fails on a report older than the newest commit touching
+  `bin/pgprox`, `crates/pgprox-session` or `crates/pgprox-proto`, and passes on
+  the report as regenerated. `M18.1` is the shape: evidence that describes a
+  tree that no longer exists is worse than no evidence, because it is quoted.
+- [ ] `M21.2` The statement-cache rotation, in every driver that has one.
+  A protocol `Close` followed by re-preparing the same SQL is `M20.1`'s exact
+  reduction, and pgx, JDBC and npgsql all produce it when their caches evict.
+  Verified by hand against pgx during `M21.0`: prepare, `DeallocateAll`,
+  prepare again, which passes. Nothing runs it.
+  Acceptance: the probe for each driver that keeps a server-side statement
+  cache rotates it, and the case fails against the tree before `M20.1`.
+- [ ] `M21.3` The unnamed statement, in the drivers that use it.
+  pgx reaches it through `QueryExecModeExec` and asyncpg through its own
+  one-shot path. `M20.6` changed what goes on the wire for it and the only
+  assertion is a unit test on the rewrite.
+  Acceptance: a driver runs a one-shot parameterised query more than once and
+  the session survives it.
+- [ ] `M21.4` The startup path, through a driver rather than through psql alone.
+  `search_path` from `options`, `application_name` from the startup packet, and
+  a `replication` connection refused by name. All three verified by hand during
+  `M21.0` and none of them runs.
+  psql is the right driver for the first two, since what is under test is the
+  packet libpq builds. The refusal deserves a second driver: a client that
+  cannot start is the one case where every driver reports differently.
+  Acceptance: each of the three fails when its fix is reverted.
+- [ ] `M21.5` Close M21. Filed as its own task for the reason `M18.4`, `M19.8`
+  and `M20.9` were.
+  Acceptance: the gate passes, the status row says complete, and the section
+  records that the milestone began by proposing to build something that already
+  existed.

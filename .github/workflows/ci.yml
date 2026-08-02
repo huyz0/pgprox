@@ -298,6 +298,9 @@ jobs:
       # schedule.
       - name: M19
         run: scripts/m19-complete.sh
-      # M20 is open, for the same reason and on the same terms as M19 above.
       - name: M20
         run: scripts/m20-complete.sh
+      # M21 is open, and its gate runs anyway, on the same terms M19 and M20
+      # were: it checks what has landed rather than what is planned.
+      - name: M21
+        run: scripts/m21-complete.sh

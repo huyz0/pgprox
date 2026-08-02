@@ -37,6 +37,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M18 | What the deployment story assumes | complete; an ADR that described a transport nobody built, a seam specified rather than guessed, and a rule that a milestone cannot close with nothing to run |
 | M19 | A seam for peer discovery | complete; the seam exists and three consumers read through it, and two of the eight tasks were corrections of claims this milestone made about its own fakes |
 | M20 | The protocol layer against pgbouncer, pgcat and odyssey | complete; eight findings, of which one corrupted a pooled connection for every session after it, three were things a client asked for and was silently not given, and one was found by the hunt rather than by the reading |
+| M21 | The driver matrix does not cover what M20 changed | open |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1187,3 +1188,38 @@ times: on the startup settings, on the unnamed statement's SQL, and on carrying
 two lists where one would do. Each time the threshold stayed where it was and
 the code got smaller. A future is the union of what is alive across its awaits,
 and the relay loop is nothing else.
+
+## M21: the driver matrix does not cover what M20 changed
+
+```bash
+scripts/m21-complete.sh
+```
+
+`scripts/driver-matrix.sh` has run all five drivers against `bin/pgprox`, over
+TLS onto a real Postgres, since `M8.13`. `tests/proxy-drivers/_env.sh` records
+why it had to exist: asyncpg deadlocked on its first parameterised query from
+M6 until M8, and `scripts/conformance.sh` stayed green throughout, because the
+harness answers a `Flush` the same wrong way the proxy did. The codec and the
+harness are the same code, so a misunderstanding shared between them is
+invisible by construction.
+
+This milestone was proposed as building that suite, before anyone checked
+whether it existed. It did. What follows is what running it actually found.
+
+**The matrix passes, and covers none of what M20 changed.** Its depths are both
+wire protocols, a prepared statement reused, a result larger than one segment,
+a transaction, and an error with a statement after it. M20 added a protocol
+`Close` and a re-prepare, the unnamed statement, a `search_path` from
+`options`, an `application_name` from the startup packet, and a refused
+`replication` connection. No driver probes any of the five.
+
+**And the report is committed evidence with a date on it that nothing checks.**
+`product/conformance/driver-matrix.md` read "Generated on 2026-07-28" through
+thirteen milestones, one of which changed the wire. `m1f-complete.sh` asserts
+the script exists and the report exists. Neither would fail on a report that
+predates everything it is evidence about, which is `M18.1`'s finding in a new
+place: evidence describing a tree that no longer exists is worse than none,
+because it gets quoted.
+
+Completion condition: `scripts/m21-complete.sh`, which exists from this
+milestone's first commit and gains a check as each task lands.
