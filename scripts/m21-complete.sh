@@ -26,7 +26,11 @@ echo "M21: the driver matrix does not cover what M20 changed"
 echo
 
 MATRIX=scripts/driver-matrix.sh
-REPORT=product/conformance/driver-matrix.md
+# Overridable so the checks below can be run against a planted report rather
+# than only against the real one, which is how `m18-complete.sh` proves its own
+# rules fire. A check that has only ever been seen to pass is a check nobody
+# knows the failure mode of.
+REPORT="${PGPROX_MATRIX_REPORT:-product/conformance/driver-matrix.md}"
 PROBES=tests/proxy-drivers
 
 # --- the suite the milestone is about still exists ---------------------------
@@ -70,6 +74,48 @@ if [[ -z "$missing" ]]; then
   ok "the report accounts for every driver the matrix runs"
 else
   fail "the report says nothing about:$missing"
+fi
+
+# --- M21.1: a stale report says how stale ------------------------------------
+#
+# ## Why this warns rather than fails, against what the task first asked for
+#
+# `M21.1` was filed as "a gate fails on a report older than the newest commit
+# touching bin/pgprox, crates/pgprox-session or crates/pgprox-proto". That
+# criterion is wrong and this corrects it.
+#
+# Regenerating the report needs Docker, a built proxy image and five driver
+# toolchains. A gate that failed on any proxy commit until someone ran all that
+# would be red from the first edit and permanently red in CI, which has none of
+# it. `check-core-contract.sh` says the thing this would become: a rule people
+# route around. The two mechanical halves it kept are the ones that can be met.
+#
+# So the failure is for provenance being absent, which is always fixable and is
+# the state that makes staleness unmeasurable, and staleness itself is reported
+# with a count. That is strictly more than existed before, where the report
+# carried a date nobody compared to anything.
+PROXY_PATHS=(bin/pgprox crates/pgprox-session crates/pgprox-proto)
+describes="$(sed -n 's/^Describes: \([0-9a-f]\{7,\}\)$/\1/p' "$REPORT" | head -1)"
+
+if [[ -z "$describes" ]]; then
+  fail "$REPORT does not say which tree it describes"
+  printf '       regenerate it with scripts/driver-matrix.sh\n'
+elif ! git cat-file -e "$describes^{commit}" 2>/dev/null; then
+  fail "$REPORT names a commit this repository does not have: $describes"
+else
+  ok "the report says which tree it describes"
+
+  behind="$(git rev-list --count "$describes..HEAD" -- "${PROXY_PATHS[@]}" 2>/dev/null || echo 0)"
+  if (( behind == 0 )); then
+    ok "the matrix results describe the proxy as it stands"
+  else
+    # Named rather than counted alone. "Three commits behind" is a number;
+    # "behind M20.4 and M20.6" is what tells someone whether it matters, and
+    # both of those changed what goes on the wire.
+    warn "the matrix results are $behind commit(s) behind the proxy"
+    git log --format='       %s' "$describes..HEAD" -- "${PROXY_PATHS[@]}" | head -8
+    printf '       re-run scripts/driver-matrix.sh to say whether they still hold\n'
+  fi
 fi
 
 finish

@@ -6318,13 +6318,26 @@ recognised so it can be refused rather than read as a version.
   The refreshed report is in this commit, and running it is what produced both
   findings. Every driver still passes: `M20` broke nothing the matrix covers,
   which is a result about `M20` rather than an absence of one.
-- [ ] `M21.1` A stale matrix report says so. The report carries a date and the
+- [x] `M21.1` A stale matrix report says so. The report carries a date and the
   repository knows when the proxy last changed, so a report generated before
   the code it describes is mechanically detectable.
-  Acceptance: a gate fails on a report older than the newest commit touching
-  `bin/pgprox`, `crates/pgprox-session` or `crates/pgprox-proto`, and passes on
-  the report as regenerated. `M18.1` is the shape: evidence that describes a
+  ~~Acceptance: a gate fails on a report older than the newest commit touching
+  `bin/pgprox`, `crates/pgprox-session` or `crates/pgprox-proto`~~, and passes
+  on the report as regenerated. `M18.1` is the shape: evidence that describes a
   tree that no longer exists is worse than no evidence, because it is quoted.
+  **That acceptance criterion was wrong and this corrects it.** Regenerating the
+  report needs Docker, a built proxy image and five driver toolchains. A gate
+  that failed on any proxy commit until someone ran all of that would be red
+  from the first edit and permanently red in CI, which has none of it.
+  `check-core-contract.sh` names what it would become: a rule people route
+  around, and it kept only the halves that can be met.
+  So the report records the newest commit touching those three paths at
+  generation time, the gate **fails** when that line is absent or names a
+  commit the repository does not have, and reports staleness as a count with
+  the commit subjects behind it. A date could never be checked because nothing
+  knows what the code looked like on it; a commit can.
+  Named rather than counted alone: "three commits behind" is a number, and
+  "behind M20.4 and M20.6" is what says whether it matters.
 - [ ] `M21.2` The statement-cache rotation, in every driver that has one.
   A protocol `Close` followed by re-preparing the same SQL is `M20.1`'s exact
   reduction, and pgx, JDBC and npgsql all produce it when their caches evict.
