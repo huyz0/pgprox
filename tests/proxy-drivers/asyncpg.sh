@@ -55,6 +55,22 @@ async def main() -> None:
             if await asyncio.wait_for(prepared.fetchval(7), STEP) != 7:
                 die("a reused prepared statement came back wrong")
 
+        # PGPROX_DEPTH_UNNAMED_STATEMENT. `M20.6`. asyncpg's `fetchval` with
+        # arguments and no `prepare` is its one-shot path, and the proxy used
+        # to rewrite the unnamed statement into a named one, which is a
+        # different thing: a named statement persists until it is closed and
+        # takes a slot under the per-connection cap, while the unnamed one is
+        # replaced by the next `Parse` of it.
+        #
+        # Distinct SQL each round, because repeating one query would pass under
+        # either behaviour and it is the accumulation that the rewrite caused.
+        for offset in range(3):
+            got = await asyncio.wait_for(
+                conn.fetchval(f"SELECT $1::int + {offset}", 7), STEP
+            )
+            if got != 7 + offset:
+                die("a one-shot query came back wrong")
+
         # PGPROX_DEPTH_LARGE_RESULT.
         rows = await asyncio.wait_for(
             conn.fetch("SELECT generate_series(1, $1)", 5000), STEP

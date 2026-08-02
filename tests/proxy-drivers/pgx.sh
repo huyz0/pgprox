@@ -107,6 +107,72 @@ func main() {
 		os.Exit(1)
 	}
 
+	// PGPROX_DEPTH_UNNAMED_STATEMENT. `M20.6`. `QueryExecModeExec` sends the
+	// one-shot form: `Parse` under the empty name, then `Bind` and `Execute`
+	// on it. That statement is replaced by the next `Parse` of it and does not
+	// survive a `Close`, which is what makes it different from a named one and
+	// what the proxy used to erase by rewriting it to `pgprox_<hash>`.
+	//
+	// More than once, with different SQL, because one round would pass under
+	// either behaviour. Repeating it is what would accumulate a permanent
+	// server-side statement per distinct query if the rewrite came back.
+	unnamedCfg, err := pgx.ParseConfig(url)
+	if err != nil {
+		die("parse for unnamed", err)
+	}
+	unnamedCfg.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	unnamedCfg.DefaultQueryExecMode = pgx.QueryExecModeExec
+	unnamed, err := pgx.ConnectConfig(ctx, unnamedCfg)
+	if err != nil {
+		die("connect for unnamed", err)
+	}
+	defer unnamed.Close(ctx)
+	// Inside a transaction, so all of it lands on one upstream connection and
+	// the count below is about the connection these ran on. Outside one the
+	// pool is free to move the session between statements, which would make
+	// the assertion a question about routing.
+	utx, err := unnamed.Begin(ctx)
+	if err != nil {
+		die("begin for unnamed", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := utx.QueryRow(ctx,
+			fmt.Sprintf("SELECT $1::int + %d /* unnamed_probe */", i), 7).Scan(&n); err != nil {
+			die("unnamed statement", err)
+		}
+		if int(n) != 7+i {
+			fmt.Fprintf(os.Stderr, "pgx: unnamed statement gave %d\n", n)
+			os.Exit(1)
+		}
+	}
+
+	// The assertion that can tell the two behaviours apart. Both produce a
+	// working sequence, so the queries passing proves nothing on its own: what
+	// separates the unnamed statement from a named one is that the server does
+	// not keep it. Rewriting it to `pgprox_<hash>` left one behind per distinct
+	// one-shot query.
+	//
+	// Matched on the marker in the SQL rather than on the name prefix, because
+	// this connection legitimately holds named statements from the rotation
+	// case above and from whoever borrowed it before. Counting every
+	// `pgprox_%` counted those too, and said four when it meant zero.
+	//
+	// The pattern is split so this statement does not match itself. Whole, its
+	// own text carries the marker, so under the old behaviour it counted the
+	// query doing the counting and reported four where three was the truth.
+	if err := utx.QueryRow(ctx,
+		"SELECT count(*) FROM pg_prepared_statements WHERE statement LIKE '%unnamed' || '_probe%'").Scan(&n); err != nil {
+		die("counting prepared statements", err)
+	}
+	if n != 0 {
+		fmt.Fprintf(os.Stderr,
+			"pgx: %d one-shot queries were left prepared on the server\n", n)
+		os.Exit(1)
+	}
+	if err := utx.Commit(ctx); err != nil {
+		die("commit for unnamed", err)
+	}
+
 	// PGPROX_DEPTH_LARGE_RESULT.
 	rows, err := conn.Query(ctx, "SELECT generate_series(1, 5000)")
 	if err != nil {

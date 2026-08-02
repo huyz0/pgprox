@@ -6361,12 +6361,30 @@ recognised so it can be refused rather than read as a version.
   `preparedStatementCacheQueries=2` and three distinct statements make the
   cache evict on the third, which is how a real application produces this
   sequence.
-- [ ] `M21.3` The unnamed statement, in the drivers that use it.
+- [x] `M21.3` The unnamed statement, in the drivers that use it.
   pgx reaches it through `QueryExecModeExec` and asyncpg through its own
   one-shot path. `M20.6` changed what goes on the wire for it and the only
   assertion is a unit test on the rewrite.
   Acceptance: a driver runs a one-shot parameterised query more than once and
   the session survives it.
+  That criterion was too weak and this says so rather than meeting it. Both
+  behaviours produce a working sequence, which `M20.6`'s own commit says: the
+  difference is which name left the process. A probe that only ran queries
+  would have passed against the rewrite it exists to catch, which is `M21.2`'s
+  mistake in a new place.
+  So pgx counts what the server was left holding. Three one-shot queries inside
+  a transaction, so they land on one connection, then
+  `pg_prepared_statements`: zero with `M20.6`, three without it, measured by
+  building the image both ways.
+  Two things the counting got wrong first. Matching `name LIKE 'pgprox\_%'`
+  counted the named statements this same probe legitimately prepares and said
+  four when it meant zero, so it matches a marker in the SQL instead. And the
+  count query's own text contained that marker, so it counted itself and said
+  four where three was true; the pattern is split as `'%unnamed' || '_probe%'`
+  so the statement cannot match itself.
+  asyncpg's case stays a behaviour check rather than a count. Its one-shot path
+  is the one that deadlocked from M6 to M8, and what is worth asserting there
+  is that it still completes.
 - [ ] `M21.4` The startup path, through a driver rather than through psql alone.
   `search_path` from `options`, `application_name` from the startup packet, and
   a `replication` connection refused by name. All three verified by hand during
