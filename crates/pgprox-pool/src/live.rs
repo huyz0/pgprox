@@ -207,24 +207,33 @@ impl<K: Connector + 'static> LivePool<K> {
 
     /// Closes idle connections that have outstayed their welcome.
     ///
-    /// Called from a background task on a timer. Returns how many were closed,
-    /// which is what `pgprox_upstream_conns` moves by.
+    /// Called from a background task on a timer. Returns the payloads it took
+    /// out, so `pgprox_upstream_conns` moves by their count.
     ///
-    /// Dropping the payload is the point: the reaper names connections and the
-    /// pool forgets them, but until the payload goes the socket is still open
-    /// and the upstream is still counting it against its cap.
-    pub fn reap_idle(&self, config: &ReapConfig) -> usize {
+    /// Handing them back rather than dropping them here is `M20.4`: a socket
+    /// deserves a `Terminate` before it goes, and writing one is an await this
+    /// function cannot do. It holds a `std::sync::Mutex`, and the rule at the
+    /// top of this file is that the lock is never held across an await. So the
+    /// reaper decides under the lock and the caller says goodbye outside it.
+    ///
+    /// Dropping the payload is still the point: the pool forgets a connection
+    /// the moment it is named, but until the payload goes the socket is open
+    /// and the upstream is counting it against its cap. A caller that ignores
+    /// the return value drops them immediately, which is the old behaviour.
+    #[must_use]
+    pub fn reap_idle(&self, config: &ReapConfig) -> Vec<K::Connection> {
         let now = self.clock.now();
         let mut keyed = self.lock();
-        let mut closed = 0;
+        let mut closed = Vec::new();
 
         for entry in keyed.values_mut() {
             for id in reap(&entry.pool, config, now).close {
                 // `close_idle` refuses if a client acquired it between the
                 // decision and here, which is the one race the reaper can lose.
-                if entry.pool.close_idle(id) {
-                    entry.connections.remove(&id);
-                    closed += 1;
+                if entry.pool.close_idle(id)
+                    && let Some(payload) = entry.connections.remove(&id)
+                {
+                    closed.push(payload);
                 }
             }
         }
@@ -1013,13 +1022,13 @@ mod tests {
         assert_eq!(pool.with_connection(&key(), id, |c| *c), Some(1));
 
         assert_eq!(
-            pool.reap_idle(&reaping),
+            pool.reap_idle(&reaping).len(),
             0,
             "a freshly idle connection was reaped"
         );
 
         clock.advance(reaping.idle_timeout);
-        assert_eq!(pool.reap_idle(&reaping), 1);
+        assert_eq!(pool.reap_idle(&reaping).len(), 1);
         assert_eq!(pool.stats(&key()).total(), 0, "a quiet pool stayed open");
         assert_eq!(
             pool.with_connection(&key(), id, |c| *c),
@@ -1036,7 +1045,7 @@ mod tests {
 
         clock.advance(reaping.idle_timeout * 100);
         assert_eq!(
-            pool.reap_idle(&reaping),
+            pool.reap_idle(&reaping).len(),
             0,
             "a connection in use was closed underneath its transaction"
         );
@@ -1058,7 +1067,7 @@ mod tests {
         drop(guard);
 
         clock.advance(reaping.idle_timeout);
-        assert_eq!(pool.reap_idle(&reaping), 1);
+        assert_eq!(pool.reap_idle(&reaping).len(), 1);
         assert_eq!(pool.stats(&quiet).total(), 0);
     }
 

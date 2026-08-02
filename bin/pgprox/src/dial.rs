@@ -20,6 +20,7 @@ use pgprox_auth::scram;
 use pgprox_core::auth::{Backend, TlsMode};
 use pgprox_core::pool::PoolError;
 use pgprox_core::secret::SecretString;
+use pgprox_session::connect::Upstreamed;
 use pgprox_session::connect::{Upstream, UpstreamScram};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
@@ -210,6 +211,25 @@ impl UpstreamScram for ClientScram {
             .ok_or("the server answered before it was asked")?;
         scram::verify_server_final(server_final, keys, &self.auth_message)
             .map_err(|err| err.to_string())
+    }
+}
+
+/// Says goodbye to connections the pool has finished with, then drops them.
+///
+/// `M20.4`. The reaper decides which connections go while holding a lock it may
+/// not await inside, so it hands the sockets back and this is where they are
+/// told. Postgres logs a client that vanishes without a `Terminate`, and this
+/// node reaps idle connections after thirty seconds with `min_pool` at zero, on
+/// purpose: reaping is the steady state here, so without this every routine
+/// close is a line on the database that reads like a crash.
+///
+/// Sequential rather than concurrent. These are connections nobody is waiting
+/// on, and a `Terminate` is five bytes into a socket that is already writable;
+/// spawning for them would trade a real cost against a saving nobody would
+/// measure.
+pub async fn retire(connections: Vec<Upstreamed<Stream>>) {
+    for mut connection in connections {
+        connection.goodbye().await;
     }
 }
 

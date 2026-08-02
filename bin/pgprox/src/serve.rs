@@ -5120,6 +5120,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_reaped_connection_says_goodbye_rather_than_vanishing() {
+        // `M20.4`. Postgres logs a client that disappears without a
+        // `Terminate`, and this node reaps idle connections after thirty
+        // seconds with `min_pool` at zero, deliberately. So reaping is the
+        // steady state, and without a goodbye every routine close is a line on
+        // the database that reads like a crash, which makes a real fault
+        // indistinguishable from housekeeping.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        // One statement, so a connection exists and goes back to the pool.
+        let mut query = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
+        client.write_all(&query).await.unwrap();
+        expect(&mut client).await;
+        expect(&mut client).await;
+
+        drop(client);
+        let _ = served.await;
+
+        assert!(
+            !crate::fakepg::statements_seen(addr).contains(&crate::fakepg::TERMINATED.to_owned()),
+            "the connection was said goodbye to before anything reaped it"
+        );
+
+        // Now retire it, which is what the node's own timer does every second.
+        let reaped = context.pool.reap_idle(&pgprox_pool::reap::ReapConfig {
+            idle_timeout: std::time::Duration::ZERO,
+            ..pgprox_pool::reap::ReapConfig::default()
+        });
+        assert_eq!(reaped.len(), 1, "nothing was idle to reap");
+        crate::dial::retire(reaped).await;
+
+        // The fake records a `Terminate` by name, because its body is empty and
+        // recording that would record the empty string.
+        //
+        // Polled rather than waited on, and the interval is not a deadline this
+        // test depends on. The bytes have already left this side: `goodbye`
+        // flushed and returned `Ok`. What is outstanding is the fake's own task
+        // being woken to read them, and on a current-thread runtime that needs
+        // the runtime to park so the I/O driver runs at all. `yield_now` does
+        // not park, which is why it is not what is here. The loop stops on the
+        // first sight of the goodbye, so the interval is what a *failure* costs
+        // rather than what a pass does, and widening it would fix nothing.
+        for _ in 0..100 {
+            if crate::fakepg::statements_seen(addr).contains(&crate::fakepg::TERMINATED.to_owned())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        let seen = crate::fakepg::statements_seen(addr);
+        assert!(
+            seen.contains(&crate::fakepg::TERMINATED.to_owned()),
+            "the socket was dropped without a Terminate: {seen:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_search_path_from_the_connection_string_reaches_the_server() {
         // `M20.2`. libpq packs `options=-c search_path=...` into the startup
         // packet, and the proxy parsed it into `StartupInfo::options` and read

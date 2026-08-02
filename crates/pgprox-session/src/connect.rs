@@ -291,6 +291,36 @@ pub struct Upstreamed<S> {
     pub statements: pgprox_pool::statements::ConnectionStatements,
 }
 
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> Upstreamed<S> {
+    /// Says goodbye before the socket goes.
+    ///
+    /// `M20.4`. Postgres logs a client that vanishes without a `Terminate`, and
+    /// this proxy reaps idle connections after thirty seconds by design with
+    /// `min_pool` at zero, so reaping is the steady state rather than an
+    /// exception. Without this, every one of them is a line on the database
+    /// that looks like a client crashed, and a real fault is indistinguishable
+    /// from routine housekeeping.
+    ///
+    /// Best effort. The connection is being closed either way, so a write that
+    /// fails changes nothing about what happens next, and waiting for a flush
+    /// on a server that has already gone would be the reaper blocking on a dead
+    /// socket.
+    ///
+    /// # Only on a clean close
+    ///
+    /// Callers use this for a connection being retired from the pool, not for
+    /// one discarded mid-transaction. A discarded connection is in a state
+    /// nobody knows: if the server is in COPY-in it reads `CopyData`,
+    /// `CopyDone` or `CopyFail` and nothing else, so a `Terminate` there is a
+    /// protocol error rather than a courtesy. pgbouncer draws the same line
+    /// with `disconnect_server`'s `send_term` argument. Closing the socket is
+    /// what "this connection is in an unknown state" should look like.
+    pub async fn goodbye(&mut self) {
+        self.wire.queue(pgprox_proto::encode_frontend::terminate);
+        let _ = self.wire.flush().await;
+    }
+}
+
 impl<S> fmt::Debug for Upstreamed<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // No stream and no key: one is a socket and the other is a bearer

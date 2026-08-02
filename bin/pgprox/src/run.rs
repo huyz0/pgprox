@@ -865,7 +865,10 @@ async fn ticker(
         // runs, so this is not housekeeping: it is the other half of the
         // promise that a quiet node holds nothing. `reap_idle` has existed
         // since M5.13 with no caller on a timer.
-        app.pool.reap_idle(&ReapConfig::default());
+        // Said goodbye to rather than dropped: `M20.4`. The reaper decides
+        // under a lock it may not await inside, so it hands the sockets back
+        // and this is where they are told.
+        crate::dial::retire(app.pool.reap_idle(&ReapConfig::default())).await;
 
         // After reporting, so a peer hears this tick's numbers rather than the
         // last one's, and awaited rather than spawned: a round that took longer

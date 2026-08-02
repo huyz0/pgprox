@@ -88,4 +88,12 @@ run_test pgprox-proto "startup::tests::an_extension_makes_an_answer_owed_at_a_ve
 run_test pgprox-proto "startup::tests::an_extension_is_recognised_by_its_prefix_and_nothing_else" \
   "an ordinary parameter is not reported as an unrecognised option"
 
+# --- M20.4: a reaped connection says goodbye ---------------------------------
+#
+# End to end, against a fake that had to learn to notice one: a `Terminate` has
+# an empty body, so a fake recording bodies records the empty string and no
+# assertion can tell it from anything else.
+run_test pgprox "serve::tests::a_reaped_connection_says_goodbye_rather_than_vanishing" \
+  "a reaped connection sends Terminate before its socket goes"
+
 finish

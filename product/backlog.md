@@ -6088,7 +6088,7 @@ Streaming removes both.
   would have been a default argument wearing a function name, and the only
   caller that wanted it is the conformance server, which answers a harness that
   sends no extensions and can say so itself.
-- [ ] `M20.4` **Nothing says goodbye to an upstream connection.**
+- [x] `M20.4` **Nothing says goodbye to an upstream connection.**
   `encode_frontend::terminate` exists and its only callers are tests. A reaped
   connection is dropped, so Postgres sees the socket close rather than a
   `Terminate`, and logs it.
@@ -6103,6 +6103,27 @@ Streaming removes both.
   extend its own courtesy to the database.
   Acceptance: a connection closed by the reaper, by `max_lifetime`, or by a
   drain sends `Terminate` first.
+  Done for the reaper, which is what `max_lifetime` and the admin reset go
+  through too. `Upstreamed::goodbye` writes it and `dial::retire` calls it for
+  everything `reap_idle` hands back.
+  `reap_idle` returns the payloads now rather than a count, and that is the
+  design rather than a convenience: it decides under a `std::sync::Mutex`, and
+  the rule at the top of `live.rs` is that the lock is never held across an
+  await. So the reaper decides under the lock and the caller says goodbye
+  outside it.
+  **Only on a clean close.** A connection discarded mid-transaction is in a
+  state nobody knows: if the server is in COPY-in it reads `CopyData`,
+  `CopyDone` or `CopyFail` and nothing else, so a `Terminate` there is a
+  protocol error rather than a courtesy. pgbouncer draws the same line with
+  `disconnect_server`'s `send_term` argument.
+  Two things worth keeping from doing it. The first negative control passed and
+  was worthless: cargo had not rebuilt, and the run printed no `Compiling`. A
+  control that does not recompile proves nothing, and the second one, which
+  did, failed as it should. The second is that the test waits by parking rather
+  than by `yield_now`: on a current-thread runtime the I/O driver only runs when
+  the runtime parks, so a yield loop never delivers the read. The interval is
+  what a failure costs, not what a pass waits for, and widening it would fix
+  nothing.
 - [ ] `M20.5` **An idle pooled connection is never read.** `Pool::idle` is a
   `VecDeque<Connection>` and nothing polls it: every `tokio::spawn` in
   `pgprox-pool` is in a test. So anything the server sends on a connection

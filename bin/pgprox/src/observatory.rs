@@ -429,7 +429,9 @@ impl Observatory for NodeObservatory {
             idle_timeout: Duration::ZERO,
             ..ReapConfig::default()
         });
-        Ok(u32::try_from(closed).unwrap_or(u32::MAX))
+        let count = closed.len();
+        crate::dial::retire(closed).await;
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
 }
 

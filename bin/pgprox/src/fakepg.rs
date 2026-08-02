@@ -47,6 +47,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// How far the fake replica says it has replayed.
 pub const REPLICA_REPLAYED: &str = "16/B374D848";
 
+/// What this fake records when a client says goodbye properly.
+///
+/// A `Terminate` has an empty body, so recording the body would be recording
+/// the empty string and no test could tell it from anything else. `M20.4`.
+pub const TERMINATED: &str = "<terminate>";
+
 /// Where the fake primary says the last write landed, which is ahead of it.
 pub const PRIMARY_WRITTEN: &str = "16/C0000000";
 
@@ -131,6 +137,14 @@ pub async fn fake_postgres_after(delay: Duration) -> SocketAddr {
                     let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
                     let mut body = vec![0; len - 4];
                     if socket.read_exact(&mut body).await.is_err() {
+                        return;
+                    }
+
+                    // Said goodbye rather than vanished, which is the whole of
+                    // what `M20.4` is about. Recorded and then gone: there is
+                    // nothing to answer a `Terminate` with.
+                    if Tag(header[0]) == Tag::TERMINATE {
+                        record(addr, TERMINATED.to_owned());
                         return;
                     }
 
