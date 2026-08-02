@@ -5765,3 +5765,56 @@ Streaming removes both.
   about all of them.
   Acceptance: `scripts/m18-complete.sh` passes, the status row says complete,
   and the section records what the milestone found rather than what it planned.
+
+## M19: a seam for peer discovery
+
+- [x] `M19.0` Plan M19, from `specs/2026-08-02-peer-discovery-seam/`. The spec
+  wrote the task list and deliberately left it unfiled; this files it.
+  The gate exists from this commit rather than from the last one. `M18.3` made
+  a milestone with nothing to run a failure and `M18.0` said a completion
+  condition is part of the milestone, so an open milestone's gate cannot wait
+  until the end. It checks what has landed, which today is the spec, and gains
+  a check as each task lands. That keeps it green while CI runs it.
+- [ ] `M19.1` `PeerSource`, its static implementation, its fake, and the ADR.
+  One commit, because non-negotiable 6 says a `pgprox-core` contract arrives
+  whole and `scripts/check-core-contract.sh` refuses the alternative.
+  Shaped like `ConfigSource` deliberately: a watch receiver, an `is_healthy`
+  the `Arc` impl forwards rather than defaults, and a `run_loop` the
+  composition root starts without knowing which source it holds. A second
+  mechanism for a thing that changes while a node runs would be a second set of
+  mistakes, and `M14.34` already found both mutants of that trait's
+  `is_healthy` surviving once.
+  Additive, so it is green on its own. The risk is that it stays additive,
+  which is what `scripts/check-wired.sh` exists to catch, so `product/wired.txt`
+  gains `PeerSource` in this commit with the `?` marker naming `M19.2`.
+  Acceptance: the trait, `StaticPeers`, `FakePeerSource` that can publish and
+  can go stale, the `Arc` forwarding impl, and an ADR recording the
+  discovery/liveness split. Tier 1 tests per the spec's `tests.md`, including
+  the negative `is_healthy` case that mutant survived on `ConfigSource`.
+- [ ] `M19.2` `run_with_peers` takes the source, and `entry.rs` builds a
+  `StaticPeers` from the `--peer` flags. The signature changes and the three
+  consumers still read the table once, at the top of the function, so nothing
+  behaves differently.
+  Separated from `M19.3` on purpose: it is the widest diff and the least
+  thinking, and reviewing it beside the semantic change would hide the semantic
+  change.
+  Acceptance: every existing test passes unchanged, and `wired.txt`'s `?`
+  marker for `PeerSource` goes.
+- [ ] `M19.3` The three consumers read the current table rather than a copy.
+  `GossipTransport`, `NodeObservatory` and `Context`. The `OnceLock` on
+  `set_peers` goes, and its doc comment is replaced rather than deleted: it says
+  a second call would mean two answers to who is in the fleet, which was right
+  when the answer could not change and is the reasoning a future change will
+  repeat.
+  Acceptance: a cancel for a node added after `Context` was built is forwarded
+  to it; the observatory's fan-out reaches a peer added after construction; and
+  a quota request goes to a leader whose address changed.
+- [ ] `M19.4` The simulation gains a peer table that changes mid-run.
+  This is the task that would catch a future change letting discovery feed
+  liveness: a table that grew during a partition would let both sides reach
+  quorum, and the cap invariant would break in `pgprox_cluster::sim` rather
+  than in production.
+  Acceptance: the simulation can add and remove peers while a run is in
+  progress, and the property that guaranteed plus outstanding leases never
+  exceeds the cap still holds. Plus the assertion the whole seam exists for: a
+  source publishing a node nothing has gossiped with does not move quorum.

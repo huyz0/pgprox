@@ -292,3 +292,9 @@ jobs:
       # milestone could close with nothing to run and nothing objected.
       - name: M18
         run: scripts/m18-complete.sh
+      # M19 is open, and its gate runs anyway. It checks what has landed rather
+      # than what is planned, so it passes at every point; a gate that waited
+      # for the milestone to close would be the defect M18.3 fixed, on a
+      # schedule.
+      - name: M19
+        run: scripts/m19-complete.sh

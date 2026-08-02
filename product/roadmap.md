@@ -35,6 +35,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M16 | The streaming relay nothing streams through | the two directions are done and 16,777,216 bytes held becomes 512; the 100k run with a large result set needs three machines and is blocked |
 | M17 | The binaries mutation testing never reached | complete; 571 mutants in `pgprox` and 124 in `pgload`, every survivor argued, and the two timeout constants re-derived from a measured suite |
 | M18 | What the deployment story assumes | complete; an ADR that described a transport nobody built, a seam specified rather than guessed, and a rule that a milestone cannot close with nothing to run |
+| M19 | A seam for peer discovery | open |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1041,3 +1042,33 @@ node id is the StatefulSet ordinal and it is encoded into every `ConnId` so a
 cancel landing on any pod routes to the owner, which makes "pods behind a
 Service" a change to what clients see on the wire rather than a deployment
 choice. That is a separate spec and a larger one.
+
+## M19: a seam for peer discovery
+
+```bash
+scripts/m19-complete.sh
+```
+
+`M18.2` specified this and deliberately did not file its tasks, because filing
+work nobody has scheduled puts entries in a backlog nobody can start. It is
+scheduled now.
+
+A node learns its peers from `--peer` flags rendered by a shell loop in the
+StatefulSet template, and hands the resulting table to three places that never
+see it change: the quota transport, the observatory's client fan-out, and the
+cancel router. So a deployment that wants Kubernetes to supply peers has nowhere
+to put it, and scaling the fleet means restarting every pod so each re-reads its
+flags.
+
+**The seam is discovery, and that distinction is the milestone.** A gossip round
+carries load and liveness in one message. An external source can say which pods
+exist; it cannot say what any of them is holding, which is what quota, shedding
+and reservations run on. And liveness has to stay first-party, because a node
+counts a peer alive from digests that *arrived*, which is what makes a one-way
+network failure safe. A third party telling a partitioned node the fleet is
+healthy is the two-leaders case ADR 0004's majority rule exists to prevent.
+
+Completion condition: `scripts/m19-complete.sh`, which exists from this
+milestone's first commit and gains a check as each task lands. `M18.3` made a
+milestone with nothing to run a failure, and a gate that waited until the end
+would be the same defect wearing a schedule.
