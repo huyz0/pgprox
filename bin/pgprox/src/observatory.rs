@@ -474,6 +474,9 @@ mod tests {
         observatory: NodeObservatory,
         sessions: Arc<Sessions>,
         pool: Arc<NodePool>,
+        /// Where upstream connections come from, so a test can teach it a
+        /// backend and have the pool actually open one. `M17.4`.
+        connector: crate::wiring::NodeConnector,
         clock: FakeClock,
         source: Arc<FakeConfigSource>,
         cache: Arc<pgprox_cache::Store>,
@@ -498,8 +501,9 @@ mod tests {
         cluster.tick();
 
         let tls = pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).unwrap();
+        let connector = Arc::new(PgConnector::new(TcpUpstream::new(tls), test_slab()));
         let pool = LivePool::new(
-            Arc::new(PgConnector::new(TcpUpstream::new(tls), test_slab())),
+            Arc::clone(&connector),
             Arc::clone(&shared),
             PoolConfig::default(),
         );
@@ -528,6 +532,7 @@ mod tests {
             observatory,
             sessions,
             pool,
+            connector,
             clock,
             source,
             cache,
@@ -930,6 +935,61 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, AdminError::NotFound { kind: "pool", .. }));
+    }
+
+    #[tokio::test]
+    async fn resetting_a_pool_closes_a_connection_the_default_reap_would_keep() {
+        // `M17.4`. Deleting `idle_timeout: Duration::ZERO` from the `ReapConfig`
+        // this builds survived every run, because no test in this file could
+        // put a real connection in a pool: `reap_idle` closes what is idle, a
+        // pool holds nothing until something opens one, and opening one means
+        // completing the startup handshake. `crate::fakepg` exists so it can.
+        //
+        // The assertion turns on the difference between the two configs. A
+        // connection released a moment ago has been idle for nothing, so a
+        // reset with a zero timeout closes it and the default thirty seconds
+        // keeps it. An operator asking for a reset and being told "0" while the
+        // pool still holds the connections they wanted gone is the failure, and
+        // the number reported is the one they read.
+        use pgprox_core::pool::UpstreamPool as _;
+
+        let addr = crate::fakepg::fake_postgres().await;
+        let backend = pgprox_core::auth::Backend {
+            server: ServerId::new("127.0.0.1", addr.port()),
+            database: "acme".into(),
+            user: "acme_app".into(),
+            password: pgprox_core::secret::SecretString::new("hunter2"),
+            tls: pgprox_core::auth::TlsMode::Disabled,
+        };
+        let fixture = fixture(config());
+        fixture.connector.learn(&backend);
+
+        let key = backend.pool_key();
+        let mut guard = fixture
+            .pool
+            .acquire(&key, fixture.clock.now() + Duration::from_secs(5))
+            .await
+            .expect("the fake server did not answer a connection");
+        // Clean, so it goes back to the pool rather than being discarded. A
+        // discarded connection is closed on release and there would be nothing
+        // left to reset.
+        guard.release_clean();
+        drop(guard);
+        assert_eq!(
+            pgprox_core::pool::UpstreamPool::stats(fixture.pool.as_ref(), &key).idle,
+            1,
+            "the connection did not go back to the pool"
+        );
+
+        assert_eq!(
+            fixture.observatory.reset_pool(&key).await.unwrap(),
+            1,
+            "a reset left the pool's idle connection open"
+        );
+        assert_eq!(
+            pgprox_core::pool::UpstreamPool::stats(fixture.pool.as_ref(), &key).idle,
+            0
+        );
     }
 
     #[tokio::test]

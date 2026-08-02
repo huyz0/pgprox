@@ -25,6 +25,14 @@ pub mod dial;
 pub mod drain;
 pub mod entropy;
 pub mod entry;
+/// A Postgres server that answers well enough to be connected to, for tests.
+///
+/// Test-only, and shared: `serve.rs` drives whole sessions through it and
+/// `observatory.rs` needs a pool that holds a real upstream connection. It was
+/// inside `serve.rs`'s own tests until `M17.4`, which is the reason a mutant in
+/// `reset_pool` survived every run.
+#[cfg(test)]
+pub mod fakepg;
 pub mod gossip;
 pub mod http;
 pub mod logging;

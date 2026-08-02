@@ -5380,8 +5380,8 @@ Streaming removes both.
   per chunk produces the same bytes either way, so what had to be stated is
   that a peer with a window smaller than the body still receives it, which
   queue-then-flush cannot do.
-- [ ] `M17.4` **In progress. 80 survivors remained after the first round; 6 are
-  now argued in the baseline and 1 is open.** Stated that way rather than as a
+- [x] `M17.4` **80 survivors remained after the first round. Six are argued in
+  the baseline and the rest are killed.** Stated that way rather than as a
   running total against the original 86, because the two figures do not add:
   each run re-tests what the previous one fixed, and a mutant that was never
   reached is absent from a missed list exactly as a caught one is. The rest of
@@ -5443,13 +5443,20 @@ Streaming removes both.
   which needs a real signal delivered to the test process; and
   `Options::static_admin`, whose only distinguishing input is an environment
   variable this workspace cannot set without `unsafe`.
-  **What is left is one thing and it is scaffolding.** `reset_pool` deleting
-  `idle_timeout: Duration::ZERO` needs a pool holding a real idle upstream
-  connection, which needs a backend that completes the Postgres handshake. That
-  fake exists, in `serve.rs`'s own test module, where nothing else can reach it.
-  Moving it to a shared `#[cfg(test)]` module is the task, and it is a move
-  rather than a new fake, which is why it is worth doing rather than
-  duplicating fifty lines into `observatory.rs`.
+  **The last one was scaffolding, and the move is what fixed it.** `reset_pool`
+  deleting `idle_timeout: Duration::ZERO` needed a pool holding a real idle
+  upstream connection, which needs a backend that completes the Postgres
+  handshake. That fake existed in `serve.rs`'s own test module where nothing
+  else could reach it, so it is now `bin/pgprox/src/fakepg.rs`, a `#[cfg(test)]`
+  module both files use. A move rather than a second fake: `serve.rs` drives
+  seventy tests through it and duplicating fifty lines of protocol into
+  `observatory.rs` would have been two fakes to keep in step.
+  The test turns on the difference between the two configs rather than on the
+  reset doing something. A connection released a moment ago has been idle for
+  nothing, so a reset with a zero timeout closes it and the default thirty
+  seconds keeps it. An operator asking for a reset, being told "0", and finding
+  the pool still holding the connections they wanted gone is the failure; the
+  number reported is the one they read.
   **A consequence to state rather than leave to be discovered.** `M17.2` put
   both binaries in `scripts/mutants.sh`, and CI's nightly `mutants` job runs it
   with no arguments, so that job is red until this task closes. That is the
