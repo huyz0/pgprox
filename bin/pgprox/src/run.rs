@@ -360,7 +360,7 @@ pub fn context(app: &App, shutdown: &Shutdown) -> Context {
         cancels: Arc::new(Registry::new(app.deps.node, Box::new(SystemEntropy))),
         acquire_timeout: ACQUIRE_TIMEOUT,
         login_timeout: LOGIN_TIMEOUT,
-        peers: BTreeMap::new(),
+        peers: pgprox_core::cluster::StaticPeers::new(BTreeMap::new()),
         replicas: Arc::new(crate::replicas::ReplicaSets::new(
             crate::dial::TcpUpstream::new(Arc::clone(&app.deps.tls)),
             Arc::clone(&app.deps.clock),
@@ -416,17 +416,19 @@ pub async fn run_with_peers(
     // table taken at startup; `M19.3` is the task that makes them read the
     // current one. Splitting it that way keeps the widest diff away from the
     // semantic change.
-    let peers = (*source.peers()).clone();
-
     app.cluster
-        .set_transport(Arc::new(crate::gossip::GossipTransport::new(peers.clone())));
-    // The same table, to the one read that fans out.
-    app.observatory.set_peers(peers.clone());
-    let addresses: Vec<String> = peers.values().cloned().collect();
+        .set_transport(Arc::new(crate::gossip::GossipTransport::new(Arc::clone(
+            &source,
+        ))));
+    // The same source, to the one read that fans out.
+    app.observatory.set_peers(Arc::clone(&source));
+    // The gossip round and the drain announcement still take a list, and they
+    // take the current one: read here, per tick, rather than once at startup.
+    let addresses: Vec<String> = source.peers().values().cloned().collect();
     warn_about_descriptors(app.config.max_client_conns);
     let gate = Arc::new(Gate::new(app.config.max_client_conns));
     let context = Arc::new(Context {
-        peers: peers.clone(),
+        peers: Arc::clone(&source),
         ..context(&app, &shutdown)
     });
     let addresses_for_drain = addresses.clone();

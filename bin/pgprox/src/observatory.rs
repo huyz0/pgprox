@@ -61,7 +61,7 @@ pub struct NodeObservatory {
     /// Set after construction, because a peer table is a deployment fact and
     /// `App::build` opens no sockets. Empty until it is, which reads as a node
     /// that is alone: the same answer it gave before the fan-out existed.
-    peers: std::sync::OnceLock<std::collections::BTreeMap<NodeId, String>>,
+    peers: std::sync::OnceLock<std::sync::Arc<dyn pgprox_core::cluster::PeerSource>>,
     /// The query cache, for the one view that is local by definition.
     ///
     /// The concrete store rather than `dyn QueryCache`, because what this
@@ -126,11 +126,17 @@ impl NodeObservatory {
         }
     }
 
-    /// Tells this observatory where its peers are.
+    /// Tells this observatory where to find out who its peers are.
     ///
-    /// Once: a second call would mean two answers to "who is in the fleet",
-    /// and the run loop is the only caller.
-    pub fn set_peers(&self, peers: std::collections::BTreeMap<NodeId, String>) -> bool {
+    /// Set once, and what is set is the *source* rather than the answer. The
+    /// `OnceLock` used to hold the table, with a comment saying a second call
+    /// would mean two answers to "who is in the fleet". That was right while
+    /// the answer could not change, and `M19.3` is the commit where it stops
+    /// being: a fan-out that read a table taken at startup would miss every
+    /// node that joined afterwards and would keep calling every node that
+    /// left. Holding the source keeps the original property, since there is
+    /// still exactly one thing being asked.
+    pub fn set_peers(&self, peers: std::sync::Arc<dyn pgprox_core::cluster::PeerSource>) -> bool {
         self.peers.set(peers).is_ok()
     }
 
@@ -342,9 +348,13 @@ impl Observatory for NodeObservatory {
         // Aggregates answer from the digest every node already holds; a client
         // list is one row per connection, and gossiping those every second
         // would put a hundred thousand rows on the wire.
-        let peers = self.peers.get().cloned().unwrap_or_default();
+        let peers = self
+            .peers
+            .get()
+            .map(|source| source.peers())
+            .unwrap_or_default();
         let mut missed = Vec::new();
-        for (node, address) in &peers {
+        for (node, address) in peers.iter() {
             if *node == self.node {
                 continue;
             }
@@ -839,6 +849,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_fan_out_reaches_a_peer_added_after_construction() {
+        // `M19.3`. The `OnceLock` here used to hold the table, and its comment
+        // said a second call would mean two answers to who is in the fleet.
+        // That was right while the answer could not change. A fan-out reading a
+        // table taken at startup reports a node that joined later as having no
+        // clients, and `clients` is the one read whose whole job is to be
+        // complete: a list with a node silently absent reads as that node
+        // serving nobody.
+        let fixture = fixture(config());
+        let source = pgprox_core::cluster::FakePeerSource::new(std::collections::BTreeMap::new());
+        assert!(fixture.observatory.set_peers(source.clone()));
+
+        // Alone at first: no peers, so nothing is missed and nothing is asked.
+        let alone = fixture.observatory.clients(Scope::Cluster).await;
+        assert!(
+            alone.is_ok(),
+            "a node that is alone reported a fan-out error"
+        );
+
+        // A node joins, and is unreachable. Reserved for documentation, so
+        // nothing answers and nothing on this machine is disturbed.
+        source.publish(std::collections::BTreeMap::from([(
+            NodeId::new(2),
+            "192.0.2.1:6433".to_owned(),
+        )]));
+
+        // Now the read has somewhere to fan out to, and says so by failing
+        // rather than by returning a short list. That it changed at all is the
+        // assertion: before `M19.3` the source could publish all it liked and
+        // this call would still believe it was alone.
+        let joined = fixture.observatory.clients(Scope::Cluster).await;
+        assert!(
+            joined.is_err(),
+            "a peer added after construction was not asked, so the fan-out is still reading a copy"
+        );
+    }
+
+    #[tokio::test]
     async fn a_local_client_read_answers_and_a_cluster_one_says_what_is_missing() {
         // The failure ADR 0018 singles out is an incomplete answer presented as
         // complete. The fan-out does not exist yet, so a cluster-scoped read
@@ -881,12 +929,14 @@ mod tests {
         // no clients.
         fixture
             .observatory
-            .set_peers(std::collections::BTreeMap::from([(
-                NodeId::new(2),
-                // Reserved for documentation, so nothing answers and nothing on
-                // the machine running this is disturbed by the attempt.
-                "192.0.2.1:6433".to_owned(),
-            )]));
+            .set_peers(pgprox_core::cluster::StaticPeers::new(
+                std::collections::BTreeMap::from([(
+                    NodeId::new(2),
+                    // Reserved for documentation, so nothing answers and nothing on
+                    // the machine running this is disturbed by the attempt.
+                    "192.0.2.1:6433".to_owned(),
+                )]),
+            ));
 
         assert!(matches!(
             fixture.observatory.clients(Scope::Cluster).await,

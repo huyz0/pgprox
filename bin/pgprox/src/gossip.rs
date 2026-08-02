@@ -632,13 +632,20 @@ pub async fn clients_of(peer: &str) -> Result<Vec<ClientView>, String> {
 /// be granted lives in `pgprox-cluster`, on the node that answers.
 #[derive(Debug)]
 pub struct GossipTransport {
-    peers: std::collections::BTreeMap<NodeId, String>,
+    /// Where the peer table comes from, rather than a copy of one.
+    ///
+    /// A quota request is sent to whoever leads *now*, and the leader is the
+    /// lowest active node in a view that changes. Holding a table taken at
+    /// startup meant a node that joined later could lead and be unreachable,
+    /// which reads as `NoLeader` and drops the whole fleet to its guaranteed
+    /// shares. `M19.3`.
+    peers: std::sync::Arc<dyn pgprox_core::cluster::PeerSource>,
 }
 
 impl GossipTransport {
-    /// A transport over a known peer table.
+    /// A transport that asks `peers` where the leader is, each time.
     #[must_use]
-    pub fn new(peers: std::collections::BTreeMap<NodeId, String>) -> Self {
+    pub fn new(peers: std::sync::Arc<dyn pgprox_core::cluster::PeerSource>) -> Self {
         Self { peers }
     }
 }
@@ -655,7 +662,8 @@ impl pgprox_cluster::service::QuotaTransport for GossipTransport {
         // A leader this node has no address for is the same as no leader: it
         // falls back to its guaranteed share, which needs no coordination and
         // cannot breach the cap.
-        let peer = self.peers.get(&leader).ok_or(QuotaError::NoLeader)?;
+        let peers = self.peers.peers();
+        let peer = peers.get(&leader).ok_or(QuotaError::NoLeader)?;
         ask(peer, server, holder, want).await
     }
 }
@@ -960,12 +968,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_quota_request_goes_to_a_leader_whose_address_arrived_late() {
+        // `M19.3`. The transport used to hold a table taken at startup, so a
+        // leader this node learned about afterwards was a leader it had no
+        // address for, which reads as `NoLeader` and drops the node to its
+        // guaranteed share. That is the safe direction and it is still wrong:
+        // the free pool becomes unreachable for a fleet that is working.
+        use pgprox_cluster::service::QuotaTransport as _;
+
+        let (leader, _clock) = leading();
+        let server = ServerId::new("db-1", 5432);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let serving = tokio::spawn(serve(
+            listener,
+            Arc::clone(&leader),
+            Arc::new(NoCancels),
+            async {
+                let _ = stopped.await;
+            },
+        ));
+
+        // Built knowing nobody, which is what a node that started first sees.
+        let source = pgprox_core::cluster::FakePeerSource::new(std::collections::BTreeMap::new());
+        let transport = GossipTransport::new(source.clone());
+        assert_eq!(
+            transport
+                .request(NodeId::new(1), &server, NodeId::new(2), 3)
+                .await,
+            Err(QuotaError::NoLeader),
+            "a leader with no address should read as no leader"
+        );
+
+        // The leader's address arrives. Nothing is rebuilt.
+        source.publish(std::collections::BTreeMap::from([(
+            NodeId::new(1),
+            addr.to_string(),
+        )]));
+
+        let lease = transport
+            .request(NodeId::new(1), &server, NodeId::new(2), 3)
+            .await
+            .expect("the leader was reachable and refused anyway");
+        assert_eq!(lease.server(), &server);
+
+        stop.send(()).unwrap();
+        serving.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn a_leader_with_no_address_is_the_same_as_no_leader() {
         // The safe direction: the asker falls back to its guaranteed share,
         // which needs no coordination and cannot breach the cap.
         use pgprox_cluster::service::QuotaTransport as _;
 
-        let transport = GossipTransport::new(std::collections::BTreeMap::new());
+        let transport = GossipTransport::new(pgprox_core::cluster::StaticPeers::new(
+            std::collections::BTreeMap::new(),
+        ));
         let refused = transport
             .request(
                 NodeId::new(9),

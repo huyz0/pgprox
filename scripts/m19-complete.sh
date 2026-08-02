@@ -55,8 +55,11 @@ run_test() {
   local crate="$1" name="$2" claim="$3"
   local out="$WORK/$crate-$RANDOM.out"
 
-  cargo test -p "$crate" --all-targets --features test-fakes -- --exact "$name" \
-    >"$out" 2>>"$WORK/log"
+  # `|| true` so that cargo failing outright becomes a reported failure rather
+  # than a dead script: `lib.sh` sets `-e`, and the first version of this gate
+  # exited 101 with four checks printed and no verdict, which reads exactly like
+  # a gate that passed and stopped early.
+  cargo test -p "$crate" --all-targets -- --exact "$name" >"$out" 2>>"$WORK/log" || true
   if grep -q "^test $name \.\.\. ok$" "$out"; then
     ok "$claim"
   else
@@ -73,5 +76,17 @@ run_test pgprox-core "cluster::tests::a_source_that_has_gone_stale_says_so_throu
   "a stale source is still stale through an Arc"
 run_test pgprox-core "cluster::tests::the_default_loop_never_returns" \
   "a source with no loop does not look like one that finished"
+
+# --- M19.3: the three consumers read the current table -----------------------
+#
+# One test each, and each publishes *after* the consumer was built. That is the
+# only shape that can tell a source from a copy: a test that published first
+# would pass against either.
+run_test pgprox "serve::tests::a_cancel_for_a_node_added_after_startup_is_forwarded_to_it" \
+  "a cancel reaches a node that joined after this one started"
+run_test pgprox "observatory::tests::the_fan_out_reaches_a_peer_added_after_construction" \
+  "the client fan-out asks a peer that joined after construction"
+run_test pgprox "gossip::tests::a_quota_request_goes_to_a_leader_whose_address_arrived_late" \
+  "a quota request reaches a leader whose address arrived late"
 
 finish

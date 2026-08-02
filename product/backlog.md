@@ -5813,7 +5813,7 @@ Streaming removes both.
   a comment saying so and naming `M19.3`: the point of splitting was to keep the
   widest diff away from the semantic change, and leaving the temporary read
   unmarked would have made the next commit look smaller than it is.
-- [ ] `M19.3` The three consumers read the current table rather than a copy.
+- [x] `M19.3` The three consumers read the current table rather than a copy.
   `GossipTransport`, `NodeObservatory` and `Context`. The `OnceLock` on
   `set_peers` goes, and its doc comment is replaced rather than deleted: it says
   a second call would mean two answers to who is in the fleet, which was right
@@ -5822,6 +5822,16 @@ Streaming removes both.
   Acceptance: a cancel for a node added after `Context` was built is forwarded
   to it; the observatory's fan-out reaches a peer added after construction; and
   a quota request goes to a leader whose address changed.
+  Done, and each test publishes *after* the consumer was built, which is the
+  only shape that can tell a source from a copy: publishing first would pass
+  against either. The cancel one was checked against the old behaviour by
+  putting an empty table back in `deliver`, and it fails, so it is testing the
+  seam rather than the routing `M6.30` already fixed.
+  The `OnceLock` stayed. What it holds is now the source rather than the answer,
+  which keeps the property its comment claimed, that there is exactly one thing
+  being asked, while letting the answer change. Replacing the comment rather
+  than deleting it: it was right when it was written, and the reasoning is what
+  a future change will repeat.
 - [ ] `M19.4` The simulation gains a peer table that changes mid-run.
   This is the task that would catch a future change letting discovery feed
   liveness: a table that grew during a partition would let both sides reach

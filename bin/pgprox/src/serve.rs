@@ -162,8 +162,14 @@ pub struct Context {
     /// sending nothing: no credentials, no traffic, no way to tell it from a
     /// slow network.
     pub login_timeout: Duration,
-    /// Where the other nodes are, for a cancel this node does not own.
-    pub peers: std::collections::BTreeMap<NodeId, String>,
+    /// Where to find out where the other nodes are, for a cancel this node
+    /// does not own.
+    ///
+    /// The source rather than a table taken at startup. A cancel arrives on
+    /// whichever pod the client's second connection reached, so a node that
+    /// held a stale table would drop cancels for every node that joined after
+    /// it did, and cancelling a query would work one time in N. `M19.3`.
+    pub peers: Arc<dyn pgprox_core::cluster::PeerSource>,
     /// The replica sets this node is watching, one per primary.
     pub replicas: Arc<crate::replicas::ReplicaSets>,
     /// Fired when the node has begun draining.
@@ -2402,7 +2408,8 @@ impl Context {
             // A peer this node has no address for is a cancel that cannot be
             // delivered, which is the same outcome as an unknown key: nothing.
             Routing::Peer(node) => {
-                if let Some(peer) = self.peers.get(&node) {
+                let peers = self.peers.peers();
+                if let Some(peer) = peers.get(&node) {
                     crate::gossip::forward(peer, conn).await;
                 }
             }
@@ -3420,7 +3427,7 @@ mod tests {
             tls: None,
             draining: crate::run::Shutdown::new(),
             closing: crate::run::Shutdown::new(),
-            peers: std::collections::BTreeMap::new(),
+            peers: pgprox_core::cluster::StaticPeers::new(std::collections::BTreeMap::new()),
             replicas: Arc::new(crate::replicas::ReplicaSets::new(
                 TcpUpstream::new(
                     pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty())
@@ -5808,8 +5815,9 @@ mod tests {
         let mut elsewhere = context_for(upstream);
         elsewhere.node = NodeId::new(2);
         elsewhere.cancels = Arc::new(Registry::new(NodeId::new(2), Box::new(Fixed)));
-        elsewhere.peers =
-            std::collections::BTreeMap::from([(NodeId::new(1), gossip_at.to_string())]);
+        elsewhere.peers = pgprox_core::cluster::StaticPeers::new(std::collections::BTreeMap::from(
+            [(NodeId::new(1), gossip_at.to_string())],
+        ));
         elsewhere.deliver(conn).await;
 
         let key = tokio::time::timeout(Duration::from_secs(5), caught)
@@ -5837,10 +5845,11 @@ mod tests {
         // A peer address that would answer, so the assertion is about the rule
         // rather than about the address being missing.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        context.peers = std::collections::BTreeMap::from([(
-            NodeId::new(1),
-            listener.local_addr().unwrap().to_string(),
-        )]);
+        context.peers =
+            pgprox_core::cluster::StaticPeers::new(std::collections::BTreeMap::from([(
+                NodeId::new(1),
+                listener.local_addr().unwrap().to_string(),
+            )]));
 
         crate::gossip::CancelSink::cancel(&context, ConnId::new(NodeId::new(1), 7)).await;
 
@@ -6312,6 +6321,59 @@ mod tests {
             listed
                 .iter()
                 .any(|view| view.tenant == pgprox_core::ids::TenantId::new("acme"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancel_for_a_node_added_after_startup_is_forwarded_to_it() {
+        // `M19.3`. The seam's whole point, asked of the consumer that would
+        // have been silently wrong: a cancel arrives on whichever pod the
+        // client's second connection reached, so a node holding a table taken
+        // at startup drops cancels for every node that joined after it did, and
+        // cancelling a query works one time in N. That is the defect `M6.30`
+        // fixed once already, and a stale table would have brought it back
+        // without touching the routing.
+        let (upstream, _caught) = cancel_catcher().await;
+        let mut context = context_for(upstream);
+        context.node = NodeId::new(2);
+        context.cancels = Arc::new(Registry::new(NodeId::new(2), Box::new(Fixed)));
+
+        // Built knowing about nobody, which is what a node that started first
+        // sees.
+        let source = pgprox_core::cluster::FakePeerSource::new(std::collections::BTreeMap::new());
+        context.peers = source.clone();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let peer_at = listener.local_addr().unwrap();
+        let (caught, catch) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let Ok((socket, _)) = listener.accept().await else {
+                return;
+            };
+            let mut lines = BufReader::new(socket).lines();
+            if let Ok(Some(line)) = lines.next_line().await {
+                let _ = caught.send(line);
+            }
+        });
+
+        // Node 1 joins. Nothing is rebuilt and nothing is restarted.
+        source.publish(std::collections::BTreeMap::from([(
+            NodeId::new(1),
+            peer_at.to_string(),
+        )]));
+
+        context
+            .deliver(ConnId::new(NodeId::new(1), 0x00AB_CDEF))
+            .await;
+
+        let line = tokio::time::timeout(Duration::from_secs(5), catch)
+            .await
+            .expect("the cancel was not forwarded to a node that joined after startup")
+            .unwrap();
+        assert!(
+            line.contains(r#""kind":"cancel""#),
+            "the peer got something other than a cancel: {line}"
         );
     }
 }
