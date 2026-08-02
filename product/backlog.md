@@ -5832,7 +5832,8 @@ Streaming removes both.
   being asked, while letting the answer change. Replacing the comment rather
   than deleting it: it was right when it was written, and the reasoning is what
   a future change will repeat.
-- [ ] `M19.4` The simulation gains a peer table that changes mid-run.
+- [ ] `M19.4` **In progress, and it found something.** The simulation gains a
+  peer table that changes mid-run.
   This is the task that would catch a future change letting discovery feed
   liveness: a table that grew during a partition would let both sides reach
   quorum, and the cap invariant would break in `pgprox_cluster::sim` rather
@@ -5841,3 +5842,217 @@ Streaming removes both.
   progress, and the property that guaranteed plus outstanding leases never
   exceeds the cap still holds. Plus the assertion the whole seam exists for: a
   source publishing a node nothing has gossiped with does not move quorum.
+  **The harness and the quorum assertion are done. The cap property is not, and
+  it is not done because it fails.** `gossip_over_peers` lets each node gossip
+  only to the peers it was told about, and the first run of the property over
+  it breached the cap at seed 7: 150 permitted against 100. That is not a flaw
+  in the new test. It is `M19.5`, and this task stays open behind it, because
+  the acceptance says the invariant still holds and it does not.
+  The two tests are held in `M19.5` rather than committed failing or weakened
+  to pass. Neither is acceptable: a red tree is not a commit, and a property
+  test edited until it stops finding the thing it found is the failure `M12`
+  spent a milestone on.
+- [ ] `M19.5` **A node that can receive but not send believes it still leads.**
+  Found by `M19.4`'s new property and reduced to a deterministic case with
+  **zero network faults**: 130 permitted against a cap of 100.
+  Five nodes. Node 1 gossips to nobody; everyone else still gossips to
+  everyone, including to node 1. Nodes 2 to 5 stop hearing from node 1 and age
+  it out, so node 2 becomes the lowest active node in their view and, after the
+  takeover wait, grants from the free pool. Node 1 still hears the whole fleet,
+  so its view holds all five, it is still the lowest id in it, it still has a
+  majority, and it grants too. Two leaders, one free pool, and the one property
+  with no graceful degradation is breached.
+  **This is not caused by `PeerSource` and it is not new.** A one-way network
+  failure in the send direction produces it exactly. A peer table that lists
+  fewer nodes than list it is a second route to the same state, which is how
+  this was found rather than what caused it.
+  **The design reasoned about the mirror case and got it right.**
+  `membership.rs` says, in as many words: "a node that can still send but no
+  longer receives ages its peers out and steps down, exactly as a node cut off
+  in both directions does. Counting sends instead would leave it convinced it
+  still leads while the other side elected a replacement." Every word of that
+  is true and it is about the other direction. Nothing anywhere reasons about a
+  node that can receive but cannot send, and that node is the one that stays
+  convinced.
+  **Why five hundred seeds never found it.** `sim::Network::partition` is
+  symmetric: `reachable` returns false for `(a,b)` and `(b,a)` together, so the
+  simulator has never been able to express a one-way failure. The property test
+  has been exploring a strictly smaller space than its own comment claims, and
+  that is worth fixing whatever the remedy for the breach turns out to be.
+  Not fixed here, and deliberately. The candidate remedy is that a node whose
+  outbound round reaches nobody should stop believing it leads, and the
+  binary's `round()` already computes exactly that number and spends it on a
+  log line. But that couples liveness to sending, which is the thing
+  `membership.rs` argues against, so it needs an ADR and a property rather than
+  a patch. This is the escalation `standards/behavior.md` names: a roadmap
+  assumption that turned out to be wrong.
+  Acceptance: the two tests below pass rather than being edited; the simulator
+  can express a one-way link; and an ADR records why liveness may now depend on
+  something other than what arrived, or why the remedy is elsewhere.
+  The tests, verbatim, so the fix restores them rather than reinventing them:
+
+```rust
+    #[test]
+    fn a_node_that_can_receive_but_not_send_reduction() {
+        // A reduction of what `the_cap_holds_while_peer_tables_change_underneath_it`
+        // found at seed 7, written out so the mechanism is readable rather than
+        // inferred from a randomized schedule.
+        const STEP: Duration = Duration::from_millis(500);
+
+        let mut now = Instant::now();
+        let mut nodes = cluster(FLEET, now);
+        let ids: Vec<NodeId> = nodes.iter().map(NodeCoordinator::node).collect();
+        let mut network = Network::new(
+            0,
+            NetworkFaults {
+                drop_percent: 0,
+                max_delay_ms: 0,
+                reorder_percent: 0,
+            },
+        );
+
+        // Node 1 sends to nobody. Everyone else still sends to everyone,
+        // including to node 1, so node 1 keeps hearing the whole fleet.
+        let mut tables: Vec<Vec<NodeId>> = ids.iter().map(|_| ids.clone()).collect();
+        tables[0] = Vec::new();
+
+        let mut version = 1_u64;
+        for _ in 0..40 {
+            now += STEP;
+            version += 1;
+            gossip_over_peers(&mut nodes, &mut network, &tables, version, STEP, now);
+        }
+
+        // Node 1 still believes it leads: it has heard from everyone, so its
+        // view holds all five and it is the lowest id in it.
+        assert!(
+            nodes[0].membership(now).is_leader(),
+            "node 1 stopped leading, so the reduction no longer reproduces"
+        );
+        // And node 2 also leads, because node 1 aged out of *its* view.
+        assert!(
+            nodes[1].membership(now).is_leader(),
+            "node 2 did not take office, so the reduction no longer reproduces"
+        );
+
+        // Two leaders, one free pool, and both can grant.
+        let mut granted = 0_u32;
+        for index in [0_usize, 1] {
+            let holder = nodes[index].node();
+            if let Ok(lease) = nodes[index].request(&server(), holder, 40, now) {
+                granted += lease.nominal_count();
+                nodes[index].accept(lease);
+            }
+        }
+
+        let total = total_permitted(&nodes, now);
+        assert!(
+            total <= CAP,
+            "two leaders granted {granted} between them: {total} permitted against a cap of {CAP}"
+        );
+    }
+
+    #[test]
+    fn the_cap_holds_while_peer_tables_change_underneath_it() {
+        // `M19.4`. The existing property test gossips to everyone, which models
+        // a fleet whose peer tables are complete and identical. `PeerSource`
+        // means they are neither while the fleet is scaling, so this runs the
+        // same invariant with the tables changing under it: nodes appear in
+        // each other's tables and vanish from them mid-run, on top of the
+        // partitions and restarts the other test already applies.
+        //
+        // What it would catch is a future change that let discovery feed
+        // liveness. A table that grew during a partition would let both sides
+        // reach quorum, and two ledgers would grant from one free pool.
+        const STEP: Duration = Duration::from_millis(500);
+
+        for seed in 0..200_u64 {
+            let mut rng = Rng::new(seed);
+            let mut network = Network::new(
+                seed,
+                NetworkFaults {
+                    drop_percent: 10,
+                    max_delay_ms: 300,
+                    reorder_percent: 15,
+                },
+            );
+            let mut now = Instant::now();
+            let mut nodes = cluster(FLEET, now);
+            let ids: Vec<NodeId> = nodes.iter().map(NodeCoordinator::node).collect();
+            let mut tables: Vec<Vec<NodeId>> = ids.iter().map(|_| ids.clone()).collect();
+            let mut version = 1_u64;
+
+            for _ in 0..60 {
+                now += STEP;
+                version += 1;
+
+                match rng.below(8) {
+                    0 => {
+                        // One node's table shrinks to a random prefix, which is
+                        // what a source reporting fewer peers looks like.
+                        let who = usize::try_from(rng.below(u64::from(FLEET))).unwrap();
+                        let keep = usize::try_from(rng.below(u64::from(FLEET) + 1)).unwrap();
+                        tables[who] = ids[..keep].to_vec();
+                    }
+                    1 => {
+                        // And grows back. A table naming everyone is the state
+                        // the flags produce today.
+                        let who = usize::try_from(rng.below(u64::from(FLEET))).unwrap();
+                        tables[who] = ids.clone();
+                    }
+                    2 => {
+                        let at = usize::try_from(rng.below(u64::from(FLEET) + 1)).unwrap();
+                        network.partition(&ids[..at], &ids[at..]);
+                    }
+                    3 => network.heal(),
+                    4 => {
+                        let count = usize::try_from(rng.below(u64::from(FLEET)) + 1).unwrap();
+                        for index in 0..count {
+                            restart(&mut nodes, index, now);
+                        }
+                    }
+                    _ => {}
+                }
+
+                gossip_over_peers(&mut nodes, &mut network, &tables, version, STEP, now);
+
+                for asker in 0..nodes.len() {
+                    let holder = nodes[asker].node();
+                    let want = u32::try_from(rng.below(60)).unwrap();
+                    for responder in 0..nodes.len() {
+                        if let Ok(lease) = nodes[responder].request(&server(), holder, want, now) {
+                            nodes[asker].accept(lease);
+                            break;
+                        }
+                    }
+                }
+
+                let total = total_permitted(&nodes, now);
+                assert!(
+                    total <= CAP,
+                    "seed {seed}: {total} permitted against a cap of {CAP}, \
+                     with peer tables changing under the fleet"
+                );
+            }
+        }
+    }
+
+```
+- [ ] `M19.6` A `pgload` test fails about one run in three, on a clean tree.
+  `run::tests::a_drain_mid_run_is_a_relocation_rather_than_an_error` failed two
+  of six consecutive runs with no change to `pgload` or `pgprox-load` in the
+  working tree. Tripped over by `M19.4`'s workspace-wide run, which is the only
+  reason it was seen: nothing in this session had touched that crate.
+  **This is a different finding from `M17.5`'s, and worse.** That task recorded
+  that `pgload`'s *mutation verdicts* are unstable, because its tests drive real
+  sockets, sleeps and deadlines, and it argued seven baseline entries on exactly
+  that basis. An unstable mutation verdict costs an argument. A test that fails
+  one run in three costs every CI run a coin flip, and the first response to a
+  red build that passes on re-run is to stop reading red builds.
+  `M16.8` is the precedent and the shape to copy: a `pgprox-tls` test that
+  failed about one run in three, diagnosed rather than retried.
+  Acceptance: the test passes twenty consecutive runs, and the commit says what
+  made it flaky rather than what was changed to stop it. If the cause is a
+  deadline that the machine decides, the fix is a paused clock or an assertion
+  that does not depend on ordering, not a longer timeout: `M17.7` is what
+  happens when a timing constant is widened without deriving it.

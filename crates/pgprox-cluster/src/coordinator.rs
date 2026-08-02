@@ -704,6 +704,32 @@ mod tests {
         now: Instant,
     ) {
         let ids: Vec<NodeId> = nodes.iter().map(NodeCoordinator::node).collect();
+        let everyone: Vec<Vec<NodeId>> = ids.iter().map(|_| ids.clone()).collect();
+        gossip_over_peers(nodes, network, &everyone, version, step, now);
+    }
+
+    /// The same round, with each node gossiping only to the peers it has been
+    /// told about.
+    ///
+    /// `M19.4`. `gossip_over` sends to everyone, which models a fleet whose
+    /// peer tables are complete and identical. A real one is neither while it
+    /// is scaling: `PeerSource` lets a table change under a running node, so
+    /// the simulation has to be able to change one.
+    ///
+    /// This is the seam's safety argument made executable. Discovery decides
+    /// who a node *talks to*; liveness comes from digests that *arrive*. A peer
+    /// table that grows cannot make a node count anybody alive, because the
+    /// only route into liveness is `gossip`, and this function is the only
+    /// thing that calls it.
+    fn gossip_over_peers(
+        nodes: &mut [NodeCoordinator],
+        network: &mut Network<VersionedDigest>,
+        peers: &[Vec<NodeId>],
+        version: u64,
+        step: Duration,
+        now: Instant,
+    ) {
+        let ids: Vec<NodeId> = nodes.iter().map(NodeCoordinator::node).collect();
         for (index, c) in nodes.iter_mut().enumerate() {
             let mut own = VersionedDigest {
                 digest: c.digest(),
@@ -711,7 +737,7 @@ mod tests {
             };
             own.digest.node = ids[index];
             c.gossip(own.clone(), now);
-            for peer in &ids {
+            for peer in &peers[index] {
                 if *peer != ids[index] {
                     network.send(ids[index], *peer, own.clone());
                 }
@@ -861,6 +887,82 @@ mod tests {
         assert!(
             c.membership(now).members().iter().any(|m| m.id == node(2)),
             "a stale message should still count as having heard from the node"
+        );
+    }
+
+    #[test]
+    fn a_peer_table_a_node_never_hears_from_moves_no_quorum() {
+        // `M19.4`, and the assertion the whole seam rests on. `PeerSource` lets
+        // a deployment decide who a node gossips with. It must not let one
+        // decide who is alive, because a node partitioned from its peers but
+        // still able to reach the source would be told the fleet is healthy and
+        // would keep granting from the free pool while the other side elected a
+        // replacement.
+        //
+        // Asserted structurally rather than by driving a source, because the
+        // structure is the guarantee: nothing in this type takes a peer table,
+        // so the only route into liveness is `gossip`. If that ever stops being
+        // true, this test is where it shows.
+        let now = Instant::now();
+        let mut alone = NodeCoordinator::new(node(1), config_for(FLEET), now);
+        alone.set_cap(server(), CAP);
+        // The self-heartbeat, which is how a node enters its own view. Without
+        // it there is no view to lead and the assertions below would be about
+        // an empty one.
+        let beat = |c: &mut NodeCoordinator, id: NodeId, at: Instant| {
+            c.gossip(
+                VersionedDigest {
+                    digest: ClusterDigest {
+                        node: id,
+                        ..ClusterDigest::default()
+                    },
+                    version: 1,
+                },
+                at,
+            );
+        };
+        beat(&mut alone, node(1), now);
+        alone.observe(now);
+
+        // It leads, being the lowest id in a view of one, and it cannot grant:
+        // a majority of five is three, and it has heard from itself alone.
+        assert!(alone.membership(now).is_leader());
+        assert!(
+            alone.request(&server(), node(1), 1, now).is_err(),
+            "a node that has heard from nobody granted from the free pool"
+        );
+
+        // Two more nodes exist and this one has been told to gossip with them,
+        // which in this type is not an event at all. Nothing changes, and that
+        // is the point: there is no call to make.
+        assert!(
+            alone.request(&server(), node(1), 1, now).is_err(),
+            "quorum moved without a digest arriving"
+        );
+
+        // Hearing from them is what moves it, and it takes a majority: three
+        // of five, counting itself.
+        for peer in [node(2), node(3)] {
+            beat(&mut alone, peer, now);
+        }
+        alone.observe(now);
+
+        // And then the takeover wait, because regaining a quorum counts as
+        // taking office: a leader that granted the instant it saw a majority
+        // could overlap with one that had not yet noticed it was deposed.
+        let mut later = now;
+        for _ in 0..12 {
+            later += Duration::from_secs(1);
+            beat(&mut alone, node(1), later);
+            for peer in [node(2), node(3)] {
+                beat(&mut alone, peer, later);
+            }
+            alone.observe(later);
+        }
+
+        assert!(
+            alone.request(&server(), node(1), 1, later).is_ok(),
+            "a node that has heard from a majority still could not grant"
         );
     }
 
