@@ -14,6 +14,13 @@ behind it. Each one runs both wire protocols, a prepared statement
 reused on one session, a result larger than one segment, a
 transaction, and an error with a statement after it.
 
+`M21` added what `M20` changed: a statement given back with a
+protocol `Close` and prepared again, in the three drivers that keep
+a cache; the unnamed statement, counted on the server rather than
+merely run; and the startup packet, meaning a `search_path` from
+`options`, an `application_name`, and a replication connection
+refused by name.
+
 | Driver | Result |
 | --- | --- |
 | psql | pass |

@@ -37,7 +37,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M18 | What the deployment story assumes | complete; an ADR that described a transport nobody built, a seam specified rather than guessed, and a rule that a milestone cannot close with nothing to run |
 | M19 | A seam for peer discovery | complete; the seam exists and three consumers read through it, and two of the eight tasks were corrections of claims this milestone made about its own fakes |
 | M20 | The protocol layer against pgbouncer, pgcat and odyssey | complete; eight findings, of which one corrupted a pooled connection for every session after it, three were things a client asked for and was silently not given, and one was found by the hunt rather than by the reading |
-| M21 | The driver matrix does not cover what M20 changed | open |
+| M21 | The driver matrix does not cover what M20 changed | complete; the suite it proposed building already existed, and three of its four cases were wrong in ways only a reverted build could show |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1189,7 +1189,7 @@ two lists where one would do. Each time the threshold stayed where it was and
 the code got smaller. A future is the union of what is alive across its awaits,
 and the relay loop is nothing else.
 
-## M21: the driver matrix does not cover what M20 changed
+## M21: the driver matrix does not cover what M20 changed (complete)
 
 ```bash
 scripts/m21-complete.sh
@@ -1223,3 +1223,40 @@ because it gets quoted.
 
 Completion condition: `scripts/m21-complete.sh`, which exists from this
 milestone's first commit and gains a check as each task lands.
+
+### Where it got to
+
+The matrix now covers what M20 changed: a statement given back with a protocol
+`Close` and prepared again, in the three drivers that keep a cache; the unnamed
+statement, counted on the server rather than merely run; and the startup
+packet. The report records which commit it describes, so a stale one says how
+far behind it is and names the commits.
+
+**Three of the four cases were wrong first, and each was wrong in a way only a
+reverted build could show.**
+
+`M21.2` used pgx's `DeallocateAll` and npgsql's `UnprepareAll`, and both passed
+against a proxy built without `M20.1`. Those send `DEALLOCATE ALL` as SQL,
+which this proxy has handled since `M15.3`. Two probes were standing evidence
+for a fix from five milestones earlier while claiming to cover this one.
+
+`M21.3` was filed as "run a one-shot query more than once and survive", which
+both behaviours do. It counts what the server was left holding instead, and the
+counting was itself wrong twice: it counted named statements the same probe
+legitimately prepares, and then it counted itself, because the count query's
+own text contained the marker it matched on.
+
+`M21.1` was filed asking for a gate that fails on a stale report. That gate
+would be red from the first edit to `bin/pgprox` and permanently red in CI,
+which has neither Docker nor the five toolchains needed to clear it. It fails
+on absent provenance instead and reports staleness with the commits behind it.
+
+**And the milestone opened by proposing to build something that already
+existed.** `scripts/driver-matrix.sh` has pointed all five drivers at the proxy
+since `M8.13`. The refutation was in `tests/proxy-drivers/_env.sh`, in a
+directory that was never listed.
+
+What the four corrections have in common is the shape of the mistake, not the
+subject: a check believed because it passed. Every one of them was caught by
+running the thing it was supposed to catch, against a build with the fix taken
+out. A green probe says nothing until it has been seen to go red.

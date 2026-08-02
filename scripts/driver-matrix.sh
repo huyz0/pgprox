@@ -148,6 +148,13 @@ mkdir -p "$(dirname "$OUT")"
   echo "reused on one session, a result larger than one segment, a"
   echo "transaction, and an error with a statement after it."
   echo
+  echo "\`M21\` added what \`M20\` changed: a statement given back with a"
+  echo "protocol \`Close\` and prepared again, in the three drivers that keep"
+  echo "a cache; the unnamed statement, counted on the server rather than"
+  echo "merely run; and the startup packet, meaning a \`search_path\` from"
+  echo "\`options\`, an \`application_name\`, and a replication connection"
+  echo "refused by name."
+  echo
   echo "| Driver | Result |"
   echo "| --- | --- |"
   for driver in "${DRIVERS[@]}"; do

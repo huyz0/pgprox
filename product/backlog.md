@@ -6403,7 +6403,7 @@ recognised so it can be refused rather than read as a version.
   error would pass for two wrong reasons.
   And both drivers check that an ordinary connection still works afterwards. A
   proxy refusing everything would satisfy every refusal assertion here.
-- [ ] `M21.5` Close M21. Filed as its own task for the reason `M18.4`, `M19.8`
+- [x] `M21.5` Close M21. Filed as its own task for the reason `M18.4`, `M19.8`
   and `M20.9` were.
   Acceptance: the gate passes, the status row says complete, and the section
   records that the milestone began by proposing to build something that already
