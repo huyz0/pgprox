@@ -35,7 +35,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M16 | The streaming relay nothing streams through | the two directions are done and 16,777,216 bytes held becomes 512; the 100k run with a large result set needs three machines and is blocked |
 | M17 | The binaries mutation testing never reached | complete; 571 mutants in `pgprox` and 124 in `pgload`, every survivor argued, and the two timeout constants re-derived from a measured suite |
 | M18 | What the deployment story assumes | complete; an ADR that described a transport nobody built, a seam specified rather than guessed, and a rule that a milestone cannot close with nothing to run |
-| M19 | A seam for peer discovery | open |
+| M19 | A seam for peer discovery | complete; the seam exists and three consumers read through it, and two of the eight tasks were corrections of claims this milestone made about its own fakes |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1043,7 +1043,7 @@ cancel landing on any pod routes to the owner, which makes "pods behind a
 Service" a change to what clients see on the wire rather than a deployment
 choice. That is a separate spec and a larger one.
 
-## M19: a seam for peer discovery
+## M19: a seam for peer discovery (complete)
 
 ```bash
 scripts/m19-complete.sh
@@ -1072,3 +1072,34 @@ Completion condition: `scripts/m19-complete.sh`, which exists from this
 milestone's first commit and gains a check as each task lands. `M18.3` made a
 milestone with nothing to run a failure, and a gate that waited until the end
 would be the same defect wearing a schedule.
+
+### Where it got to
+
+The seam is `PeerSource` in `pgprox-core`, with `StaticPeers` behind the
+`--peer` flags and a `watch` channel so a table published later reaches a
+consumer built earlier. All three consumers read through it, and each is held
+by a test that publishes *after* the consumer exists, which is the only shape
+that can tell a source from a copy. Nothing discovers peers yet, and that is
+deliberate: the milestone is the seam, and a Kubernetes source is an opt-in
+that plugs into it. ADR 0023 holds the line the seam may not cross, which is
+that a source may add a peer to gossip with and may never make one count as
+alive.
+
+**Two of the eight tasks were corrections of claims this milestone made, and
+both were about a fake rather than about the system.** `M19.4` reported a quota
+cap breach, deterministic and with no network faults, and `M19.5` found it in
+the simulation: `gossip_over_peers` sent the initiator's digest and nothing
+back, and the transport has carried both halves of an exchange on one
+connection since M6. `M19.6` chased a `pgload` test failing one run in
+twenty-five and found its fake sending `57P01` at whatever statement a shared
+counter landed on, so the scheduler was choosing between a relocation and a
+lost transaction while the test asserted the first. Both reductions were kept
+and inverted into assertions.
+
+The third finding was found by the hunt rather than by the milestone. Running
+the workspace under `cargo test` instead of nextest to reproduce `M19.6` turned
+up `M19.7`: `entry::serve` installed a process-wide subscriber, so two tests in
+one binary raced for the one install a process gets. Nextest gives every test
+its own process, so the gate had been green over it throughout. That is the
+part worth carrying forward. A gate that isolates every test cannot see a
+collision between two of them, and this project's gate does exactly that.

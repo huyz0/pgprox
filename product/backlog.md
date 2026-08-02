@@ -5964,3 +5964,14 @@ Streaming removes both.
   called `..._fails_before_the_runtime_does_anything`, and the runtime started
   and installed logging before that failure. A name that says a thing does not
   happen is where nobody looks for the thing happening.
+- [x] `M19.8` Close M19. The gate exists and passes, so the status row can stop
+  saying open and the section can say where it got to.
+  Filed as its own task for the reason `M15.8` and `M18.4` were: closing a
+  milestone is a claim about the whole of it, and bundling that claim into the
+  last piece of work makes it look like a side effect of that piece rather than
+  a judgement about all of them.
+  Acceptance: `scripts/m19-complete.sh` passes, the status row says complete,
+  and the section records what the milestone found rather than what it planned.
+  In particular it records that two of the eight tasks were corrections of
+  claims this milestone itself made, because a section that reads as seven clean
+  steps would be the same fiction `M18.1` deleted from ADR 0004.
