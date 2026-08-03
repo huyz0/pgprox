@@ -19,35 +19,50 @@ WORKLOAD=product/perf/workload-large.yaml scripts/scale.sh 200 --local
 
 ## The number
 
-200 connections each, same tenants, same transaction shapes, same think time,
+Two connection counts, same tenants, same transaction shapes, same think time,
 same churn. `scripts/m23-complete.sh` checks that the two documents differ in
 their statements and nowhere else, so a difference between the runs has one
 cause.
 
-| workload | row | rss per connection |
-| --- | --- | --- |
-| `workload.yaml` | pgbench's | 26,112 bytes |
-| `workload-large.yaml` | 1 MiB | 34,693 bytes |
+| connections | `workload.yaml` | `workload-large.yaml` | difference |
+| --- | --- | --- | --- |
+| 200 | 26,112 bytes/conn | 34,693 bytes/conn | +8,581 |
+| 600 | 17,674 bytes/conn | 17,271 bytes/conn | **-403** |
 
-A megabyte of result costs **8,581 more bytes per connection, which is 0.82% of
-the row**. A relay that held the row entire would cost 1,048,576 more.
+A relay that held each row entire would show +1,048,576.
 
-That is `M16.1`'s finding under concurrency rather than in isolation: 200
-sessions each pulling a megabyte through the real proxy, a real pool and a real
-Postgres, and the bytes are not accumulating anywhere.
+**The second pair is the one that answers the question, and it corrects the
+first.** With only the run at 200 this document said a megabyte of result costs
+8,581 more bytes per connection. It does not. At 600 the difference is negative,
+which is to say the two runs differ by less than the measurement's own
+variability, and a cost that disappears when you look harder was never a cost.
+What 8,581 measured was fixed overhead landing differently across two runs at a
+count where fixed overhead still dominates.
+
+That distinction is the whole reason for a second pair. One pair cannot tell a
+per-connection cost from a constant, and the two have opposite meanings here: a
+per-connection cost that grows with the count is something accumulating, which
+is exactly what streaming exists to prevent.
+
+So the finding is stronger than the one pair suggested. At 600 sessions each
+pulling a megabyte through the real proxy, a real pool and a real Postgres,
+**there is no measurable per-connection cost to the row being a megabyte
+instead of a few bytes.**
 
 ## What this does not say
 
-**Not the 100k target.** 34,693 bytes extrapolates to 3,308 MB at 100k against
+**Not the 100k target.** 17,271 bytes extrapolates to 1,647 MB at 100k against
 a 500 MB target, and the extrapolation is worthless here: the reference
-workload extrapolates to 2,490 MB on this machine, where `M7` measured 546 MB
+workload extrapolates to 1,685 MB on this machine, where `M7` measured 546 MB
 on three. A one-node local stack sharing twenty cores with its own load client
-is not the deployment shape, and the per-connection constant is dominated by
-fixed cost at these counts. The same large workload at 50 connections reported
-69,959 bytes per connection, twice the figure at 200, for that reason.
+is not the deployment shape.
 
-The comparison is the result. The absolute number is not portable and the pair
-is, because both halves carry the same fixed cost.
+The per-connection constant is dominated by fixed cost until the count is large
+enough to amortise it, which is visible in the numbers themselves: the large
+workload reported 69,959 bytes per connection at 50, 34,693 at 200 and 17,271
+at 600, on the same machine against the same database. The comparison at one
+count is the result. The absolute number is not portable, and the pair is,
+because both halves carry the same fixed cost.
 
 **The latency figures are Postgres.** 1,114,400us added p99 on the large run is
 the database generating megabyte rows while `pgload` competes for the same

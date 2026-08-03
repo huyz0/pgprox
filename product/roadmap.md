@@ -1346,8 +1346,12 @@ would have produced identical numbers. A pair of runs at one connection count,
 differing in nothing but their statements, answers the memory question on one
 machine.
 
-At 200 connections, a 1 MiB result costs 8,581 more bytes per connection than
-pgbench's rows do, which is 0.82% of the row. Holding it would cost 1,048,576.
+Two pairs, and the second corrects the first. At 200 connections a 1 MiB result
+appeared to cost 8,581 more bytes per connection; at 600 the difference is -403,
+which is less than the measurement's own variability. A cost that disappears
+when you look harder was never a cost, and one pair could not tell a
+per-connection cost from a constant landing differently across two runs. Holding
+each row would cost 1,048,576 per connection.
 
 The 100k half stays blocked, and this narrows what is unknown rather than
 closing it. What remains unmeasured is whether the same holds at a hundred

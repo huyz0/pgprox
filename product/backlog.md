@@ -6581,7 +6581,21 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a large-result workload derived from `workload.yaml`, a run
   document with the pair, and a gate that checks the two workloads differ where
   they claim to and nowhere else.
-- [ ] `M23.1` The workload and the measurement.
+- [x] `M23.1` A second connection count, because one pair cannot tell a
+  per-connection cost from a constant.
+  Filed as "the workload and the measurement", and `M23.0` committed both:
+  its gate checks for them, so it could not pass without them. That is the
+  merge the green-tree rule outranks the one-task-one-commit rule for, and it
+  should have been said in that commit's message rather than here.
+  What was left is the part that mattered. At 200 connections the large
+  workload cost 8,581 more bytes per connection and this document said so. At
+  600 the difference is **-403**, which is to say less than the measurement's
+  own variability, and a cost that disappears when you look harder was never a
+  cost. The 8,581 was fixed overhead landing differently across two runs at a
+  count where fixed overhead still dominates.
+  The two readings have opposite meanings, which is why one pair was not
+  enough: a per-connection cost that grows with the count is something
+  accumulating, and that is precisely what streaming exists to prevent.
   Acceptance: the numbers are recorded with what they do not say, which is the
   100k target, the latency figures, and the per-connection constant at small
   connection counts.
