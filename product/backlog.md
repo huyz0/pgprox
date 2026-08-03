@@ -6527,7 +6527,7 @@ recognised so it can be refused rather than read as a version.
   and turns the hang into a caught mutant because tests run in debug. Not a
   test, because a hanging test cannot assert; not a baseline entry, because the
   mutant was pointing at something real. Down to 4 of 560, all baselined.
-- [ ] `M22.8` Sweep the eleven that remain: `pgprox-route`, `pgprox-cache`,
+- [x] `M22.8` Sweep the eleven that remain: `pgprox-route`, `pgprox-cache`,
   `pgprox-cluster`, `pgprox-admin`, `pgprox-auth`, `pgprox-config`,
   `pgprox-observe`, `pgprox-load`, `pgprox-tls`, `pgprox-testkit`, `pgload`.
   `M19`'s seam touched `pgprox-cluster`, so that is the one with new logic; the
@@ -6536,6 +6536,15 @@ recognised so it can be refused rather than read as a version.
   One commit if they are all quiet. Any crate whose sweep changes code takes
   its own task, for the reason `M22.5` was split out of this one.
   Acceptance: as `M22.1`, per crate.
+  All eleven quiet. 1,283 mutants, 21 surviving, every one already argued and
+  no new survivor anywhere. The prediction held, which is worth recording as a
+  result rather than as an absence: `pgprox-cluster` was the one with new logic,
+  `M19`'s `PeerSource` seam, and its tests were written in the crate that owns
+  it, which is the third time that has been the difference.
+  `pgprox-load` and `pgload` carry fifteen of the twenty-one between them, all
+  argued by `M17.5` on the grounds that their tests drive real sockets, sleeps
+  and deadlines, so a verdict there is unstable by construction. Nothing about
+  that changed.
 - [ ] `M22.6` Close M22. Filed as its own task for the reason `M18.4`, `M19.8`,
   `M20.9` and `M21.5` were.
   Acceptance: the gate passes, the status row says complete, and the section
