@@ -1714,25 +1714,13 @@ fn ready_statement(
     // connection last parsed it, and a session that moved between the `Parse`
     // and the `Bind` has to have it parsed again on the new one.
     if let Some(sql) = unnamed_statement(message, session) {
-        return match message {
-            // The client's own `Parse` is about to go, so the connection ends
-            // up with it either way and nothing is owed.
-            Message::Parse { .. } => {
-                upstream.statements.note_unnamed(sql);
-                Statement::Nothing
-            }
-            _ if upstream.statements.holds_unnamed(sql) => Statement::Nothing,
-            // Re-parsed rather than refused, and legal: a `Parse` of the
-            // unnamed statement replaces whatever was there, so unlike a named
-            // one it cannot collide with itself.
-            _ => {
-                upstream.wire.queue(|out| {
-                    pgprox_proto::encode_frontend::parse(out, "", sql);
-                });
-                upstream.statements.note_unnamed(sql);
-                Statement::Prepared(1)
-            }
-        };
+        if !prepare_unnamed(message, sql, &mut upstream.statements) {
+            return Statement::Nothing;
+        }
+        upstream.wire.queue(|out| {
+            pgprox_proto::encode_frontend::parse(out, "", sql);
+        });
+        return Statement::Prepared(1);
     }
 
     let Some((global, sql)) = statement_of(message, session) else {
@@ -1758,6 +1746,37 @@ fn ready_statement(
         pgprox_proto::encode_frontend::parse(out, global.as_str(), &sql);
     });
     Statement::Prepared(swallow)
+}
+
+/// Whether a `Parse` of the unnamed statement has to be sent before this frame.
+///
+/// Records what the connection ends up holding either way, which is why it takes
+/// the map rather than borrowing it: the answer and the bookkeeping are one
+/// decision and a caller that did one without the other is the bug.
+///
+/// `M22.4`. This was three arms inside `ready_statement`, which takes an
+/// `Upstreamed` and therefore a socket, so the only tests that could reach it
+/// were end-to-end ones and none of them covered the branch that matters.
+/// `holds_unnamed` replaced by `true` survived, and that mutant is a session
+/// that moved connections binding against whatever the previous borrower left
+/// unnamed: not an error, the wrong query's rows. Split out so the decision can
+/// be tested without a socket, which is what `standards/testing.md` now says to
+/// do and what `M22.7` wrote down.
+fn prepare_unnamed(
+    message: &pgprox_proto::frontend::FrontendMessage<'_>,
+    sql: &str,
+    held: &mut pgprox_pool::statements::ConnectionStatements,
+) -> bool {
+    use pgprox_proto::frontend::FrontendMessage as Message;
+
+    // The client's own `Parse` is about to go, so the connection ends up with
+    // it either way and nothing is owed.
+    let already = matches!(message, Message::Parse { .. }) || held.holds_unnamed(sql);
+    held.note_unnamed(sql);
+    // Re-parsing rather than refusing, and legal: a `Parse` of the unnamed
+    // statement replaces whatever was there, so unlike a named one it cannot
+    // collide with itself.
+    !already
 }
 
 /// The SQL of the unnamed statement, when this message is about it.
@@ -4612,6 +4631,141 @@ mod tests {
             );
         }
         tags
+    }
+
+    /// A `Parse` or a `Bind` of the unnamed statement, decoded.
+    fn unnamed_frame(parse: bool, sql: &str) -> (Vec<u8>, Tag) {
+        let mut out = Vec::new();
+        if parse {
+            pgprox_proto::encode_frontend::parse(&mut out, "", sql);
+            (out[5..].to_vec(), Tag::PARSE)
+        } else {
+            pgprox_proto::encode_frontend::bind(&mut out, "", "");
+            (out[5..].to_vec(), Tag::BIND)
+        }
+    }
+
+    #[test]
+    fn a_bind_of_the_unnamed_statement_reparses_it_on_a_connection_that_has_something_else() {
+        // `M22.4`, and the mutant that made this worth writing: `holds_unnamed`
+        // replaced by `true` survived every test in this file. That mutant is a
+        // session that moved connections binding against whatever the previous
+        // borrower left unnamed, which is not an error, it is the wrong query's
+        // rows.
+        let mut held = pgprox_pool::statements::ConnectionStatements::new(
+            pgprox_pool::statements::StatementConfig::default(),
+        );
+        let (body, tag) = unnamed_frame(false, "");
+        let frame = Frame::new(tag, &body);
+        let bind = pgprox_proto::frontend::decode(&frame).unwrap();
+
+        // A connection carrying somebody else's unnamed statement.
+        held.note_unnamed("SELECT 'not yours'");
+        assert!(
+            prepare_unnamed(&bind, "SELECT $1::int", &mut held),
+            "a bind was sent against a connection holding a different statement"
+        );
+        assert!(
+            held.holds_unnamed("SELECT $1::int"),
+            "the parse was not recorded"
+        );
+
+        // And on the connection that now has it, nothing more is owed.
+        assert!(
+            !prepare_unnamed(&bind, "SELECT $1::int", &mut held),
+            "the statement was parsed twice on one connection"
+        );
+    }
+
+    #[test]
+    fn the_clients_own_parse_of_the_unnamed_statement_needs_no_help() {
+        // It is about to go upstream itself, so a second `Parse` would be this
+        // proxy sending a frame the client did not ask for and owing the client
+        // a `ParseComplete` it must not be shown.
+        let mut held = pgprox_pool::statements::ConnectionStatements::new(
+            pgprox_pool::statements::StatementConfig::default(),
+        );
+        let (body, tag) = unnamed_frame(true, "SELECT 1");
+        let frame = Frame::new(tag, &body);
+        let parse = pgprox_proto::frontend::decode(&frame).unwrap();
+
+        assert!(!prepare_unnamed(&parse, "SELECT 1", &mut held));
+        // Recorded even so: the connection ends up holding it either way, and a
+        // connection that forgot would re-parse on the next bind.
+        assert!(held.holds_unnamed("SELECT 1"));
+    }
+
+    #[test]
+    fn only_a_parse_or_a_bind_naming_nothing_is_the_unnamed_statement() {
+        // `unnamed_statement` replaced by `None` survived, which makes the whole
+        // branch above dead and sends every unnamed frame down the named path.
+        let mut session = pgprox_session::resume::SessionMemory::default();
+        session.statements.parse("", "SELECT 1");
+        session.statements.parse("s1", "SELECT 2");
+
+        let (body, tag) = unnamed_frame(true, "SELECT 1");
+        let frame = Frame::new(tag, &body);
+        assert_eq!(
+            unnamed_statement(&pgprox_proto::frontend::decode(&frame).unwrap(), &session),
+            Some("SELECT 1"),
+            "an unnamed Parse was not recognised as the unnamed statement"
+        );
+
+        // A named one is not it, however much else it looks the same.
+        let mut named = Vec::new();
+        pgprox_proto::encode_frontend::bind(&mut named, "", "s1");
+        let body = named[5..].to_vec();
+        let frame = Frame::new(Tag::BIND, &body);
+        assert_eq!(
+            unnamed_statement(&pgprox_proto::frontend::decode(&frame).unwrap(), &session),
+            None
+        );
+
+        // Nor is a frame that names no statement at all.
+        assert_eq!(
+            unnamed_statement(&pgprox_proto::frontend::FrontendMessage::Sync, &session),
+            None
+        );
+
+        // Nor one this session never parsed, which is the case that would
+        // otherwise re-parse an empty string.
+        let mut fresh = pgprox_session::resume::SessionMemory::default();
+        let (body, tag) = unnamed_frame(false, "");
+        let frame = Frame::new(tag, &body);
+        assert_eq!(
+            unnamed_statement(&pgprox_proto::frontend::decode(&frame).unwrap(), &fresh),
+            None
+        );
+        let _ = &mut fresh;
+    }
+
+    #[test]
+    fn a_describe_or_close_of_the_unnamed_statement_keeps_its_name() {
+        // The third of the four `M22.4` found: the guard that routes these to
+        // the pass-through arm survived being made `false`, which sends this
+        // proxy's global name on a `Describe` of a statement the server knows
+        // as the unnamed one.
+        let mut session = pgprox_session::resume::SessionMemory::default();
+        session.statements.parse("", "SELECT 1");
+
+        // Built by hand: there is no `describe_statement` encoder, and both
+        // frames are a target byte and a name, so writing them out says more
+        // than a helper would.
+        let mut described = vec![Tag::DESCRIBE.get(), 0, 0, 0, 6, b'S', 0];
+        let mut closed = Vec::new();
+        pgprox_proto::encode_frontend::close_statement(&mut closed, "");
+
+        for whole in [std::mem::take(&mut described), closed] {
+            let body = whole[5..].to_vec();
+            let frame = Frame::new(Tag(whole[0]), &body);
+            let message = pgprox_proto::frontend::decode(&frame).unwrap();
+
+            assert_eq!(
+                map_statement_name(&message, &body, &mut session).unwrap(),
+                body,
+                "an unnamed statement was renamed on the way out"
+            );
+        }
     }
 
     #[test]

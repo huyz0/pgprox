@@ -6476,10 +6476,27 @@ recognised so it can be refused rather than read as a version.
   Third data point for what `M22.2` found: `M20.6` put its tests in this crate,
   beside the functions, and its mutants die. The two that survived in `M22.1`
   are still the only pair whose tests were written somewhere else.
-- [ ] `M22.4` Sweep `pgprox`. The largest of the four and the one `M17.4` spent
+- [x] `M22.4` Sweep `pgprox`. The largest of the four and the one `M17.4` spent
   a milestone on: 571 mutants and eighty minutes then, and `M20` and `M21` have
   added to `serve.rs` since.
   Acceptance: as `M22.1`.
+  590 mutants, 10 surviving, 4 new and all four in `M20.6`'s unnamed-statement
+  code. Down to 6 of 592 after the tests.
+  **`M22.2`'s rule does not explain these, and that is worth saying: these had
+  tests in this crate.** In-crate is necessary and not sufficient. The check
+  that survived lived inside `ready_statement`, which takes an `Upstreamed` and
+  therefore a socket, so only an end-to-end test could reach it and none
+  covered the branch.
+  The one that matters is `holds_unnamed` replaced by `true`. That mutant is a
+  session which moved connections binding against whatever the previous
+  borrower left unnamed: not an error the client sees, the wrong query's rows.
+  It survived every test in the file.
+  Fixed by the rule `M22.7` had just written down. `prepare_unnamed` takes the
+  statement map and no socket, so the decision is testable where it is made.
+  The other three were `unnamed_statement` returning `None`, which makes the
+  whole branch dead, and the `Describe`/`Close` guard going `false`, which puts
+  this proxy's global name on a `Describe` of a statement the server knows as
+  the unnamed one.
 - [ ] `M22.5` Sweep the remaining crates, one commit each: `pgprox-core`,
   `pgprox-route`, `pgprox-cache`, `pgprox-cluster`, `pgprox-admin`,
   `pgprox-auth`, `pgprox-config`, `pgprox-observe`, `pgprox-load`,
