@@ -308,3 +308,7 @@ jobs:
       # M21 were: it checks what has landed rather than what is planned.
       - name: M22
         run: scripts/m22-complete.sh
+      # M23 is open, and its gate runs anyway, on the same terms M19 through
+      # M22 were: it checks what has landed rather than what is planned.
+      - name: M23
+        run: scripts/m23-complete.sh

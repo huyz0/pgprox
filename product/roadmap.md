@@ -39,6 +39,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M20 | The protocol layer against pgbouncer, pgcat and odyssey | complete; eight findings, of which one corrupted a pooled connection for every session after it, three were things a client asked for and was silently not given, and one was found by the hunt rather than by the reading |
 | M21 | The driver matrix does not cover what M20 changed | complete; the suite it proposed building already existed, and three of its four cases were wrong in ways only a reverted build could show |
 | M22 | The mutants nobody has swept since M17 | complete; 3,835 mutants across all sixteen crates, nine new survivors, and no two of them had the same cause |
+| M23 | The streaming question M16 left open, at the scale one machine has | open |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1327,3 +1328,31 @@ What generalises is not any of the nine. It is that **coverage was 95% or better
 in every one of these crates throughout**, and the sweep is what said the lines
 had run without mattering. That claim has been in `standards/testing.md` since
 M-1 and nothing ran it until `M10.3`.
+
+## M23: the streaming question M16 left open, at the scale one machine has
+
+```bash
+scripts/m23-complete.sh
+```
+
+`M16.1` measured one 16 MiB `DataRow` on one connection: 16,777,216 bytes held
+on the path the proxy used, zero on the streaming relay it did not. `M16`'s
+completion condition asks for "the same 100k run with a result set large enough
+that the difference would show", and that half is blocked on three machines.
+
+**The connection count is not what makes the difference visible. The row size
+is.** `M7`'s 100k run used pgbench's rows, so a proxy holding every row entire
+would have produced identical numbers. A pair of runs at one connection count,
+differing in nothing but their statements, answers the memory question on one
+machine.
+
+At 200 connections, a 1 MiB result costs 8,581 more bytes per connection than
+pgbench's rows do, which is 0.82% of the row. Holding it would cost 1,048,576.
+
+The 100k half stays blocked, and this narrows what is unknown rather than
+closing it. What remains unmeasured is whether the same holds at a hundred
+thousand connections on real network hardware.
+
+Completion condition: `scripts/m23-complete.sh`, which checks the two workloads
+differ where they claim to and nowhere else, because that is what makes the
+pair a comparison rather than two numbers.

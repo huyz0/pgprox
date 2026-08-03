@@ -1,0 +1,101 @@
+# The reference workload, answering with one large row.
+
+# `M23`. `M16` moved both bulk directions onto the streaming relay and measured
+# one 16 MiB `DataRow` costing 16,777,216 bytes held on the old path and zero on
+# the new one. That measurement is one connection in a unit test. The question
+# it does not answer is the one `M16`'s completion condition asks: whether the
+# memory a node holds stays flat when many connections are each pulling a large
+# result at once.
+#
+# `M7`'s 100k run cannot answer it either, and says so: it used pgbench's tiny
+# rows, so a proxy that held every row entire would have looked identical.
+#
+# So this exists to make the difference visible. The only fields that differ
+# from `workload.yaml` are the statements: same tenants, same transaction
+# shapes, same think time, same churn, so a run against this and a run against
+# that differ in one thing.
+#
+# Derived from workload.yaml. If that file changes, this one is re-derived
+# rather than edited, or the pair stops being comparable.
+
+# The same contract version as `workload.yaml`, because this is that document
+# with its statements replaced rather than a new format. Every derived workload
+# here does the same: the field says which schema the file speaks, and a run's
+# report records it so two numbers taken a week apart can be compared.
+version: 3
+
+
+# A handful of busy tenants and a long tail of near-idle ones, which is what a
+# multitenant proxy actually sees. A uniform mix would hide the two things this
+# proxy exists to get right: the grant cache working for the busy few, and
+# 100k idle connections costing almost nothing.
+tenants:
+  - name: hot
+    count: 4
+    share: 0.80
+  - name: tail
+    count: 200
+    share: 0.20
+
+# One shape, and it is the point of the file: a single row far larger than a
+# socket buffer, so the relay has to either stream it or hold it.
+#
+# A megabyte rather than sixteen, because the interesting number is what a node
+# holds with many of these in flight at once, and sixteen would make the run a
+# measurement of this machine's memory rather than of the proxy's.
+#
+# `clock_timestamp()` makes it volatile so the query cache cannot answer it.
+# Without that the second client onward would be served from the store and the
+# bytes would never cross the relay, which is the path under test.
+statements:
+  - name: large_row
+    weight: 100
+    kind: read
+    sql: "SELECT repeat('x', 1048576) || clock_timestamp()::text"
+
+# Most transactions are one statement, which is what a pooled proxy is
+# optimised for, and a minority are long enough that holding a connection
+# across them matters.
+transactions:
+  - statements: 1
+    weight: 80
+  - statements: 4
+    weight: 15
+  - statements: 20
+    weight: 5
+
+# How many statements go through the extended protocol, with a named prepared
+# statement, rather than the simple one. Every mainstream driver uses it, and
+# it is the path that deadlocked twice during M6 and whose statement mapping
+# the semantic coverage report showed almost untouched. A workload that only
+# sent simple queries measured a proxy nobody deploys.
+prepared_fraction: 0.5
+
+# How long a client waits between transactions. Without this, N connections
+# means N requests in flight and a run measures the database queueing rather
+# than the proxy: the first run at 200 connections reported a p50 of 101ms
+# against a direct baseline of 4ms, which is a saturated Postgres and says
+# nothing about a proxy hop.
+#
+# It is also what makes the workload describe the design point. This proxy
+# exists because 100k connections are idle most of the time; a workload where
+# every connection is always busy is a workload for a different product.
+think:
+  min_ms: 50
+  max_ms: 500
+
+# How often a client goes away and a new one arrives, in transactions per
+# connection. Connection churn is a cost the proxy pays and pgbench does not
+# generate, so it is declared here rather than left to whatever the load client
+# happens to do.
+churn:
+  transactions_per_connection: 500
+
+# Of the reads, how many are eligible to be served by a replica. The rest go to
+# the primary either because they are writes or because the session has written
+# and is behind its own watermark.
+replica_read_fraction: 0.50
+
+# Cluster size the gossip budgets measure at. A digest encode that is free at
+# one node and quadratic at ten is a fact this workload has to pin down.
+cluster_size: 3

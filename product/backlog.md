@@ -6564,3 +6564,24 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the standard says that a crate's decisions are tested in that
   crate, that an end-to-end test elsewhere does not discharge it, and cites the
   measurement rather than asserting it. Documentation only.
+
+## M23: the streaming question M16 left open, at the scale one machine has
+
+- [x] `M23.0` Plan M23, and give it a gate that passes from this commit.
+  `M16` moved both bulk directions onto the streaming relay and measured one
+  16 MiB `DataRow` costing 16,777,216 bytes held on the old path and zero on
+  the new. That is one connection in a unit test. Its completion condition asks
+  for "the same 100k run with a result set large enough that the difference
+  would show", and the 100k half is blocked on three machines.
+  **The connection count is not what makes the difference visible; the row size
+  is.** `M7`'s 100k run used pgbench's tiny rows, so a proxy holding every row
+  entire would have looked identical. A pair of runs at one connection count,
+  differing in nothing but the statements, answers the memory question on one
+  machine.
+  Acceptance: a large-result workload derived from `workload.yaml`, a run
+  document with the pair, and a gate that checks the two workloads differ where
+  they claim to and nowhere else.
+- [ ] `M23.1` The workload and the measurement.
+  Acceptance: the numbers are recorded with what they do not say, which is the
+  100k target, the latency figures, and the per-connection constant at small
+  connection counts.
