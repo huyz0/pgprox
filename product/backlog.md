@@ -6449,10 +6449,23 @@ recognised so it can be refused rather than read as a version.
   The two survivors that remain are the pre-existing `sequence.rs` pair, both
   argued equivalent: the replacement yields a program no test can distinguish.
   Down to 2 surviving out of 455, coverage 97.75%.
-- [ ] `M22.2` Sweep `pgprox-proto`. `M20.3` added `negotiate`, `extensions` and
+- [x] `M22.2` Sweep `pgprox-proto`. `M20.3` added `negotiate`, `extensions` and
   `settings`, and `M20.8` added `replication`, all of which are predicates
   whose wrong answer is a client told something untrue at connect.
   Acceptance: as `M22.1`.
+  378 mutants, 6 surviving, none of them new. The prediction that opened this
+  task was wrong: the four predicates `M20` added are all killed, and the shape
+  `M22.1` found is absent here.
+  The difference is where their tests live. `M20.3` and `M20.8` put theirs in
+  `startup::tests`, in this crate, beside the functions. `M20.4` and `M20.5`
+  put theirs in `bin/pgprox`, and that is exactly the pair whose mutants
+  survived. Same milestone, same author, one week apart; the only variable is
+  whether the crate tested its own decision.
+  The six that survive are the ones already argued: three comparison operators
+  in `FrameRelay`'s buffer arithmetic, the `^` in `conn_id_from_key`, the SASL
+  preference `<=`, and an arm of `SessionState::on_frontend`. No baseline entry
+  is stale, which the sweep checks: it warns on an accepted mutant that is now
+  caught, and warned about none.
 - [ ] `M22.3` Sweep `pgprox-pool`. `M20.6` added `note_unnamed` and
   `holds_unnamed`, and the second is a comparison with a sentinel, which is the
   shape a mutant survives most easily.

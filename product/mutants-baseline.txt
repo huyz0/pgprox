@@ -30,6 +30,7 @@
 # records a sweep is the one immediately after it. `scripts/m22-complete.sh`
 # does not count a commit that also touched this file, because that commit is
 # the sweep rather than a change since it.
+# Sweeps: pgprox-proto 1ac037f8ae6829e1172faa52aa9c2244599a0de9
 # Sweeps: pgprox-session 4fac6873ba68131c390eebabb04c55b558ba062b
 
 # # Where this list came from
