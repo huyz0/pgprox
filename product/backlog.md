@@ -6497,15 +6497,44 @@ recognised so it can be refused rather than read as a version.
   whole branch dead, and the `Describe`/`Close` guard going `false`, which puts
   this proxy's global name on a `Describe` of a statement the server knows as
   the unnamed one.
-- [ ] `M22.5` Sweep the remaining crates, one commit each: `pgprox-core`,
-  `pgprox-route`, `pgprox-cache`, `pgprox-cluster`, `pgprox-admin`,
-  `pgprox-auth`, `pgprox-config`, `pgprox-observe`, `pgprox-load`,
-  `pgprox-tls`, `pgprox-testkit`, `pgload`.
-  Split per crate rather than done as one sweep, because a sweep that finds a
-  missing test produces a commit with a test in it and those must not be
-  bundled. `M19`'s seam touched `pgprox-core` and `pgprox-cluster`, so those
-  two are the ones with new logic; the rest are re-baselines that should be
-  quiet and are worth running because "should be quiet" is a prediction.
+- [x] `M22.5` Sweep `pgprox-core`.
+  Filed as one task for twelve crates and split here, because twelve commits
+  all naming `M22.5` would satisfy the commit-msg gate and break the rule it
+  exists to serve. A crate whose sweep changes code gets its own task; the ones
+  that come back quiet share one, since recording eleven clean sweeps is one
+  coherent change that reverts as one thing.
+  560 mutants, 5 surviving, 1 new, and the new one was neither a missing test
+  nor machine contention.
+  `is_word_char` replaced by `true` came back as `Timeout`, which
+  `survivors_of` counts as a survivor by an explicit choice `M17.7` argued for.
+  Its three siblings, `false`, `&&` and `!=`, were all caught, which is what
+  made "missing test" the wrong reading: the function is tested, and there is
+  an assertion that `!is_word_char('(')` which a constant `true` fails in
+  microseconds.
+  **What it was hiding is a latent hang.** `Lexer::next` guards its word arm
+  with `is_word_char` and then calls `word_end` to decide how far to advance,
+  and `word_end` does not call `is_word_char`: it restates the same rule inline
+  over bytes, because it is the innermost loop of the route decision at 3.6
+  million calls per replay. So the guard trusts one implementation and the
+  advance uses the other. Disagree about one character and the guard accepts
+  it, `word_end` returns zero, `advance(0)` consumes nothing, and `next` spins
+  forever on a live connection.
+  That is the hazard `pgprox-pool`'s `AGENTS.md` warns about by name, "do not
+  write another SQL scanner", occurring inside the scanner between two halves
+  of one rule.
+  Fixed with a `debug_assert!` that the lexer consumes something, which
+  documents the invariant where it can be violated, costs nothing in release,
+  and turns the hang into a caught mutant because tests run in debug. Not a
+  test, because a hanging test cannot assert; not a baseline entry, because the
+  mutant was pointing at something real. Down to 4 of 560, all baselined.
+- [ ] `M22.8` Sweep the eleven that remain: `pgprox-route`, `pgprox-cache`,
+  `pgprox-cluster`, `pgprox-admin`, `pgprox-auth`, `pgprox-config`,
+  `pgprox-observe`, `pgprox-load`, `pgprox-tls`, `pgprox-testkit`, `pgload`.
+  `M19`'s seam touched `pgprox-cluster`, so that is the one with new logic; the
+  rest are re-baselines that should be quiet, and are worth running because
+  "should be quiet" is a prediction rather than a fact.
+  One commit if they are all quiet. Any crate whose sweep changes code takes
+  its own task, for the reason `M22.5` was split out of this one.
   Acceptance: as `M22.1`, per crate.
 - [ ] `M22.6` Close M22. Filed as its own task for the reason `M18.4`, `M19.8`,
   `M20.9` and `M21.5` were.

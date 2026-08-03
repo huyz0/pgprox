@@ -134,6 +134,22 @@ impl<'a> Iterator for Lexer<'a> {
             }
             c if is_word_char(c) => {
                 let end = word_end(self.rest);
+                // The lexer must consume something on every step, and this arm
+                // is the one place where that depends on two functions agreeing.
+                // `word_end` restates the rule `is_word_char` holds, inline and
+                // over bytes, because it is the innermost loop of the route
+                // decision. If the two ever disagree about one character, this
+                // guard accepts it, `word_end` returns zero, and `next` spins
+                // forever on a live connection.
+                //
+                // `M22.5` found that by mutation rather than by reading:
+                // replacing `is_word_char` with `true` did not fail a test, it
+                // hung the suite, and a timeout is what the tool had to report
+                // because nothing could get far enough to disagree with it.
+                debug_assert!(
+                    end > 0,
+                    "the lexer accepted a character word_end will not consume: {c:?}"
+                );
                 let word = &self.rest[..end];
                 self.advance(end);
 
