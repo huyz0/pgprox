@@ -38,7 +38,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M19 | A seam for peer discovery | complete; the seam exists and three consumers read through it, and two of the eight tasks were corrections of claims this milestone made about its own fakes |
 | M20 | The protocol layer against pgbouncer, pgcat and odyssey | complete; eight findings, of which one corrupted a pooled connection for every session after it, three were things a client asked for and was silently not given, and one was found by the hunt rather than by the reading |
 | M21 | The driver matrix does not cover what M20 changed | complete; the suite it proposed building already existed, and three of its four cases were wrong in ways only a reverted build could show |
-| M22 | The mutants nobody has swept since M17 | open |
+| M22 | The mutants nobody has swept since M17 | complete; 3,835 mutants across all sixteen crates, nine new survivors, and no two of them had the same cause |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1262,7 +1262,7 @@ subject: a check believed because it passed. Every one of them was caught by
 running the thing it was supposed to catch, against a build with the fix taken
 out. A green probe says nothing until it has been seen to go red.
 
-## M22: the mutants nobody has swept since M17
+## M22: the mutants nobody has swept since M17 (complete)
 
 ```bash
 scripts/m22-complete.sh
@@ -1288,3 +1288,42 @@ test in it, and those must not be bundled with a re-baseline.
 
 Completion condition: `scripts/m22-complete.sh`, which exists from this
 milestone's first commit and gains a check as each crate is swept.
+
+### Where it got to
+
+3,835 mutants across all sixteen crates, 39 surviving and argued, nine of them
+new. The baseline now records, per crate, the commit its sweep ran against.
+
+**No two of the nine had the same cause**, and that is the result.
+
+Two were tests in the wrong crate. `Upstreamed::unfit` and
+`Upstreamed::goodbye` were covered only from `bin/pgprox`, and a sweep mutates
+one crate and runs that crate's tests, so a decision whose only witness is
+downstream is invisible to the tool built to find untested decisions. `M22.7`
+wrote that into `standards/testing.md`, where it had never been said.
+
+Four were a decision made where a test cannot stand. `M20.6`'s unnamed-statement
+checks lived inside `ready_statement`, which takes a socket, and they had
+in-crate tests that still could not reach them. The worst of them, `holds_unnamed`
+replaced by `true`, is a session that moved connections binding against whatever
+the previous borrower left unnamed: no error, the wrong query's rows.
+**In-crate is necessary and not sufficient**, which is the correction M22.4 had
+to make to M22.2's neat rule one task after stating it.
+
+Two were `map_statement_name` and `unnamed_statement` from the same milestone,
+and one was a `Timeout` that was neither a missing test nor machine contention.
+`Lexer::next` guards its word arm with `is_word_char` and advances by
+`word_end`, and `word_end` restates the rule inline over bytes for speed. Let
+them disagree about one character and the lexer stops making progress and spins
+forever on a live connection. That is `pgprox-pool`'s "do not write another SQL
+scanner" happening inside the scanner, between two halves of one rule, and it
+was found by mutation rather than by reading because no test could fail: they
+all hung.
+
+The eleven crates with no new logic were quiet, which was a prediction before it
+was a fact and is recorded as a result for that reason.
+
+What generalises is not any of the nine. It is that **coverage was 95% or better
+in every one of these crates throughout**, and the sweep is what said the lines
+had run without mattering. That claim has been in `standards/testing.md` since
+M-1 and nothing ran it until `M10.3`.

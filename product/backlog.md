@@ -6545,7 +6545,7 @@ recognised so it can be refused rather than read as a version.
   argued by `M17.5` on the grounds that their tests drive real sockets, sleeps
   and deadlines, so a verdict there is unstable by construction. Nothing about
   that changed.
-- [ ] `M22.6` Close M22. Filed as its own task for the reason `M18.4`, `M19.8`,
+- [x] `M22.6` Close M22. Filed as its own task for the reason `M18.4`, `M19.8`,
   `M20.9` and `M21.5` were.
   Acceptance: the gate passes, the status row says complete, and the section
   records what four milestones of unswept code turned out to contain, including
