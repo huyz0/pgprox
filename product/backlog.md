@@ -6495,3 +6495,17 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the gate passes, the status row says complete, and the section
   records what four milestones of unswept code turned out to contain, including
   if the answer is nothing.
+- [x] `M22.7` Write down where a test has to live, because three sweeps
+  measured it. `M22.1`, `M22.2` and `M22.3` are one experiment with the
+  variable isolated by accident: six functions added by one milestone in one
+  week by one author, four of them tested in the crate that owns them and two
+  tested only from `bin/pgprox`. The four are killed and the two survived every
+  mutant of themselves, including `unfit` surviving all three of its possible
+  answers.
+  `standards/testing.md` says a surviving mutant is a missing test and says
+  nothing about where the test goes, so the rule that decided this outcome is
+  not written anywhere. `pgprox-session`'s own `AGENTS.md` implies it and that
+  did not stop the same milestone getting it wrong twice.
+  Acceptance: the standard says that a crate's decisions are tested in that
+  crate, that an end-to-end test elsewhere does not discharge it, and cites the
+  measurement rather than asserting it. Documentation only.

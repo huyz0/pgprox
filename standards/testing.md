@@ -48,6 +48,19 @@ threshold.
   fourteen after `M14`, sixteen after `M17.2`. A surviving mutant is a missing
   test. One that is accepted instead goes in `product/mutants-baseline.txt` with
   a reason, and one that is in neither place fails the script.
+  **A crate's decisions are tested in that crate.** An end-to-end test
+  somewhere downstream does not discharge it, and the difference is measurable
+  rather than stylistic. `M20` added six functions across three crates in one
+  week. Four were tested where they live and every mutant of them dies;
+  `Upstreamed::unfit` and `Upstreamed::goodbye` were tested only from
+  `bin/pgprox`, and `M22.1` found `goodbye` surviving replacement by `()` and
+  `unfit` surviving all three of its possible answers. All three answers of a
+  boolean surviving is not a weak test, it is no test, and the integration
+  tests that did cover both were passing throughout.
+  The reason is what a sweep measures: it mutates one crate and runs that
+  crate's tests. A decision whose only witness is downstream is invisible to
+  the tool that exists to find untested decisions, which makes this the one
+  rule here that mutation testing cannot enforce for you.
   The suite runs under nextest there, with a per-test timeout, and that is not
   a detail. `cargo mutants` budgets the whole suite and calls the mutant a
   timeout when the budget runs out; under `cargo test` one hung test costs the
