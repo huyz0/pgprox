@@ -6466,10 +6466,16 @@ recognised so it can be refused rather than read as a version.
   preference `<=`, and an arm of `SessionState::on_frontend`. No baseline entry
   is stale, which the sweep checks: it warns on an accepted mutant that is now
   caught, and warned about none.
-- [ ] `M22.3` Sweep `pgprox-pool`. `M20.6` added `note_unnamed` and
+- [x] `M22.3` Sweep `pgprox-pool`. `M20.6` added `note_unnamed` and
   `holds_unnamed`, and the second is a comparison with a sentinel, which is the
   shape a mutant survives most easily.
   Acceptance: as `M22.1`.
+  284 mutants, zero surviving, and no baseline entries at all. The sentinel
+  comparison in `holds_unnamed` was the thing to watch and it is killed, along
+  with everything else in the crate.
+  Third data point for what `M22.2` found: `M20.6` put its tests in this crate,
+  beside the functions, and its mutants die. The two that survived in `M22.1`
+  are still the only pair whose tests were written somewhere else.
 - [ ] `M22.4` Sweep `pgprox`. The largest of the four and the one `M17.4` spent
   a milestone on: 571 mutants and eighty minutes then, and `M20` and `M21` have
   added to `serve.rs` since.
