@@ -39,7 +39,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M20 | The protocol layer against pgbouncer, pgcat and odyssey | complete; eight findings, of which one corrupted a pooled connection for every session after it, three were things a client asked for and was silently not given, and one was found by the hunt rather than by the reading |
 | M21 | The driver matrix does not cover what M20 changed | complete; the suite it proposed building already existed, and three of its four cases were wrong in ways only a reverted build could show |
 | M22 | The mutants nobody has swept since M17 | complete; 3,835 mutants across all sixteen crates, nine new survivors, and no two of them had the same cause |
-| M23 | The streaming question M16 left open, at the scale one machine has | open |
+| M23 | The streaming question M16 left open, at the scale one machine has | complete; no measurable per-connection cost to a megabyte row at 600 connections, and the second pair corrected what the first appeared to show |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1329,7 +1329,7 @@ in every one of these crates throughout**, and the sweep is what said the lines
 had run without mattering. That claim has been in `standards/testing.md` since
 M-1 and nothing ran it until `M10.3`.
 
-## M23: the streaming question M16 left open, at the scale one machine has
+## M23: the streaming question M16 left open, at the scale one machine has (complete)
 
 ```bash
 scripts/m23-complete.sh
@@ -1360,3 +1360,51 @@ thousand connections on real network hardware.
 Completion condition: `scripts/m23-complete.sh`, which checks the two workloads
 differ where they claim to and nowhere else, because that is what makes the
 pair a comparison rather than two numbers.
+
+### Where it got to
+
+Two pairs of runs, each pair at one connection count, the two workloads
+differing in their statements and nothing else.
+
+| connections | `workload.yaml` | `workload-large.yaml` | difference |
+| --- | --- | --- | --- |
+| 200 | 26,112 bytes/conn | 34,693 bytes/conn | +8,581 |
+| 600 | 17,674 bytes/conn | 17,271 bytes/conn | -403 |
+
+A relay that held each row entire would show +1,048,576. At 600 sessions each
+pulling a megabyte through the real proxy, a real pool and a real Postgres,
+there is no measurable per-connection cost to the row being a megabyte rather
+than a few bytes.
+
+**The second pair corrected the first**, and that is the part worth keeping.
+With only the run at 200 this milestone had recorded that a megabyte costs 8,581
+more bytes per connection. It does not: at 600 the difference is negative, which
+is to say smaller than the measurement's own variability. The 8,581 was fixed
+overhead landing differently across two runs at a count where fixed overhead
+still dominates, which the same workload says plainly across three counts on one
+machine: 69,959 bytes per connection at 50, 34,693 at 200, 17,271 at 600.
+
+One pair could not have told those apart, and the two readings mean opposite
+things. A per-connection cost that grows with the count is something
+accumulating, which is what the streaming relay exists to prevent; a constant is
+fixed overhead. The first pair was consistent with both.
+
+**What this does not close.** `M16`'s 100k half stays blocked and this narrows
+it rather than answering it. What remains unmeasured is whether the same holds
+at a hundred thousand connections on real network hardware, which needs the
+three machines `M7`'s full run needed. The extrapolations here are worthless in
+both directions: 17,271 bytes reaches 1,647 MB at 100k against a 500 MB target,
+and the reference workload reaches 1,685 MB on the same machine where `M7`
+measured 546 MB on three.
+
+The reframing is what made the milestone possible at all. `M16`'s blocked half
+had been read as blocked on the connection count. It was not: `M7`'s 100k run
+used pgbench's rows, so a proxy holding every row entire would have produced
+identical numbers. The row size is what makes the difference visible, and that
+costs one machine rather than three.
+
+The gate checks the property that makes a pair a comparison rather than two
+numbers: that the two workloads differ where they claim to and nowhere else.
+Every derived workload in `product/perf/` asserts that in its header, including
+the pair `M7.55`'s conclusion rests on, and until this milestone nothing checked
+one of them.

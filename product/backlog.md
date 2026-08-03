@@ -6599,3 +6599,13 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the numbers are recorded with what they do not say, which is the
   100k target, the latency figures, and the per-connection constant at small
   connection counts.
+- [x] `M23.2` Close M23. Filed as its own task for the reason `M18.4`, `M19.8`,
+  `M20.9`, `M21.5` and `M22.6` were: closing a milestone is a claim about the
+  whole of it, and bundling that claim into the last piece of work makes it
+  look like a side effect of that piece rather than a judgement about all of
+  them.
+  Acceptance: the gate passes, the status row says complete, and the section
+  records what was measured, what the second pair corrected, and which part of
+  `M16` is still blocked and why. The last of those matters most: this
+  milestone narrows an open question and a section that read as closing it
+  would be worse than no section.
