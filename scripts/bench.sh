@@ -26,7 +26,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$REPO_ROOT"
 
 BASELINE="product/perf/baseline.json"
-CRATES=(pgprox-proto pgprox-route pgprox-pool)
+CRATES=(pgprox-proto pgprox-route pgprox-pool pgprox-cache)
 
 # Enough iterations that the per-iteration number is stable to the unit, few
 # enough that callgrind finishes in seconds.
@@ -72,6 +72,7 @@ bench_binary() {
           pgprox-proto) "$path" | grep -q '^scan_frame$' && { echo "$path"; return; } ;;
           pgprox-route) "$path" | grep -q '^route_point_select$' && { echo "$path"; return; } ;;
           pgprox-pool) "$path" | grep -q '^acquire_and_release$' && { echo "$path"; return; } ;;
+          pgprox-cache) "$path" | grep -q '^cache_hit$' && { echo "$path"; return; } ;;
         esac
       fi
     done

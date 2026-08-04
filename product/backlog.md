@@ -6802,3 +6802,43 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the gate passes, the status row says complete, and the section
   records which of pgpool's advantages were fixed, which two are still open
   and why they are limits rather than findings.
+
+## M26: what the query cache costs, measured for the first time
+
+- [ ] `M26.0` A bench and a baseline for the query cache, because there is
+  none. `run-2026-07-29-cache.md` measured what the cache is *worth* end to
+  end and nothing has ever measured what it *costs* per call. The store's own
+  module docs say that if a profile finds its single lock, the answer is to
+  shard by the hash of the key; a profile cannot find anything without a
+  number to compare against, and `scripts/bench.sh` ran three crates and not
+  this one.
+  Acceptance: `crates/pgprox-cache/benches/hot_paths.rs` covers the paths a
+  statement takes, `bench.sh` runs it, the five counts are in
+  `product/perf/baseline.json`, and this milestone has a gate wired into CI.
+- [ ] `M26.1` A write walks every entry on the node and compares a string per
+  entry. `invalidate_tenant` filters `entries.keys()` by `&key.tenant ==
+  tenant`, which is an `Arc<str>` comparison, so it is a string compare per
+  entry across every tenant's entries, then clones each match.
+  **The measurement, at 4,096 entries across 64 tenants, invalidating a tenant
+  that holds nothing: 198,283 instructions.** That is 48 times a hit and 124
+  times a miss, and it is linear in the whole node's entry count rather than
+  the tenant's. `M9.10` counted 10,700 invalidations against 20,000 lookups on
+  the reference workload, so on those numbers invalidation costs roughly
+  thirty-six times what every lookup on the node costs put together, and this
+  is at 4,096 entries where a 64 MiB budget of point-select answers holds
+  twenty-five times more.
+  Acceptance: the count falls by an order of magnitude at the same entry
+  count, the byte total and the recency order still agree with the entry map
+  afterwards, and the improvement is stated as a number against the baseline.
+- [ ] `M26.2` A hit costs two and a half times a miss. 4,144 instructions
+  against 1,605, and the whole argument for a cache is that a hit is the cheap
+  path. The difference is the recency bookkeeping: `touch` clones the key into
+  the `lru` map, which is six `Arc` increments and two `BTreeMap` traversals,
+  on the one path that is supposed to be free.
+  Acceptance: a hit costs measurably less than it does now, the LRU order is
+  still an order and eviction still takes the least recently used, and the
+  number is stated against the baseline.
+- [ ] `M26.3` Close M26, on the terms `M18.4` through `M25.4` closed on.
+  Acceptance: the gate passes, the status row says complete, the section
+  records what the numbers were before and after, and it says plainly which of
+  the store's documented worries the measurement found and which it did not.

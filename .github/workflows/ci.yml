@@ -322,3 +322,8 @@ jobs:
       # has landed, and refuses to pass with a ticked task it does not name.
       - name: M25
         run: scripts/m25-complete.sh
+      # M26 is open, and its gate runs anyway, on M24's terms. Its own numbers
+      # live in product/perf/baseline.json and are checked by scripts/bench.sh,
+      # which is a separate CI job because it needs valgrind.
+      - name: M26
+        run: scripts/m26-complete.sh

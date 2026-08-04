@@ -44,6 +44,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M25 | The query cache against pgpool-II | complete; three findings, all one constant, and the two places pgpool is ahead stay open as limits rather than becoming tasks |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
+| M26 | What the query cache costs, measured for the first time | open |
 
 ## M-1: AI development system (complete)
 
@@ -1591,3 +1592,44 @@ with the default cap above it. That is exactly the case
 an operator may write the section down before deciding who gets it. The check is
 conditional on the cache being on, and that test is in the gate for `M25.3` as
 well as its own.
+
+## M26: what the query cache costs, measured for the first time
+
+```bash
+scripts/m26-complete.sh
+```
+
+`run-2026-07-29-cache.md` measured what the cache is **worth** end to end: 7% of
+median latency and 7% of CPU per statement, and no movement in the pool lock
+that holds half this proxy's CPU. Nothing has ever measured what it **costs**
+per call. `scripts/bench.sh` ran three crates and this was not one of them, and
+the store's own module docs promise that if a profile finds its single lock the
+answer is to shard by the hash of the key, which is a promise nobody could
+have kept: there was no number to compare against.
+
+There is one now, at 4,096 entries across 64 tenants:
+
+| path | instructions |
+| --- | --- |
+| `serves` | 206 |
+| `cache_miss` | 1,605 |
+| `cache_hit` | 4,144 |
+| `cache_put` | 4,269 |
+| `invalidate_one_tenant` | **198,283** |
+
+**The lock is not the problem and invalidation is.** One write costs 48 hits or
+124 misses, and it is linear in the whole node's entry count rather than in the
+tenant's, because `invalidate_tenant` walks every key and compares an `Arc<str>`
+by its contents. `M9.10` counted 10,700 invalidations against 20,000 lookups on
+the reference workload; on those numbers invalidation costs roughly thirty-six
+times what every lookup on the node costs put together, and 4,096 entries is
+twenty-five times smaller than what a 64 MiB budget of point-select answers
+holds.
+
+The second number is smaller and points the same way: a hit costs two and a half
+times a miss, which is the wrong way round for a structure whose whole argument
+is that a hit is the cheap path.
+
+Completion condition: `scripts/m26-complete.sh`, which runs a named test per
+finding and reads its exit status, and refuses to pass with a ticked task it
+does not name.
