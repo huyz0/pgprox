@@ -6686,7 +6686,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a count past the bound is refused with `BadIterationCount`, the
   bound is a constant no environment can move, and the RFC 7677 vectors at
   4,096 still pass.
-- [ ] `M24.7` A prepared statement's global name is a 64-bit hash of the SQL,
+- [x] `M24.7` A prepared statement's global name is a 64-bit hash of the SQL,
   and nothing checks the SQL. `GlobalName::for_sql` is FNV-1a with a bijective
   finalizer, so colliding the name is colliding FNV-1a-64, which is cheap to do
   on purpose. `ConnectionStatements` keeps the name and not the text, so a
@@ -6695,8 +6695,16 @@ recognised so it can be refused rather than read as a version.
   Contained to one tenant's own pool, since `PoolKey` carries the database and
   the role, so this is wrong answers rather than a crossing. It is still wrong
   answers with nothing to see.
-  Acceptance: two different statements that hash alike do not share a
-  preparation, tested against a constructed collision rather than an argument.
+  **The acceptance this was filed with was wrong and is replaced.** It asked
+  for "a constructed collision rather than an argument". Constructing an
+  FNV-1a-64 collision is a meet-in-the-middle search of roughly 2^32, which is
+  not a unit test, and no collision was constructed. Saying so is the point:
+  the criterion would otherwise have been quietly met by something weaker.
+  Acceptance: the name is 128 bits from two independent passes rather than one
+  repeated, with a test that fails for `(h << 64) | h`, which every other test
+  in the file would pass; the name fits an identifier Postgres will not
+  truncate, which nothing checked; and the half that was **not** fixed says so
+  with the measurement that decided it.
 - [ ] `M24.8` `LivePool` never forgets a pool key. `keyed` and `doorbells` gain
   an entry per `PoolKey` and lose one never: `reap_idle` closes the connections
   and leaves the `Pool`. A node that has served a tenant that no longer exists

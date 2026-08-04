@@ -67,6 +67,26 @@ impl Default for StatementConfig {
 ///
 /// Derived from the SQL, so identical SQL always yields the same name and two
 /// sessions preparing it share one server-side statement.
+///
+/// # The name is the identity, so its width is the guarantee
+///
+/// Nothing checks the SQL again once a connection holds a name.
+/// [`ConnectionStatements::prepare_for`] is given the name and answers
+/// `AlreadyHeld`, and the client's `Bind` then runs whatever that name is
+/// attached to. Two different statements sharing a name is two clients running
+/// each other's SQL, silently and with correct-looking results.
+///
+/// This was one 64-bit FNV-1a. FNV is not a cryptographic hash and its
+/// finalizer here is a bijection, so colliding the name was colliding FNV-1a-64:
+/// meet-in-the-middle work, around 2^32, on input a tenant writes. `M24.7`.
+///
+/// **The blast radius is one tenant's own pool**, and that is why this is 128
+/// bits of a fast hash rather than a keyed or cryptographic one. `PoolKey`
+/// carries the server, the database and the role, so the connections a name is
+/// held on all belong to one tenant under one role. A tenant that constructs a
+/// collision confuses itself. What 128 bits buys is that nobody does it by
+/// accident and nobody does it cheaply; what it does not buy is a guarantee
+/// against someone who wants it, and a guarantee is not what this needs.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct GlobalName(String);
 
@@ -86,7 +106,8 @@ impl GlobalName {
         // A fixed prefix so a proxy-created statement is recognisable in
         // `pg_prepared_statements`, which is where an operator looks when
         // backend memory is climbing.
-        Self(format!("pgprox_{:016x}", stable_hash(sql.as_bytes())))
+        let [low, high] = wide_hash(sql.as_bytes());
+        Self(format!("pgprox_{high:016x}{low:016x}"))
     }
 
     /// The name as it goes on the wire.
@@ -94,6 +115,39 @@ impl GlobalName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// Longest identifier Postgres accepts, from `NAMEDATALEN - 1`.
+///
+/// A name past this is not an error: the server truncates it, silently, which
+/// would turn a wide hash back into a narrow one at whatever width survived.
+/// The constant is here so widening the hash again has something to fail.
+pub const MAX_IDENTIFIER: usize = 63;
+
+/// A stable 128-bit hash of the SQL, low half first.
+///
+/// Two independent 64-bit passes rather than one repeated, which is the
+/// simplification this must not become: `(h as u128) << 64 | h` is 128 bits wide
+/// and 64 bits strong. The second pass starts from a different offset basis and
+/// walks the input backwards, so an input pair that collides under one has no
+/// reason to collide under the other.
+///
+/// A pair rather than a `u128`, which is the same 16 bytes and not the same
+/// alignment. `ConnectionStatements` holds one of these and sits inside the
+/// session future, and a 16-byte alignment there cascaded into 152 bytes of
+/// padding: `one_session_costs_less_than_the_slab_buffer_it_no_longer_holds`
+/// went from 5,048 to 5,200 against a 5,120 ceiling. The ceiling is a constant
+/// and the layout was the thing that could move.
+fn wide_hash(bytes: &[u8]) -> [u64; 2] {
+    // The published FNV-1a offset basis, and a second one that is simply a
+    // different constant. The basis only has to differ; nothing about the
+    // original value is load-bearing.
+    const SECOND_BASIS: u64 = 0x9E37_79B9_7F4A_7C15;
+
+    [
+        stable_hash(bytes),
+        hash_from(SECOND_BASIS, bytes.iter().rev().copied()),
+    ]
 }
 
 /// A stable 64-bit hash of the SQL.
@@ -107,11 +161,20 @@ impl GlobalName {
 /// server-side statement count during every deploy.
 fn stable_hash(bytes: &[u8]) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+    hash_from(FNV_OFFSET, bytes.iter().copied())
+}
+
+/// FNV-1a from a given basis, with a `SplitMix64` finalizer.
+///
+/// The basis and the iteration order are the two things [`wide_hash`] varies
+/// between its passes.
+fn hash_from(basis: u64, bytes: impl Iterator<Item = u8>) -> u64 {
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-    let mut hash = FNV_OFFSET;
+    let mut hash = basis;
     for byte in bytes {
-        hash ^= u64::from(*byte);
+        hash ^= u64::from(byte);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
 
@@ -263,6 +326,26 @@ pub struct ConnectionStatements {
     held: HashMap<GlobalName, u64>,
     /// A hash of the SQL this connection's unnamed statement currently holds,
     /// or zero for none.
+    ///
+    /// # Still 64 bits, and that is a measurement rather than an oversight
+    ///
+    /// A collision here answers `holds_unnamed` true for SQL the connection
+    /// does not hold, so the `Parse` is skipped and the client's `Bind` runs
+    /// whatever the previous session on this connection parsed unnamed. That is
+    /// the same defect `M24.7` widened [`GlobalName`] for, with the same blast
+    /// radius: one tenant, one role, one database, since that is what a
+    /// `PoolKey` is.
+    ///
+    /// Widening [`GlobalName`] cost nothing, because it is a `String` either
+    /// way. Widening this one costs 32 bytes of session future, measured:
+    /// `one_session_costs_less_than_the_slab_buffer_it_no_longer_holds` goes
+    /// from 5,112 to 5,144 against a ceiling of 5,120. The ceiling is a
+    /// constant and non-negotiable 2 says it does not move, so the honest
+    /// answer is that this half is not fixed and this is what it would take.
+    ///
+    /// Anything that buys back 32 bytes of that future unblocks it. The pair
+    /// has to be `[u64; 2]` rather than `u128` when it happens: a 16-byte
+    /// alignment here cascaded to 152 bytes rather than 32.
     ///
     /// Outside `held` on purpose: the unnamed statement has no name to be held
     /// under, the next `Parse` of it replaces it rather than adding to it, and
@@ -635,7 +718,61 @@ mod tests {
         // Pinned, not merely computed. DefaultHasher is not stable across Rust
         // releases, and a name that changed between compiler versions would
         // double the server-side statement count during every rolling upgrade.
-        assert_eq!(name("SELECT $1").as_str(), "pgprox_533e5fdc2f41216f");
+        //
+        // The low half is what this pinned before `M24.7` widened it, which is
+        // visible here on purpose: the second pass is appended rather than
+        // mixed in, so the first is still the published FNV-1a-64 and this
+        // pinning still says what it said.
+        assert_eq!(
+            name("SELECT $1").as_str(),
+            "pgprox_1079e9518a147011533e5fdc2f41216f"
+        );
+        assert!(
+            name("SELECT $1").as_str().ends_with("533e5fdc2f41216f"),
+            "the low half is no longer the hash this pinned before M24.7"
+        );
+    }
+
+    #[test]
+    fn a_global_name_fits_an_identifier_postgres_will_not_truncate() {
+        // `M24.7`. A name past NAMEDATALEN - 1 is not an error: the server
+        // truncates it, silently, which turns a wide hash back into a narrow
+        // one at whatever width survived. Nothing checked this while the name
+        // was 23 characters, and widening it is exactly when it starts to
+        // matter.
+        for sql in ["", "SELECT 1", &"x".repeat(4096)] {
+            let name = GlobalName::for_sql(sql);
+            assert!(
+                name.as_str().len() <= MAX_IDENTIFIER,
+                "{} characters, which Postgres truncates to {MAX_IDENTIFIER}",
+                name.as_str().len()
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_halves_of_a_name_are_different_functions() {
+        // The simplification this must not become. `(h as u128) << 64 | h` is
+        // 128 bits wide and 64 bits strong, and every other test here would
+        // pass for it: identical SQL would still share a name, different SQL
+        // would still differ, and the pinned value would still be pinned.
+        //
+        // Asserted over a spread rather than one input, because two functions
+        // agreeing once is a coincidence and agreeing every time is one
+        // function.
+        let mut agreements = 0;
+        for i in 0..256 {
+            let sql = format!("SELECT {i}");
+            let text = GlobalName::for_sql(&sql);
+            let (high, low) = text.as_str()["pgprox_".len()..].split_at(16);
+            if high == low {
+                agreements += 1;
+            }
+        }
+        assert_eq!(
+            agreements, 0,
+            "the two halves of the name are the same 64 bits twice"
+        );
     }
 
     #[test]

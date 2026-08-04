@@ -152,4 +152,17 @@ run_finding pgprox-auth \
   scram::tests::the_client_proof_matches_rfc_7677 \
   "the RFC 7677 exchange at 4,096 rounds still derives"
 
+# --- M24.7: a statement name is 128 bits of two functions --------------------
+run_finding pgprox-pool \
+  statements::tests::the_two_halves_of_a_name_are_different_functions \
+  "a global name is two independent passes rather than one repeated"
+run_finding pgprox-pool \
+  statements::tests::a_global_name_fits_an_identifier_postgres_will_not_truncate \
+  "a name Postgres would truncate is refused before it can narrow the hash"
+# The pinning, which is what stops a rolling upgrade preparing everything twice
+# and is the constraint a wider name had to keep.
+run_finding pgprox-pool \
+  statements::tests::the_name_is_stable_across_builds \
+  "the name is pinned rather than merely computed"
+
 finish
