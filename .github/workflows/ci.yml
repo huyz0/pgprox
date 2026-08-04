@@ -363,3 +363,5 @@ jobs:
       # M28 is open, and its gate runs anyway, on M24's terms.
       - name: M28
         run: scripts/m28-complete.sh
+      - name: M29
+        run: scripts/m29-complete.sh

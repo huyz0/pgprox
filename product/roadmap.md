@@ -47,6 +47,7 @@ M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 | M26 | What the query cache costs, measured for the first time | complete; a hit is 65% cheaper and allocates nothing, a write is 97% cheaper, and the lock the store worried about was never the problem |
 | M27 | Unsafe becomes a governed exception rather than a closed door | complete; five conditions, a script that enforces them, nine cases proving each can fail, and no unsafe written |
 | M28 | The build configuration nobody had measured | complete; one lever of the four was actually available, it is worth 7 to 15% on the route decision, and a benchmark that reported a regression from it turned out to be measuring a random seed |
+| M29 | The first exception the unsafe policy was asked for | complete; it refused one, on the evidence it asks for, because LLVM had already elided the bounds checks |
 
 ## M-1: AI development system (complete)
 
@@ -1829,3 +1830,41 @@ the machinery around it costs more than the thing it measures. The rule that
 falls out is worth stating, because it is not written anywhere: a benchmark
 under about a thousand instructions is measuring `scripts/bench.sh` as much as
 it is measuring the code.
+
+## M29: the first exception the unsafe policy was asked for (complete)
+
+```bash
+scripts/m29-complete.sh
+```
+
+`M27` produced a policy that lets unsafe in on evidence and deliberately shipped
+no exception. `M28` did the safe half of the same procedure and found 7 to 15%
+in one line of `Cargo.toml`. This is the unsafe half, and the answer is no.
+
+The candidate was the query cache's recency slab, which is the best one in the
+workspace: `Slot` is a private newtype with no public constructor, issued only
+by `claim`, so its in-bounds property is a type invariant rather than a runtime
+fact. A rotating hit touches five of them.
+
+| benchmark | safe | `get_unchecked` | |
+| --- | --- | --- | --- |
+| `cache_hit_rotating` | 1,801 | 1,812 | +0.6% |
+| `cache_hit` | 1,462 | 1,469 | +0.5% |
+| `cache_put` | 3,753 | 3,745 | -0.2% |
+
+**Nothing moved**, and two of the three came out slower with the checks removed,
+which is what noise looks like. LLVM had already elided them. The procedure's
+second step exists to catch exactly this before anything is written, and it is
+the step that is easiest to skip.
+
+The policy worked on its first use and that is worth recording apart from the
+result. It did not have to be argued with: the condition it imposes is a
+benchmark in `product/perf/baseline.json` that justifies the exception, and
+there was no number to name.
+
+Full detail in
+[run-2026-08-04-unchecked-slab.md](../perf/run-2026-08-04-unchecked-slab.md),
+including what this does **not** say: four of the procedure's five patterns are
+untested here, and none of them has a candidate with a number behind it yet.
+
+Completion condition: `scripts/m29-complete.sh`.

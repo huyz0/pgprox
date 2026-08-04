@@ -6950,3 +6950,26 @@ recognised so it can be refused rather than read as a version.
   spread across three runs is inside a percent, and the fix is the shape of the
   measurement rather than a wider tolerance.
 - [x] `M28.3` Close M28, on the terms `M18.4` through `M27.2` closed on.
+
+## M29: the first exception the unsafe policy was asked for
+
+- [x] `M29.0` Plan M29. Small enough to be one task and a close, because the
+  work is a measurement and its answer is no.
+  `M27` produced a policy that lets unsafe in on evidence and deliberately
+  shipped no exception. `M28` did the safe half of the same procedure and found
+  7 to 15% in one line of `Cargo.toml`. What was left untested is whether the
+  unsafe half buys anything here.
+  Acceptance: this list, a roadmap section, and `scripts/m29-complete.sh`
+  wired into CI.
+- [x] `M29.1` Measure `get_unchecked` on the query cache's recency slab.
+  The best candidate in the workspace: `Slot` is a private newtype with no
+  public constructor, issued only by `claim`, so its in-bounds property is a
+  type invariant rather than a runtime fact. A rotating hit touches five.
+  **Nothing moved.** 1,801 against 1,812 on `cache_hit_rotating`, 1,462 against
+  1,469 on `cache_hit`, 3,753 against 3,745 on `cache_put`. Two of the three
+  came out slower unsafe, which is noise rather than a regression. LLVM had
+  already elided the checks, which is what the procedure's second step exists
+  to catch before anything is written.
+  Acceptance: a run document with both arms, the prototype reverted, and no
+  unsafe in the tree.
+- [x] `M29.2` Close M29.
