@@ -6645,7 +6645,7 @@ recognised so it can be refused rather than read as a version.
   half of the promise holds.
   Acceptance: the setting is either recorded or the session is pinned, tested
   both ways, with the test failing on the current build.
-- [ ] `M24.3` A schema-qualified advisory lock does not pin.
+- [x] `M24.3` A schema-qualified advisory lock does not pin.
   `SELECT pg_catalog.pg_advisory_lock(1)` takes a session-level lock.
   `is_session_advisory_lock` matches `starts_with("pg_advisory")` against words
   from `statement_words(sql, true)`, which joins a qualified name into one

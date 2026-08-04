@@ -110,4 +110,9 @@ run_finding pgprox-pool \
   params::tests::a_quoted_parameter_name_pins_instead_of_being_recorded \
   "the recorded half and the pinned half agree about a quoted name"
 
+# --- M24.3: a schema-qualified advisory lock pins ----------------------------
+run_finding pgprox-pool \
+  pin::tests::a_schema_qualified_advisory_lock_pins \
+  "pg_catalog.pg_advisory_lock pins, and the _xact_ forms still do not"
+
 finish

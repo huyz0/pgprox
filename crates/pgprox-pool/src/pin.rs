@@ -421,11 +421,27 @@ pub const PIN_PARAMETER: &str = "pgprox.pin";
 
 /// Whether a word names a session-scoped advisory lock function.
 fn is_session_advisory_lock(word: &str) -> bool {
+    // The bare name, because the words this reads are taken with dots kept so
+    // `pgprox.pin` and `pg_temp.t` can be compared whole, and that makes
+    // `pg_catalog.pg_advisory_lock` one word that starts with `pg_catalog`.
+    // The same call, schema-qualified, went unpinned and returned a connection
+    // still holding a session lock to the pool. `M24.3`.
+    //
+    // `pgprox-route` had it right on the same text, because it reads the
+    // lexer's tokens rather than joined words and sees `pg_catalog`, `.` and
+    // `pg_advisory_lock` separately.
+    //
+    // The cost is that a column named `t.pg_advisory_lock` now pins. That is
+    // the direction this module states it errs in: a false pin costs one
+    // session's share of multiplexing, a missed one hands a client another
+    // client's lock.
+    let name = word.rsplit('.').next().unwrap_or(word);
+
     // `_xact_` locks release at commit and do not pin. Checking for the
     // infix rather than listing every function keeps this correct as
     // Postgres adds variants.
-    word.starts_with("pg_advisory") && !word.contains("_xact_")
-        || word.starts_with("pg_try_advisory") && !word.contains("_xact_")
+    (name.starts_with("pg_advisory") || name.starts_with("pg_try_advisory"))
+        && !name.contains("_xact_")
 }
 
 /// Whether two words appear next to each other, in order.
@@ -511,6 +527,44 @@ mod tests {
 
     fn reason(sql: &str) -> Option<PinReason> {
         pin_reason(sql, Replayable::DEFAULT)
+    }
+
+    #[test]
+    fn a_schema_qualified_advisory_lock_pins() {
+        // `M24.3`. The words here are taken with dots kept, so a qualified call
+        // arrives as one word and `pg_catalog.pg_advisory_lock` does not start
+        // with `pg_advisory`. `pgprox-route` gets the same text right, because
+        // it reads the lexer's tokens rather than joined words: two readings of
+        // one function, disagreeing about one statement.
+        //
+        // A missed pin here returns a connection still holding a session lock
+        // to the pool, and hands the lock to whoever gets it next.
+        for sql in [
+            "SELECT pg_catalog.pg_advisory_lock(1)",
+            "SELECT pg_catalog.pg_try_advisory_lock(1)",
+            "SELECT PG_CATALOG.PG_ADVISORY_UNLOCK_ALL()",
+        ] {
+            assert_eq!(reason(sql), Some(PinReason::AdvisoryLock), "{sql}");
+        }
+
+        // The transaction-scoped variants release at commit and must not start
+        // pinning because they are qualified.
+        for sql in [
+            "SELECT pg_catalog.pg_advisory_xact_lock(1)",
+            "SELECT pg_catalog.pg_try_advisory_xact_lock_shared(1)",
+        ] {
+            assert_eq!(reason(sql), None, "{sql}");
+        }
+
+        // And a column whose name merely ends in one of these is not a call to
+        // it. `t.pg_advisory_lock` is a qualified name like any other, so this
+        // is the cost of the fix rather than a case it gets right: it pins.
+        // Erring toward pinning is the rule this module states.
+        assert_eq!(
+            reason("SELECT t.pg_advisory_lock FROM t"),
+            Some(PinReason::AdvisoryLock),
+            "a false pin costs multiplexing; a missed one costs correctness"
+        );
     }
 
     #[test]
