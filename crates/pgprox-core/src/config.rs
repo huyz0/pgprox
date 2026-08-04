@@ -76,6 +76,28 @@ pub struct QueryCacheConfig {
     /// A byte budget rather than an entry count, because nothing bounds the
     /// size of one result and a count would bound nothing.
     pub max_bytes: usize,
+    /// The largest single answer the proxy will hold on the chance it is
+    /// cacheable.
+    ///
+    /// # Two resources, two guards
+    ///
+    /// Not [`QueryCacheConfig::max_bytes`] and deliberately not derived from
+    /// it. That is one figure for one store. This is per session, spent while
+    /// an answer is in flight, and multiplied by however many sessions are
+    /// recording at once, which is the same arithmetic that makes the protocol
+    /// crate's inspect cap small.
+    ///
+    /// The guard is applied while the answer is still arriving, so an answer
+    /// past it is abandoned mid-flight and falls back to the streaming path
+    /// rather than being assembled and then refused. Until `M17.1` there was no
+    /// guard here at all and a 500 MB result was 500 MB held and thrown away:
+    /// the cache's own check is at `put`, which is the end.
+    ///
+    /// Settable since `M25.2`, which is pgpool-II's `memqcache_maxcache`. It
+    /// was a constant while the budget it interacts with was configuration, so
+    /// an operator who raised the budget to a gigabyte still could not cache a
+    /// five megabyte result and nothing they could read said why.
+    pub max_entry_bytes: usize,
     /// The longest TTL any tenant may have, whatever it asked for.
     pub ttl_cap: Duration,
     /// Tenants that have opted in. Empty is a cache that serves nobody.
@@ -90,6 +112,11 @@ impl Default for QueryCacheConfig {
             // argument is about what a connection costs, and a cache that
             // defaulted to a gigabyte would undo it.
             max_bytes: 64 * 1024 * 1024,
+            // A megabyte, because the cache is for small repeated reads: ADR
+            // 0007's case is a point select answered thousands of times, and an
+            // answer that does not fit here was never going to earn its place
+            // in a shared budget. pgpool-II defaults its own to 400 KB.
+            max_entry_bytes: 1024 * 1024,
             // Nothing chose this number from measurement; it is a ceiling, so
             // it only has to be short enough that an operator who never
             // thought about it has not accidentally allowed a stale hour.

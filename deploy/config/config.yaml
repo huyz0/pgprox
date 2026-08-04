@@ -27,6 +27,11 @@ nodes:
 #
 # query_cache:
 #   max_bytes: 64MiB
+#   # The largest single answer the proxy will hold on the chance it is
+#   # cacheable, which is a different resource from the budget above: this one
+#   # is spent per session while an answer is in flight. pgpool-II calls it
+#   # memqcache_maxcache.
+#   max_entry_bytes: 1MiB
 #   ttl_cap: 30s
 #   tenants:
 #     acme: { ttl: 5s }

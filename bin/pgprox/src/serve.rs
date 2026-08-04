@@ -2432,7 +2432,13 @@ fn record_frame(
     if tag == pgprox_proto::frame::Tag::ERROR_RESPONSE {
         live.failed = true;
     }
-    if live.frames.len() > MAX_RECORDED_ANSWER {
+    // The bound is `query_cache.max_entry_bytes` and it is read on every
+    // frame rather than captured, because the tick loop can move it while an
+    // answer is in flight and the cheaper reading would be the stale one.
+    // `M25.2`. A per-session buffer is a different resource from the store's
+    // budget, which is why it is a second key rather than derived from the
+    // first: `QueryCacheConfig::max_entry_bytes` carries that argument.
+    if live.frames.len() > recordings.max_bytes() {
         *recording = None;
         // Counted, because nothing else can be. The lookup that started this
         // already reported a miss and `put` is never reached, so without this
@@ -2507,24 +2513,6 @@ fn client_body_wanted(tag: pgprox_proto::frame::Tag, body_len: usize, caching: b
     }
     pgprox_proto::relay::inspect_budget(Direction::Frontend, tag, body_len, DEFAULT_MAX_INSPECT)
 }
-
-/// The largest answer this proxy will hold on the chance it is cacheable.
-///
-/// The query cache rejects an entry bigger than its budget, and that guard is
-/// at `put`, which is the end. The pump accumulates the whole answer first, so
-/// until `M17.1` a 500 MB result was 500 MB held and then thrown away: the
-/// cache's guard protected the cache and nothing protected the proxy.
-///
-/// Not the cache's budget, and deliberately not asked for. That is one global
-/// figure for a store. This is per session, spent while an answer is in
-/// flight, and multiplied by however many sessions are recording at once,
-/// which is the same arithmetic that makes `DEFAULT_MAX_INSPECT` small. Two
-/// resources, two guards.
-///
-/// A megabyte because the cache is for small repeated reads: ADR 0007's case
-/// is a point select answered thousands of times, and an answer that does not
-/// fit here was never going to earn its place in a shared budget.
-const MAX_RECORDED_ANSWER: usize = 1024 * 1024;
 
 /// How much of a server message the pump actually reads.
 ///
@@ -2853,7 +2841,8 @@ mod tests {
 
         assert!(
             held.is_none(),
-            "the pump kept accumulating past {MAX_RECORDED_ANSWER} bytes"
+            "the pump kept accumulating past {} bytes",
+            counted.max_bytes()
         );
     }
 
@@ -3033,7 +3022,7 @@ mod tests {
         assert_eq!(counted.abandoned(), 0, "a kept answer was counted");
 
         // One that does not is counted once, at the frame that crossed.
-        let body = vec![b'x'; MAX_RECORDED_ANSWER];
+        let body = vec![b'x'; counted.max_bytes()];
         record_frame(&mut held, Tag::DATA_ROW, &body, &counted);
         assert!(held.is_none());
         assert_eq!(counted.abandoned(), 1);
@@ -3059,11 +3048,11 @@ mod tests {
 
         // One frame that takes the recording to exactly the bound. A frame is a
         // tag, four length bytes and the body.
-        let body = vec![b'x'; MAX_RECORDED_ANSWER - 5];
+        let body = vec![b'x'; counted.max_bytes() - 5];
         record_frame(&mut held, Tag::DATA_ROW, &body, &counted);
 
         let kept = held.expect("an answer of exactly the bound was dropped");
-        assert_eq!(kept.frames.len(), MAX_RECORDED_ANSWER);
+        assert_eq!(kept.frames.len(), counted.max_bytes());
 
         // And one byte more gives up.
         let mut held = Some(kept);
@@ -3788,6 +3777,7 @@ mod tests {
         let store = pgprox_cache::Store::new(clock.clone());
         store.reconfigure(&QueryCacheConfig {
             max_bytes: 1024 * 1024,
+            max_entry_bytes: QueryCacheConfig::default().max_entry_bytes,
             ttl_cap: Duration::from_secs(60),
             tenants: tenants
                 .iter()

@@ -75,6 +75,14 @@ pub struct QueryCacheDocument {
     /// wrote.
     #[serde(default)]
     pub max_bytes: Option<String>,
+    /// The largest single answer the proxy will hold on the chance it is
+    /// cacheable, written with a unit: `1MiB`.
+    ///
+    /// pgpool-II's `memqcache_maxcache`. A different resource from `max_bytes`
+    /// and so a different key: that one bounds the store, this one bounds a
+    /// buffer held per session while an answer is in flight. `M25.2`.
+    #[serde(default)]
+    pub max_entry_bytes: Option<String>,
     /// The longest TTL any tenant may have, whatever it asks for.
     #[serde(default)]
     pub ttl_cap: Option<String>,
@@ -244,6 +252,11 @@ impl QueryCacheDocument {
         Ok(QueryCacheConfig {
             max_bytes: optional_size(self.max_bytes.as_deref(), "query_cache.max_bytes")?
                 .unwrap_or(defaults.max_bytes),
+            max_entry_bytes: optional_size(
+                self.max_entry_bytes.as_deref(),
+                "query_cache.max_entry_bytes",
+            )?
+            .unwrap_or(defaults.max_entry_bytes),
             ttl_cap: optional_duration(self.ttl_cap.as_deref(), "query_cache.ttl_cap")?
                 .unwrap_or(defaults.ttl_cap),
             tenants,
@@ -611,6 +624,33 @@ nodes:
         let config = parse(EXAMPLE).unwrap();
         assert!(config.query_cache.is_off());
         assert!(!config.query_cache.serves(&TenantId::new("acme")));
+    }
+
+    #[test]
+    fn the_per_answer_cap_is_read_and_defaults_when_absent() {
+        // `M25.2`, and pgpool-II's `memqcache_maxcache`. A second key rather
+        // than a value derived from `max_bytes`, because the two bound
+        // different resources: one figure for the store, one buffer per session
+        // while an answer is in flight.
+        let defaults = pgprox_core::config::QueryCacheConfig::default();
+
+        let absent = parse("query_cache:\n  max_bytes: 8MiB\n").unwrap();
+        assert_eq!(
+            absent.query_cache.max_entry_bytes, defaults.max_entry_bytes,
+            "omitting the key changed the bound"
+        );
+
+        let set = parse("query_cache:\n  max_entry_bytes: 4MiB\n").unwrap();
+        assert_eq!(set.query_cache.max_entry_bytes, 4 * 1024 * 1024);
+        assert_eq!(
+            set.query_cache.max_bytes, defaults.max_bytes,
+            "setting one moved the other"
+        );
+
+        // A unit is required here for the reason it is required everywhere
+        // else in this document: a bare number silently means something.
+        let err = parse("query_cache:\n  max_entry_bytes: \"4\"\n").unwrap_err();
+        assert_eq!(field_of(&err), "query_cache.max_entry_bytes");
     }
 
     #[test]

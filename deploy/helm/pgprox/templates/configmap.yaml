@@ -36,6 +36,7 @@ data:
 
     query_cache:
       max_bytes: {{ .maxBytes }}
+      max_entry_bytes: {{ .maxEntryBytes }}
       ttl_cap: {{ .ttlCap }}
       tenants:
         {{- toYaml .tenants | nindent 8 }}

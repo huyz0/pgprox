@@ -6771,7 +6771,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: an abandoned answer moves a counter, `SHOW CACHE` and
   `pgprox_cache_total{result="abandoned"}` both report it, and the test fails
   on a build where the counter is not incremented.
-- [ ] `M25.2` The per-answer cap is a constant while the budget it interacts
+- [x] `M25.2` The per-answer cap is a constant while the budget it interacts
   with is configuration. `query_cache.max_bytes` is in the document and
   reloads live; `MAX_RECORDED_ANSWER` is 1 MiB in a `const` and no
   configuration reaches it. So an operator who raises the budget to a gigabyte

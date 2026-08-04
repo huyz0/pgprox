@@ -875,6 +875,12 @@ async fn ticker(
             let live = live.borrow();
             gate.set_ceiling(live.max_client_conns);
             app.cache.reconfigure(&live.query_cache);
+            // The other half of the same section, and it goes to a different
+            // place because it bounds a different resource: `max_bytes` is one
+            // figure for the store, `max_entry_bytes` is a buffer held per
+            // session while an answer is in flight. `M25.2`.
+            app.recordings
+                .set_max_bytes(live.query_cache.max_entry_bytes);
         }
         app.cluster.tick();
         app.cluster.report(
@@ -1612,6 +1618,80 @@ mod tests {
         polling.abort();
         turned_on.expect("a tenant added to the document never reached the running cache");
         assert!(app.cache.serves(&acme));
+    }
+
+    #[tokio::test]
+    async fn the_per_answer_cap_reaches_a_running_node_from_the_document() {
+        // `M25.2`. It was a `const` in `serve.rs` while `max_bytes`, the budget
+        // it interacts with, was configuration that reloads live. An operator
+        // who raised the budget still could not cache a larger result, and
+        // nothing they could read said why.
+        //
+        // The same route `max_client_conns` takes to the gate, because the
+        // reason is the same: `Context` is built once, and a value that only
+        // reached it at startup is a value an operator restarts a pod to change.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "max_client_conns: 100\n").unwrap();
+
+        let source = pgprox_config::provider::FileSource::new(
+            pgprox_config::provider::FileConfig::at(&path),
+        )
+        .unwrap();
+        let app = App::build(Deps {
+            config: Arc::clone(&source) as Arc<dyn pgprox_core::config::ConfigSource>,
+            ..deps()
+        })
+        .await
+        .unwrap();
+
+        let default = pgprox_core::config::QueryCacheConfig::default().max_entry_bytes;
+        assert_eq!(
+            app.recordings.max_bytes(),
+            default,
+            "a document with no query_cache section changed the bound"
+        );
+
+        let probes = probes(&app);
+        let shutdown = Shutdown::new();
+        let context = Arc::new(context(&app, &shutdown));
+        let gate = Arc::new(Gate::new(10));
+        let drainer = Drainer {
+            context: &context,
+            gate: &gate,
+            addresses: &[],
+            grace: Duration::from_millis(50),
+        };
+
+        let polling = tokio::spawn(pgprox_core::config::ConfigSource::run_loop(Arc::clone(
+            &source,
+        )));
+
+        std::fs::write(
+            &path,
+            "max_client_conns: 100\nquery_cache:\n  max_bytes: 64MiB\n  max_entry_bytes: 4MiB\n",
+        )
+        .unwrap();
+
+        let raised = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                () = async {
+                    loop {
+                        if app.recordings.max_bytes() == 4 * 1024 * 1024 {
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                } => {}
+                _ = ticker(&app, &probes, &[], &drainer, &shutdown) => {}
+            }
+        })
+        .await;
+
+        shutdown.fire();
+        polling.abort();
+        raised.expect("a raised per-answer cap never reached the running recorder");
+        assert_eq!(app.recordings.max_bytes(), 4 * 1024 * 1024);
     }
 
     #[tokio::test]

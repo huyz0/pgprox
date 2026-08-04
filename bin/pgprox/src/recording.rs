@@ -21,20 +21,57 @@
 //! remedy for a different problem: raising the budget does nothing here.
 //!
 //! `M25.1`.
+//!
+//! # The bound lives here too
+//!
+//! Because the bound and the count of hitting it are one subject, and because
+//! the bound has to be settable while the node runs. The tick loop pushes it
+//! from the live document the way it pushes `max_client_conns` into the gate:
+//! `Context` is built once and a configuration that only reached it at startup
+//! would be a configuration an operator has to restart a pod to change.
+//!
+//! `M25.2`.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-/// Answers the recorder started and gave up on.
-#[derive(Debug, Default)]
+/// The bound on one recorded answer, and how often it has been hit.
+#[derive(Debug)]
 pub struct Recordings {
     abandoned: AtomicU64,
+    max_bytes: AtomicUsize,
+}
+
+impl Default for Recordings {
+    fn default() -> Self {
+        Self {
+            abandoned: AtomicU64::new(0),
+            // The document's default, so a node with no `query_cache` section
+            // behaves the way it did before the key existed. Read from the
+            // configuration type rather than restated, because a default
+            // written twice is a default that disagrees with itself.
+            max_bytes: AtomicUsize::new(
+                pgprox_core::config::QueryCacheConfig::default().max_entry_bytes,
+            ),
+        }
+    }
 }
 
 impl Recordings {
-    /// A fresh counter.
+    /// A fresh counter, bounded at the configured default.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The largest answer the recorder will hold.
+    #[must_use]
+    pub fn max_bytes(&self) -> usize {
+        self.max_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Applies a new bound, as the tick loop reads one from the document.
+    pub fn set_max_bytes(&self, bytes: usize) {
+        self.max_bytes.store(bytes, Ordering::Relaxed);
     }
 
     /// Records an answer given up on for exceeding the per-answer cap.
@@ -63,6 +100,28 @@ mod tests {
         recordings.abandon();
         recordings.abandon();
         assert_eq!(recordings.abandoned(), 2);
+    }
+
+    #[test]
+    fn the_bound_starts_at_the_documents_default_and_moves() {
+        // `M25.2`. It was a `const` in `serve.rs` while `max_bytes`, the budget
+        // it interacts with, was configuration that reloads live. An operator
+        // who raised the budget to a gigabyte still could not cache a five
+        // megabyte result, and nothing they could read said why.
+        let recordings = Recordings::new();
+        assert_eq!(
+            recordings.max_bytes(),
+            pgprox_core::config::QueryCacheConfig::default().max_entry_bytes,
+            "a node with no query_cache section changed behaviour"
+        );
+
+        recordings.set_max_bytes(4 * 1024 * 1024);
+        assert_eq!(recordings.max_bytes(), 4 * 1024 * 1024);
+
+        // Down as well as up, since an operator narrowing it is the case that
+        // protects a node under memory pressure.
+        recordings.set_max_bytes(4096);
+        assert_eq!(recordings.max_bytes(), 4096);
     }
 
     #[test]

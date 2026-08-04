@@ -399,6 +399,7 @@ mod tests {
     fn config(max_bytes: usize, tenants: &[&str]) -> QueryCacheConfig {
         QueryCacheConfig {
             max_bytes,
+            max_entry_bytes: QueryCacheConfig::default().max_entry_bytes,
             ttl_cap: Duration::from_secs(3600),
             tenants: tenants
                 .iter()
@@ -1011,6 +1012,7 @@ mod tests {
         let cache = Store::new(clock);
         cache.reconfigure(&QueryCacheConfig {
             max_bytes: 64 * 1024,
+            max_entry_bytes: QueryCacheConfig::default().max_entry_bytes,
             ttl_cap: Duration::MAX,
             tenants: [(TenantId::new("acme"), TenantCache { ttl: Duration::MAX })]
                 .into_iter()

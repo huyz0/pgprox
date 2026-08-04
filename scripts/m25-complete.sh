@@ -97,4 +97,17 @@ run_finding pgprox-admin \
   both_surfaces_report_the_same_cache \
   "SHOW CACHE and the JSON API both report it"
 
+# --- M25.2: the per-answer cap is configuration -------------------------------
+run_finding pgprox-config \
+  document::tests::the_per_answer_cap_is_read_and_defaults_when_absent \
+  "query_cache.max_entry_bytes is read, defaulted, and needs its unit"
+run_finding pgprox \
+  recording::tests::the_bound_starts_at_the_documents_default_and_moves \
+  "the recorder's bound starts at the default and can be moved"
+# The wiring half. The two above would pass for a key nothing reads, which is
+# what the constant already was.
+run_finding pgprox \
+  run::tests::the_per_answer_cap_reaches_a_running_node_from_the_document \
+  "a rewritten cap reaches the recorder without a restart"
+
 finish
