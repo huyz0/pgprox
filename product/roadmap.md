@@ -41,6 +41,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M22 | The mutants nobody has swept since M17 | complete; 3,835 mutants across all sixteen crates, nine new survivors, and no two of them had the same cause |
 | M23 | The streaming question M16 left open, at the scale one machine has | complete; no measurable per-connection cost to a megabyte row at 600 connections, and the second pair corrected what the first appeared to show |
 | M24 | A reading of every crate, and the nine things it found | complete; nine findings, four of them one cause, and two fixed only in part with the measurement that decided how far |
+| M25 | The query cache against pgpool-II | open |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1502,3 +1503,37 @@ Every fix was run against a build with the fix removed. Eight negative controls
 across six tasks, and two of them found the test rather than the code:
 `M24.5`'s rate limit and `M24.8`'s waiter guard each had a test that passed
 without them until the control said otherwise.
+
+## M25: the query cache against pgpool-II
+
+```bash
+scripts/m25-complete.sh
+```
+
+`pgprox-cache` read against pgpool-II's `memqcache`, which is the closest thing
+to a reference implementation this feature has.
+
+Most of the comparison came out well, and the parts that did are worth naming
+so a later reading does not go over them again. The per-answer cap fires while
+the answer is still streaming, so an answer that will not fit is abandoned
+mid-flight and falls back to the streaming path rather than being assembled and
+then refused. The opt-in is per tenant rather than one global switch. The TTL is
+the contract, where `memqcache_expire` defaults to zero and means never. And the
+key carries the tenant, the database and the role, which ADR 0024 is about.
+
+**Two places pgpool is genuinely ahead, and both stay open.** It consults
+`pg_proc` for a function's volatility, so it catches a tenant's own `VOLATILE`
+function; `cacheable.rs` matches a denylist of built-in names and cannot. It
+invalidates by table OID from the parse tree; this invalidates a whole tenant.
+Both are already written down, in `cacheable.rs`'s own docs and in this crate's
+`AGENTS.md`, as the honest limits of a lexical scan. They are limits, not
+findings, and this milestone does not pretend otherwise.
+
+**Three findings, all about one constant.** `MAX_RECORDED_ANSWER` is pgpool's
+`memqcache_maxcache`, and it behaves unlike every other bound in this cache: it
+is invisible when it fires, it cannot be set, and nothing relates it to the
+budget it interacts with.
+
+Completion condition: `scripts/m25-complete.sh`, which runs a named test per
+finding and reads its exit status, per `M12.8`, and refuses to pass with a
+ticked task it does not name, per `M24.0`.

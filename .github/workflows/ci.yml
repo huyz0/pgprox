@@ -318,3 +318,7 @@ jobs:
       # which is what stops "what has landed" from meaning "whatever is easy".
       - name: M24
         run: scripts/m24-complete.sh
+      # M25 is open, and its gate runs anyway, on M24's terms: it checks what
+      # has landed, and refuses to pass with a ticked task it does not name.
+      - name: M25
+        run: scripts/m25-complete.sh

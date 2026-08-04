@@ -6735,3 +6735,70 @@ recognised so it can be refused rather than read as a version.
   records the four findings that shared one cause, the two that were fixed
   only in part and say which part, and the one whose acceptance criterion this
   milestone had to withdraw.
+
+## M25: the query cache against pgpool-II, and the three things it has that we do not
+
+- [ ] `M25.0` Plan M25, and give it a gate that passes from this commit.
+  A comparison of `pgprox-cache` against pgpool-II's `memqcache`. Most of it
+  came out well: the per-answer cap fires while the answer is still streaming
+  rather than after it is assembled, the opt-in is per tenant rather than
+  global, and the TTL is a contract rather than a default of never.
+  Two places pgpool is ahead are already written down as known limits and stay
+  that way: it consults `pg_proc` for volatility where `cacheable.rs` matches a
+  denylist of built-in names, and it invalidates by table OID where this
+  invalidates a whole tenant. `cacheable.rs` and this crate's `AGENTS.md` each
+  say so; neither is a finding.
+  Three are findings, all about the same constant. `MAX_RECORDED_ANSWER` is
+  pgpool's `memqcache_maxcache` and behaves differently from every other bound
+  in the query cache: it is invisible, unsettable, and unrelated to the budget
+  it interacts with.
+  Acceptance: the roadmap has an M25 section and a status row, this list is
+  written, and `scripts/m25-complete.sh` exists, is named in CI, and passes on
+  this commit under `M24.0`'s rule: every task the backlog ticks must be named
+  in it.
+- [ ] `M25.1` An answer abandoned for being too big is counted nowhere.
+  `record_frame` drops the recording at `MAX_RECORDED_ANSWER` and increments
+  nothing. `get` has already counted a miss, so a tenant whose results all sit
+  just over a megabyte sees a 100% miss rate with no reason attached, while
+  `rejected` stays at zero because it only counts the check inside `put`.
+  The two are different failures with different fixes: `rejected` says raise
+  the budget, this says the answers are too big for the cache to be the right
+  tool. Reporting neither is worse than reporting either.
+  A proxy-side counter rather than one on the store, because the store never
+  sees this answer. `RouteCounts` is the pattern and its module comment is the
+  argument: a count belongs where the decision is made and in the metric that
+  answers the question an operator is asking.
+  Acceptance: an abandoned answer moves a counter, `SHOW CACHE` and
+  `pgprox_cache_total{result="abandoned"}` both report it, and the test fails
+  on a build where the counter is not incremented.
+- [ ] `M25.2` The per-answer cap is a constant while the budget it interacts
+  with is configuration. `query_cache.max_bytes` is in the document and
+  reloads live; `MAX_RECORDED_ANSWER` is 1 MiB in a `const` and no
+  configuration reaches it. So an operator who raises the budget to a gigabyte
+  still cannot cache a five megabyte result, and nothing they can read says
+  why.
+  pgpool has `memqcache_maxcache` for exactly this and defaults it to 400 KB.
+  **The existing comment argues the cap is not the cache's, and it is right.**
+  It bounds a per-session buffer held while an answer is in flight, multiplied
+  by however many sessions are recording at once, where `max_bytes` is one
+  figure for one store. Two resources, two guards. That argues against the
+  store owning the number, not against an operator setting it.
+  Acceptance: `query_cache.max_entry_bytes` reaches the recorder through the
+  tick loop the way `max_client_conns` reaches the gate, the default is the
+  constant it replaces, and a test shows a raised value caching an answer the
+  default refuses.
+- [ ] `M25.3` Nothing checks the two limits against each other. A
+  `max_entry_bytes` above `max_bytes` is a node that records answers to the
+  cap and then rejects every one of them at `put`: work done, memory held,
+  nothing stored, and two counters that each look explainable on their own.
+  pgpool documents the same interaction between `memqcache_maxcache` and
+  `memqcache_cache_block_size` and leaves it to the operator to get right.
+  Configuration validation is the place this project puts that kind of thing,
+  beside the six checks already in `Config::validate`.
+  Acceptance: a document setting the pair that way is refused with a reason
+  naming both fields, and the boundary where they are equal is accepted.
+- [ ] `M25.4` Close M25. Filed as its own task for the reason `M18.4` through
+  `M24.10` were: closing a milestone is a claim about the whole of it.
+  Acceptance: the gate passes, the status row says complete, and the section
+  records which of pgpool's advantages were fixed, which two are still open
+  and why they are limits rather than findings.
