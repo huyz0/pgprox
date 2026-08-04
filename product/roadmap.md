@@ -1962,3 +1962,24 @@ ones, and this one reads a socket. It has one now, over `tokio::io::duplex`, and
 it is in the gated baseline.
 
 Completion condition: `scripts/m30-complete.sh`.
+
+## M31: the comments at M30's optimisation sites
+
+```bash
+scripts/m31-complete.sh
+```
+
+The procedure `M30` followed sets a bar for the comment at an optimisation site,
+and it is the same bar whether or not the optimisation is unsafe. A good comment
+answers which invariant, established where, and why it is still true at this
+line. Three ways of failing it are named, and `M30` left one of each in the
+tree: a comment that refers the reader elsewhere, a comment that describes the
+operation rather than justifying it, and a claim with no executable form beside
+it.
+
+The last is the one worth stating on its own. A `debug_assert!` is the same
+claim written so a test can fail on it, and `M30` wrote none at any of its five
+sites. Two of them are one line each and run in every test in the workspace that
+reaches those paths.
+
+Completion condition: `scripts/m31-complete.sh`.

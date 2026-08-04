@@ -7068,3 +7068,39 @@ recognised so it can be refused rather than read as a version.
   than only the one that says yes, and the rule that catches this class is
   written where the next benchmark will be read against it.
 - [x] `M30.7` Close M30, on the terms `M18.4` through `M29.2` closed on.
+
+## M31: the comments at M30's optimisation sites
+
+- [x] `M31.0` Plan M31. The procedure `M30` followed sets a bar for the comment
+  at an optimisation site, and it is the same bar whether or not the
+  optimisation is unsafe: a good comment answers which invariant, established
+  where, and why it is still true at this line. It names three ways of failing
+  that bar, and `M30` left one of each in the tree.
+  It also says the `debug_assert!` beside the comment is the executable form of
+  the same claim, and to write both. `M30` wrote no `debug_assert!` at any of
+  the five sites.
+  Acceptance: this list, a roadmap section, and `scripts/m31-complete.sh` wired
+  into CI.
+- [ ] `M31.1` Three comments refer the reader elsewhere, two describe the
+  operation instead of justifying it, and none has an executable form.
+  The referrals: `matches_any` says "See `WordSet` for why", `Keyed`'s
+  connection map says "for the reason given there", and `fill_held` ends on "the
+  test below holds that". A reader is at the line, not at the other place, and
+  the whole point of the comment is that they should not have to leave.
+  The descriptions: `might_hold`'s case fold is explained as what `| 0x20` does
+  to a byte. What a reader needs is why folding is required at all, which is
+  that the scan behind the filter is `eq_ignore_ascii_case`, so a
+  case-sensitive filter would reject `SELECT` while the scan accepts `select`.
+  The executable forms, where one exists: the filter never rejects a word the
+  scan would accept, and `reserve` leaves at least a full read of spare
+  capacity. Both are one line and both run in every test in the workspace that
+  touches those paths.
+  Where no executable form exists the comment says so rather than leaving the
+  reader to wonder whether one was forgotten. `begins_read_only_transaction`
+  rests on "no word after the first can change the answer", which is a claim
+  about the language and not about any state this function can inspect.
+  Acceptance: no comment at an M30 site refers the reader elsewhere for its
+  justification, each states the invariant and where it was established, each
+  checkable claim has a `debug_assert!` that fails when the claim is broken,
+  and the benchmarks are unmoved because none of this is a code change.
+- [ ] `M31.2` Close M31.
