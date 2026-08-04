@@ -119,6 +119,29 @@ opt-level = 0
 debug = 1
 
 [profile.release]
-lto = "thin"
+# Fat rather than thin since `M28.1`, measured. Thin optimises within a crate's
+# own codegen units and across them only loosely; fat gives LLVM the whole
+# program at once, and what that buys here is inlining across the crate
+# boundary the route decision sits on:
+#
+#   pgprox-route::route_begin         1,536 -> 1,294   -15%
+#   pgprox-proto::decode_query          460 ->   390   -15%
+#   pgprox-route::route_update        7,423 -> 6,717    -9%
+#   pgprox-route::route_point_select  6,982 -> 6,444    -7%
+#
+# The route decision is a declared hot path taken once per statement, and
+# route_point_select is the largest number in the baseline.
+#
+# It costs link time: a release relink went from 12.98s to 30.43s, 2.3 times.
+# That lands on CI and on releases and on nobody's edit loop, since
+# `[profile.dev]` is untouched and the tests run at `[profile.test]`'s
+# opt-level = 1.
+lto = "fat"
 codegen-units = 1
+# A panic aborts rather than unwinding one task. That is the right direction
+# for a process whose rule is that it does not panic: `unwrap_used` and
+# `expect_used` are denied outside tests, the decoder is fuzzed, and
+# `standards/security.md` says no panic is reachable from client bytes. A node
+# that panicked and kept running would be one serving from state nobody
+# reasoned about.
 panic = "abort"

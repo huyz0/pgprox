@@ -84,4 +84,31 @@ fi
 
 # --- the findings that have landed -------------------------------------------
 
+# --- M28.1: the release profile is measured -----------------------------------
+#
+# Not `run_finding`: what landed is three lines of Cargo.toml and a baseline,
+# not a Rust test. The check is the same shape, per `M12.8`: read the artefact
+# and compare it against the thing it claims.
+
+# The profile says what the baseline was measured under. A baseline taken at
+# fat and a profile that says thin is a set of numbers nobody can reproduce.
+if grep -q '^lto = "fat"$' Cargo.toml; then
+  ok "the release profile is the one the baseline was measured under"
+else
+  fail "Cargo.toml no longer sets lto = \"fat\", so the baseline is unreproducible"
+fi
+
+# And the numbers it bought, pinned so a later profile change that quietly
+# gives them back is caught. Thin put route_begin at 1,536 and decode_query at
+# 460; these are the fat figures with room for a toolchain bump.
+for pair in "pgprox-route::route_begin 1400" "pgprox-proto::decode_query 420"; do
+  set -- $pair
+  measured="$(python3 -c "import json,sys; print(json.load(open('product/perf/baseline.json'))['$1'])" 2>/dev/null || echo 999999)"
+  if (( measured < $2 )); then
+    ok "$1 is $measured, under the $2 thin left it near"
+  else
+    fail "$1 is $measured, which is back where thin had it"
+  fi
+done
+
 finish

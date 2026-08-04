@@ -6920,7 +6920,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the roadmap has an M28 section and a status row, this list is
   written, and `scripts/m28-complete.sh` exists, is named in CI, and passes on
   this commit under `M24.0`'s rule.
-- [ ] `M28.1` `lto = "thin"` costs the route decision seven to fifteen percent.
+- [x] `M28.1` `lto = "thin"` costs the route decision seven to fifteen percent.
   Measured, thin against fat, on the committed baseline:
 
   | benchmark | thin | fat | |
