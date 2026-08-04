@@ -86,6 +86,12 @@ pub struct Deps {
     pub tls: Arc<tokio_rustls::rustls::ClientConfig>,
     /// What this node presents to clients, if it has a certificate.
     pub listener_tls: Option<Arc<tokio_rustls::rustls::ServerConfig>>,
+    /// The certificate behind that configuration, so a rotation can reach it.
+    ///
+    /// Separate from `listener_tls` because they have different lifetimes: the
+    /// configuration is fixed for the life of the process and the certificate
+    /// it resolves to is not. `M24.9`.
+    pub listener_certificate: Option<Arc<pgprox_tls::CertReloader>>,
     /// Whether a client may authenticate without TLS.
     ///
     /// Separate from having a certificate, because the two failures are
@@ -378,6 +384,7 @@ mod tests {
     fn deps(config: Config) -> Deps {
         Deps {
             listener_tls: None,
+            listener_certificate: None,
             require_tls: false,
             node: NodeId::new(1),
             node_name: "pgprox-1".to_owned(),

@@ -6713,7 +6713,7 @@ recognised so it can be refused rather than read as a version.
   project rejects elsewhere.
   Acceptance: a pool with nothing open, nobody waiting and nothing checked out
   is forgotten by the reaper, and one with any of those three is not.
-- [ ] `M24.9` Certificate hot reload is claimed twice and does not exist.
+- [x] `M24.9` Certificate hot reload is claimed twice and does not exist.
   `product/architecture.md` gives `pgprox-tls` "rustls setup, FIPS feature
   gate, cert hot-reload" and the crate's own `AGENTS.md` repeats it. Nothing in
   the workspace re-reads a certificate: `server_config` is called once from

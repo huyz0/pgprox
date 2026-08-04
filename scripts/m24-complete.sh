@@ -178,4 +178,23 @@ run_finding pgprox-pool \
   live::tests::a_doorbell_somebody_is_holding_is_not_dropped \
   "a waiter's doorbell survives the reaper and still wakes them"
 
+# --- M24.9: the certificate is reloadable ------------------------------------
+run_finding pgprox-tls \
+  tests::a_rewritten_certificate_reaches_the_listener_without_a_restart \
+  "a rewritten certificate is picked up without a restart"
+run_finding pgprox-tls \
+  tests::a_rewrite_that_does_not_parse_leaves_the_previous_one_serving \
+  "a half-written rotation does not take the listener down"
+run_finding pgprox-tls \
+  tests::a_reloading_config_is_still_checked_for_fips \
+  "the reloading path makes the FIPS assertion the fixed one makes"
+# The wiring half. The three above would all pass for a reloader nothing calls,
+# which is exactly the state this finding was about.
+run_finding pgprox \
+  run::tests::a_rotated_certificate_reaches_a_running_listener \
+  "the node asks the reloader rather than only owning one"
+run_finding pgprox \
+  run::tests::the_certificate_is_re_read_on_a_minute_rather_than_a_tick \
+  "the re-read is on a minute rather than on every tick"
+
 finish

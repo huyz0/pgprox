@@ -132,6 +132,154 @@ pub fn server_config(
     Ok(Arc::new(config))
 }
 
+/// How often a node should ask whether its certificate has changed.
+///
+/// A certificate is rotated on the order of weeks and a rewrite has to be
+/// noticed on the order of minutes, so the interval is chosen for how little it
+/// costs rather than how quickly it reacts: two small files read and hashed.
+pub const RELOAD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A certificate that can be replaced while the listener is running.
+///
+/// # Why this exists
+///
+/// `product/architecture.md` has credited this crate with "cert hot-reload"
+/// since M-1 and the crate's own `AGENTS.md` repeated it. Nothing re-read a
+/// certificate: `server_config` was called once and the `ServerConfig` it
+/// returned was fixed for the life of the process, so a cert-manager rotation
+/// served an expired certificate until somebody restarted the pod. `M24.9`.
+///
+/// # Why a resolver rather than a new `ServerConfig`
+///
+/// The `Arc<ServerConfig>` is handed to the accept loop at startup and read by
+/// every connection. Swapping it would mean an indirection on the accept path
+/// and a decision about connections mid-handshake. A resolver is the seam
+/// rustls already has for this: the configuration never changes, and what it
+/// resolves to does.
+///
+/// # A rewrite that does not parse changes nothing
+///
+/// Certificates are rotated by machines, and a half-written file is a normal
+/// thing to read. [`CertReloader::reload`] parses into a new key before it
+/// touches the live one, so the failure mode of a bad rewrite is a log line and
+/// the previous certificate still serving, rather than a listener that stops
+/// answering.
+#[derive(Debug)]
+pub struct CertReloader {
+    cert: PathBuf,
+    key: PathBuf,
+    /// What the listener is serving right now.
+    current: std::sync::RwLock<Arc<rustls::sign::CertifiedKey>>,
+}
+
+impl CertReloader {
+    /// Reads a certificate and key, ready to be replaced later.
+    ///
+    /// # Errors
+    ///
+    /// Fails when either file cannot be read, holds nothing, or the two do not
+    /// match. All three are deployment mistakes and none of them should start a
+    /// node.
+    pub fn new(cert: &Path, key: &Path) -> Result<Arc<Self>, TlsError> {
+        let certified = Self::read(cert, key)?;
+        Ok(Arc::new(Self {
+            cert: cert.to_owned(),
+            key: key.to_owned(),
+            current: std::sync::RwLock::new(certified),
+        }))
+    }
+
+    /// Re-reads both files, replacing what is served if they changed.
+    ///
+    /// Returns whether the certificate this serves is now a different one.
+    ///
+    /// Re-read and compared rather than watched by modification time. A
+    /// certificate arrives in a Kubernetes volume as a symlink swap, whose
+    /// timestamps are its own business, and two small files a minute is a cost
+    /// nobody has to reason about.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the files cannot be read or do not parse, leaving the
+    /// previous certificate serving. A rotation that writes half a file is a
+    /// normal thing to catch, and a listener that stopped answering because of
+    /// one would be worse than the stale certificate it replaced.
+    pub fn reload(&self) -> Result<bool, TlsError> {
+        let fresh = Self::read(&self.cert, &self.key)?;
+
+        let mut current = self
+            .current
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if current.cert == fresh.cert {
+            return Ok(false);
+        }
+        *current = fresh;
+        Ok(true)
+    }
+
+    /// The certificate chain currently being served, as DER.
+    ///
+    /// For a caller that wants to say which certificate is live, and for the
+    /// tests that a rewrite reached the listener.
+    #[must_use]
+    pub fn serving(&self) -> Vec<CertificateDer<'static>> {
+        self.current
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cert
+            .clone()
+    }
+
+    /// Reads and validates a pair from disk.
+    fn read(cert: &Path, key: &Path) -> Result<Arc<rustls::sign::CertifiedKey>, TlsError> {
+        let certs = load_certs(cert)?;
+        let key = load_private_key(key)?;
+        let provider = rustls::crypto::CryptoProvider::get_default()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
+
+        Ok(Arc::new(rustls::sign::CertifiedKey::from_der(
+            certs, key, &provider,
+        )?))
+    }
+}
+
+impl rustls::server::ResolvesServerCert for CertReloader {
+    fn resolve(
+        &self,
+        _hello: rustls::server::ClientHello<'_>,
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        Some(Arc::clone(
+            &self
+                .current
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        ))
+    }
+}
+
+/// Builds the listener's TLS configuration around a reloadable certificate.
+///
+/// The configuration is fixed for the life of the process and the certificate
+/// it resolves to is not, which is the whole arrangement: see [`CertReloader`].
+///
+/// # Errors
+///
+/// Fails if a FIPS build produces a non-FIPS configuration.
+pub fn server_config_reloading(reloader: Arc<CertReloader>) -> Result<Arc<ServerConfig>, TlsError> {
+    let config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_cert_resolver(reloader);
+
+    // The same assertion the fixed-certificate path makes, and it has to be
+    // made here too: a build that took this path and skipped it would be a FIPS
+    // binary that never checked, which is the thing ADR 0010 says is worse than
+    // no FIPS binary.
+    assert_fips(config.fips(), "server")?;
+    Ok(Arc::new(config))
+}
+
 /// Builds the configuration used for upstream connections.
 ///
 /// Takes an explicit root store. There is no variant that trusts everything and
@@ -490,5 +638,113 @@ mod tests {
     #[test]
     fn the_build_flag_matches_the_feature() {
         assert_eq!(FIPS_BUILD, cfg!(feature = "fips"));
+    }
+    /// Writes a fresh self-signed certificate over an existing pair.
+    ///
+    /// What a rotation is: the same two paths, different contents.
+    fn rewrite(cert_path: &Path, key_path: &Path, name: &str) {
+        let cert = rcgen::generate_simple_self_signed(vec![name.into()]).unwrap();
+        std::fs::File::create(cert_path)
+            .unwrap()
+            .write_all(cert.cert.pem().as_bytes())
+            .unwrap();
+        std::fs::File::create(key_path)
+            .unwrap()
+            .write_all(cert.signing_key.serialize_pem().as_bytes())
+            .unwrap();
+    }
+
+    #[test]
+    fn a_rewritten_certificate_reaches_the_listener_without_a_restart() {
+        // `M24.9`. architecture.md has credited this crate with cert hot-reload
+        // since M-1 and this crate's AGENTS.md repeated it. Nothing re-read a
+        // certificate, so a cert-manager rotation served an expired one until
+        // somebody restarted the pod.
+        let (_dir, cert_path, key_path) = test_cert();
+        let reloader = CertReloader::new(&cert_path, &key_path).unwrap();
+        let before = reloader.serving();
+
+        assert!(
+            !reloader.reload().unwrap(),
+            "reading the same files twice reported a change"
+        );
+        assert_eq!(reloader.serving(), before);
+
+        rewrite(&cert_path, &key_path, "rotated.example");
+        assert!(reloader.reload().unwrap(), "the rewrite was not noticed");
+        assert_ne!(
+            reloader.serving(),
+            before,
+            "the listener is still serving the certificate it started with"
+        );
+    }
+
+    #[test]
+    fn a_rewrite_that_does_not_parse_leaves_the_previous_one_serving() {
+        // Certificates are rotated by machines, and a half-written file is a
+        // normal thing to read. The failure mode has to be a log line and a
+        // stale certificate, not a listener that stops answering.
+        let (_dir, cert_path, key_path) = test_cert();
+        let reloader = CertReloader::new(&cert_path, &key_path).unwrap();
+        let before = reloader.serving();
+
+        std::fs::File::create(&cert_path)
+            .unwrap()
+            .write_all(b"-----BEGIN CERTIFICATE-----\nhalf a fi")
+            .unwrap();
+
+        assert!(reloader.reload().is_err(), "a corrupt file was accepted");
+        assert_eq!(
+            reloader.serving(),
+            before,
+            "a bad rewrite took the previous certificate with it"
+        );
+
+        // And it recovers when the rotation finishes, rather than needing a
+        // restart to forget the bad read.
+        rewrite(&cert_path, &key_path, "recovered.example");
+        assert!(reloader.reload().unwrap());
+        assert_ne!(reloader.serving(), before);
+    }
+
+    #[test]
+    fn a_certificate_that_does_not_match_its_key_never_starts() {
+        // The deployment mistake, caught at construction rather than at the
+        // first client. `from_der` compares the public keys.
+        let (_dir, cert_path, key_path) = test_cert();
+        let (_other_dir, _other_cert, other_key) = test_cert();
+
+        assert!(
+            CertReloader::new(&cert_path, &other_key).is_err(),
+            "a mismatched pair was accepted"
+        );
+        assert!(CertReloader::new(&cert_path, &key_path).is_ok());
+    }
+
+    #[test]
+    fn a_reloading_config_is_still_checked_for_fips() {
+        // The assertion the fixed-certificate path makes, on the path that did
+        // not exist when it was written. A build that took this route and
+        // skipped it would be a FIPS binary that never checked, which ADR 0010
+        // says is worse than no FIPS binary.
+        let (_dir, cert_path, key_path) = test_cert();
+        let reloader = CertReloader::new(&cert_path, &key_path).unwrap();
+
+        let config = server_config_reloading(reloader).unwrap();
+        assert_eq!(
+            config.fips(),
+            FIPS_BUILD,
+            "a reloading configuration disagrees with the build about FIPS"
+        );
+    }
+
+    #[test]
+    fn the_reload_interval_is_minutes_rather_than_seconds() {
+        // What it costs is two small files read, and what it buys is noticing a
+        // rotation within a minute of it happening. A value in the seconds
+        // would be a file read per second per pod for a file that changes
+        // monthly.
+        assert!(RELOAD_INTERVAL >= std::time::Duration::from_secs(30));
+        assert!(RELOAD_INTERVAL <= std::time::Duration::from_secs(600));
     }
 }

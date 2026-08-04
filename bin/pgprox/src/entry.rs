@@ -277,23 +277,22 @@ impl Options {
         Ok(Some(Arc::new(admin)))
     }
 
-    /// The listener's TLS configuration, if certificates were given.
+    /// The listener's certificate, if one was given.
+    ///
+    /// A [`pgprox_tls::CertReloader`] rather than a fixed configuration, so a
+    /// rotation reaches a running node. `run` polls it; see `M24.9`.
     ///
     /// # Errors
     ///
     /// Fails when only one of the pair is given, or when either cannot be read
     /// or does not match the other. All three are deployment mistakes that
     /// must not start a node serving in the clear when it was told not to.
-    pub fn tls(&self) -> Result<Option<Arc<tokio_rustls::rustls::ServerConfig>>, StartupError> {
+    pub fn tls(&self) -> Result<Option<Arc<pgprox_tls::CertReloader>>, StartupError> {
         match (&self.tls_cert, &self.tls_key) {
             (None, None) => Ok(None),
-            (Some(cert), Some(key)) => {
-                let certs = pgprox_tls::load_certs(cert).map_err(|err| tls_error(&err))?;
-                let key = pgprox_tls::load_private_key(key).map_err(|err| tls_error(&err))?;
-                Ok(Some(
-                    pgprox_tls::server_config(certs, key).map_err(|err| tls_error(&err))?,
-                ))
-            }
+            (Some(cert), Some(key)) => Ok(Some(
+                pgprox_tls::CertReloader::new(cert, key).map_err(|err| tls_error(&err))?,
+            )),
             _ => Err(StartupError::Arguments {
                 detail: "--tls-cert and --tls-key go together".to_owned(),
             }),
@@ -474,7 +473,14 @@ pub async fn start_with(
     config: Arc<dyn pgprox_core::config::ConfigSource>,
     resolver: Arc<dyn pgprox_core::auth::CredentialResolver>,
 ) -> Result<App, StartupError> {
-    let listener_tls = options.tls()?;
+    let listener_certificate = options.tls()?;
+    // One configuration for the life of the process, resolving to whatever the
+    // reloader currently holds. See `pgprox_tls::CertReloader`.
+    let listener_tls = listener_certificate
+        .clone()
+        .map(pgprox_tls::server_config_reloading)
+        .transpose()
+        .map_err(|err| tls_error(&err))?;
     let upstream_tls = options.upstream_tls()?;
 
     // Every resolver this node uses is a caching one, and until now none was.
@@ -509,6 +515,7 @@ pub async fn start_with(
 
     App::build(Deps {
         listener_tls,
+        listener_certificate,
         statics: options.static_admin()?,
         require_tls: options.require_tls,
         node: options.node,

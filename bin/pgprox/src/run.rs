@@ -533,6 +533,48 @@ pub async fn run_with_peers(
 /// Returns how many ticks it ran. A count rather than nothing, because the
 /// work it does is reported to peers and to probes rather than returned, and a
 /// loop that silently never ran would look exactly like one that did.
+/// Ticks between certificate reloads.
+///
+/// Derived from the two constants rather than written a third time, so
+/// `pgprox_tls::RELOAD_INTERVAL` is the one place the interval is decided. A
+/// floor of one, because a `TICK` longer than the interval would otherwise
+/// produce zero and a modulo by zero.
+const TICKS_PER_RELOAD: u64 = {
+    let ticks = pgprox_tls::RELOAD_INTERVAL.as_secs() / TICK.as_secs();
+    if ticks == 0 { 1 } else { ticks }
+};
+
+/// Whether this tick is one that re-reads the certificate.
+///
+/// A pure function of the tick count so it can be tested without a runtime, a
+/// clock or a file. `M24.9`.
+const fn due_for_reload(ran: u64) -> bool {
+    ran.is_multiple_of(TICKS_PER_RELOAD)
+}
+
+/// Re-reads the listener's certificate, if there is one.
+///
+/// A node with no certificate has nothing to reload, and a node whose files
+/// have not changed does nothing visible. Both are silent; only a rotation and
+/// a failure say anything, because a log line a minute is a log nobody reads.
+///
+/// A failure is logged and swallowed. Certificates are rotated by machines and
+/// a half-written file is a normal thing to read: `CertReloader::reload` leaves
+/// the previous certificate serving, and the next tick tries again.
+fn reload_certificate(reloader: Option<&Arc<pgprox_tls::CertReloader>>) {
+    let Some(reloader) = reloader else {
+        return;
+    };
+    match reloader.reload() {
+        Ok(true) => tracing::info!("the listener certificate was rotated"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(
+            %err,
+            "could not re-read the listener certificate; the previous one is still serving"
+        ),
+    }
+}
+
 /// Asks each idle client whether it belongs on another node, and closes the
 /// ones that do.
 ///
@@ -892,6 +934,14 @@ async fn ticker(
             tracing::info!(shed, "shed clients toward their home nodes");
         }
 
+        // Not every tick. A certificate is rotated on the order of weeks and
+        // two files read a minute is a cost nobody has to reason about, where
+        // two files read a second for a file that changes monthly is a thing
+        // somebody eventually asks about.
+        if due_for_reload(ran) {
+            reload_certificate(app.deps.listener_certificate.as_ref());
+        }
+
         // Last, so a node that has just been told to drain has already
         // reported its final numbers to the fleet.
         follow_drain(app, probes, drainer).await;
@@ -1173,6 +1223,7 @@ mod tests {
     fn deps() -> Deps {
         Deps {
             listener_tls: None,
+            listener_certificate: None,
             require_tls: false,
             statics: None,
             node: NodeId::new(1),
@@ -1982,5 +2033,77 @@ mod tests {
         drop(client);
         shutdown.fire();
         let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
+    }
+    #[test]
+    fn the_certificate_is_re_read_on_a_minute_rather_than_a_tick() {
+        // `M24.9`. Two small files a minute is a cost nobody has to reason
+        // about; two files a second, for a file that changes monthly, is a
+        // thing somebody eventually asks about.
+        assert_eq!(
+            TICKS_PER_RELOAD,
+            pgprox_tls::RELOAD_INTERVAL.as_secs() / TICK.as_secs(),
+            "the two constants disagree, so the interval is decided twice"
+        );
+        const {
+            assert!(TICKS_PER_RELOAD > 1, "every tick re-reads the certificate");
+        }
+
+        assert!(due_for_reload(0));
+        assert!(due_for_reload(TICKS_PER_RELOAD));
+        assert!(due_for_reload(TICKS_PER_RELOAD * 2));
+        for ran in 1..TICKS_PER_RELOAD {
+            assert!(!due_for_reload(ran), "tick {ran} re-read the certificate");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rotated_certificate_reaches_a_running_listener() {
+        // The wiring half. `pgprox-tls` proves the reloader notices a rewrite;
+        // this proves the node asks it to. Until `M24.9` nothing did, and
+        // architecture.md had credited the crate with hot reload since M-1.
+        let dir = std::env::temp_dir().join(format!("pgprox-reload-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        write_cert(&cert_path, &key_path, "before.example");
+
+        let reloader = pgprox_tls::CertReloader::new(&cert_path, &key_path).unwrap();
+        let before = reloader.serving();
+
+        // What the tick does, on a tick that is due.
+        reload_certificate(Some(&reloader));
+        assert_eq!(reloader.serving(), before, "nothing changed and it changed");
+
+        write_cert(&cert_path, &key_path, "after.example");
+        reload_certificate(Some(&reloader));
+        assert_ne!(
+            reloader.serving(),
+            before,
+            "the tick did not carry the rotation to the listener"
+        );
+
+        // A node with no certificate has nothing to reload, and must not
+        // panic on the tick that would have.
+        reload_certificate(None);
+
+        // A half-written file leaves the previous certificate serving rather
+        // than taking the listener down.
+        let rotated = reloader.serving();
+        std::fs::write(&cert_path, b"-----BEGIN CERTIFICATE-----\nhalf").unwrap();
+        reload_certificate(Some(&reloader));
+        assert_eq!(
+            reloader.serving(),
+            rotated,
+            "a half-written rotation took the live certificate with it"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Writes a self-signed certificate and its key to two paths.
+    fn write_cert(cert_path: &std::path::Path, key_path: &std::path::Path, name: &str) {
+        let cert = rcgen::generate_simple_self_signed(vec![name.into()]).unwrap();
+        std::fs::write(cert_path, cert.cert.pem()).unwrap();
+        std::fs::write(key_path, cert.signing_key.serialize_pem()).unwrap();
     }
 }

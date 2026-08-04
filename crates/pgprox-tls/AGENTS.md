@@ -12,6 +12,16 @@ frontend listener and upstream connections.
   it should fail.
 - **There is no skip-verification option for upstream TLS**, not even behind a
   flag. That flag always ends up set in production.
+- **The listener's certificate is reloadable and the `ServerConfig` is not.**
+  `CertReloader` is a `ResolvesServerCert`, so the configuration handed to the
+  accept loop is fixed for the life of the process and what it resolves to is
+  not. A rewrite that does not parse leaves the previous certificate serving:
+  certificates are rotated by machines and a half-written file is a normal
+  thing to read, so the failure mode is a log line rather than a listener that
+  stops answering.
+  This line described nothing until `M24.9`. `server_config` was called once
+  and its answer never changed, so a cert-manager rotation served an expired
+  certificate until somebody restarted the pod.
 - TLS is required on the frontend whenever JWT auth is in use, since the token
   travels in the password field. A client skipping `SSLRequest` gets an
   `ErrorResponse` explaining why, never a silent downgrade.

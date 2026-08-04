@@ -27,7 +27,7 @@ not left to review.
 | --- | --- | --- |
 | `pgprox-core` | Traits, DTOs, errors, IDs, `SecretString`, `Clock`, buffer slab, fakes | M0 |
 | `pgprox-proto` | Postgres wire codec, both directions, frame-level passthrough | A |
-| `pgprox-tls` | rustls setup, FIPS feature gate, cert hot-reload | A |
+| `pgprox-tls` | rustls setup, FIPS feature gate, cert hot-reload through a resolver | A |
 | `pgprox-auth` | JWT extraction, sidecar gRPC client, grant cache | B |
 | `pgprox-cluster` | SWIM gossip, membership, quota leases, tenant reservations | C |
 | `pgprox-config` | `ConfigSource` providers, validation, hot reload | D |
