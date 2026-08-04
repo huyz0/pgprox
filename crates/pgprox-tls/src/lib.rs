@@ -15,6 +15,17 @@
 //! Upstream TLS verifies the certificate chain against a configured CA, and
 //! this crate exposes no option to disable that. Such a flag always ends up set
 //! in production.
+//!
+//! # No unsafe, and not by the workspace's leave
+//!
+//! `#![forbid]` rather than the workspace's `deny`, so no `#[allow]` anywhere
+//! in this crate can reach it. This crate sits on the path a client's first
+//! bytes take.
+//!
+//! `M27.1` opened the door elsewhere and left it shut here on purpose. See ADR
+//! 0026 and `scripts/check-unsafe.sh`, which holds the list.
+
+#![forbid(unsafe_code)]
 
 use std::io;
 use std::path::{Path, PathBuf};

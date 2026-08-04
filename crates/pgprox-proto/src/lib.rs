@@ -35,7 +35,18 @@
 //! A fifth used to: `backend::select_sasl_mechanism` collected the offered
 //! mechanisms in order to search them. It no longer does, which is the only
 //! one of the five that was not paying for anything.
+//!
+//! # No unsafe, and not by the workspace's leave
+//!
+//! `#![forbid]` rather than the workspace's `deny`, so no `#[allow]` anywhere
+//! in this crate can reach it. This crate reads bytes sent by anyone who can reach the listener, and
+//! `standards/security.md` is about this crate when it says the failure mode of
+//! a decoder bug must be a wrong answer and never memory corruption.
+//!
+//! `M27.1` opened the door elsewhere and left it shut here on purpose. See ADR
+//! 0026 and `scripts/check-unsafe.sh`, which holds the list.
 
+#![forbid(unsafe_code)]
 pub mod backend;
 pub mod encode;
 pub mod encode_frontend;

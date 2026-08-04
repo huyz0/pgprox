@@ -139,6 +139,17 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+      # The five conditions on the unsafe exception. Whole-workspace scan, well
+      # under a second, and it has to run per commit rather than nightly: an
+      # `#[allow(unsafe_code)]` is one line and this is what that line has to
+      # get past. M27.1.
+      - id: unsafe-governed
+        name: unsafe is a governed exception
+        entry: scripts/check-unsafe.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+
       - id: secrets-not-formatted
         name: no exposed credential reaches a formatter
         entry: scripts/check-secrets.sh

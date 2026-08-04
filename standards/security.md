@@ -32,8 +32,16 @@ allocating it.
 - No `panic!` on any path reachable from client bytes. A malformed frame must
   not take down a node serving 100k other connections. This is why the decoder
   is fuzzed rather than only unit tested.
-- No `unsafe`, so the failure mode of a decoder bug is a wrong answer or an
-  error, never memory corruption.
+- No `unsafe` **in the crates that read bytes a peer chose**, so the failure
+  mode of a decoder bug is a wrong answer or an error, never memory corruption.
+  `pgprox-proto`, `pgprox-core`, `pgprox-route`, `pgprox-auth` and `pgprox-tls`
+  carry `#![forbid(unsafe_code)]` in their own `lib.rs`, where the workspace's
+  `deny` and any `#[allow]` cannot reach them.
+  This was a workspace-wide `forbid` until `M27.1`. The sentence above is the
+  argument and it was always narrower than the lint: it is about a decoder, not
+  about the query cache's slab. Elsewhere unsafe is a governed exception with
+  five conditions, in [rust-style.md](rust-style.md) and enforced by
+  `scripts/check-unsafe.sh`.
 - The statement classifier parses untrusted SQL. When it cannot classify with
   confidence it returns unknown and the router sends the statement to the
   primary. Guessing read-only on an ambiguous statement is a correctness bug and

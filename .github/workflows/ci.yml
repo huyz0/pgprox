@@ -48,6 +48,9 @@ jobs:
       # Non-negotiable 5, which check-layering.sh was credited with and does
       # not check: it enforces the crate dependency rule, a different rule. M13.4.
       - run: scripts/check-sans-io.sh
+      # The five conditions on the unsafe exception. Per commit rather than
+      # nightly, because an `#[allow(unsafe_code)]` is one line. M27.1.
+      - run: scripts/check-unsafe.sh
       - run: scripts/check-layering.sh
       # The most repeated defect in this project: correct, tested code that
       # nothing reaches. Four instances across M15 and M16, the last committed
@@ -169,6 +172,33 @@ jobs:
           name: fuzz-artifacts
           path: fuzz/artifacts/
           if-no-files-found: warn
+
+  miri:
+    name: tier 3 - miri
+    runs-on: ubuntu-latest
+    # Nightly and on demand, alongside the fuzzers and the mutation run. Miri
+    # interprets rather than executes, so a suite it runs takes minutes rather
+    # than seconds, and what it buys is the only mechanical check on an unsafe
+    # block's argument that exists.
+    #
+    # The job is here before any crate needs it, and `scripts/check-unsafe.sh`
+    # is what keeps the two in step: a crate that grows an `unsafe` block and is
+    # not named below fails the pre-commit gate. Adding the job afterwards would
+    # mean the first unsafe in this repo landed with nothing verifying it, which
+    # is the order `M13` is about.
+    #
+    # `-p` per crate rather than `--workspace`: Miri cannot run a test that
+    # opens a socket or spawns a process, and most of this workspace does. The
+    # list is the crates that hold unsafe, which today is none.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the nightly toolchain with Miri
+        run: |
+          rustup toolchain install nightly --profile minimal --component miri
+          rustup +nightly component add miri
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/miri.sh
 
   mutants:
     name: tier 3 - mutation testing

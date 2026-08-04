@@ -20,10 +20,44 @@ true`. Denied beyond the defaults:
 - `clippy::unwrap_used` and `clippy::expect_used` outside `#[cfg(test)]`
 - `clippy::todo`, `clippy::dbg_macro`, `clippy::print_stdout`,
   `clippy::print_stderr`
-- `unsafe_code`, forbidden at the crate level in every crate
+- `unsafe_code`, denied at the workspace root
 
-If the buffer slab or the codec ever appears to need `unsafe`, that is a design
-review, not a local `#[allow]`.
+## Unsafe is a governed exception
+
+This said "`unsafe_code`, forbidden at the crate level in every crate", which
+described an arrangement that was not there: it was forbidden once in
+`[workspace.lints.rust]` and exactly one crate repeated it in its own `lib.rs`.
+`M27.1` corrected the sentence and changed what it says.
+
+`forbid` cannot be overridden by a local `#[allow]` at all, which made it the
+one threshold in this repo that no measurement could reopen. It is now `deny`,
+and an exception has to get past five conditions that
+[`scripts/check-unsafe.sh`](../scripts/check-unsafe.sh) enforces:
+
+1. **Five crates stay shut**, with `#![forbid(unsafe_code)]` in their own
+   `lib.rs` where no `#[allow]` reaches them: `pgprox-proto`, `pgprox-core`,
+   `pgprox-route`, `pgprox-auth`, `pgprox-tls`. Each of them reads bytes a peer
+   chose. See [security.md](security.md).
+2. **Every `#[allow(unsafe_code)]` names a benchmark** on the line above it, as
+   `// SAFETY-POLICY: <benchmark>`, and that benchmark exists in
+   `product/perf/baseline.json`. Unsafe with no number is a liability with no
+   evidence of upside.
+3. **The hygiene lints are on** and denied workspace-wide:
+   `unsafe_op_in_unsafe_fn`, `clippy::undocumented_unsafe_blocks`,
+   `clippy::missing_safety_doc`, `clippy::multiple_unsafe_ops_per_block`.
+4. **A crate holding `unsafe` is named in the Miri job.** Unsafe without Miri
+   in CI is unsafe nobody can maintain.
+5. **Tests, benches and build scripts may not take the exception.** Nothing in
+   the four conditions above governs them.
+
+Try the safe construct first, and measure both. Iterators, `assert!` before a
+loop rather than `debug_assert!`, `chunks_exact`, `split_at_mut`, `bytemuck`,
+`with_capacity`, and the release profile itself all reach unsafe-level speed
+often enough that reaching for `unsafe` first is usually the slower route to the
+same number. If the unsafe version moves the benchmark less than the tolerance
+`scripts/bench.sh` holds, delete it and keep the safe one.
+
+See ADR [0026](../product/decisions/0026-unsafe-is-a-governed-exception.md).
 
 ## Module layout
 

@@ -52,9 +52,19 @@ tracing = { version = "0.1", default-features = false, features = ["std", "attri
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "json"] }
 
 [workspace.lints.rust]
-# No unsafe anywhere. If the buffer slab or the codec appears to need it, that
-# is a design review, not a local allow. See standards/rust-style.md.
-unsafe_code = "forbid"
+# Denied rather than forbidden, since `M27.1`. `forbid` cannot be overridden by
+# a local `#[allow]` at all, which made it the one threshold in this repo that
+# no measurement could reopen; `deny` makes an exception possible and makes it
+# something somebody had to write down where they took it.
+#
+# The crates whose argument is about untrusted bytes keep `#![forbid]` in their
+# own `lib.rs`, where no `#[allow]` can reach them. `scripts/check-unsafe.sh`
+# holds the rest of the conditions and the list of which crates those are.
+# See standards/rust-style.md and ADR 0026.
+unsafe_code = "deny"
+# The hygiene an exception has to be written with. Each of these turns a
+# reviewer's job into the compiler's.
+unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "warn"
 missing_debug_implementations = "warn"
 unreachable_pub = "warn"
@@ -67,6 +77,13 @@ pedantic = { level = "deny", priority = -1 }
 # of is either encodable in the type or worth a real error.
 unwrap_used = "deny"
 expect_used = "deny"
+
+# Unsafe hygiene, `M27.1`. An `unsafe` block with no argument for why it is
+# sound is one nobody can review, and one that does three things at once is an
+# argument that cannot be checked against what it justifies.
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+multiple_unsafe_ops_per_block = "deny"
 panic = "deny"
 todo = "deny"
 unimplemented = "deny"

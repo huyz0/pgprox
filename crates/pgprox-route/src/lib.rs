@@ -12,7 +12,17 @@
 //! here, so the real router and every fake share one implementation. This crate
 //! supplies what that decision needs: what a statement does, and how far each
 //! replica has replayed.
+//!
+//! # No unsafe, and not by the workspace's leave
+//!
+//! `#![forbid]` rather than the workspace's `deny`, so no `#[allow]` anywhere
+//! in this crate can reach it. This crate classifies untrusted SQL, and a wrong answer here is a
+//! stale read rather than a crash only because nothing in it can corrupt memory.
+//!
+//! `M27.1` opened the door elsewhere and left it shut here on purpose. See ADR
+//! 0026 and `scripts/check-unsafe.sh`, which holds the list.
 
+#![forbid(unsafe_code)]
 pub mod classify;
 pub mod hints;
 pub mod poller;

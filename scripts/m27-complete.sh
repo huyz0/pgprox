@@ -84,4 +84,35 @@ fi
 
 # --- the findings that have landed -------------------------------------------
 
+# --- M27.1: the policy, and the script that enforces it -----------------------
+#
+# Not `run_finding`, because what this milestone produced is a script and two
+# standards rather than a Rust test. The check is the same shape all the same:
+# run the thing and read its exit code, per `M12.8`.
+
+# The conditions hold on this tree right now.
+if scripts/check-unsafe.sh >/dev/null 2>&1; then
+  ok "the five conditions hold on this tree"
+else
+  fail "scripts/check-unsafe.sh does not pass on the tree it governs"
+fi
+
+# And every one of them can fail, which is the half that makes the first mean
+# anything. `M12`: a check nobody has seen fail is a check nobody knows the
+# failure mode of.
+if tests/gates/negative.sh unsafe >/dev/null 2>&1; then
+  ok "every condition is proven able to fail"
+else
+  fail "tests/gates/negative.sh unsafe does not pass"
+  printf '       the conditions are not proven able to fail, so they are decoration\n'
+fi
+
+# The verification duty has somewhere to run. A policy that requires Miri and
+# has no Miri job is the shape `M13` audited seven of.
+if [[ -x scripts/miri.sh ]] && grep -q 'name: tier 3 - miri' .github/workflows/ci.yml; then
+  ok "the Miri job exists for the crates that will need it"
+else
+  fail "the policy requires Miri and there is no job to run it"
+fi
+
 finish

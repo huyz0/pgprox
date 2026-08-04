@@ -6881,7 +6881,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the roadmap has an M27 section and a status row, this list is
   written, and `scripts/m27-complete.sh` exists, is named in CI, and passes on
   this commit under `M24.0`'s rule.
-- [ ] `M27.1` The policy, and the script that enforces it.
+- [x] `M27.1` The policy, and the script that enforces it.
   Five conditions, because a rule with no script is a rule nobody keeps, which
   is what `M13` is about:
   1. The workspace lint becomes `deny`, so an exception is possible and has to

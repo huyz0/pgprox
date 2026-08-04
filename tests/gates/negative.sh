@@ -653,6 +653,102 @@ case_secrets() {
     env PGPROX_RUST_ROOTS="$dir/ok.rs" scripts/check-secrets.sh
 }
 
+
+# --- check-unsafe.sh, M27.1 --------------------------------------------------
+#
+# The five conditions on the unsafe exception. Every one gets a case, because a
+# lint anybody can switch off in one line is a lint that switches itself off,
+# and the script is the only thing between an `#[allow(unsafe_code)]` and the
+# tree.
+#
+# Writing these found a defect in the script itself: an `#[allow]` on the first
+# line of a file made it ask `sed` for line 0, which is an error rather than an
+# empty answer, and under `set -e` that killed the run instead of failing the
+# check. A gate written to enforce a rule about care, dying rather than
+# reporting. That is what the last case here holds.
+case_unsafe() {
+  echo
+  echo "  check-unsafe.sh"
+
+  local dir="$WORK/unsafe"
+  rm -rf "$dir"; mkdir -p "$dir/crates/pgprox-cache/src" "$dir/bin/pgprox/src"
+
+  # A tree that satisfies every condition: the five closed crates forbid, and
+  # nobody takes the exception.
+  local closed
+  for closed in pgprox-proto pgprox-core pgprox-route pgprox-auth pgprox-tls; do
+    mkdir -p "$dir/crates/$closed/src"
+    printf '#![forbid(unsafe_code)]\n' > "$dir/crates/$closed/src/lib.rs"
+  done
+  printf 'fn ordinary() {}\n' > "$dir/crates/pgprox-cache/src/store.rs"
+  printf 'fn main() {}\n' > "$dir/bin/pgprox/src/main.rs"
+
+  expect_pass "accepts a tree where nobody takes the exception" \
+    env PGPROX_CRATES_DIR="$dir/crates" PGPROX_BINS_DIR="$dir/bin" \
+    scripts/check-unsafe.sh
+
+  # 1. A closed crate that stops forbidding.
+  printf 'fn open_now() {}\n' > "$dir/crates/pgprox-proto/src/lib.rs"
+  expect_fail "flags a closed crate that dropped its own forbid" \
+    env PGPROX_CRATES_DIR="$dir/crates" PGPROX_BINS_DIR="$dir/bin" \
+    scripts/check-unsafe.sh
+  printf '#![forbid(unsafe_code)]\n' > "$dir/crates/pgprox-proto/src/lib.rs"
+
+  # 2. An exception with no benchmark named above it.
+  printf 'fn ordinary() {}\n\n#[allow(unsafe_code)]\nfn taken() {}\n' \
+    > "$dir/crates/pgprox-cache/src/store.rs"
+  expect_fail "flags an exception with no SAFETY-POLICY line" \
+    env PGPROX_CRATES_DIR="$dir/crates" PGPROX_BINS_DIR="$dir/bin" \
+    scripts/check-unsafe.sh
+
+  # 3. One naming a benchmark the baseline does not hold.
+  printf 'fn ordinary() {}\n\n// SAFETY-POLICY: pgprox-cache::invented\n#[allow(unsafe_code)]\nfn taken() {}\n' \
+    > "$dir/crates/pgprox-cache/src/store.rs"
+  expect_fail "flags an exception naming a benchmark that does not exist" \
+    env PGPROX_CRATES_DIR="$dir/crates" PGPROX_BINS_DIR="$dir/bin" \
+    scripts/check-unsafe.sh
+
+  # And one naming a real benchmark is accepted, so the check is not simply
+  # refusing everything.
+  printf 'fn ordinary() {}\n\n// SAFETY-POLICY: pgprox-cache::cache_hit\n#[allow(unsafe_code)]\nfn taken() {}\n' \
+    > "$dir/crates/pgprox-cache/src/store.rs"
+  expect_pass "accepts an exception justified by a benchmark in the baseline" \
+    env PGPROX_CRATES_DIR="$dir/crates" PGPROX_BINS_DIR="$dir/bin" \
+    scripts/check-unsafe.sh
+
+  # 4. A crate that holds unsafe while the workflow has no Miri job.
+  printf 'fn held() { unsafe { } }\n' > "$dir/crates/pgprox-cache/src/store.rs"
+  printf 'jobs:\n  tier1:\n    name: tier 1\n' > "$dir/no-miri.yml"
+  expect_fail "flags unsafe in a crate no Miri job covers" \
+    env PGPROX_CRATES_DIR="$dir/crates" PGPROX_BINS_DIR="$dir/bin" \
+    PGPROX_WORKFLOW="$dir/no-miri.yml" scripts/check-unsafe.sh
+
+  # And a workflow that names it is accepted.
+  printf 'jobs:\n  miri:\n    name: tier 3 - miri\n    steps:\n      - run: cargo miri test -p pgprox-cache\n' \
+    > "$dir/with-miri.yml"
+  expect_pass "accepts unsafe in a crate the Miri job names" \
+    env PGPROX_CRATES_DIR="$dir/crates" PGPROX_BINS_DIR="$dir/bin" \
+    PGPROX_WORKFLOW="$dir/with-miri.yml" scripts/check-unsafe.sh
+  printf 'fn ordinary() {}\n' > "$dir/crates/pgprox-cache/src/store.rs"
+
+  # 5. The exception taken from a test, where nothing else here governs it.
+  mkdir -p "$dir/crates/pgprox-cache/tests"
+  printf '// SAFETY-POLICY: pgprox-cache::cache_hit\n#[allow(unsafe_code)]\nfn taken() {}\n' \
+    > "$dir/crates/pgprox-cache/tests/planted.rs"
+  expect_fail "flags the exception taken from a test" \
+    env PGPROX_CRATES_DIR="$dir/crates" PGPROX_BINS_DIR="$dir/bin" \
+    scripts/check-unsafe.sh
+
+  # The first-line case, which killed the script rather than failing it. Kept
+  # as its own case because the failure mode was an abort, and an aborting gate
+  # reports nothing at all rather than reporting the wrong thing.
+  rm -rf "$dir/crates/pgprox-cache/tests"
+  printf '#[allow(unsafe_code)]\nfn taken() {}\n' > "$dir/crates/pgprox-cache/src/store.rs"
+  expect_fail "flags an exception on the first line rather than dying on it" \
+    env PGPROX_CRATES_DIR="$dir/crates" PGPROX_BINS_DIR="$dir/bin" \
+    scripts/check-unsafe.sh
+}
+
 # --- check-sans-io.sh, M13.4 -------------------------------------------------
 #
 # Non-negotiable 5. AGENTS.md credited check-layering.sh with this, and that
@@ -793,6 +889,7 @@ if [[ -z "$WANTED" || "$WANTED" == thresholds ]]; then case_thresholds; ran=1; f
 if [[ -z "$WANTED" || "$WANTED" == tests-kept ]]; then case_tests_kept; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == secrets ]]; then case_secrets; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == sans-io ]]; then case_sans_io; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == unsafe ]]; then case_unsafe; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == core-contract ]]; then case_core_contract; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == named-scripts ]]; then case_named_scripts; ran=1; fi
 

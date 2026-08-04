@@ -39,7 +39,18 @@
 //!   to check expiry cannot over-subscribe a cap.
 //! - [`StmtClass::Unknown`] is the default and never reaches a replica.
 //! - Nothing holding a credential derives `Debug`.
+//!
+//! # No unsafe, and not by the workspace's leave
+//!
+//! `#![forbid]` rather than the workspace's `deny`, so no `#[allow]` anywhere
+//! in this crate can reach it. This crate holds `sql::Lexer`, which decides which text in an untrusted
+//! statement is SQL and which is data, and `SecretString`, whose whole purpose
+//! is that a credential cannot be read out by accident.
+//!
+//! `M27.1` opened the door elsewhere and left it shut here on purpose. See ADR
+//! 0026 and `scripts/check-unsafe.sh`, which holds the list.
 
+#![forbid(unsafe_code)]
 pub mod admin;
 pub mod auth;
 pub mod buf;
