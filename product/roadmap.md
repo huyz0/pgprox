@@ -2082,3 +2082,49 @@ The pattern is worth keeping: every one was caught by a number being too good or
 too bad to believe, and none by a test.
 
 Completion condition: `scripts/m32-complete.sh`.
+
+## M33: what pgbouncer and pgcat do differently (complete)
+
+```bash
+scripts/m33-complete.sh
+```
+
+`M32` found pgbouncer serving 200 connections in 4.5 MB where pgprox needed 13.9
+and pgcat 26.1. A number is not a reason, and both are open source, so this
+reads them instead of guessing.
+
+**Three things pgprox found by profiling, pgbouncer has had since 2007.** A
+cursor rather than a `drain`, which pgprox added after a profile put 19% of its
+time in `memmove` and pgbouncer spells `done_pos`/`parse_pos`. Buffers borrowed
+on read and returned when quiet, which is `ADR 0008` and `sbuf_try_resync`.
+Reading into uninitialised capacity, which is `M30.4` and an `init_func` that
+resets three cursors and not the buffer. The convergence is the finding: these
+are not tricks, they are what a pooler needs.
+
+**The obvious answer was wrong, and the experiment is the milestone.** pgbouncer's
+buffer is 4 KiB and pgprox's is 16, so pgprox should be paying four times over.
+Setting both constants to 4 KiB and re-running moved the per-connection cost by
+205 bytes out of 22,835, and `held_read` not at all. A 12 KiB reduction per
+buffer showing up as 40 kB across 200 connections means at most three buffers
+were outstanding at once.
+
+That is the buffer slab working exactly as `ADR 0008` intended, so completely
+that buffer size is not a memory lever. It also means the cheap optimisation is
+not available, and a version of the document recommending it existed before the
+run.
+
+**What is not the lever anywhere:** pgcat has zero `unsafe` and is the heaviest
+of the three by five times. Neither project contains any SIMD. pgbouncer aligns
+to `sizeof(long)` and pads nothing. The lever in all three is how much is
+allocated per connection and for how long.
+
+**The question it leaves:** 22,835 bytes per connection, of which 5,048 is the
+session future and none is the buffers. The other seventeen kilobytes are
+unaccounted for, and the cheapest candidate to rule out is glibc's per-thread
+allocator arenas, which a one-thread runtime would separate from a real
+per-connection cost.
+
+Full detail in
+[run-2026-08-05-what-the-others-do.md](../perf/run-2026-08-05-what-the-others-do.md).
+
+Completion condition: `scripts/m33-complete.sh`.

@@ -7189,3 +7189,21 @@ recognised so it can be refused rather than read as a version.
   absolute peak with the cold per-connection delta beside it, and a finished
   run can be re-read without being re-run.
 - [x] `M32.7` Close M32.
+
+## M33: what pgbouncer and pgcat do differently
+
+- [x] `M33.0` Plan M33. `M32` measured the three poolers against each other and
+  found pgbouncer using a third of pgprox's memory. A number is not a reason,
+  and the reason is in their source rather than in a table. Both are open, so
+  reading them is cheaper than guessing.
+  Acceptance: this list, a roadmap section, and `scripts/m33-complete.sh` wired
+  into CI.
+- [x] `M33.1` The study, and the experiment that refuted its own obvious answer.
+  The hypothesis worth testing first is the cheap one: pgbouncer's read buffer
+  is 4 KiB by default and pgprox's is 16 KiB, so pgprox should be paying four
+  times over. Test it before writing it down.
+  Acceptance: a document naming what each of the three actually does with
+  memory, read from source rather than remembered, the buffer experiment with
+  both numbers, and the question it leaves open stated as a question rather
+  than filled in with a guess.
+- [x] `M33.2` Close M33.
