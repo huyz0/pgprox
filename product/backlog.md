@@ -6906,3 +6906,47 @@ recognised so it can be refused rather than read as a version.
   pre-commit hook and CI, and every one of its checks is proven able to fail
   against a planted violation, per `M12`.
 - [x] `M27.2` Close M27, on the terms `M18.4` through `M26.5` closed on.
+
+## M28: the build configuration nobody had measured
+
+- [ ] `M28.0` Plan M28, and give it a gate that passes from this commit.
+  `M27` closed on the observation that `scripts/bench.sh`'s own advice puts
+  build configuration before any unsafe, and that this workspace's release
+  profile had never been measured. It turned out to be half set already:
+  `codegen-units = 1` and `panic = "abort"` are there and `lto` is `"thin"`.
+  So there is one lever, not four, and the two that look available are not:
+  `panic = "abort"` is already taken, and `-C target-cpu=native` is wrong for a
+  binary shipped as a container image.
+  Acceptance: the roadmap has an M28 section and a status row, this list is
+  written, and `scripts/m28-complete.sh` exists, is named in CI, and passes on
+  this commit under `M24.0`'s rule.
+- [ ] `M28.1` `lto = "thin"` costs the route decision seven to fifteen percent.
+  Measured, thin against fat, on the committed baseline:
+
+  | benchmark | thin | fat | |
+  | --- | --- | --- | --- |
+  | `pgprox-route::route_begin` | 1,536 | 1,294 | -15% |
+  | `pgprox-proto::decode_query` | 460 | 390 | -15% |
+  | `pgprox-route::route_update` | 7,423 | 6,717 | -9% |
+  | `pgprox-route::route_point_select` | 6,982 | 6,444 | -7% |
+
+  The route decision is a declared hot path taken once per statement, and
+  `route_point_select` is the largest number in the baseline.
+  The cost is link time: a release relink goes from 12.98s to 30.43s, 2.3
+  times. That is CI and release builds only, since `[profile.dev]` is
+  untouched and `[profile.test]` runs at `opt-level = 1`.
+  Acceptance: the profile changes, the baseline is rewritten with the reason,
+  and both the win and the link-time cost are stated as numbers.
+- [ ] `M28.2` A benchmark in the gated baseline moves with a random seed.
+  `invalidate_after_one_put` read 5,689, then 6,080, then 5,609 across runs
+  that differ in nothing the benchmark is about. That is +6% and -1% around the
+  same code, and `scripts/bench.sh` fails at 5%, so this benchmark will
+  eventually fail CI on a change that did not touch it. It already reported a
+  regression that was not one, during `M28.1`.
+  The cause is the one `M26.4` recorded for its predecessor: the work is small
+  enough that how many probes a `HashMap` lookup takes, which depends on a
+  per-process random seed, is a measurable share of it.
+  Acceptance: the benchmark measures enough work that the seed is noise, its
+  spread across three runs is inside a percent, and the fix is the shape of the
+  measurement rather than a wider tolerance.
+- [ ] `M28.3` Close M28, on the terms `M18.4` through `M27.2` closed on.

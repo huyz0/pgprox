@@ -46,6 +46,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 | M26 | What the query cache costs, measured for the first time | complete; a hit is 65% cheaper and allocates nothing, a write is 97% cheaper, and the lock the store worried about was never the problem |
 | M27 | Unsafe becomes a governed exception rather than a closed door | complete; five conditions, a script that enforces them, nine cases proving each can fail, and no unsafe written |
+| M28 | The build configuration nobody had measured | open |
 
 ## M-1: AI development system (complete)
 
@@ -1762,3 +1763,22 @@ The tolerance for what comes next is already written down: if an unsafe version
 moves its benchmark less than `scripts/bench.sh`'s threshold, it is deleted and
 the safe one kept. `M26` is the evidence that the safe route usually wins
 anyway, having taken a hit from 4,144 instructions to 1,460 without any.
+
+## M28: the build configuration nobody had measured
+
+```bash
+scripts/m28-complete.sh
+```
+
+`M27` closed on the observation that the hot-path procedure puts build
+configuration before any unsafe, and that this workspace's release profile had
+never been measured against the baseline. I also said it had no
+`[profile.release]` block, which was wrong: it has one, and it already carries
+`codegen-units = 1` and `panic = "abort"`.
+
+So there is one lever rather than four. `lto` is `"thin"`, and the two that look
+available are not: `panic = "abort"` is already taken, and
+`-C target-cpu=native` is wrong for a binary shipped as a container image that
+runs on hardware the build machine has never seen.
+
+Completion condition: `scripts/m28-complete.sh`.
