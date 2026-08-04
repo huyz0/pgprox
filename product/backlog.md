@@ -6756,7 +6756,7 @@ recognised so it can be refused rather than read as a version.
   written, and `scripts/m25-complete.sh` exists, is named in CI, and passes on
   this commit under `M24.0`'s rule: every task the backlog ticks must be named
   in it.
-- [ ] `M25.1` An answer abandoned for being too big is counted nowhere.
+- [x] `M25.1` An answer abandoned for being too big is counted nowhere.
   `record_frame` drops the recording at `MAX_RECORDED_ANSWER` and increments
   nothing. `get` has already counted a miss, so a tenant whose results all sit
   just over a megabyte sees a 100% miss rate with no reason attached, while

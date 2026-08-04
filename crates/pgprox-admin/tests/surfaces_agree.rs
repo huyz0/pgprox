@@ -259,6 +259,9 @@ async fn both_surfaces_report_the_same_cache() {
         evicted: 1,
         invalidated: 3,
         rejected: 0,
+        // Distinct from `rejected`, and both non-default, so a surface that
+        // dropped one or read the other in its place cannot pass. `M25.1`.
+        abandoned: 5,
     });
 
     let json = http(&fake, "/v1/cache").await;
@@ -278,6 +281,7 @@ async fn both_surfaces_report_the_same_cache() {
         "evicted",
         "invalidated",
         "rejected",
+        "abandoned",
     ] {
         assert_eq!(
             rows.get(0, column).unwrap(),

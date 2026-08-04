@@ -70,6 +70,11 @@ pub struct NodeObservatory {
     /// is a cache a session could report on, and nothing on the relay path
     /// should be able to.
     cache: Arc<pgprox_cache::Store>,
+    /// Answers the recorder gave up on for exceeding the per-answer cap.
+    ///
+    /// Not on the store, because the store never saw them. See
+    /// `crate::recording`.
+    recordings: Arc<crate::recording::Recordings>,
 }
 
 /// The live components an observatory reads.
@@ -97,6 +102,8 @@ pub struct NodeParts {
     pub drain: SharedDrain,
     /// The query cache.
     pub cache: Arc<pgprox_cache::Store>,
+    /// Answers the recorder gave up on, which the store never saw. `M25.1`.
+    pub recordings: Arc<crate::recording::Recordings>,
 }
 
 impl NodeObservatory {
@@ -112,9 +119,11 @@ impl NodeObservatory {
             sessions,
             drain,
             cache,
+            recordings,
         } = parts;
         Self {
             cache,
+            recordings,
             node,
             clock,
             config,
@@ -335,6 +344,10 @@ impl Observatory for NodeObservatory {
             evicted: stats.evicted,
             invalidated: stats.invalidated,
             rejected: stats.rejected,
+            // From the proxy rather than the store, because the store never
+            // saw this answer: it was given up on before `put` was called. See
+            // `crate::recording`.
+            abandoned: self.recordings.abandoned(),
         }
     }
 
@@ -492,6 +505,8 @@ mod tests {
         clock: FakeClock,
         source: Arc<FakeConfigSource>,
         cache: Arc<pgprox_cache::Store>,
+        /// Shared with the observatory, so a test can abandon an answer.
+        recordings: Arc<crate::recording::Recordings>,
     }
 
     fn fixture(config: Config) -> Fixture {
@@ -524,6 +539,7 @@ mod tests {
         // opts a tenant in gets a store that agrees with the view.
         let cache = pgprox_cache::Store::new(Arc::clone(&shared));
         cache.reconfigure(&source.watch().borrow().query_cache);
+        let recordings = Arc::new(crate::recording::Recordings::new());
         let observatory = NodeObservatory::new(NodeParts {
             node: NodeId::new(1),
             clock: Arc::clone(&shared),
@@ -538,6 +554,7 @@ mod tests {
                 ),
             )),
             cache: Arc::clone(&cache),
+            recordings: Arc::clone(&recordings),
         });
 
         Fixture {
@@ -548,6 +565,7 @@ mod tests {
             clock,
             source,
             cache,
+            recordings,
         }
     }
 
@@ -715,6 +733,7 @@ mod tests {
                 ),
             )),
             cache: Arc::clone(&stale.cache),
+            recordings: Arc::new(crate::recording::Recordings::new()),
         });
         assert!(!observatory.config_is_current());
     }
@@ -792,6 +811,34 @@ mod tests {
             })
             .await;
         assert_eq!(fixture.observatory.cache().misses, 1);
+    }
+
+    #[tokio::test]
+    async fn the_cache_view_reports_answers_the_store_never_saw() {
+        // `M25.1`. An answer given up on for exceeding the per-answer cap
+        // never reaches `put`, so `rejected` cannot count it and the lookup
+        // that started it already counted a plain miss. A tenant whose results
+        // sit just over the cap therefore reported a hit rate of zero with
+        // nothing anywhere saying why.
+        //
+        // The two are apart on purpose: `rejected` says the budget is too
+        // small for one result, this says the results are too big for the
+        // cache to be the right tool, and raising the budget fixes only one of
+        // them.
+        let fixture = fixture(config());
+        let before = fixture.observatory.cache();
+        assert_eq!(before.abandoned, 0);
+        assert_eq!(before.rejected, 0);
+
+        fixture.recordings.abandon();
+        fixture.recordings.abandon();
+
+        let after = fixture.observatory.cache();
+        assert_eq!(after.abandoned, 2, "the view does not read the counter");
+        assert_eq!(
+            after.rejected, 0,
+            "an abandoned answer was counted as one the store rejected"
+        );
     }
 
     #[test]

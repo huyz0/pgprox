@@ -247,6 +247,7 @@ fn cache_samples(
                 ("evicted", cache.evicted),
                 ("invalidated", cache.invalidated),
                 ("rejected", cache.rejected),
+                ("abandoned", cache.abandoned),
             ] {
                 let _ = writeln!(
                     out,
@@ -607,6 +608,10 @@ mod tests {
             "evicted",
             "invalidated",
             "rejected",
+            // `M25.1`. Apart from `rejected` because the remedies differ: one
+            // says the budget is too small for a result, the other says the
+            // results are too big for a cache to be the right tool.
+            "abandoned",
         ] {
             let sample = format!("pgprox_cache_total{{node=\"1\",result=\"{result}\"}} 0");
             assert!(idle.contains(&sample), "missing {sample} in {idle}");

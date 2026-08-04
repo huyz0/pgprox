@@ -188,6 +188,7 @@ const CACHE: &[&str] = &[
     "evicted",
     "invalidated",
     "rejected",
+    "abandoned",
 ];
 
 /// The columns a command produces.
@@ -500,6 +501,7 @@ fn cache_rows(observatory: &dyn Observatory) -> Vec<Vec<String>> {
         cache.evicted.to_string(),
         cache.invalidated.to_string(),
         cache.rejected.to_string(),
+        cache.abandoned.to_string(),
     ]]
 }
 

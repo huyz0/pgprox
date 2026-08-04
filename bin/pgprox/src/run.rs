@@ -329,6 +329,7 @@ pub fn context(app: &App, shutdown: &Shutdown) -> Context {
         cache: Some(Arc::clone(&app.cache) as Arc<dyn pgprox_core::cache::QueryCache>),
         slab: Arc::clone(&app.slab),
         routes: Arc::clone(&app.routes),
+        recordings: Arc::clone(&app.recordings),
         statics: app.statics.clone(),
         observatory: Arc::clone(&app.observatory) as Arc<dyn pgprox_core::admin::Observatory>,
         // A node with certificates terminates TLS; one without answers `N` and

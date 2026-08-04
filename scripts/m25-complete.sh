@@ -84,4 +84,17 @@ fi
 
 # --- the findings that have landed -------------------------------------------
 
+# --- M25.1: an abandoned answer is counted -----------------------------------
+run_finding pgprox \
+  serve::tests::giving_up_on_an_answer_is_counted_and_finishing_one_is_not \
+  "an answer given up on for its size moves a counter, once"
+run_finding pgprox \
+  observatory::tests::the_cache_view_reports_answers_the_store_never_saw \
+  "the count reaches the view apart from the store's own rejections"
+# Both surfaces, because a counter on one and not the other is the state SHOW
+# and the API exist to avoid.
+run_finding pgprox-admin \
+  both_surfaces_report_the_same_cache \
+  "SHOW CACHE and the JSON API both report it"
+
 finish

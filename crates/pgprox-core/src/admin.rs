@@ -246,7 +246,22 @@ pub struct CacheView {
     /// Entries dropped because a tenant wrote.
     pub invalidated: u64,
     /// Results too large to store at all.
+    ///
+    /// The check inside `put`, which is about the budget: an entry bigger than
+    /// the whole of it would evict everything else and then be evicted itself.
+    /// [`CacheView::abandoned`] is the other size failure and the fixes differ.
     pub rejected: u64,
+    /// Answers given up on before the cache was ever offered them.
+    ///
+    /// The proxy holds an answer while it decides whether it is cacheable, and
+    /// stops holding one that grows past its per-answer cap. That answer never
+    /// reaches the store, so `rejected` cannot see it and every lookup for it
+    /// counted a plain miss.
+    ///
+    /// Apart from `rejected` because the remedies are opposite: `rejected`
+    /// says the budget is too small for one result, this says the results are
+    /// too big for the cache to be the right tool. `M25.1`.
+    pub abandoned: u64,
 }
 
 impl CacheView {

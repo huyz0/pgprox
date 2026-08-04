@@ -197,6 +197,11 @@ pub struct App {
     /// be told to start caching without being restarted, which is the one
     /// thing ADR 0006 says configuration must never require.
     pub cache: Arc<pgprox_cache::Store>,
+    /// Answers the recorder gave up on for exceeding the per-answer cap.
+    ///
+    /// Beside the cache rather than inside it, because the store never sees
+    /// them: the decision is made while the answer is still arriving. `M25.1`.
+    pub recordings: Arc<crate::recording::Recordings>,
 }
 
 impl App {
@@ -287,6 +292,7 @@ impl App {
         // from its first tick.
         let cache = pgprox_cache::Store::new(Arc::clone(&deps.clock));
         cache.reconfigure(&config.query_cache);
+        let recordings = Arc::new(crate::recording::Recordings::new());
 
         let observatory = Arc::new(NodeObservatory::new(NodeParts {
             node: deps.node,
@@ -297,6 +303,7 @@ impl App {
             sessions: Arc::clone(&sessions),
             drain: Arc::clone(&drain),
             cache: Arc::clone(&cache),
+            recordings: Arc::clone(&recordings),
         }));
 
         // Started, because a node reaches this line only with a configuration
@@ -308,6 +315,7 @@ impl App {
 
         Ok(Self {
             cache,
+            recordings,
             listener_tls: deps.listener_tls.clone(),
             statics: deps.statics.clone(),
             tenants: Arc::new(pgprox_observe::tenants::TenantAllowlist::new()),

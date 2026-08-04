@@ -337,6 +337,7 @@ mod tests {
             sessions: crate::sessions::Sessions::new(),
             drain,
             cache: pgprox_cache::Store::new(Arc::clone(&clock)),
+            recordings: Arc::new(crate::recording::Recordings::new()),
         })
     }
 

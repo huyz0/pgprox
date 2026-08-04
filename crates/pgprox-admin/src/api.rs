@@ -646,6 +646,8 @@ pub struct CacheBody {
     pub invalidated: u64,
     /// Results too large to store at all.
     pub rejected: u64,
+    /// Answers given up on before the cache was offered them.
+    pub abandoned: u64,
 }
 
 impl From<pgprox_core::admin::CacheView> for CacheBody {
@@ -666,6 +668,7 @@ impl From<pgprox_core::admin::CacheView> for CacheBody {
             evicted: view.evicted,
             invalidated: view.invalidated,
             rejected: view.rejected,
+            abandoned: view.abandoned,
         }
     }
 }

@@ -137,6 +137,12 @@ pub struct Context {
     /// Where statements went, for the metric that answers what share of them
     /// a replica served.
     pub routes: Arc<crate::routes::RouteCounts>,
+    /// Answers the recorder gave up on for exceeding the per-answer cap.
+    ///
+    /// Beside `routes` and for the same reason: a count belongs where the
+    /// decision is made. The store never sees these, so it cannot report them.
+    /// `M25.1`.
+    pub recordings: Arc<crate::recording::Recordings>,
     /// Where every connection's read and write buffers come from.
     ///
     /// Shared with the connector, so client and upstream connections draw on
@@ -2300,7 +2306,7 @@ where
         //
         // `belongs_in_payload` is the assembler's own list. Two lists here
         // would drift, and the one nobody remembers to fix is always the second.
-        record_frame(&mut pumping.recording, tag, &body);
+        record_frame(&mut pumping.recording, tag, &body, &context.recordings);
 
         // A copy reverses the direction the conversation is going in, and this
         // loop is one-way. Everything else the proxy relays is a request the
@@ -2411,6 +2417,7 @@ fn record_frame(
     recording: &mut Option<Box<Recording>>,
     tag: pgprox_proto::frame::Tag,
     body: &[u8],
+    recordings: &crate::recording::Recordings,
 ) {
     let Some(live) = recording.as_mut() else {
         return;
@@ -2427,6 +2434,11 @@ fn record_frame(
     }
     if live.frames.len() > MAX_RECORDED_ANSWER {
         *recording = None;
+        // Counted, because nothing else can be. The lookup that started this
+        // already reported a miss and `put` is never reached, so without this
+        // a tenant whose results all sit just over the cap sees a hit rate of
+        // zero and every counter agreeing that nothing is wrong. `M25.1`.
+        recordings.abandon();
     }
 }
 
@@ -2798,6 +2810,12 @@ mod tests {
     };
     use pgprox_proto::frame::Tag;
 
+    /// A counter for the tests that do not care about it, so the ones that do
+    /// are the ones that assert on it.
+    fn counter() -> crate::recording::Recordings {
+        crate::recording::Recordings::new()
+    }
+
     /// A recording armed for an answer, with a key nothing here reads.
     fn recording() -> Recording {
         Recording {
@@ -2816,6 +2834,7 @@ mod tests {
 
     #[test]
     fn an_answer_too_big_to_cache_is_dropped_rather_than_held() {
+        let counted = counter();
         // `M17.1`. The cache rejects an oversized entry at `put`, which is the
         // end of the answer. Until this existed the pump accumulated the whole
         // thing first, so a large result was held in full and then thrown away:
@@ -2826,7 +2845,7 @@ mod tests {
         // Rows until it gives up. Each is 64 KiB, so this is bounded.
         let row = vec![b'x'; 64 * 1024];
         for _ in 0..64 {
-            record_frame(&mut held, Tag::DATA_ROW, &row);
+            record_frame(&mut held, Tag::DATA_ROW, &row, &counted);
             if held.is_none() {
                 break;
             }
@@ -2840,13 +2859,14 @@ mod tests {
 
     #[test]
     fn an_answer_that_fits_is_kept_whole() {
+        let counted = counter();
         // The cost side. Giving up too eagerly would make the cache miss
         // everything, which is worse than not having one: the work is done and
         // the entry is thrown away.
         let mut held = Some(Box::new(recording()));
         let row = vec![b'x'; 1024];
         for _ in 0..16 {
-            record_frame(&mut held, Tag::DATA_ROW, &row);
+            record_frame(&mut held, Tag::DATA_ROW, &row, &counted);
         }
 
         let kept = held.expect("an answer well under the bound was dropped");
@@ -2857,13 +2877,14 @@ mod tests {
 
     #[test]
     fn only_the_frames_that_answer_the_statement_are_kept() {
+        let counted = counter();
         // `belongs_in_payload` decides, and a `ReadyForQuery` arrives once per
         // simple query and once per `Sync`, so an entry carrying one could only
         // serve the protocol that filled it.
         let mut held = Some(Box::new(recording()));
-        record_frame(&mut held, Tag::DATA_ROW, b"row");
-        record_frame(&mut held, Tag::READY_FOR_QUERY, b"I");
-        record_frame(&mut held, Tag::PARAMETER_STATUS, b"x\0y\0");
+        record_frame(&mut held, Tag::DATA_ROW, b"row", &counted);
+        record_frame(&mut held, Tag::READY_FOR_QUERY, b"I", &counted);
+        record_frame(&mut held, Tag::PARAMETER_STATUS, b"x\0y\0", &counted);
 
         let kept = held.expect("nothing here should have dropped the recording");
         assert_eq!(kept.frames.len(), 1 + 4 + 3, "a framing message was kept");
@@ -2871,10 +2892,11 @@ mod tests {
 
     #[test]
     fn an_error_marks_the_recording_failed_rather_than_dropping_it() {
+        let counted = counter();
         // The distinction the storing side needs: a failed answer is one that
         // must not be stored, and it is not the same as no answer at all.
         let mut held = Some(Box::new(recording()));
-        record_frame(&mut held, Tag::ERROR_RESPONSE, b"SERROR\0\0");
+        record_frame(&mut held, Tag::ERROR_RESPONSE, b"SERROR\0\0", &counted);
 
         let kept = held.expect("an error should not drop the recording here");
         assert!(kept.failed);
@@ -2882,10 +2904,11 @@ mod tests {
 
     #[test]
     fn recording_nothing_stays_nothing() {
+        let counted = counter();
         // A session with no recording armed must not acquire one by being fed
         // frames, which is what the pump does for every uncached statement.
         let mut none: Option<Box<Recording>> = None;
-        record_frame(&mut none, Tag::DATA_ROW, b"row");
+        record_frame(&mut none, Tag::DATA_ROW, b"row", &counted);
         assert!(none.is_none());
     }
 
@@ -2995,7 +3018,40 @@ mod tests {
     }
 
     #[test]
+    fn giving_up_on_an_answer_is_counted_and_finishing_one_is_not() {
+        // `M25.1`. The recording is dropped here and `put` is never reached, so
+        // `CacheStats::rejected` cannot see it, and the lookup that started it
+        // counted a plain miss before anything knew how big the answer would
+        // be. A tenant whose results sit just over the cap therefore saw a hit
+        // rate of zero with every counter agreeing that nothing was wrong.
+        let counted = counter();
+
+        // An answer that fits moves nothing.
+        let mut held = Some(Box::new(recording()));
+        record_frame(&mut held, Tag::DATA_ROW, b"small", &counted);
+        assert!(held.is_some());
+        assert_eq!(counted.abandoned(), 0, "a kept answer was counted");
+
+        // One that does not is counted once, at the frame that crossed.
+        let body = vec![b'x'; MAX_RECORDED_ANSWER];
+        record_frame(&mut held, Tag::DATA_ROW, &body, &counted);
+        assert!(held.is_none());
+        assert_eq!(counted.abandoned(), 1);
+
+        // And the frames that keep arriving on the same answer do not count
+        // again: the recording is already gone, and one answer is one event.
+        record_frame(&mut held, Tag::DATA_ROW, &body, &counted);
+        record_frame(&mut held, Tag::READY_FOR_QUERY, b"I", &counted);
+        assert_eq!(
+            counted.abandoned(),
+            1,
+            "one oversized answer was counted once per frame"
+        );
+    }
+
+    #[test]
     fn the_recorded_bound_is_a_ceiling_rather_than_a_limit_it_may_reach() {
+        let counted = counter();
         // `record_frame`'s bound at exactly the limit. `>` becoming `>=`
         // survived, because the test above it loops until the recording gives
         // up and never lands on the boundary.
@@ -3004,14 +3060,14 @@ mod tests {
         // One frame that takes the recording to exactly the bound. A frame is a
         // tag, four length bytes and the body.
         let body = vec![b'x'; MAX_RECORDED_ANSWER - 5];
-        record_frame(&mut held, Tag::DATA_ROW, &body);
+        record_frame(&mut held, Tag::DATA_ROW, &body, &counted);
 
         let kept = held.expect("an answer of exactly the bound was dropped");
         assert_eq!(kept.frames.len(), MAX_RECORDED_ANSWER);
 
         // And one byte more gives up.
         let mut held = Some(kept);
-        record_frame(&mut held, Tag::DATA_ROW, b"x");
+        record_frame(&mut held, Tag::DATA_ROW, b"x", &counted);
         assert!(held.is_none(), "one byte past the bound was kept");
     }
 
@@ -3630,6 +3686,7 @@ mod tests {
             cache: None,
             slab: test_slab(),
             routes: Arc::new(crate::routes::RouteCounts::new()),
+            recordings: Arc::new(crate::recording::Recordings::new()),
             node: NodeId::new(1),
             clock: Arc::clone(&clock),
             handshake: HandshakeConfig {
