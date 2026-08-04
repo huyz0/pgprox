@@ -742,6 +742,29 @@ mod tests {
     }
 
     #[test]
+    fn a_quoted_parameter_name_pins_instead_of_being_recorded() {
+        // `M24.2`, the other half. This side does not record it, because the
+        // quotes survive `normalise` and the name misses the allowlist, and
+        // that is the right answer as long as the pin side pins. It did not.
+        //
+        // Asserted together, in one test, because the failure was that the two
+        // halves each did the safe thing on their own and the pair left the
+        // setting nowhere.
+        let sql = r#"SET "search_path" = 'tenant1'"#;
+
+        let mut params = SessionParams::new();
+        assert_eq!(params.observe_statement(sql, Replayable::DEFAULT), None);
+        assert_eq!(params.get("search_path"), None);
+        assert_eq!(params.get(r#""search_path""#), None);
+
+        assert_eq!(
+            crate::pin::pin_reason(sql, Replayable::DEFAULT),
+            Some(crate::pin::PinReason::UnreplayableSet),
+            "not recorded here and not pinned there is the one outcome ruled out"
+        );
+    }
+
+    #[test]
     fn a_reset_after_a_semicolon_is_heard_too() {
         // The other direction, and the one that leaks rather than loses: a
         // session that reset a parameter and was recorded as still holding it

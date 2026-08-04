@@ -6637,7 +6637,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a test that a `SET` after a semicolon is recorded, a test that a
   string mixing a replayable and an unreplayable `SET` still pins whichever
   order they arrive in, and both failing before the fix.
-- [ ] `M24.2` A `SET` whose parameter name is quoted is neither replayed nor
+- [x] `M24.2` A `SET` whose parameter name is quoted is neither replayed nor
   pinned. `SET "search_path" = tenant1` is valid Postgres. `params.rs` keeps the
   quotes, so the name misses the allowlist and is not recorded; `pin.rs` reads
   `statement_words`, which drops a quoted token entirely, so the statement has

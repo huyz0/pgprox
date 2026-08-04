@@ -99,4 +99,15 @@ run_finding pgprox-core \
   sql::tests::a_statement_is_split_on_a_separator_and_not_on_data \
   "a semicolon inside quoted text does not split a statement"
 
+# --- M24.2: a SET with a quoted parameter name pins --------------------------
+run_finding pgprox-pool \
+  pin::tests::a_set_whose_parameter_name_is_quoted_pins \
+  "a SET naming its parameter in quotes pins rather than being lost"
+run_finding pgprox-pool \
+  pin::tests::a_quoted_name_does_not_make_set_local_pin \
+  "quoting the parameter does not make SET LOCAL pin"
+run_finding pgprox-pool \
+  params::tests::a_quoted_parameter_name_pins_instead_of_being_recorded \
+  "the recorded half and the pinned half agree about a quoted name"
+
 finish

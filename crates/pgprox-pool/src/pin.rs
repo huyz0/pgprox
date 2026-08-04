@@ -33,6 +33,7 @@
 //! instead, by the statement map. See ADR 0011.
 
 use pgprox_core::ids::TenantId;
+use pgprox_core::sql::Token;
 
 /// Why a session is pinned to one upstream connection.
 ///
@@ -286,13 +287,17 @@ pub fn pin_reason(sql: &str, allowlist: Replayable) -> Option<PinReason> {
     // several in one message, so checking only the leading word would let
     // `SELECT 1; LISTEN c` through unpinned, and the session would silently
     // stop receiving its notifications.
-    statements_of(sql)
+    pgprox_core::sql::statements(sql)
         .into_iter()
-        .find_map(|words| statement_pin_reason(&words, allowlist))
+        .find_map(|statement| statement_pin_reason(statement, allowlist))
 }
 
-/// Why one statement pins, given its words.
-fn statement_pin_reason(words: &[String], allowlist: Replayable) -> Option<PinReason> {
+/// Why one statement pins.
+///
+/// Takes the text as well as deriving words from it, because one case cannot be
+/// decided from words alone: see [`quoted_parameter_name`].
+fn statement_pin_reason(statement: &str, allowlist: Replayable) -> Option<PinReason> {
+    let words = words_of(statement);
     let first = words.first()?.as_str();
 
     // `LISTEN` and `UNLISTEN` both pin. Unlistening does not undo a pin: a
@@ -310,7 +315,7 @@ fn statement_pin_reason(words: &[String], allowlist: Replayable) -> Option<PinRe
 
     // `DECLARE ... CURSOR WITH HOLD` outlives its transaction. A cursor without
     // WITH HOLD dies at commit, so it needs no pin.
-    if first == "declare" && has_adjacent_pair(words, "with", "hold") {
+    if first == "declare" && has_adjacent_pair(&words, "with", "hold") {
         return Some(PinReason::WithHold);
     }
 
@@ -333,22 +338,39 @@ fn statement_pin_reason(words: &[String], allowlist: Replayable) -> Option<PinRe
     // A SET the proxy cannot replay elsewhere. `SET LOCAL` is
     // transaction-scoped and disappears at commit, so it never pins.
     if first == "set" {
-        return set_pin_reason(words, allowlist);
+        return set_pin_reason(statement, &words, allowlist);
     }
 
     None
 }
 
 /// Whether a `SET` pins, given the replay allowlist.
-fn set_pin_reason(words: &[String], allowlist: Replayable) -> Option<PinReason> {
+fn set_pin_reason(statement: &str, words: &[String], allowlist: Replayable) -> Option<PinReason> {
     let mut rest = &words[1..];
 
     // `SET SESSION x` is the same as `SET x`.
     if rest.first().is_some_and(|w| w == "session") {
         rest = &rest[1..];
     } else if rest.first().is_some_and(|w| w == "local") {
-        // Transaction-scoped, gone at commit.
+        // Transaction-scoped, gone at commit, whatever it names and however
+        // that name is spelled. Checked before the quoting below for exactly
+        // that reason.
         return None;
+    }
+
+    // A parameter named in quotes, which the words cannot show: `Token::Quoted`
+    // carries no text on purpose, so `SET "search_path" = 'tenant1'` reduces to
+    // the single word `set` and there is no name here to compare against the
+    // allowlist. `params.rs` does not record it either, because the quotes
+    // survive its own reading and the name misses the list.
+    //
+    // A name this cannot read is a name it cannot promise to replay, so it
+    // pins. `M24.2`. The alternative is to teach the lexer to hand out the
+    // text inside quotes, which it declines to do for a good reason: a caller
+    // that can search quoted text is a caller whose behaviour a tenant's own
+    // data can change.
+    if quoted_parameter_name(statement) {
+        return Some(PinReason::UnreplayableSet);
     }
 
     let name = rest.first()?;
@@ -411,7 +433,25 @@ fn has_adjacent_pair(words: &[String], first: &str, second: &str) -> bool {
     words.windows(2).any(|w| w[0] == first && w[1] == second)
 }
 
-/// The lowercase bare words of each statement.
+/// Whether this `SET` names its parameter in quotes.
+///
+/// The one thing [`set_pin_reason`] cannot decide from words. Reads tokens
+/// rather than words, because the distinction it needs is precisely the one
+/// words throw away: whether something was there at all.
+///
+/// The caller has established the first word is `set`, so the first token is
+/// that word, and `SET SESSION x` is `SET x` with one more.
+fn quoted_parameter_name(statement: &str) -> bool {
+    let mut lexer = pgprox_core::sql::Lexer::new(statement);
+    lexer.next();
+    let mut token = lexer.next();
+    if matches!(token, Some(Token::Word(word)) if word.eq_ignore_ascii_case("session")) {
+        token = lexer.next();
+    }
+    matches!(token, Some(Token::Quoted))
+}
+
+/// The lowercase bare words of one statement.
 ///
 /// [`pgprox_core::sql`] owns the hard part: which text is SQL and which is
 /// data. This crate used to carry its own copy, and the two diverged. See that
@@ -419,8 +459,14 @@ fn has_adjacent_pair(words: &[String], first: &str, second: &str) -> bool {
 ///
 /// Dots are kept, so `pgprox.pin` and `pg_temp.t` arrive as one word each and
 /// can be compared against a qualified name.
-fn statements_of(sql: &str) -> Vec<Vec<String>> {
-    pgprox_core::sql::statement_words(sql, true)
+///
+/// Empty when the statement holds no bare words at all, which `SET "a" = 'b'`
+/// does: both of its tokens are quoted.
+fn words_of(statement: &str) -> Vec<String> {
+    pgprox_core::sql::statement_words(statement, true)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -465,6 +511,42 @@ mod tests {
 
     fn reason(sql: &str) -> Option<PinReason> {
         pin_reason(sql, Replayable::DEFAULT)
+    }
+
+    #[test]
+    fn a_set_whose_parameter_name_is_quoted_pins() {
+        // `M24.2`. `SET "search_path" = 'tenant1'` is valid Postgres. Both
+        // tokens are quoted, `statement_words` drops quoted text on purpose,
+        // and the statement arrived here as the single word `set`, so
+        // `set_pin_reason` returned before it looked at a name.
+        //
+        // `params.rs` did not record it either, because the quotes survive its
+        // own reading and the name misses the allowlist. Neither replayed nor
+        // pinned is the one outcome the two are supposed to make impossible.
+        for sql in [
+            r#"SET "search_path" = 'tenant1'"#,
+            r#"SET "work_mem" = '1GB'"#,
+            r#"SET SESSION "search_path" = 'tenant1'"#,
+            r#"SELECT 1; SET "search_path" = 'tenant1'"#,
+            // A quoted name with a bare value pinned already, and for the wrong
+            // reason: the value was read as the name and missed the allowlist.
+            // It has to keep pinning for the right one.
+            r#"SET "search_path" = tenant1"#,
+        ] {
+            assert_eq!(reason(sql), Some(PinReason::UnreplayableSet), "{sql}");
+        }
+    }
+
+    #[test]
+    fn a_quoted_name_does_not_make_set_local_pin() {
+        // `SET LOCAL` is gone at commit whatever it names, so quoting the
+        // parameter must not turn a transaction-scoped statement into a pin.
+        for sql in [
+            r#"SET LOCAL "search_path" = 'tenant1'"#,
+            r#"SET local "work_mem" = '1GB'"#,
+        ] {
+            assert_eq!(reason(sql), None, "{sql}");
+        }
     }
 
     #[test]
