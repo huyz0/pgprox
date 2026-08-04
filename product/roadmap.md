@@ -45,6 +45,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 | M26 | What the query cache costs, measured for the first time | complete; a hit is 65% cheaper and allocates nothing, a write is 97% cheaper, and the lock the store worried about was never the problem |
+| M27 | Unsafe becomes a governed exception rather than a closed door | open |
 
 ## M-1: AI development system (complete)
 
@@ -1689,3 +1690,30 @@ measured a walk; with the walk gone it measured a failed hash lookup, and moved
 takes depends on a per-process random seed. It stores one entry per iteration
 now, is stable to 0.01%, and still guards what matters: against five thousand
 instructions, a reintroduced walk is two hundred thousand.
+
+## M27: unsafe becomes a governed exception rather than a closed door
+
+```bash
+scripts/m27-complete.sh
+```
+
+The workspace has set `unsafe_code = "forbid"` since M0. `forbid` is not `deny`:
+it cannot be overridden by a local `#[allow]` at all, so it is a decision no
+measurement can ever reopen. Every other threshold in this repo is a constant
+that a commit message and a number can move; this one was the exception, and it
+was the exception by accident rather than by argument.
+
+The argument in `standards/security.md` is sound and it is narrower than the
+lint: "the failure mode of a decoder bug is a wrong answer or an error, never
+memory corruption". That is about the crates parsing bytes an unauthenticated
+peer sent. It is not about the query cache's slab or the buffer pool.
+
+**This milestone writes no unsafe code.** It produces the conditions under which
+unsafe may be written and the script that refuses it when they are not met. Any
+actual use is a later task with a measurement attached, because a rule with no
+script is a rule nobody keeps and unsafe with no number is a liability with no
+evidence of upside.
+
+Completion condition: `scripts/m27-complete.sh`, which runs a named test per
+finding and reads its exit status, and refuses to pass with a ticked task it
+does not name.

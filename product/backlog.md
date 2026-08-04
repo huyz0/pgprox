@@ -6864,3 +6864,45 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the gate passes, the status row says complete, the section
   records what the numbers were before and after, and it says plainly which of
   the store's documented worries the measurement found and which it did not.
+
+## M27: unsafe becomes a governed exception rather than a closed door
+
+- [ ] `M27.0` Plan M27, and give it a gate that passes from this commit.
+  The workspace sets `unsafe_code = "forbid"`, which cannot be overridden by a
+  local `#[allow]` at all, and two standards files give the reason. The
+  reasoning is sound for the crates it was written about and it is not a reason
+  to close the door everywhere: `forbid` is a decision that no measurement can
+  ever reopen, which is the opposite of how every other threshold in this repo
+  works.
+  This milestone changes the policy and **writes no unsafe code**. What it
+  produces is the conditions under which unsafe may be written, and the script
+  that refuses it when they are not met. Any actual use is a later task with a
+  number attached.
+  Acceptance: the roadmap has an M27 section and a status row, this list is
+  written, and `scripts/m27-complete.sh` exists, is named in CI, and passes on
+  this commit under `M24.0`'s rule.
+- [ ] `M27.1` The policy, and the script that enforces it.
+  Five conditions, because a rule with no script is a rule nobody keeps, which
+  is what `M13` is about:
+  1. The workspace lint becomes `deny`, so an exception is possible and has to
+     be written down where it is taken.
+  2. The crates whose argument is about untrusted bytes keep
+     `#![forbid(unsafe_code)]` in their own `lib.rs`, where no `#[allow]` can
+     reach them. `standards/security.md` says the failure mode of a decoder bug
+     must be a wrong answer and never memory corruption, and that sentence is
+     about those crates specifically.
+  3. Every `#[allow(unsafe_code)]` names the benchmark that justifies it, and
+     that benchmark exists in `product/perf/baseline.json`. Unsafe with no
+     number is a liability with no evidence of upside.
+  4. The hygiene lints are on: `unsafe_op_in_unsafe_fn`,
+     `clippy::undocumented_unsafe_blocks`, `clippy::missing_safety_doc`,
+     `clippy::multiple_unsafe_ops_per_block`.
+  5. A crate containing `unsafe` is named in a Miri job, and the job exists.
+  Also corrects `standards/rust-style.md`, which says `unsafe_code` is
+  "forbidden at the crate level in every crate". It is forbidden once at the
+  workspace root and one crate repeats it, so the sentence describes an
+  arrangement that is not there. `M13`'s subject, found while rewriting it.
+  Acceptance: `scripts/check-unsafe.sh` enforces all five, is wired into the
+  pre-commit hook and CI, and every one of its checks is proven able to fail
+  against a planted violation, per `M12`.
+- [ ] `M27.2` Close M27, on the terms `M18.4` through `M26.5` closed on.

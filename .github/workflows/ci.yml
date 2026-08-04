@@ -327,3 +327,6 @@ jobs:
       # which is a separate CI job because it needs valgrind.
       - name: M26
         run: scripts/m26-complete.sh
+      # M27 is open, and its gate runs anyway, on M24's terms.
+      - name: M27
+        run: scripts/m27-complete.sh
