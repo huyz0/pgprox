@@ -1645,6 +1645,10 @@ does not name.
 | `cache_miss` | 1,605 | 1,256 | -22% |
 | `cache_put` | 4,269 | 3,783 | -11% |
 | `invalidate_after_one_put` | 204,255 | 5,689 | **-97%** |
+
+(`M28.2` later renamed that benchmark `invalidate_a_tenants_entries` and gave
+it sixteen entries to drop rather than one, because at one entry it moved with
+a random seed. The comparison above is the one that was measured.)
 | heap blocks per lookup | 2 | **0** | |
 
 **The lock was never the problem.** `store.rs` has promised since M9 that if a

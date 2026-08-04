@@ -40,6 +40,14 @@ const ENTRIES: usize = 4_096;
 /// How many tenants those entries are spread across.
 const TENANTS: usize = 64;
 
+/// How many entries the invalidated tenant holds.
+///
+/// Not one. See `invalidate_a_tenants_entries`: at one entry the benchmark moved
+/// 6% between runs of the same code, because a `HashMap`'s probe count depends
+/// on a per-process random seed and at that size it was a measurable share of
+/// the work.
+const HELD: usize = 16;
+
 fn tenant(i: usize) -> TenantId {
     TenantId::new(format!("tenant-{i:04}"))
 }
@@ -142,30 +150,39 @@ fn cache_put(iterations: u64) {
 
 /// What one write costs a node holding other tenants' entries.
 ///
-/// One entry stored and its tenant invalidated, on a node holding `ENTRIES`
-/// entries for `TENANTS` other tenants. That is the case the cost was always
-/// about: a node serving five thousand tenants used to spend every
+/// `HELD` entries stored and their tenant invalidated, on a node holding
+/// `ENTRIES` entries for `TENANTS` other tenants. That is the case the cost was
+/// always about: a node serving five thousand tenants used to spend every
 /// invalidation walking the other four thousand nine hundred and ninety-nine.
 ///
-/// # Why the put is inside the measurement
+/// # Why the puts are inside the measurement
 ///
 /// The N and 2N subtraction needs every iteration to do the same work, so the
 /// tenant has to be back to holding something before the next one. That makes
-/// this the sum of a `put` and an invalidation rather than an invalidation
-/// alone, and the alternative was worse: with the walk gone, invalidating a
-/// tenant that holds nothing is one failed hash lookup, and at that size the
-/// number moved 15% between two runs of the same binary because how many
-/// probes a `HashMap` miss takes depends on a per-process random seed.
+/// this the sum of `HELD` puts and an invalidation rather than an invalidation
+/// alone.
 ///
-/// What this guards is the walk coming back. Against roughly six thousand
-/// instructions, a reintroduced walk is two hundred thousand.
-fn invalidate_after_one_put(iterations: u64) {
+/// # Why `HELD` is not one
+///
+/// It was, and the benchmark moved with a random seed. It read 5,689, then
+/// 6,080, then 5,609 across runs that differed in nothing it measures, which is
+/// +6% and -1% around the same code against a gate that fails at 5%. During
+/// `M28.1` it reported a regression from an LTO change that had not touched it.
+///
+/// The cause is the one `M26.4` recorded for the version before this: at that
+/// size, how many probes a `HashMap` lookup takes is a measurable share of the
+/// work, and the probe count depends on a per-process random seed. Sixteen
+/// entries makes the seed noise rather than signal, and measures a tenant with
+/// a working set rather than a tenant with one row. `M28.2`.
+fn invalidate_a_tenants_entries(iterations: u64) {
     let store = populated();
     let quiet = tenant(TENANTS);
-    let only = key(&quiet, ENTRIES + 7);
+    let held: Vec<CacheKey> = (0..HELD).map(|i| key(&quiet, ENTRIES + 7 + i)).collect();
 
     for _ in 0..iterations {
-        store.put(only.clone(), result());
+        for one in &held {
+            store.put(one.clone(), result());
+        }
         store.invalidate_tenant(std::hint::black_box(&quiet));
     }
 }
@@ -190,7 +207,7 @@ fn main() {
         "cache_hit_rotating" => cache_hit_rotating(iterations),
         "cache_miss" => cache_miss(iterations),
         "cache_put" => cache_put(iterations),
-        "invalidate_after_one_put" => invalidate_after_one_put(iterations),
+        "invalidate_a_tenants_entries" => invalidate_a_tenants_entries(iterations),
         "serves" => serves(iterations),
         _ => print_names(),
     }
@@ -203,7 +220,7 @@ fn print_names() {
         println!("cache_hit_rotating");
         println!("cache_miss");
         println!("cache_put");
-        println!("invalidate_after_one_put");
+        println!("invalidate_a_tenants_entries");
         println!("serves");
     }
 }

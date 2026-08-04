@@ -6937,7 +6937,7 @@ recognised so it can be refused rather than read as a version.
   untouched and `[profile.test]` runs at `opt-level = 1`.
   Acceptance: the profile changes, the baseline is rewritten with the reason,
   and both the win and the link-time cost are stated as numbers.
-- [ ] `M28.2` A benchmark in the gated baseline moves with a random seed.
+- [x] `M28.2` A benchmark in the gated baseline moves with a random seed.
   `invalidate_after_one_put` read 5,689, then 6,080, then 5,609 across runs
   that differ in nothing the benchmark is about. That is +6% and -1% around the
   same code, and `scripts/bench.sh` fails at 5%, so this benchmark will

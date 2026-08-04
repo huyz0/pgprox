@@ -111,4 +111,27 @@ for pair in "pgprox-route::route_begin 1400" "pgprox-proto::decode_query 420"; d
   fi
 done
 
+# --- M28.2: a benchmark that moved with a random seed -------------------------
+#
+# The check is that the benchmark still measures enough work for the seed to be
+# noise. It is named here rather than its stability re-measured, because
+# measuring it three times is what `scripts/bench.sh` does and this gate is not
+# the place to do it again: a benchmark under a thousand instructions is where
+# the problem starts, and the baseline is where that is visible.
+held="$(python3 -c "import json; print(json.load(open('product/perf/baseline.json')).get('pgprox-cache::invalidate_a_tenants_entries', 0))")"
+if (( held > 10000 )); then
+  ok "the invalidation benchmark measures $held instructions, well past seed noise"
+else
+  fail "the invalidation benchmark is $held instructions, back in the range where"
+  printf '       a HashMap probe count decides whether it passes\n'
+fi
+
+# And the benchmark it replaced is gone rather than both being carried, which
+# would leave the unstable one still gating CI.
+if grep -q 'invalidate_after_one_put' product/perf/baseline.json; then
+  fail "the baseline still carries invalidate_after_one_put, which is the unstable one"
+else
+  ok "the unstable benchmark is gone rather than kept beside its replacement"
+fi
+
 finish
