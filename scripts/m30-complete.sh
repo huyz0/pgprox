@@ -107,6 +107,27 @@ run_finding pgprox-route \
 under pgprox-route::route_point_select 5200
 under pgprox-route::route_update 4800
 
+# --- M30.2: every word compared against every keyword -------------------------
+#
+# Three checks rather than one, because the filter can be wrong in two
+# directions and only one of them is visible in a benchmark. Letting a keyword
+# through is a write classified as a read; rejecting nothing is a filter that
+# costs and buys nothing, and every other test in the crate passes either way
+# because the scan behind it still runs.
+run_finding pgprox-route \
+  classify::properties::the_filter_lets_every_word_on_every_list_through \
+  "the filter lets every word on every list through"
+run_finding pgprox-route \
+  classify::properties::the_filter_is_a_filter_and_not_an_answer \
+  "the filter rejects something, and does not answer for the scan"
+run_finding pgprox-route \
+  classify::properties::the_filter_and_the_scan_agree_on_everything \
+  "the filter and the scan agree on words generated next to the lists"
+
+# The route decision after both findings. It was 6,444 and 6,717.
+under pgprox-route::route_point_select 4000
+under pgprox-route::route_update 4200
+
 # --- M30.6: a second benchmark that moved with a random seed ------------------
 #
 # Not `run_finding`: what landed is the shape of a measurement, and the place

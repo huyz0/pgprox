@@ -7005,7 +7005,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the function returns as soon as the first word rules it out,
   `route_point_select` and `route_update` both fall, `route_begin` does not
   regress, and a test covers the case where the deciding word is the second.
-- [ ] `M30.2` Every word of every statement is compared against every keyword.
+- [x] `M30.2` Every word of every statement is compared against every keyword.
   `matches_any` is a linear scan calling `eq_ignore_ascii_case` per candidate,
   and a read-only statement reaches it twice per word: once for `WRITE_WORDS`,
   fourteen entries, and once for `WRITING_FUNCTIONS`, which is thirty-odd. The

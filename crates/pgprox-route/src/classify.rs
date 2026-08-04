@@ -79,7 +79,107 @@ use pgprox_core::sql::{Lexer, Token};
 /// Deliberately short. Anything not here is [`StmtClass::Unknown`] and goes to
 /// the primary, which is the correct answer for transaction control, `SET`,
 /// `SHOW`, DDL, and every construct this list has not learned yet.
-const READ_FIRST_WORDS: &[&str] = &["select", "with", "table", "values", "explain"];
+const READ_FIRST_WORDS: WordSet = WordSet::new(&["select", "with", "table", "values", "explain"]);
+
+/// A keyword list, and a filter over it computed at compile time.
+///
+/// # Why the lists are not searched directly
+///
+/// They were, and it cost 1,935 instructions of the route decision's 6,444: a
+/// read-only statement asks about every word twice, once against
+/// [`WRITE_WORDS`] and once against [`WRITING_FUNCTIONS`], so the reference
+/// point select ran about 290 comparisons to find no match at all. `M30.2`.
+///
+/// Almost all of those comparisons are against words that share nothing with
+/// the one being looked up. `pgbench_accounts` is sixteen bytes and ends in
+/// `s`; nothing on either list is both. So three facts about a word are kept
+/// as bitmasks, and a word disagreeing with any of them cannot be on the list
+/// and is refused before a single comparison happens.
+///
+/// # Why these three facts
+///
+/// Length, first byte and last byte, because each is one load and one shift and
+/// the three are close to independent for identifiers. They are a filter and
+/// not an answer: passing all three means the scan still runs, which is why
+/// [`matches_any`] ends where it always did.
+///
+/// The lists themselves are untouched, and that is deliberate rather than
+/// convenient. Every entry carries a comment naming the construct that requires
+/// it, and those comments are the reason the lists are correct.
+struct WordSet {
+    words: &'static [&'static str],
+    /// Bit `n` set if some word is `n` bytes long.
+    lengths: u64,
+    /// Bit `n` set if some word starts with the `n`th letter of the alphabet.
+    initials: u32,
+    /// The same for the last letter.
+    finals: u32,
+}
+
+impl WordSet {
+    /// Builds the filter by reading the list.
+    ///
+    /// Derived rather than written down, so a word added to a list cannot be
+    /// added without its filter bits. That failure would be a statement
+    /// silently classified as a read, which is the one direction this crate
+    /// must not be wrong in.
+    const fn new(words: &'static [&'static str]) -> Self {
+        let mut lengths = 0_u64;
+        let mut initials = 0_u32;
+        let mut finals = 0_u32;
+
+        let mut at = 0;
+        while at < words.len() {
+            let bytes = words[at].as_bytes();
+            assert!(
+                !bytes.is_empty() && bytes.len() < 64,
+                "a keyword this long cannot be filtered by a 64-bit length mask"
+            );
+            assert!(
+                bytes[0].is_ascii_lowercase() && bytes[bytes.len() - 1].is_ascii_lowercase(),
+                "the lists are lowercase and start and end in a letter"
+            );
+
+            lengths |= 1 << bytes.len();
+            initials |= 1 << (bytes[0] - b'a');
+            finals |= 1 << (bytes[bytes.len() - 1] - b'a');
+            at += 1;
+        }
+
+        Self {
+            words,
+            lengths,
+            initials,
+            finals,
+        }
+    }
+
+    /// Whether the filter can rule `word` out without comparing it to anything.
+    ///
+    /// Answers `true` for a word that might be on the list and `false` only for
+    /// one that certainly is not, which is the direction that has to be exact.
+    fn might_hold(&self, word: &str) -> bool {
+        let bytes = word.as_bytes();
+
+        // Length first, and it also covers the empty word: no entry is empty,
+        // so bit zero is clear and the indexing below is unreachable for one.
+        if bytes.len() >= 64 || self.lengths & (1 << bytes.len()) == 0 {
+            return false;
+        }
+
+        // `| 0x20` lowercases an ASCII letter and moves everything else
+        // somewhere that is not one, which `is_ascii_lowercase` then refuses.
+        // A word starting with a digit, an underscore or a multi-byte character
+        // is on neither list, and Postgres identifiers may be any of the three.
+        let first = bytes[0] | 0x20;
+        let last = bytes[bytes.len() - 1] | 0x20;
+        if !first.is_ascii_lowercase() || !last.is_ascii_lowercase() {
+            return false;
+        }
+
+        self.initials & (1 << (first - b'a')) != 0 && self.finals & (1 << (last - b'a')) != 0
+    }
+}
 
 /// Words that disqualify a statement from being a read, wherever they appear.
 ///
@@ -98,7 +198,7 @@ const READ_FIRST_WORDS: &[&str] = &["select", "with", "table", "values", "explai
 ///
 /// Each entry below names the construct that requires it. Removing one means
 /// showing that construct cannot occur.
-const WRITE_WORDS: &[&str] = &[
+const WRITE_WORDS: WordSet = WordSet::new(&[
     // Data-modifying CTEs: `WITH x AS (INSERT ... RETURNING *) SELECT ...`.
     // These are also what `EXPLAIN INSERT`, `EXPLAIN UPDATE` and so on reach.
     "insert", "update", "delete", "merge",
@@ -125,7 +225,7 @@ const WRITE_WORDS: &[&str] = &[
     // `EXPLAIN ANALYZE` executes the plan for real, side effects and all. Plain
     // `EXPLAIN` does not, which is why `explain` is an allowed first word.
     "analyze", "analyse",
-];
+]);
 
 /// Functions that write, and so cannot run on a replica.
 ///
@@ -134,7 +234,7 @@ const WRITE_WORDS: &[&str] = &[
 ///
 /// Not a list of every `VOLATILE` function. `random()` is volatile and
 /// perfectly safe to route; these are the ones with side effects.
-const WRITING_FUNCTIONS: &[&str] = &[
+const WRITING_FUNCTIONS: WordSet = WordSet::new(&[
     // Sequences.
     "nextval",
     "setval",
@@ -170,7 +270,7 @@ const WRITING_FUNCTIONS: &[&str] = &[
     "lo_unlink",
     "lo_from_bytea",
     "lo_put",
-];
+]);
 
 /// Classifies a statement.
 ///
@@ -246,19 +346,19 @@ fn classify_one(scanner: &mut Lexer<'_>) -> (StmtClass, bool) {
             Token::Word(word) => {
                 if first {
                     first = false;
-                    class = if matches_any(word, READ_FIRST_WORDS) {
+                    class = if matches_any(word, &READ_FIRST_WORDS) {
                         StmtClass::ReadOnly
                     } else {
                         StmtClass::Unknown
                     };
                 }
-                if matches_any(word, WRITE_WORDS) {
+                if matches_any(word, &WRITE_WORDS) {
                     // Not an early return: the rest of the statement still has
                     // to be consumed so the scanner is positioned for the next
                     // one, and a `;` inside a string must not be mistaken for a
                     // separator.
                     class = StmtClass::Write;
-                } else if class == StmtClass::ReadOnly && matches_any(word, WRITING_FUNCTIONS) {
+                } else if class == StmtClass::ReadOnly && matches_any(word, &WRITING_FUNCTIONS) {
                     // Downgrades a read, never upgrades an already-known write.
                     class = StmtClass::Unknown;
                 }
@@ -273,9 +373,16 @@ fn classify_one(scanner: &mut Lexer<'_>) -> (StmtClass, bool) {
 }
 
 /// ASCII case-insensitive membership, without allocating.
-fn matches_any(word: &str, set: &[&str]) -> bool {
-    set.iter()
-        .any(|candidate| word.eq_ignore_ascii_case(candidate))
+///
+/// The filter first, which answers most words. See [`WordSet`] for why: the
+/// scan below is the same one it always was, and it now runs on the words that
+/// could plausibly be on the list rather than on every word of every statement.
+fn matches_any(word: &str, set: &WordSet) -> bool {
+    set.might_hold(word)
+        && set
+            .words
+            .iter()
+            .any(|candidate| word.eq_ignore_ascii_case(candidate))
 }
 
 /// Whether a statement opens a transaction the server will refuse writes in.
@@ -987,8 +1094,148 @@ mod properties {
         )
     }
 
+    /// The three lists, so a check written about one is written about all.
+    const EVERY_SET: &[(&str, &WordSet)] = &[
+        ("READ_FIRST_WORDS", &READ_FIRST_WORDS),
+        ("WRITE_WORDS", &WRITE_WORDS),
+        ("WRITING_FUNCTIONS", &WRITING_FUNCTIONS),
+    ];
+
+    /// The scan `matches_any` did before `M30.2` put a filter in front of it.
+    ///
+    /// The comparison the filter has to survive, kept here rather than deleted,
+    /// because "the fast one agrees with the slow one" is a claim that needs
+    /// both of them.
+    /// A word taken from one of the lists, cased at random and optionally
+    /// edited by one character.
+    ///
+    /// The generator that makes the agreement property mean something. An
+    /// entry with one byte changed, one appended, or one removed is exactly a
+    /// word the filter has to decide about and the scan has to reject, and it
+    /// is what a random string generator will never produce.
+    fn near_a_keyword() -> impl Strategy<Value = String> {
+        let every: Vec<&'static str> = EVERY_SET
+            .iter()
+            .flat_map(|(_, set)| set.words.iter().copied())
+            .collect();
+
+        (
+            proptest::sample::select(every),
+            any::<u64>(),
+            0_u8..4,
+            any::<char>(),
+        )
+            .prop_map(|(word, case_mask, edit, extra)| {
+                let mut cased: String = word
+                    .chars()
+                    .enumerate()
+                    .map(|(at, c)| {
+                        if case_mask >> (at % 64) & 1 == 1 {
+                            c.to_ascii_uppercase()
+                        } else {
+                            c
+                        }
+                    })
+                    .collect();
+
+                match edit {
+                    // Unedited, so the entries themselves are generated too.
+                    0 => {}
+                    // One longer, one shorter, and one character different:
+                    // the three ways a word can sit next to a keyword.
+                    1 => cased.push(extra),
+                    2 => {
+                        cased.pop();
+                    }
+                    _ => {
+                        cased.pop();
+                        cased.push(extra);
+                    }
+                }
+                cased
+            })
+    }
+
+    fn scan_only(word: &str, set: &WordSet) -> bool {
+        set.words
+            .iter()
+            .any(|candidate| word.eq_ignore_ascii_case(candidate))
+    }
+
+    #[test]
+    fn the_filter_lets_every_word_on_every_list_through() {
+        // The direction that matters. A filter rejecting a word that is on the
+        // list turns a write into a read, which is the one mistake this crate
+        // is not allowed to make, and it would do it silently: every test above
+        // asserts about statements, and a word quietly stopped being found is
+        // a statement quietly changing class.
+        for (name, set) in EVERY_SET {
+            for word in set.words {
+                assert!(set.might_hold(word), "{name}: {word} was filtered out");
+                assert!(matches_any(word, set), "{name}: {word} is not found");
+
+                // The scan is case insensitive, so the filter has to be too.
+                assert!(
+                    matches_any(&word.to_uppercase(), set),
+                    "{name}: {word} is not found in upper case"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_filter_is_a_filter_and_not_an_answer() {
+        // A word agreeing with all three facts and being on no list. Without
+        // this, a `might_hold` that returned `true` for everything would pass
+        // the test above and every other test in this file, because the scan
+        // behind it would still be doing the work.
+        //
+        // `shade` is five bytes, starts with `s` and ends with `e`, all of
+        // which `share` also is. It is not on the list.
+        assert!(WRITE_WORDS.might_hold("shade"));
+        assert!(!matches_any("shade", &WRITE_WORDS));
+
+        // And one the filter does reject, so it is doing something at all.
+        assert!(!WRITE_WORDS.might_hold("pgbench_accounts"));
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(2_000))]
+
+        /// The filter never changes an answer, for any input at all.
+        ///
+        /// The unit tests above cover the entries and two hand-picked words.
+        /// This covers the rest of the space, which is where a filter goes
+        /// wrong: a length, a case, or a byte nobody thought to write down.
+        ///
+        /// Most of the generator is [`near_a_keyword`] rather than arbitrary
+        /// text, and that is not decoration. Four mutations were run against
+        /// this milestone's filter, and with a generator of arbitrary strings
+        /// this property caught none of them: two thousand random words never
+        /// land on a thirty-word list, so it was asserting that two functions
+        /// agree about text neither of them was ever going to match.
+        #[test]
+        fn the_filter_and_the_scan_agree_on_everything(
+            word in prop_oneof![
+                // Words one edit away from a real entry, which is where a
+                // filter is wrong if it is wrong at all.
+                4 => near_a_keyword(),
+                // Arbitrary text, including non-ASCII and the empty string,
+                // because Postgres identifiers may be either.
+                1 => ".{0,40}",
+                1 => "[a-zA-Z_]{0,20}",
+            ],
+        ) {
+            for (name, set) in EVERY_SET {
+                prop_assert_eq!(
+                    matches_any(&word, set),
+                    scan_only(&word, set),
+                    "{}: the filter changed the answer for {:?}",
+                    name,
+                    word
+                );
+            }
+        }
 
         /// The property this milestone exists to hold.
         ///
