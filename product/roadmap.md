@@ -41,7 +41,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M22 | The mutants nobody has swept since M17 | complete; 3,835 mutants across all sixteen crates, nine new survivors, and no two of them had the same cause |
 | M23 | The streaming question M16 left open, at the scale one machine has | complete; no measurable per-connection cost to a megabyte row at 600 connections, and the second pair corrected what the first appeared to show |
 | M24 | A reading of every crate, and the nine things it found | complete; nine findings, four of them one cause, and two fixed only in part with the measurement that decided how far |
-| M25 | The query cache against pgpool-II | open |
+| M25 | The query cache against pgpool-II | complete; three findings, all one constant, and the two places pgpool is ahead stay open as limits rather than becoming tasks |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1504,7 +1504,7 @@ across six tasks, and two of them found the test rather than the code:
 `M24.5`'s rate limit and `M24.8`'s waiter guard each had a test that passed
 without them until the control said otherwise.
 
-## M25: the query cache against pgpool-II
+## M25: the query cache against pgpool-II (complete)
 
 ```bash
 scripts/m25-complete.sh
@@ -1537,3 +1537,57 @@ budget it interacts with.
 Completion condition: `scripts/m25-complete.sh`, which runs a named test per
 finding and reads its exit status, per `M12.8`, and refuses to pass with a
 ticked task it does not name, per `M24.0`.
+
+### Where it got to
+
+Three findings, all about `MAX_RECORDED_ANSWER`, and the shape they shared is
+worth more than any of them: it was the only bound in the query cache that was
+invisible when it fired, unsettable, and unrelated to the limit it interacts
+with. Every other bound here is at least two of those three.
+
+| Finding | What it was | What it is |
+| --- | --- | --- |
+| `M25.1` | an abandoned answer moved no counter, and `get` had already booked a miss | `pgprox_cache_total{result="abandoned"}`, a `SHOW CACHE` column and a JSON field |
+| `M25.2` | 1 MiB in a `const`, beside a budget that reloads live | `query_cache.max_entry_bytes`, pushed by the tick loop the way `max_client_conns` reaches the gate |
+| `M25.3` | nothing related the two | refused above the budget, and refused at zero the way the budget already was |
+
+`M25.1` is the one worth having. A tenant whose results sat just over a
+megabyte saw a hit rate of zero, and every counter agreed nothing was wrong:
+the lookup booked a miss before anything knew how big the answer would be, and
+`rejected` stayed at zero because `put` was never reached. The two counters say
+opposite things about what to do. `rejected` says the budget is too small for
+one result; `abandoned` says the results are too big for a cache to be the right
+tool, and raising the budget does nothing for it.
+
+**What did not become a task.** Two places pgpool-II is genuinely ahead, and
+both stay open:
+
+- It consults `pg_proc` for a function's volatility, so it catches a tenant's
+  own `VOLATILE` function. `cacheable.rs` matches a denylist of built-in names
+  and cannot.
+- It invalidates by table OID from the parse tree. This invalidates a whole
+  tenant.
+
+Both were already written down, in `cacheable.rs`'s own docs and in the crate's
+`AGENTS.md`, as the honest limits of a lexical scan. ADR 0009 records the same
+limit for the classifier. Filing them would have been filing a design, and a
+milestone that turned two known limits into two open tasks would have made its
+own count of findings look better at the cost of saying something false about
+what was discovered.
+
+**And what came out well**, recorded so a later reading does not repeat the
+comparison: the per-answer cap fires while the answer is still streaming, so an
+answer that will not fit is abandoned mid-flight and falls back to the streaming
+path rather than being assembled and then refused, which is the order pgpool
+does it in. The opt-in is per tenant rather than one global switch. The TTL is
+the contract, where `memqcache_expire` defaults to zero and means never. Bounded
+by bytes with LRU eviction, where pgpool carries both a byte total and an entry
+count.
+
+One thing the fix had to keep, found by a test rather than by reading: the pair
+check in `M25.3` was unconditional at first, and it refused a budget of zero
+with the default cap above it. That is exactly the case
+`a_budget_of_zero_is_allowed_while_nothing_is_cached` exists to permit, because
+an operator may write the section down before deciding who gets it. The check is
+conditional on the cache being on, and that test is in the gate for `M25.3` as
+well as its own.

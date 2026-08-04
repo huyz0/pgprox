@@ -6738,7 +6738,7 @@ recognised so it can be refused rather than read as a version.
 
 ## M25: the query cache against pgpool-II, and the three things it has that we do not
 
-- [ ] `M25.0` Plan M25, and give it a gate that passes from this commit.
+- [x] `M25.0` Plan M25, and give it a gate that passes from this commit.
   A comparison of `pgprox-cache` against pgpool-II's `memqcache`. Most of it
   came out well: the per-answer cap fires while the answer is still streaming
   rather than after it is assembled, the opt-in is per tenant rather than
@@ -6797,7 +6797,7 @@ recognised so it can be refused rather than read as a version.
   beside the six checks already in `Config::validate`.
   Acceptance: a document setting the pair that way is refused with a reason
   naming both fields, and the boundary where they are equal is accepted.
-- [ ] `M25.4` Close M25. Filed as its own task for the reason `M18.4` through
+- [x] `M25.4` Close M25. Filed as its own task for the reason `M18.4` through
   `M24.10` were: closing a milestone is a claim about the whole of it.
   Acceptance: the gate passes, the status row says complete, and the section
   records which of pgpool's advantages were fixed, which two are still open
