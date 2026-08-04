@@ -6848,7 +6848,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a statement costs one block rather than two, the budget test says
   so, and the blanket impl either keeps its callers or loses them with the
   reason written down.
-- [ ] `M26.4` The recency order allocates on every hit. `lru` is a `BTreeMap`
+- [x] `M26.4` The recency order allocates on every hit. `lru` is a `BTreeMap`
   keyed by a monotonic sequence, and a hit removes the entry's old sequence and
   inserts a new higher one, so nodes merge at the low end and split at the high
   end for as long as the cache is used. Roughly one block per seven hits on top

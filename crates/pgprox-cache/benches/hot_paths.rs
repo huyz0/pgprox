@@ -101,6 +101,23 @@ fn cache_hit(iterations: u64) {
     }
 }
 
+/// Hits that rotate, so the recency order actually reorders.
+///
+/// `cache_hit` asks for the same key every time, which is the best case: the
+/// entry is already the most recently used and `touch` returns without
+/// touching anything. That is a real case and it is not the only one, and
+/// until `M26.4` added this the number for a hit was measured entirely on the
+/// path that skips the work.
+fn cache_hit_rotating(iterations: u64) {
+    let store = populated();
+    let wanted: Vec<CacheKey> = (0..TENANTS).map(|i| key(&tenant(i % TENANTS), i)).collect();
+
+    for i in 0..iterations {
+        let at = usize::try_from(i).unwrap_or(0) % wanted.len();
+        std::hint::black_box(store.get(&wanted[at]));
+    }
+}
+
 /// A lookup that finds nothing, which is what most statements are.
 fn cache_miss(iterations: u64) {
     let store = populated();
@@ -170,6 +187,7 @@ fn main() {
 
     match name.as_str() {
         "cache_hit" => cache_hit(iterations),
+        "cache_hit_rotating" => cache_hit_rotating(iterations),
         "cache_miss" => cache_miss(iterations),
         "cache_put" => cache_put(iterations),
         "invalidate_after_one_put" => invalidate_after_one_put(iterations),
@@ -182,6 +200,7 @@ fn print_names() {
     #[allow(clippy::print_stdout)]
     {
         println!("cache_hit");
+        println!("cache_hit_rotating");
         println!("cache_miss");
         println!("cache_put");
         println!("invalidate_after_one_put");

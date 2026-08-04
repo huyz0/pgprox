@@ -142,4 +142,22 @@ run_finding pgprox-core \
   cache::tests::a_cache_behind_an_arc_is_the_same_cache \
   "an Arc around a cache is still that cache"
 
+# --- M26.4: the recency order is a list rather than a tree --------------------
+#
+# The numbers are in the baseline. What the tests hold is that a list has two
+# ways to be wrong where a tree had one, and only one of them is visible from
+# the front.
+run_finding pgprox-cache \
+  store::tests::the_recency_order_is_walkable_from_both_ends \
+  "every older link is the mirror of a newer one"
+run_finding pgprox-cache \
+  store::tests::the_recency_index_holds_one_place_per_entry \
+  "the walk reaches every entry exactly once and never cycles"
+run_finding pgprox-cache \
+  store::tests::eviction_takes_the_least_recently_used \
+  "eviction still takes the least recently used"
+run_finding pgprox-cache \
+  store::tests::a_hit_makes_an_entry_the_last_one_evicted \
+  "a hit still moves an entry to the back of the eviction queue"
+
 finish

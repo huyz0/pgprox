@@ -124,28 +124,26 @@ fn a_hit_serves_an_answer_without_building_anything() {
     });
     assert_eq!(direct, misses, "the forwarding impl costs something again");
 
-    // --- a hit builds only what the recency order does ----------------------
+    // --- a hit builds nothing either ----------------------------------------
     //
-    // It reads one entry, clones two `Arc`s and moves a `u64` between two
-    // places in a tree. Everything it hands back is shared with what is
-    // stored, so the only blocks left are the tree's own: a `BTreeMap` that
-    // has one key removed and a higher one inserted on every hit splits and
-    // merges nodes for as long as the cache is used. That is `M26.4`, and
-    // until it lands this is the one path here that allocates at all.
+    // It reads one entry, clones an `Arc` and writes four links. Everything it
+    // hands back is shared with what is stored.
+    //
+    // This asserted a number rather than zero until `M26.4`. The recency order
+    // was a `BTreeMap` keyed by a rising sequence, so a hit removed one key and
+    // inserted a higher one, and the live range sliding upward forever meant
+    // nodes merging at one end and splitting at the other: about one heap block
+    // per seven hits. A list the entries hold between them allocates none.
     let hits = allocations(|| {
         for one in &keys {
             std::hint::black_box(store.get(one));
         }
     });
-    assert!(
-        hits > 0,
-        "the recency order stopped churning, so this budget is now wrong in \
-         the good direction and M26.4 is done"
-    );
-    assert!(
-        hits <= 64,
-        "a hit allocated more than the recency order's churn: {hits} across \
-         {} lookups",
+    assert_eq!(
+        hits,
+        misses,
+        "a hit allocated {hits} time(s) across {} lookups where a miss \
+         allocated {misses}",
         keys.len()
     );
 
@@ -153,12 +151,30 @@ fn a_hit_serves_an_answer_without_building_anything() {
     //
     // `M26.1` gave invalidation an index to walk instead of the whole node.
     // The walk it replaced cloned every key it matched, so this is the
-    // allocation half of that change: sixty-four entries dropped for a
-    // constant, which is the set of sequence numbers taken out of the index
-    // and iterated.
+    // allocation half of that change.
+    //
+    // Twice, and the second is the one asserted. The first grows the list of
+    // slots given back, which is a `Vec` reaching its steady size in
+    // logarithmically many steps and never again. A node that has been running
+    // for a minute is doing the second.
+    store.invalidate_tenant(&TenantId::new("acme"));
+    for one in &keys {
+        store.put(
+            one.clone(),
+            CachedResult {
+                frames: Arc::from(vec![0_u8; 256].as_slice()),
+                ttl: Duration::from_secs(60),
+            },
+        );
+    }
+
     let invalidations = allocations(|| {
         store.invalidate_tenant(&TenantId::new("acme"));
     });
+    // Constant rather than zero. One block is observed and the property that
+    // matters is the shape: sixty-four entries dropped for a number that does
+    // not follow the count. Before `M26.1` this walked every entry on the node
+    // and cloned each key it matched.
     assert!(
         invalidations <= 2,
         "invalidating 64 entries allocated {invalidations} block(s), which is \

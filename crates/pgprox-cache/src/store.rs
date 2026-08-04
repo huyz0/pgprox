@@ -21,7 +21,7 @@
 //! is why nothing outside this module knows there is one lock rather than
 //! sixteen.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::Instant;
 
@@ -59,25 +59,42 @@ pub struct CacheStats {
     pub bytes: u64,
 }
 
+/// One slot's place in the recency order, and whose entry it is.
+///
+/// Beside the entry map rather than inside it, and that is the whole reason
+/// this is fast. Links held in the `Entry` mean every edit to a neighbour is a
+/// lookup by key, so one hit hashes a six-field key up to four times; held
+/// here, an edit is an index into a `Vec`.
+#[derive(Clone, Debug, Default)]
+struct Placed {
+    /// The key whose entry occupies this slot, or [`None`] if it is free.
+    key: Option<Arc<CacheKey>>,
+    /// The slot used just before this one, or [`None`] at the least recently
+    /// used end.
+    older: Option<Slot>,
+    /// The slot used just after this one, or [`None`] at the most recently
+    /// used end.
+    newer: Option<Slot>,
+}
+
+/// Where an entry sits, as an index this file issues.
+///
+/// A newtype so a slot cannot be passed where a byte count or a sequence was
+/// wanted, which is the mistake a bare `u32` invites in a file that already
+/// counts three different things.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+struct Slot(u32);
+
 /// One stored result, with what the store needs to expire and rank it.
 #[derive(Debug)]
 struct Entry {
     value: CachedResult,
     /// When this stops being servable. ADR 0021's entire guarantee.
     expires_at: Instant,
-    /// Where it sits in the recency order.
-    seq: u64,
+    /// Where this entry sits, so removing it does not mean finding it again.
+    slot: Slot,
     /// What it costs, by the accounting in [`weigh`].
     bytes: usize,
-    /// A second handle on the key this is filed under.
-    ///
-    /// The same allocation the entry map is keyed by, not a copy. It is here
-    /// because a hit has to move the entry to the front of the recency order,
-    /// which means writing the key into `lru`, and `HashMap::get_mut` hands
-    /// back the value without the key. Reaching for it separately meant
-    /// hashing all six of the key's fields a second time on the one path that
-    /// is supposed to be cheap. `M26.2`.
-    key: Arc<CacheKey>,
 }
 
 /// The parts behind the lock.
@@ -88,12 +105,26 @@ struct Inner {
     /// A hit then costs one atomic increment where it used to cost six, and
     /// the map stores a pointer where it used to store six words. `M26.2`.
     entries: HashMap<Arc<CacheKey>, Entry>,
-    /// Recency order, least recent first.
+    /// The least and most recently used entries, or [`None`] when empty.
     ///
-    /// A `BTreeMap` keyed by a monotonic sequence rather than a scan for the
-    /// minimum: eviction happens on the insert path, and a linear scan there
-    /// would make the cost of a `put` depend on how full the cache is.
-    lru: BTreeMap<u64, Arc<CacheKey>>,
+    /// # The recency order is a list, not a tree
+    ///
+    /// It was a `BTreeMap` keyed by a monotonic sequence, and a hit removed
+    /// the entry's sequence and inserted a higher one. Two O(log n) traversals
+    /// and, because the live range slid upward forever, nodes merging at one
+    /// end and splitting at the other: roughly one heap block per seven hits.
+    ///
+    /// That was 894 instructions, 38% of a hit, measured by making `touch` a
+    /// no-op and taking the difference. A list the entries hold between them
+    /// costs four writes and allocates nothing. `M26.4`.
+    ///
+    /// Slots rather than keys, so unlinking a neighbour does not mean hashing
+    /// its key to find it. That is the mistake the obvious version makes: an
+    /// `Option<Arc<CacheKey>>` for each link turns one hit into three hash
+    /// lookups, and holding the links inside the entries makes it two, because
+    /// reaching an entry means going back through the map.
+    least: Option<Slot>,
+    most: Option<Slot>,
     /// Which keys each tenant holds.
     ///
     /// A second index, and it exists because of one number. Invalidation ran
@@ -114,8 +145,17 @@ struct Inner {
     /// A tenant with nothing left is removed rather than left holding an empty
     /// set, so a node that has served five thousand tenants and now serves one
     /// does not keep five thousand entries here.
-    by_tenant: HashMap<TenantId, HashSet<u64>>,
-    next_seq: u64,
+    by_tenant: HashMap<TenantId, HashSet<Slot>>,
+    /// The recency links and the key, by slot.
+    ///
+    /// Eviction and invalidation both start from a slot and need the key to
+    /// take the entry out of `entries`, so the two directions have to be
+    /// walkable. A `Vec` indexed by slot, with a free list, rather than a map:
+    /// a slot is an index this file issues, so nothing needs hashing, and
+    /// every link edit is an array write.
+    slots: Vec<Placed>,
+    /// Slots whose entries have gone, ready to be issued again.
+    free: Vec<Slot>,
     bytes: usize,
     stats: CacheStats,
 }
@@ -228,67 +268,151 @@ impl Store {
 impl Inner {
     /// Removes an entry and everything that pointed at it.
     ///
-    /// The `lru` index and the byte total both have to move with the map or
-    /// they drift, and a drifted byte total is a budget that stops meaning
-    /// anything without ever failing a test that only checks the map.
+    /// The recency order, the tenant index and the byte total all have to move
+    /// with the map or they drift, and a drifted byte total is a budget that
+    /// stops meaning anything without ever failing a test that only checks the
+    /// map.
     fn remove(&mut self, key: &CacheKey) -> Option<Entry> {
         let entry = self.entries.remove(key)?;
-        self.lru.remove(&entry.seq);
-        // Both indexes, or the next invalidation walks a key the entry map no
-        // longer holds. An empty set goes with it: a node that has served five
-        // thousand tenants and now serves one must not keep five thousand
-        // entries here.
-        if let Some(seqs) = self.by_tenant.get_mut(&key.tenant) {
-            seqs.remove(&entry.seq);
-            if seqs.is_empty() {
+        let slot = entry.slot;
+
+        self.unlink(slot);
+
+        // The tenant index, and an empty set goes with it: a node that has
+        // served five thousand tenants and now serves one must not keep five
+        // thousand entries here.
+        if let Some(slots) = self.by_tenant.get_mut(&key.tenant) {
+            slots.remove(&slot);
+            if slots.is_empty() {
                 self.by_tenant.remove(&key.tenant);
             }
         }
+
+        self.slots[slot.0 as usize] = Placed::default();
+        self.free.push(slot);
         self.bytes -= entry.bytes;
         Some(entry)
     }
 
-    /// Files an entry's place under its tenant.
+    /// Issues a slot for a key, reusing one if any have been given back.
+    fn claim(&mut self, key: &Arc<CacheKey>) -> Slot {
+        let placed = Placed {
+            key: Some(Arc::clone(key)),
+            older: None,
+            newer: None,
+        };
+        if let Some(slot) = self.free.pop() {
+            self.slots[slot.0 as usize] = placed;
+            return slot;
+        }
+        let slot = Slot(u32::try_from(self.slots.len()).unwrap_or(u32::MAX));
+        self.slots.push(placed);
+        slot
+    }
+
+    /// Files an entry's slot under its tenant.
     ///
     /// `entry` rather than a `get_mut` that falls back to it. The fallback
     /// looks cheaper, since a tenant is new to this map once and stores
     /// answers thousands of times, and it was measured and is not: two hash
     /// lookups on the cold path cost more than the `Arc` increment it saves,
     /// and `cache_put` went from 5,246 instructions to 5,284.
-    fn index(&mut self, tenant: &TenantId, seq: u64) {
+    fn index(&mut self, tenant: &TenantId, slot: Slot) {
         self.by_tenant
             .entry(tenant.clone())
             .or_default()
-            .insert(seq);
+            .insert(slot);
     }
 
-    /// Moves an entry the caller has already found to the front of the
-    /// recency order.
+    /// Takes a slot out of the recency order.
     ///
-    /// Takes what it needs rather than the key, because the caller has just
-    /// looked the entry up and a second lookup here means hashing all six of
-    /// the key's fields again. That was 2,538 instructions of the difference
-    /// between a hit and a miss, on the path a cache exists to make cheap.
-    /// `M26.2`.
-    fn touch(&mut self, key: Arc<CacheKey>, was: u64) {
-        self.lru.remove(&was);
-        self.lru.insert(self.next_seq, key);
-        self.next_seq += 1;
+    /// Leaves its own links alone: every caller either fills them in again or
+    /// frees the slot, and clearing them here would be a write nobody reads.
+    fn unlink(&mut self, slot: Slot) {
+        let (older, newer) = {
+            let placed = &self.slots[slot.0 as usize];
+            (placed.older, placed.newer)
+        };
+
+        match older {
+            Some(before) => self.slots[before.0 as usize].newer = newer,
+            None => self.least = newer,
+        }
+        match newer {
+            Some(after) => self.slots[after.0 as usize].older = older,
+            None => self.most = older,
+        }
+    }
+
+    /// Puts a slot at the most-recently-used end.
+    fn link_newest(&mut self, slot: Slot) {
+        let previous = self.most;
+        if let Some(previous) = previous {
+            self.slots[previous.0 as usize].newer = Some(slot);
+        }
+
+        let placed = &mut self.slots[slot.0 as usize];
+        placed.older = previous;
+        placed.newer = None;
+
+        self.most = Some(slot);
+        if self.least.is_none() {
+            self.least = Some(slot);
+        }
+    }
+
+    /// Moves an entry the caller has already found to the most recently used
+    /// end.
+    ///
+    /// Takes the slot rather than the key, because the caller has just looked
+    /// the entry up and a second lookup here means hashing all six of the
+    /// key's fields again. That was 2,538 instructions of the difference
+    /// between a hit and a miss. `M26.2`.
+    fn touch(&mut self, slot: Slot) {
+        // Already the most recent, which is the common case for a hot key and
+        // the one worth not paying for at all.
+        if self.most == Some(slot) {
+            return;
+        }
+        self.unlink(slot);
+        self.link_newest(slot);
     }
 
     /// Throws out least-recently-used entries until the budget is met.
     fn evict_to_fit(&mut self, max_bytes: usize) {
         while self.bytes > max_bytes {
-            // The oldest key, or nothing left to throw out. The second is
+            // The oldest slot, or nothing left to throw out. The second is
             // unreachable while `bytes` and `entries` agree, and returning
             // rather than looping is what keeps a drift between them from
             // becoming a hang.
-            let Some(key) = self.lru.values().next().cloned() else {
+            let Some(key) = self
+                .least
+                .and_then(|slot| self.slots[slot.0 as usize].key.clone())
+            else {
                 return;
             };
             self.remove(&key);
             self.stats.evicted += 1;
         }
+    }
+
+    /// The slots in recency order, least recently used first.
+    ///
+    /// For the tests that the order is an order. Nothing on the serving path
+    /// walks it, which is the point of it being a list.
+    #[cfg(test)]
+    fn recency(&self) -> Vec<Slot> {
+        let mut walked = Vec::new();
+        let mut at = self.least;
+        while let Some(slot) = at {
+            walked.push(slot);
+            at = self.slots[slot.0 as usize].newer;
+            assert!(
+                walked.len() <= self.entries.len(),
+                "the recency order has a cycle in it"
+            );
+        }
+        walked
     }
 }
 
@@ -307,9 +431,6 @@ impl QueryCache for Store {
 
         let now = self.clock.now();
         let mut inner = self.lock();
-        // Read before the entry is borrowed, because the borrow holds the
-        // whole of `inner` and this is a field beside the map.
-        let next = inner.next_seq;
 
         // One lookup, and everything a hit needs taken out of it before the
         // borrow ends. `get` then `touch(key)` hashed all six of the key's
@@ -330,13 +451,12 @@ impl QueryCache for Store {
             return None;
         }
 
+        // Everything a hit needs, read while the entry is still borrowed,
+        // since `touch` needs the map back.
         let value = entry.value.clone();
-        let was = entry.seq;
-        // Read while the entry is still borrowed, since `touch` needs the map.
-        let held = Arc::clone(&entry.key);
-        entry.seq = next;
+        let slot = entry.slot;
 
-        inner.touch(held, was);
+        inner.touch(slot);
         inner.stats.hits += 1;
         Some(value)
     }
@@ -387,21 +507,21 @@ impl QueryCache for Store {
         // One allocation, shared by the entry map, the recency order and the
         // entry's own handle on it. See `Entry::key`.
         let key = Arc::new(key);
-        let seq = inner.next_seq;
-        inner.next_seq += 1;
+        let slot = inner.claim(&key);
         inner.bytes += bytes;
-        inner.lru.insert(seq, Arc::clone(&key));
-        inner.index(&key.tenant, seq);
+        inner.index(&key.tenant, slot);
         inner.entries.insert(
             Arc::clone(&key),
             Entry {
                 value,
                 expires_at,
-                seq,
+                slot,
                 bytes,
-                key,
             },
         );
+        // After the entry is in the map, because linking edits its neighbours
+        // through it.
+        inner.link_newest(slot);
 
         inner.evict_to_fit(max_bytes);
     }
@@ -421,13 +541,12 @@ impl QueryCache for Store {
             return;
         };
 
-        for seq in doomed {
-            // The key is in `lru` under the same sequence, so this reads it
-            // back rather than storing a second copy. A sequence with no place
-            // there would be the two indexes disagreeing, which
+        for slot in doomed {
+            // The slot names the key, which is how a second copy is avoided. A
+            // slot naming nothing would be the two indexes disagreeing, which
             // `the_tenant_index_holds_exactly_what_the_entry_map_holds` is
             // what stops.
-            let Some(key) = inner.lru.get(&seq).cloned() else {
+            let Some(key) = inner.slots[slot.0 as usize].key.clone() else {
                 continue;
             };
             inner.remove(&key);
@@ -1051,12 +1170,17 @@ mod tests {
 
     #[test]
     fn the_recency_index_holds_one_place_per_entry() {
-        // The index is a `BTreeMap` keyed by a sequence number, so two entries
-        // that share one lose a place between them and the byte total starts
-        // drifting from the map. `M10.3` found that `next_seq *= 1` in `touch`
-        // is a no-op, which hands the next insert a sequence a live entry
-        // already has, and no test noticed because eviction order happened to
-        // come out the same. This is the invariant that mistake breaks.
+        // This was a `BTreeMap` keyed by a sequence number, and two entries
+        // sharing one lost a place between them while the byte total drifted
+        // from the map. `M10.3` found that `next_seq *= 1` in `touch` is a
+        // no-op, which hands the next insert a sequence a live entry already
+        // has, and no test noticed because eviction order happened to come out
+        // the same.
+        //
+        // `M26.4` made it a list the entries hold between them, where the same
+        // mistake is a link pointing at the wrong slot. The assertion is
+        // stronger for it: walking from the least recently used has to reach
+        // every entry exactly once, and `recency` refuses to walk a cycle.
         let (cache, _clock) = store(64 * 1024);
         let first = key("acme", "select 1");
         cache.put(first.clone(), result(16, 1000));
@@ -1065,11 +1189,57 @@ mod tests {
         cache.put(key("acme", "select 3"), result(16, 1000));
 
         let inner = cache.lock();
+        let walked = inner.recency();
         assert_eq!(
-            inner.lru.len(),
+            walked.len(),
             inner.entries.len(),
             "an entry has no place in the recency order, or two share one"
         );
+
+        let distinct: std::collections::BTreeSet<_> = walked.iter().copied().collect();
+        assert_eq!(distinct.len(), walked.len(), "a slot appears twice");
+
+        // And the order itself: `select 1` was used after `select 2`, so it is
+        // the newer of the two, and `select 3` is newer than either.
+        let ends = (inner.least, inner.most);
+        assert!(ends.0.is_some() && ends.1.is_some(), "the list has no ends");
+        assert_eq!(walked.first().copied(), ends.0, "the walk starts elsewhere");
+        assert_eq!(walked.last().copied(), ends.1, "the walk ends elsewhere");
+    }
+
+    #[test]
+    fn the_recency_order_is_walkable_from_both_ends() {
+        // A doubly linked list has two ways to be wrong and one of them is
+        // invisible from the front. Every `older` link has to be the mirror of
+        // some `newer` link, and a `touch` that fixed one and not the other
+        // would leave eviction taking the right entry and `remove` splicing
+        // the list in half.
+        let (cache, _clock) = store(64 * 1024);
+        let keys: Vec<CacheKey> = (0..8)
+            .map(|i| key("acme", &format!("select {i}")))
+            .collect();
+        for one in &keys {
+            cache.put(one.clone(), result(16, 1000));
+        }
+        // Touch a few, in an order that is not the insertion order, so the
+        // links are not simply what `put` left.
+        for i in [3_usize, 0, 6, 3] {
+            cache.get(&keys[i]);
+        }
+
+        let inner = cache.lock();
+        let forward = inner.recency();
+
+        let mut backward = Vec::new();
+        let mut at = inner.most;
+        while let Some(slot) = at {
+            backward.push(slot);
+            at = inner.slots[slot.0 as usize].older;
+            assert!(backward.len() <= forward.len(), "the older links cycle");
+        }
+        backward.reverse();
+
+        assert_eq!(forward, backward, "the two directions disagree");
     }
 
     #[test]
@@ -1120,18 +1290,18 @@ mod tests {
     fn assert_indexed(cache: &Store, expected: usize) {
         let inner = cache.lock();
         assert_eq!(inner.entries.len(), expected, "the entry map");
-        assert_eq!(inner.lru.len(), expected, "the recency order");
+        assert_eq!(inner.recency().len(), expected, "the recency order");
 
         let indexed: usize = inner.by_tenant.values().map(HashSet::len).sum();
         assert_eq!(indexed, expected, "the tenant index");
 
         for (tenant, seqs) in &inner.by_tenant {
             assert!(!seqs.is_empty(), "{tenant} is indexed with nothing in it");
-            for seq in seqs {
-                let found = inner.lru.get(seq);
+            for slot in seqs {
+                let found = inner.slots[slot.0 as usize].key.as_ref();
                 assert!(
                     found.is_some(),
-                    "the tenant index holds a place the recency order does not"
+                    "the tenant index holds a slot that names no key"
                 );
                 let Some(key) = found else { continue };
                 assert!(
