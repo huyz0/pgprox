@@ -1,0 +1,19 @@
+# The document the comparison run uses. `M32.2`.
+#
+# scale.yaml with two nodes removed: the comparison points one arm at one pgprox
+# node, so what is measured is one node's pooling. Holding a cap across three is
+# what pgprox does that the other two cannot, and it is a separate question this
+# run does not answer.
+#
+# The upstream cap stays at sixty, which is the number pgbouncer.ini and
+# pgcat.toml also carry. scripts/compare.sh reads all three and refuses to run
+# if they disagree.
+max_client_conns: 150000
+drain_grace: 10s
+grant_ttl_cap: 300s
+servers:
+  - server: primary:5432
+    max_connections: 60
+    guaranteed_fraction: 0.5
+nodes:
+  pgprox-1: {}

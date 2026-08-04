@@ -1,0 +1,106 @@
+# The other two arms of the comparison, against the same primary. `M32.2`.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.compare.yml up
+#
+# `scripts/compare.sh` drives it. What this file is for is stating the ways the
+# three arms are held equal, in one place, so a reader can check them rather
+# than take the run document's word for it.
+#
+# # What is held equal
+#
+#   * The same primary, the same database, the same role and password.
+#   * The same upstream cap: sixty, which is what `deploy/config/scale.yaml`
+#     gives pgprox. `scripts/compare.sh` reads all three rather than trusting
+#     this comment.
+#   * Transaction pooling in all three.
+#   * `min_pool_size` zero, so none of them holds connections open that the
+#     others do not.
+#   * Protocol-level prepared statements mapped in all three. This one is
+#     load-bearing: the workload uses named `Parse` because every real driver
+#     does, and a pooler without it fails every one of them. `pgcat` needs
+#     `prepared_statements_cache_size` and `pgbouncer` needs
+#     `max_prepared_statements`, and leaving either out produces a run that
+#     looks like a finding and is a misconfiguration. It did, during `M32.6`.
+#
+# # What cannot be held equal
+#
+# pgprox resolves a grant through its sidecar on every connect and the other two
+# read a static password file, so establishing a connection is not the same work
+# in each arm. The run reports the ramp apart from the steady state rather than
+# pretending otherwise.
+#
+# pgprox is also the only one being asked to hold a cap across three nodes. The
+# comparison points one arm at one pgprox node, so what is measured is one
+# node's pooling, and the coordination cost is a separate question this run does
+# not answer.
+#
+# # Why the other two are pinned to a digest-less tag and this is not a problem
+#
+# They are what an operator would deploy today, which is what the comparison is
+# about, and the run document records the version each reported at startup.
+
+services:
+  # No load client service. `scripts/compare.sh` runs `bin/pgload` on the host
+  # against published ports, which puts the same forwarder in front of every arm
+  # and keeps the client's own memory out of the memory each pooler is measured
+  # for. A container mounting `target/` would also take ownership of it as root,
+  # which is how the first run of this failed.
+
+  primary:
+    ports:
+      - "15432:5432"
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    depends_on:
+      primary:
+        condition: service_healthy
+    volumes:
+      - ./compare/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./compare/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    ports:
+      - "16442:6432"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  pgcat:
+    image: ghcr.io/postgresml/pgcat:latest
+    depends_on:
+      primary:
+        condition: service_healthy
+    volumes:
+      - ./compare/pgcat.toml:/etc/pgcat/pgcat.toml:ro
+    ports:
+      - "16443:6432"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  # The pgprox arm. One node rather than three, and the same overrides a scale
+  # run uses: a client cap a comparison will not hit, and plaintext, because
+  # `bin/pgload` does not speak TLS and the other two arms are not being asked
+  # to terminate it either.
+  pgprox-1:
+    environment:
+      PGPROX_CONFIG: /etc/pgprox/compare.yaml
+      # A space rather than an empty string: the entrypoint expands this
+      # unquoted, and `:-` would substitute the default for an empty value.
+      PGPROX_REQUIRE_TLS: " "
+      RUST_LOG: "${COMPARE_LOG:-info}"
+      PGPROX_NODE: "1"
+      PGPROX_NODE_NAME: pgprox-1
+      PGPROX_MOCK_PRIMARY: primary:5432
+      PGPROX_MOCK_DATABASE: tenant_acme
+      PGPROX_MOCK_USER: acme_app
+      PGPROX_MOCK_PASSWORD: acme-password
+      PGPROX_MOCK_TLS: disabled
+    ports:
+      - "16441:6432"
+      - "19090:9090"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144

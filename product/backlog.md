@@ -7132,7 +7132,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `pgload` completes a SCRAM handshake against a real Postgres,
   the implementation is `pgprox-auth`'s with no crypto written here, and a
   server offering a mechanism it does not have still fails with a reason.
-- [ ] `M32.2` The other two arms, configured so the comparison is about
+- [x] `M32.2` The other two arms, configured so the comparison is about
   pooling. Same upstream cap, same pool mode, same database and role, same
   machine. `pgprox` runs with its query cache off and one upstream rather than
   three, because a run that let it answer from cache or spread reads over
@@ -7145,7 +7145,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a compose overlay bringing up all three against one primary, each
   reachable on its own port, each holding the same cap, and a check that the
   three caps are equal read from the files rather than restated.
-- [ ] `M32.3` `scripts/compare.sh`, the run. One workload replayed against each
+- [x] `M32.3` `scripts/compare.sh`, the run. One workload replayed against each
   arm in turn with the same seed and the same connection count, sampling the
   proxy's resident memory and the primary's connection count while it runs, and
   reporting a table. Arms run one at a time, because three proxies under load

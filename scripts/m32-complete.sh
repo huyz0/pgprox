@@ -114,4 +114,58 @@ else
   fail "the proxy no longer refuses md5, which M32.6 was explicitly not about"
 fi
 
+# --- M32.2: the arms are configured so the comparison is about pooling --------
+#
+# Not `run_finding`: what landed is configuration, and the check is that the
+# three files agree about the two things that decide whether this is a
+# comparison at all. Both are read from the files rather than restated, so a
+# check here keeps passing only while the files do.
+
+cap_pgprox="$(awk '/max_connections:/ { print $2; exit }' deploy/config/compare.yaml)"
+cap_pgbouncer="$(awk -F'= *' '/^max_db_connections/ { print $2; exit }' deploy/compare/pgbouncer.ini)"
+cap_pgcat="$(awk -F'= *' '/^pool_size/ { print $2; exit }' deploy/compare/pgcat.toml)"
+if [[ "$cap_pgprox" == "$cap_pgbouncer" && "$cap_pgprox" == "$cap_pgcat" ]]; then
+  ok "all three arms are capped at $cap_pgprox upstream connections"
+else
+  fail "the arms are capped differently, so a run would not be a comparison"
+  printf '       pgprox %s, pgbouncer %s, pgcat %s\n' \
+    "$cap_pgprox" "$cap_pgbouncer" "$cap_pgcat"
+fi
+
+# The one that nearly produced a false finding. Without these the other two
+# arms fail every named Parse, which reads exactly like the failure ADR 0011
+# predicts for a pooler with no statement mapping and is a missing line of
+# configuration. `M32.6` watched it happen.
+statements_missing=""
+grep -q '^max_prepared_statements *= *[1-9]' deploy/compare/pgbouncer.ini || statements_missing+=" pgbouncer"
+grep -q '^prepared_statements_cache_size *= *[1-9]' deploy/compare/pgcat.toml || statements_missing+=" pgcat"
+if [[ -z "$statements_missing" ]]; then
+  ok "prepared statements are mapped in every arm that needs telling"
+else
+  fail "these arms would fail every named Parse, which is configuration and not a finding:$statements_missing"
+fi
+
+# --- M32.3: the run ----------------------------------------------------------
+#
+# The run needs four containers and a Postgres, which is `scripts/e2e.sh`'s
+# division rather than a per-commit gate's. What is checked here is that the
+# script exists and parses, and that it still refuses the two ways a comparison
+# stops being one. A script that cannot be parsed is a run nobody can make.
+if bash -n scripts/compare.sh 2>/dev/null; then
+  ok "the comparison run parses"
+else
+  fail "scripts/compare.sh does not parse"
+fi
+
+# Its own guards, by name. These are the checks that made the difference
+# between a comparison and four numbers taken under four different conditions.
+for guard in check_caps_agree check_statements_are_mapped arm_address; do
+  if grep -q "^$guard()" scripts/compare.sh; then
+    ok "the run still refuses to proceed without $guard"
+  else
+    fail "scripts/compare.sh no longer has $guard, so a run could report an arm's"
+    printf '       numbers taken under conditions another arm did not share\n'
+  fi
+done
+
 finish

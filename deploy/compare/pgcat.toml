@@ -1,0 +1,46 @@
+# The pgcat arm of the comparison. `M32.2`.
+#
+# Every setting here that is not a default is one of the ways the three arms are
+# held equal. The list is in deploy/docker-compose.compare.yml, and
+# scripts/compare.sh reads the numbers out of this file rather than trusting it.
+
+[general]
+host = "0.0.0.0"
+port = 6432
+
+# A client cap a comparison will not reach, matching the other two arms.
+max_client_conn = 150000
+
+# pgcat requires an admin user to exist. Nothing in the run connects to it.
+admin_username = "admin_user"
+admin_password = "admin_pass"
+
+[pools.tenant_acme]
+# The comparison is about transaction pooling.
+pool_mode = "transaction"
+
+# One upstream, the primary. pgprox is configured the same way for this run:
+# spreading reads over replicas is a feature the other two do not have, and a
+# run that used it would be measuring that instead of pooling.
+default_role = "primary"
+query_parser_enabled = false
+primary_reads_enabled = true
+
+# Protocol-level prepared statements, which the workload uses because every real
+# driver does. Without this every named Parse fails with "prepared statement
+# does not exist", which reads exactly like the failure ADR 0011 predicts for a
+# pooler with no statement mapping and is in fact a missing line here. M32.6
+# nearly published it as a finding.
+prepared_statements_cache_size = 500
+
+[pools.tenant_acme.users.0]
+username = "acme_app"
+password = "acme-password"
+# Sixty, the same cap deploy/config/scale.yaml gives pgprox and pgbouncer.ini
+# gives pgbouncer.
+pool_size = 60
+min_pool_size = 0
+
+[pools.tenant_acme.shards.0]
+servers = [["primary", 5432, "primary"]]
+database = "tenant_acme"

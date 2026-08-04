@@ -1,0 +1,3 @@
+; The role the comparison runs as. Plaintext, so pgbouncer can derive a
+; SCRAM verifier from it. See pgbouncer.ini.
+"acme_app" "acme-password"
