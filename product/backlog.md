@@ -7188,4 +7188,4 @@ recognised so it can be refused rather than read as a version.
   median across rounds with the spread beside it, the memory figure is the
   absolute peak with the cold per-connection delta beside it, and a finished
   run can be re-read without being re-run.
-- [ ] `M32.7` Close M32.
+- [x] `M32.7` Close M32.

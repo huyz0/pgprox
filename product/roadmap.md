@@ -2003,7 +2003,7 @@ and a figure that moved would mean one of these had reached one.
 
 Completion condition: `scripts/m31-complete.sh`.
 
-## M32: the comparison against pgbouncer and pgcat
+## M32: the comparison against pgbouncer and pgcat (complete)
 
 ```bash
 scripts/compare.sh [connections]
@@ -2030,5 +2030,55 @@ What cannot be equalised is reported rather than hidden. `pgprox` resolves a
 grant through a sidecar on every connect where the other two read a static
 password file, so the ramp is not the same work in each arm and is reported
 apart from the steady state.
+
+| arm | tx | p50 µs | upstream | peak RSS |
+| --- | --- | --- | --- | --- |
+| direct | 6,400 | 2,322 | 60 | - |
+| pgprox | 17,447 | 4,813 | **50** | 13.9 MB |
+| pgbouncer | 17,685 | 3,763 | 60 | **4.5 MB** |
+| pgcat | 17,638 | 3,031 | 60 | 26.1 MB |
+
+**Throughput is the same in all three**, and one round said otherwise. A single
+run had pgprox 4.7% ahead; three rounds put the medians within 1.4% with ranges
+that overlap almost completely. That 4.7% would have been published.
+
+**pgbouncer uses a third of pgprox's memory and a sixth of pgcat's**, and it is
+the only one of the three that is flat. That is the first of the two questions
+this milestone existed for and the answer is no.
+
+**pgprox multiplexed onto fifty upstream connections where both others used
+sixty**, in every round. Same work, same cap, 17% fewer connections held on the
+database. It is the one number where pgprox is ahead of both, and it is the
+thing pgprox is for.
+
+It is also a millisecond slower per transaction at the median, and the most
+consistent of the three by a wide margin.
+
+Full detail, including everything the run does not say, in
+[run-2026-08-05-pgbouncer-pgcat.md](../perf/run-2026-08-05-pgbouncer-pgcat.md).
+
+## What the milestone cost to make honest
+
+Four of its eight tasks were not the comparison. They were the comparison
+becoming trustworthy, and each came from running the thing rather than reading
+it.
+
+`M32.1` and `M32.6`: the load client could not authenticate to either pooler. It
+spoke trust and cleartext, pgbouncer wanted SCRAM and pgcat wanted MD5, and
+there was nothing to compare until it spoke both.
+
+`M32.8`: three runs disagreed by a factor of two, because each rebuilt the
+machine underneath itself, and the memory figure was a difference from a
+baseline that had stopped being one.
+
+And three near-misses that would each have produced a confident wrong number.
+pgcat failing every named `Parse` for want of one configuration line, which
+reads exactly like the failure `ADR 0011` predicts. pgbouncer appearing to hold
+111 connections against a cap of 60, which was the previous arm's unreaped pool.
+A per-connection memory figure of 61 bytes, which was round two measured against
+round one's peak.
+
+The pattern is worth keeping: every one was caught by a number being too good or
+too bad to believe, and none by a test.
 
 Completion condition: `scripts/m32-complete.sh`.
