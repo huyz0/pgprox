@@ -1868,3 +1868,37 @@ including what this does **not** say: four of the procedure's five patterns are
 untested here, and none of them has a candidate with a number behind it yet.
 
 Completion condition: `scripts/m29-complete.sh`.
+
+## M30: the same procedure, applied to every crate
+
+```bash
+scripts/m30-complete.sh
+```
+
+`M29` ran the unsafe procedure on one candidate in one crate, found nothing,
+and said so in its own closing text: four of the five patterns were untested
+and none had a number behind it. This runs the procedure across the workspace
+instead, and starts where it is supposed to start, which is a measurement.
+
+The measurement is a callgrind run at N iterations subtracted from one at 2N,
+per function rather than per binary, so fixture construction cancels the same
+way `scripts/bench.sh` already cancels it for the total.
+
+| path | total | where it goes |
+| --- | --- | --- |
+| `route_point_select` | 6,444 | `sql::Lexer::next` 3,404, `matches_any` 1,935, `SessionRouter::route` 985 |
+| `decode_query` | 390 | `str::from_utf8` 262, `memchr` 106 |
+| `acquire_and_release` | 443 | SipHash over `UpstreamId` 174, `release` 117, `HashMap::insert` 81 |
+
+Not one of those is a bounds check, which is the first thing worth saying about
+a procedure whose best-known pattern is unchecked indexing. Three of them are
+work that does not need doing at all: a statement lexed twice when the second
+pass reads one word, a keyword scan that compares every word against every
+keyword, and a cryptographic hash over an integer this process handed out.
+
+The fourth is the one place unsafe would pay, and it is the first entry on
+`ADR 0026`'s closed list. That is the right answer and it has a price, and this
+milestone writes the price down rather than leaving the list justified only in
+the abstract.
+
+Completion condition: `scripts/m30-complete.sh`.

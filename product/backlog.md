@@ -6973,3 +6973,84 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a run document with both arms, the prototype reverted, and no
   unsafe in the tree.
 - [x] `M29.2` Close M29.
+
+## M30: the same procedure, applied to every crate
+
+- [x] `M30.0` Plan M30. `M29` ran the unsafe procedure on one candidate in one
+  crate and found nothing, and its own closing text said so: four of the five
+  patterns were untested and none had a number behind it. This runs the
+  procedure across the workspace instead, starting where it is supposed to
+  start, which is a measurement rather than a pattern.
+  What the measurement says, per iteration, by subtracting a callgrind run at N
+  from one at 2N so fixture construction cancels:
+
+  | path | total | where it goes |
+  | --- | --- | --- |
+  | `route_point_select` | 6,444 | `sql::Lexer::next` 3,404, `matches_any` 1,935, `SessionRouter::route` 985 |
+  | `decode_query` | 390 | `str::from_utf8` 262, `memchr` 106 |
+  | `acquire_and_release` | 443 | SipHash over `UpstreamId` 174, `release` 117, `HashMap::insert` 81 |
+
+  Three of the four costs are work that does not need doing, and none of the
+  four is a bounds check. The fourth is the one place unsafe would pay, and it
+  is inside the closed list on purpose.
+  Acceptance: this list, a roadmap section, and `scripts/m30-complete.sh` wired
+  into CI.
+- [ ] `M30.1` `begins_read_only_transaction` lexes a whole statement to learn
+  its first word. It runs on the route decision's hot path for every statement
+  outside a transaction, and its own comment claims one pass and no allocation,
+  which is true and is not the point: the answer depends only on the first word
+  and, for `SET`, the second. Everything after that cannot change it, and the
+  loop reads all of it anyway. On the reference point select that is a complete
+  second lex of the statement, next to the one `classify` already does.
+  Acceptance: the function returns as soon as the first word rules it out,
+  `route_point_select` and `route_update` both fall, `route_begin` does not
+  regress, and a test covers the case where the deciding word is the second.
+- [ ] `M30.2` Every word of every statement is compared against every keyword.
+  `matches_any` is a linear scan calling `eq_ignore_ascii_case` per candidate,
+  and a read-only statement reaches it twice per word: once for `WRITE_WORDS`,
+  fourteen entries, and once for `WRITING_FUNCTIONS`, which is thirty-odd. The
+  reference point select has six words, so one route decision runs about 290
+  comparisons to find no match at all, at 1,935 instructions, which is 30% of
+  the decision.
+  The lists stay as they are. Every entry carries a comment naming the
+  construct that requires it and those comments are the reason the lists are
+  correct.
+  Acceptance: a filter computed at compile time from the list itself rejects a
+  word that cannot match before any comparison happens, `matches_any` falls by
+  more than half, no list entry or comment is edited, and a test shows the
+  filter and the scan agree on every entry in every list.
+- [ ] `M30.3` The pool hashes a proxy-issued integer with a cryptographic hash.
+  `UpstreamId` is a `u64` this process hands out. It is the key of the pool's
+  `checked_out` map, and SipHash over it is 174 instructions, 39% of
+  `acquire_and_release`. The same is true of the cache's `HashSet<Slot>`, whose
+  keys are the slab indices `M26.4` introduced.
+  This is not a blanket change and must not become one. `CacheKey` holds the
+  client's SQL and its database and user names, all peer-chosen, and a map
+  keyed on those keeps SipHash because that is what SipHash is for. The rule is
+  about who chooses the key, not about how fast the map is.
+  Acceptance: a hasher in `pgprox-core` for keys this process issues, used by
+  the pool and the cache's slot set, `acquire_and_release` falls, every
+  peer-keyed map is still on `RandomState`, and the rule is written down where
+  the next person adding a map will read it.
+- [ ] `M30.4` The held read path zeroes 16 KiB before every read, for a reason
+  that is no longer true. `Wire::fill_held` grows its buffer with
+  `resize(start + HELD_READ, 0)` and trims after, and the comment says it is
+  written that way "because reading into uninitialised capacity needs `unsafe`
+  and this workspace forbids it". `M27` made the second half false. The first
+  half was never true: `AsyncReadExt::read_buf` reads into uninitialised spare
+  capacity through `ReadBuf`, and the crate has had it imported all along.
+  So this is not an unsafe candidate at all. It is the procedure's third step
+  finding that the safe construct was always there, and a comment that stopped
+  anyone looking.
+  Acceptance: the memset is gone with no unsafe anywhere, the buffer still
+  grows no further than the slab lends, and the measurement is stated for what
+  it is, including whether instruction counts can see a memset at all.
+- [ ] `M30.5` Two thirds of the query decode is a validation the policy will
+  not let anyone skip. `str::from_utf8` is 262 of `decode_query`'s 390
+  instructions, and the fix is `from_utf8_unchecked` in `pgprox-proto`, which
+  is first on `ADR 0026`'s closed list. That is the correct answer and it costs
+  something, which is the part worth writing down: the list was justified in
+  the abstract and this is the number it was bought with.
+  Acceptance: a run document holding the number and the reasoning, and no code
+  change.
+- [ ] `M30.6` Close M30, on the terms `M18.4` through `M29.2` closed on.
