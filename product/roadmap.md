@@ -46,7 +46,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 | M26 | What the query cache costs, measured for the first time | complete; a hit is 65% cheaper and allocates nothing, a write is 97% cheaper, and the lock the store worried about was never the problem |
 | M27 | Unsafe becomes a governed exception rather than a closed door | complete; five conditions, a script that enforces them, nine cases proving each can fail, and no unsafe written |
-| M28 | The build configuration nobody had measured | open |
+| M28 | The build configuration nobody had measured | complete; one lever of the four was actually available, it is worth 7 to 15% on the route decision, and a benchmark that reported a regression from it turned out to be measuring a random seed |
 
 ## M-1: AI development system (complete)
 
@@ -1768,7 +1768,7 @@ moves its benchmark less than `scripts/bench.sh`'s threshold, it is deleted and
 the safe one kept. `M26` is the evidence that the safe route usually wins
 anyway, having taken a hit from 4,144 instructions to 1,460 without any.
 
-## M28: the build configuration nobody had measured
+## M28: the build configuration nobody had measured (complete)
 
 ```bash
 scripts/m28-complete.sh
@@ -1786,3 +1786,46 @@ available are not: `panic = "abort"` is already taken, and
 runs on hardware the build machine has never seen.
 
 Completion condition: `scripts/m28-complete.sh`.
+
+### Where it got to
+
+**One lever of the four, and the other three were already decided or wrong.**
+
+| Knob | Verdict |
+| --- | --- |
+| `lto = "thin"` -> `"fat"` | taken, 7 to 15% on the route decision |
+| `codegen-units = 1` | already set |
+| `panic = "abort"` | already set, and right for a process whose rule is that it does not panic |
+| `-C target-cpu=native` | refused: this ships as a container image |
+
+| benchmark | thin | fat | |
+| --- | --- | --- | --- |
+| `pgprox-route::route_begin` | 1,536 | 1,294 | -15% |
+| `pgprox-proto::decode_query` | 460 | 390 | -15% |
+| `pgprox-route::route_update` | 7,423 | 6,717 | -9% |
+| `pgprox-route::route_point_select` | 6,982 | 6,444 | -7% |
+
+Every cache and pool number is unchanged to within a percent, which is what
+inlining across one crate boundary looks like rather than a general uplift. The
+cost is a release relink going from 12.98s to 30.43s, and it lands on CI and on
+releases and on nobody's edit loop.
+
+**The milestone was filed on a claim that was wrong.** `M27` closed saying this
+workspace had no `[profile.release]` block. It has one, and it already carried
+two of the four knobs. The milestone's own planning task says so, which is the
+only reason the reader is not left with the earlier sentence.
+
+**A benchmark reported a regression that did not exist.** `M28.1` measured
+`invalidate_after_one_put` at +6% under fat LTO. A second run put it at -1%. The
+benchmark measured one entry stored and dropped, which at that size is small
+enough that a `HashMap`'s probe count is a measurable share of it, and probe
+counts depend on a per-process random seed. It now drops sixteen entries and
+three runs agree to 0.45%.
+
+That is the second time this has happened to the same benchmark, in a different
+form. `M26.4` fixed it once, when it measured an early return and moved 15%.
+Both times the tell was the same: a number in a gated baseline small enough that
+the machinery around it costs more than the thing it measures. The rule that
+falls out is worth stating, because it is not written anywhere: a benchmark
+under about a thousand instructions is measuring `scripts/bench.sh` as much as
+it is measuring the code.

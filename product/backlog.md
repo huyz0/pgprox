@@ -6909,7 +6909,7 @@ recognised so it can be refused rather than read as a version.
 
 ## M28: the build configuration nobody had measured
 
-- [ ] `M28.0` Plan M28, and give it a gate that passes from this commit.
+- [x] `M28.0` Plan M28, and give it a gate that passes from this commit.
   `M27` closed on the observation that `scripts/bench.sh`'s own advice puts
   build configuration before any unsafe, and that this workspace's release
   profile had never been measured. It turned out to be half set already:
@@ -6949,4 +6949,4 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the benchmark measures enough work that the seed is noise, its
   spread across three runs is inside a percent, and the fix is the shape of the
   measurement rather than a wider tolerance.
-- [ ] `M28.3` Close M28, on the terms `M18.4` through `M27.2` closed on.
+- [x] `M28.3` Close M28, on the terms `M18.4` through `M27.2` closed on.
