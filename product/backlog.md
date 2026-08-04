@@ -7172,4 +7172,20 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `pgload` answers `AuthenticationMD5Password`, verified against
   `pgcat` rather than only against a fake, the digest is a dependency rather
   than a hash written here, and the proxy still refuses MD5.
+- [x] `M32.8` The run's first numbers were not reproducible, and its memory
+  figure measured the wrong thing.
+  Three runs that each tore the stack down and rebuilt it disagreed by a factor
+  of two on identical code: pgprox read 17,637 transactions and then 8,427,
+  with p99 going from 686ms to 14s. Every arm in the bad run was equally bad,
+  which is what says it was the machine. A comparison that rebuilds a Postgres
+  and five containers between runs puts a different machine under each one.
+  The memory figure was worse, because it looked precise. `peak - idle` is a
+  connection cost only while `idle` means idle, and a process does not return
+  its heap when its clients leave, so the second round starts at the first
+  round's peak. pgbouncer read 7,618 bytes per connection cold and 61 in the
+  round after it, on the same code doing the same work.
+  Acceptance: the rotation repeats inside one stack, what is reported is the
+  median across rounds with the spread beside it, the memory figure is the
+  absolute peak with the cold per-connection delta beside it, and a finished
+  run can be re-read without being re-run.
 - [ ] `M32.7` Close M32.

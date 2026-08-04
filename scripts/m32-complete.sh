@@ -168,4 +168,28 @@ for guard in check_caps_agree check_statements_are_mapped arm_address; do
   fi
 done
 
+# --- M32.8: the run is reproducible and its memory figure means something -----
+#
+# The run itself needs containers. What is checked is that the two fixes are
+# still in the script: rounds inside one stack, and a memory figure that is not
+# a difference from a baseline that stopped being a baseline.
+for piece in "ROUNDS=" "cold_per_conn()" "REPORT_ONLY="; do
+  if grep -q -- "$piece" scripts/compare.sh; then
+    ok "the run still carries $piece"
+  else
+    fail "scripts/compare.sh no longer carries $piece"
+    printf '       without it a run reports one number with no spread behind it,\n'
+    printf '       or a per-connection figure taken against the previous round peak\n'
+  fi
+done
+
+# The median is over rounds, so a single round has to be a deliberate choice
+# rather than the default. Three, because two cannot have a middle value.
+rounds="$(awk -F'[:-]' '/^ROUNDS=/ { print $3; exit }' scripts/compare.sh | tr -d '}"')"
+if [[ "$rounds" =~ ^[0-9]+$ ]] && (( rounds >= 3 )); then
+  ok "the run defaults to $rounds rounds, so every figure has a spread"
+else
+  fail "the run defaults to $rounds rounds, which is not enough for a median"
+fi
+
 finish
