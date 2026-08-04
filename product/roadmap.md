@@ -40,7 +40,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M21 | The driver matrix does not cover what M20 changed | complete; the suite it proposed building already existed, and three of its four cases were wrong in ways only a reverted build could show |
 | M22 | The mutants nobody has swept since M17 | complete; 3,835 mutants across all sixteen crates, nine new survivors, and no two of them had the same cause |
 | M23 | The streaming question M16 left open, at the scale one machine has | complete; no measurable per-connection cost to a megabyte row at 600 connections, and the second pair corrected what the first appeared to show |
-| M24 | A reading of every crate, and the nine things it found | open |
+| M24 | A reading of every crate, and the nine things it found | complete; nine findings, four of them one cause, and two fixed only in part with the measurement that decided how far |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1410,7 +1410,7 @@ Every derived workload in `product/perf/` asserts that in its header, including
 the pair `M7.55`'s conclusion rests on, and until this milestone nothing checked
 one of them.
 
-## M24: a reading of every crate, and the nine things it found
+## M24: a reading of every crate, and the nine things it found (complete)
 
 ```bash
 scripts/m24-complete.sh
@@ -1436,3 +1436,69 @@ caught. Nothing looked for a third.
 
 Completion condition: `scripts/m24-complete.sh`, which runs a named test for
 each finding and reads its exit status, per `M12.8`.
+
+### Where it got to
+
+Nine findings, all fixed, two of them only in part and both saying which part.
+
+**Four were one cause.** A decision that reads SQL, taken by a scanner that is
+not the shared one or by the shared one asked the wrong way.
+
+| Finding | What read the SQL | What it cost |
+| --- | --- | --- |
+| `M24.1` | `params.rs`, its own scanner, first statement only | `SET a=1; SET search_path=x` dropped the search path and pinned on neither |
+| `M24.2` | `statement_words`, which drops quoted text | `SET "search_path" = 'x'` was neither recorded nor pinned |
+| `M24.3` | `statement_words(sql, true)`, which joins qualified names | `pg_catalog.pg_advisory_lock` did not pin |
+| `M24.4` | nothing; the cache key simply had fewer fields than the pool key | one tenant's two databases and two roles shared entries |
+
+`pgprox-pool` and `pgprox-route` each carry a written rule against a second
+scanner, in the same words, because the two crates once had one each and
+disagreed about where an `E'...'` string ends. `pgprox-pool/src/params.rs` had a
+third. The rule was right and it was applied to the two places that had already
+been caught; nothing looked for a third.
+
+The other three in that table are subtler and worth naming separately, because
+none of them is a second scanner. They are three callers of the *same* function
+asking it differently: raw tokens, words, words with dots joined. Each choice is
+correct for the caller that made it, and no two of them answer the same question
+about the same text.
+
+**Two are fixed only in part**, and the honest half is which:
+
+- `M24.7` widened a prepared statement's global name from 64 bits to 128, and
+  left the unnamed statement's guard at 64. Widening the name cost nothing,
+  because it is a `String` either way. Widening the guard costs 32 bytes of
+  session future, taking `one_session_costs_less_than_the_slab_buffer_it_no_
+  longer_holds` from 5,112 to 5,144 against a ceiling of 5,120. The ceiling is a
+  constant and non-negotiable 2 says it does not move, so the field carries the
+  measurement and what would have to change first.
+- `M24.7` also **withdrew its own acceptance criterion**. It was filed asking
+  for "a constructed collision rather than an argument", and constructing an
+  FNV-1a-64 collision is a meet-in-the-middle search of roughly 2^32, which is
+  not a unit test. No collision was constructed. The criterion would otherwise
+  have been quietly met by something weaker, which is the failure mode a written
+  acceptance exists to prevent and the one it is most likely to cause.
+
+**The two that were nothing failing.** `M24.5` and `M24.8` are both slow leaks
+with no error attached. The grant cache stopped admitting once full, because an
+entry left only when its own key was looked up again and a rotating token's key
+never is; every connection then made a sidecar RPC, on a declared hot path,
+permanently and only under the load that fills it. `LivePool` never forgot a
+pool key. Neither would ever have appeared in a log.
+
+**One was a capability two documents asserted and no code implemented.**
+`M24.9`: `architecture.md` has credited `pgprox-tls` with cert hot reload since
+M-1 and the crate's own `AGENTS.md` repeated it. `server_config` was called once
+and its answer never changed. This is `M13`'s subject from the other side: not a
+rule with no script, but a capability with no code.
+
+**Test quality came back empty**, which is worth recording as a result rather
+than as silence. Seven test functions in the workspace assert nothing, and six
+of those are "this input does not panic" and "this input does not hang", where
+not panicking is the assertion. The seventh is a `proptest` whose assertion is
+`prop_assert_eq!`.
+
+Every fix was run against a build with the fix removed. Eight negative controls
+across six tasks, and two of them found the test rather than the code:
+`M24.5`'s rate limit and `M24.8`'s waiter guard each had a test that passed
+without them until the control said otherwise.

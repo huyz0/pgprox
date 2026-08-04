@@ -6612,7 +6612,7 @@ recognised so it can be refused rather than read as a version.
 
 ## M24: a reading of every crate, and the nine things it found
 
-- [ ] `M24.0` Plan M24, and give it a gate that passes from this commit.
+- [x] `M24.0` Plan M24, and give it a gate that passes from this commit.
   A read of all sixteen crates against correctness, completeness, design,
   performance and test quality. Nine findings, filed below in the order of what
   they cost rather than the order they were found.
@@ -6726,3 +6726,12 @@ recognised so it can be refused rather than read as a version.
   a rewritten file that does not parse leaves the previous one serving rather
   than taking the listener down, and the gate runs the test rather than looking
   for the file.
+- [x] `M24.10` Close M24. Filed as its own task for the reason `M18.4`,
+  `M19.8`, `M20.9`, `M21.5`, `M22.6` and `M23.2` were: closing a milestone is
+  a claim about the whole of it, and bundling that claim into the last piece
+  of work makes it look like a side effect of that piece rather than a
+  judgement about all of them.
+  Acceptance: the gate passes, the status row says complete, and the section
+  records the four findings that shared one cause, the two that were fixed
+  only in part and say which part, and the one whose acceptance criterion this
+  milestone had to withdraw.

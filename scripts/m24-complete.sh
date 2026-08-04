@@ -57,12 +57,13 @@ run_finding() {
 # backlog and absent from this script is a finding nothing stands behind, and
 # the gate would go on reporting green for the ones that did land.
 #
-# `M24.0` is the planning task and has no test; it is excluded by name rather
-# than by a rule about which tasks have tests, so a second exclusion has to be
-# written down here to exist.
+# Two tasks are about the milestone rather than about a finding, and neither has
+# a test to run: `M24.0` planned it and `M24.10` closed it. Excluded by name
+# rather than by a rule about which tasks have tests, so a third exclusion has
+# to be written down here to exist.
 finished="$(sed -n '/^## M24:/,/^## /p' "$BACKLOG" \
   | sed -n 's/^- \[x\] `\(M24\.[0-9]*\)`.*/\1/p' \
-  | grep -v '^M24\.0$' || true)"
+  | grep -vE '^M24\.(0|10)$' || true)"
 
 if [[ -z "$finished" ]]; then
   ok "no finding has been ticked yet, so none can be unchecked"
