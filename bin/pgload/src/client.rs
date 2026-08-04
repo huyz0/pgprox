@@ -128,6 +128,30 @@ fn sasl_mechanisms(body: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// The answer to `AuthenticationMD5Password`.
+///
+/// `"md5" + hex(md5(hex(md5(password + username)) + salt))`, which is Postgres's
+/// own construction: the inner digest is what the server stores, so the salt is
+/// what stops the stored value being a password equivalent on the wire.
+///
+/// The inner hex is lowercase and that is load-bearing rather than cosmetic. It
+/// is the string the server hashes on its side, so a client that upper-cased it
+/// would compute a different digest and fail with a correct implementation of
+/// everything else.
+fn md5_password(user: &str, password: &str, salt: &[u8]) -> String {
+    use md5::{Digest as _, Md5};
+
+    let mut inner = Md5::new();
+    inner.update(password.as_bytes());
+    inner.update(user.as_bytes());
+    let inner = format!("{:x}", inner.finalize());
+
+    let mut outer = Md5::new();
+    outer.update(inner.as_bytes());
+    outer.update(salt);
+    format!("md5{:x}", outer.finalize())
+}
+
 /// The payload of a SASL challenge or result, after the four-byte subtype.
 ///
 /// `from_utf8` rather than `from_utf8_lossy`: every field of a SCRAM message is
@@ -353,6 +377,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
                     AuthRequest::CleartextPassword => {
                         self.write.clear();
                         encode_frontend::password_message(&mut self.write, password);
+                        self.send().await?;
+                    }
+                    AuthRequest::Md5Password => {
+                        // `pgcat` offers clients nothing else, and an arm of
+                        // the comparison is worth more than the point that
+                        // would be made by refusing. `M32.6`.
+                        //
+                        // The proxy still refuses MD5, for the reason on its
+                        // own dial path: this is a measurement tool, and it has
+                        // to speak what the thing it measures asks for.
+                        let salt = body.get(4..8).ok_or_else(|| {
+                            SessionError::Auth("the md5 request carried no salt".to_owned())
+                        })?;
+                        let answer = md5_password(user, password, salt);
+                        self.write.clear();
+                        encode_frontend::password_message(&mut self.write, &answer);
                         self.send().await?;
                     }
                     AuthRequest::Sasl => {
@@ -614,23 +654,61 @@ mod tests {
     async fn a_method_this_client_cannot_answer_is_reported_by_name() {
         // Rather than hanging, which is what a client that ignored the request
         // would do, and which reads as a proxy that stopped answering.
+        //
+        // GSSAPI, subtype 7. This asked for MD5 until `M32.6`, which taught
+        // this client to answer it because `pgcat` offers nothing else. The
+        // test is about the refusal rather than about MD5, so it now names a
+        // method that is still refused instead of being deleted.
         let (client, mut server) = pair();
         tokio::spawn(async move {
             server.take_startup().await;
-            // Built by hand: this crate encodes only what the proxy sends,
-            // and nothing in the proxy asks a client for MD5.
+            // Built by hand: this crate encodes only what the proxy sends, and
+            // the proxy never asks a client for GSSAPI.
             let mut out = vec![Tag::AUTHENTICATION.get()];
-            out.extend_from_slice(&12_u32.to_be_bytes());
-            out.extend_from_slice(&5_i32.to_be_bytes());
-            out.extend_from_slice(&[1, 2, 3, 4]);
+            out.extend_from_slice(&8_u32.to_be_bytes());
+            out.extend_from_slice(&7_i32.to_be_bytes());
             server.send(&out).await;
             server
         });
 
         let error = Session::start(client, "u", "d", "pw").await.unwrap_err();
         assert!(
-            matches!(error, SessionError::Auth(ref detail) if detail.contains("Md5")),
+            matches!(error, SessionError::Auth(ref detail) if detail.contains('7')),
             "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_md5_request_is_answered_with_the_salted_digest() {
+        // The hermetic half of `M32.6`. The run against `pgcat` is the other
+        // half and it needs a container; this needs nothing and fails if the
+        // answer stops being sent at all.
+        let (client, mut server) = pair();
+        let serving = tokio::spawn(async move {
+            server.take_startup().await;
+            let mut out = vec![Tag::AUTHENTICATION.get()];
+            out.extend_from_slice(&12_u32.to_be_bytes());
+            out.extend_from_slice(&5_i32.to_be_bytes());
+            out.extend_from_slice(&[1, 2, 3, 4]);
+            server.send(&out).await;
+
+            let (tag, body) = server.take_body().await;
+            let mut out = Vec::new();
+            encode::authentication_ok(&mut out);
+            server.send(&out).await;
+            server.ready().await;
+            (tag, body)
+        });
+
+        Session::start(client, "acme_app", "tenant_acme", "acme-password")
+            .await
+            .unwrap();
+
+        let (tag, body) = serving.await.unwrap();
+        assert_eq!(tag, Tag::PASSWORD);
+        assert_eq!(
+            String::from_utf8(body).unwrap().trim_end_matches('\0'),
+            md5_password("acme_app", "acme-password", &[1, 2, 3, 4])
         );
     }
 
@@ -1001,6 +1079,45 @@ mod tests {
         encode::authentication_ok(&mut out);
         server.send(&out).await;
         server.ready().await;
+    }
+
+    #[test]
+    fn the_md5_answer_is_postgres_own_construction() {
+        // Against a value Postgres computed, not one this code did. Taken from
+        // a running postgres:17-alpine:
+        //
+        //   SELECT 'md5' || md5(
+        //     convert_to(md5('acme-password' || 'acme_app'), 'UTF8')
+        //     || '\x01020304'::bytea);
+        //
+        // `convert_to` is what makes that the right query, and leaving it out
+        // is how this expectation was wrong twice before it was right.
+        // `text || bytea` coerces the salt to its text form, so the server
+        // hashes the eleven characters `\x01020304` rather than the four
+        // bytes, and its answer then disagrees with a correct client. The
+        // implementation below never changed.
+        //
+        // The value comes from the server rather than from here because a
+        // test that recomputed the same formula in the same order would pass
+        // for a wrong formula. `M32.6`.
+        assert_eq!(
+            md5_password("acme_app", "acme-password", &[1, 2, 3, 4]),
+            "md5f61dfd93e36618e09a57836829fd2073"
+        );
+
+        // The salt is what makes two connections differ. Without it the answer
+        // would be a password equivalent anybody on the wire could replay.
+        assert_ne!(
+            md5_password("acme_app", "acme-password", &[1, 2, 3, 4]),
+            md5_password("acme_app", "acme-password", &[4, 3, 2, 1])
+        );
+
+        // And the username is in the inner digest, so the same password under
+        // two roles is two different stored values.
+        assert_ne!(
+            md5_password("acme_app", "pw", &[0; 4]),
+            md5_password("other", "pw", &[0; 4])
+        );
     }
 
     #[tokio::test]

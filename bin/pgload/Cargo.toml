@@ -25,6 +25,17 @@ pgprox-load = { path = "../../crates/pgprox-load" }
 # `ClientExchange` to authenticate to upstream servers. `M32.1`.
 pgprox-auth = { path = "../../crates/pgprox-auth" }
 pgprox-core = { path = "../../crates/pgprox-core" }
+# MD5, for `pgcat`, which offers clients nothing else. `M32.6`.
+#
+# A dependency rather than sixty lines of RFC 1321 here. Writing a hash by hand
+# to avoid a crate trades a supply-chain risk that can be audited for a
+# correctness risk that has to be got exactly right, and this repo's third
+# non-negotiable is about not claiming things work.
+#
+# It reaches nothing but this binary. `product/architecture.md` already says
+# `bin/pgload` is never a dependency of the proxy, and the proxy still refuses
+# MD5 for the reason in its dial path.
+md-5 = "0.10"
 pgprox-proto = { path = "../../crates/pgprox-proto" }
 thiserror.workspace = true
 # TLS for the load client. `ring` is not in the picture: the workspace's

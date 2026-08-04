@@ -7156,4 +7156,20 @@ recognised so it can be refused rather than read as a version.
 - [ ] `M32.4` The run, recorded, including what it does not say.
   Acceptance: a document in `product/perf` with every arm's figures, the
   configuration each ran under, and the arms it is not fair to compare.
-- [ ] `M32.5` Close M32.
+- [x] `M32.6` `pgcat` only offers MD5 to clients, so `M32.1` was half the work.
+  Found by running it: `pgcat` answers a startup packet with
+  `AuthenticationMD5Password` and its configuration has no client-facing
+  alternative. Its own documentation says so in passing, describing `auth_query`
+  as fetching "the hash used for md5 authentication". The binary does carry
+  `SCRAM-SHA-256`, and that is for its own connections to Postgres.
+  This project declines MD5 on purpose and the reason is in
+  `pgprox-session`'s dial path: md5 was deprecated in Postgres 14, and adding it
+  would put a second hash implementation in the proxy for a server
+  configuration nobody should run. That argument is about the proxy. `pgload`
+  is a measurement tool that has to speak what the thing it measures asks for,
+  and refusing here would mean dropping an arm of the comparison rather than
+  making a point.
+  Acceptance: `pgload` answers `AuthenticationMD5Password`, verified against
+  `pgcat` rather than only against a fake, the digest is a dependency rather
+  than a hash written here, and the proxy still refuses MD5.
+- [ ] `M32.7` Close M32.

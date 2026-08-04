@@ -43,7 +43,7 @@ run_finding() {
 # --- every finished task is checked here -------------------------------------
 finished="$(sed -n '/^## M32:/,/^## /p' "$BACKLOG" \
   | sed -n 's/^- \[x\] `\(M32\.[0-9]*\)`.*/\1/p' \
-  | grep -vE '^M32\.(0|5)$' || true)"
+  | grep -vE '^M32\.(0|7)$' || true)"
 
 if [[ -z "$finished" ]]; then
   ok "no finding has been ticked yet, so none can be unchecked"
@@ -88,5 +88,30 @@ run_finding pgload \
 # against the server half, so a divergence fails there rather than here.
 run_finding pgprox dial::tests::the_client_half_and_the_server_half_agree \
   "the proxy drives the same exchange, and it agrees with the server half"
+
+# --- M32.6: the client answers MD5, because pgcat offers nothing else ---------
+#
+# Against a value Postgres computed rather than one this code did. A test that
+# recomputed the same formula in the same order would pass for a wrong formula,
+# and the first two expectations written here were both wrong.
+run_finding pgload client::tests::the_md5_answer_is_postgres_own_construction \
+  "the md5 answer is the construction Postgres computes"
+run_finding pgload client::tests::an_md5_request_is_answered_with_the_salted_digest \
+  "and an md5 request is answered with it"
+
+# The refusal is still there for a method this client genuinely cannot answer.
+# That test named MD5 until this milestone, and it was repurposed rather than
+# deleted: its subject is the refusal, not the mechanism.
+run_finding pgload client::tests::a_method_this_client_cannot_answer_is_reported_by_name \
+  "and a method it cannot answer is still refused by name"
+
+# The proxy is not the load client and still refuses MD5, for the reason on its
+# own dial path. `M32.6` is about a measurement tool speaking what it measures.
+if grep -q 'the server asked for md5, which this proxy does not implement' \
+    crates/pgprox-session/src/connect.rs; then
+  ok "the proxy still refuses md5"
+else
+  fail "the proxy no longer refuses md5, which M32.6 was explicitly not about"
+fi
 
 finish
