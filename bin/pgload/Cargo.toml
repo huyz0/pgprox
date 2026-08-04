@@ -20,6 +20,11 @@ path = "src/main.rs"
 
 [dependencies]
 pgprox-load = { path = "../../crates/pgprox-load" }
+# SCRAM, so a load run can reach a pooler that asks for it. The exchange is
+# this crate's, not a second one written here: `bin/pgprox` drives the same
+# `ClientExchange` to authenticate to upstream servers. `M32.1`.
+pgprox-auth = { path = "../../crates/pgprox-auth" }
+pgprox-core = { path = "../../crates/pgprox-core" }
 pgprox-proto = { path = "../../crates/pgprox-proto" }
 thiserror.workspace = true
 # TLS for the load client. `ring` is not in the picture: the workspace's
@@ -31,7 +36,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-pgprox-core = { path = "../../crates/pgprox-core" }
+# Only the SCRAM tests, which decode the proof the client sent so the fake
+# server can verify it with `pgprox-auth`'s server half.
+base64 = "0.22"
 # A certificate for the TLS tests. Generated per run rather than checked in,
 # for the same reason the e2e stack generates its own.
 rcgen = "0.14"

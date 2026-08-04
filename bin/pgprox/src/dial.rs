@@ -13,7 +13,6 @@
 //! fell back to plaintext would move a tenant's credentials onto the wire in
 //! the clear and report nothing.
 
-use base64::Engine as _;
 use std::sync::Arc;
 
 use pgprox_auth::scram;
@@ -159,23 +158,23 @@ impl Upstream for TcpUpstream {
     }
 }
 
-/// The client half of SCRAM, over `pgprox-auth`'s arithmetic.
+/// The client half of SCRAM, as `pgprox-session`'s trait wants it.
 ///
-/// The exchange's sequencing lives in `pgprox-session` and the HMAC and PBKDF2
-/// live in `pgprox-auth`, and this is the only place both are visible.
+/// The exchange itself is `pgprox_auth::ClientExchange` and this is a wrapper
+/// over it. The split is a layering one rather than a design one:
+/// [`UpstreamScram`] lives in `pgprox-session`, which `pgprox-auth` may not
+/// depend on, so the type is shared and the trait implementation is not.
+///
+/// It was the exchange until `M32.1`, when `bin/pgload` needed the same three
+/// messages to reach a pooler that asks for SCRAM. Two implementations of an
+/// authentication exchange is a worse version of the mistake
+/// `pgprox_core::sql` exists to prevent.
 #[derive(Debug, Default)]
-pub struct ClientScram {
-    nonce: String,
-    client_first_bare: String,
-    keys: Option<scram::ScramKeys>,
-    auth_message: String,
-}
+pub struct ClientScram(scram::ClientExchange);
 
 impl UpstreamScram for ClientScram {
     fn client_first(&mut self, user: &str) -> String {
-        self.nonce = scram::generate_nonce();
-        self.client_first_bare = scram::client_first_bare(user, &self.nonce);
-        scram::client_first(user, &self.nonce)
+        self.0.client_first(user)
     }
 
     fn client_final(
@@ -183,34 +182,13 @@ impl UpstreamScram for ClientScram {
         password: &SecretString,
         server_first: &str,
     ) -> Result<String, String> {
-        let parsed =
-            scram::parse_server_first(server_first, &self.nonce).map_err(|err| err.to_string())?;
-        let keys = scram::ScramKeys::derive(
-            password.expose().as_bytes(),
-            &parsed.salt,
-            parsed.iterations,
-        )
-        .map_err(|err| err.to_string())?;
-
-        let without_proof = scram::client_final_without_proof(&parsed.nonce);
-        self.auth_message =
-            scram::auth_message(&self.client_first_bare, server_first, &without_proof);
-        let proof = scram::client_proof(&keys, &self.auth_message);
-        self.keys = Some(keys);
-
-        Ok(format!(
-            "{without_proof},p={}",
-            base64::engine::general_purpose::STANDARD.encode(proof)
-        ))
+        self.0
+            .client_final(password, server_first)
+            .map_err(|err| err.to_string())
     }
 
     fn verify(&mut self, server_final: &str) -> Result<(), String> {
-        let keys = self
-            .keys
-            .as_ref()
-            .ok_or("the server answered before it was asked")?;
-        scram::verify_server_final(server_final, keys, &self.auth_message)
-            .map_err(|err| err.to_string())
+        self.0.verify(server_final).map_err(|err| err.to_string())
     }
 }
 
@@ -237,6 +215,10 @@ pub async fn retire(connections: Vec<Upstreamed<Stream>>) {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    // The trait, for the `encode` and `decode` the SCRAM tests below call. It
+    // was imported at module level until `M32.1` moved the exchange into
+    // `pgprox-auth`, after which nothing outside these tests encodes anything.
+    use base64::Engine as _;
     use pgprox_core::ids::ServerId;
     use tokio_rustls::rustls::RootCertStore;
 

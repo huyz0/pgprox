@@ -28,4 +28,4 @@ pub mod scram;
 pub use cache::{CacheConfig, CachingResolver};
 pub use client::{SidecarConfig, SidecarResolver};
 pub use jwt::{ALLOWED_ALGORITHMS, check_algorithm};
-pub use scram::{ScramError, ScramKeys};
+pub use scram::{ClientExchange, SCRAM_SHA_256, ScramError, ScramKeys};

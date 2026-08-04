@@ -19,6 +19,8 @@
 use pgprox_load::sampler::Transaction;
 use std::collections::HashSet;
 
+use pgprox_auth::scram::{ClientExchange, SCRAM_SHA_256};
+use pgprox_core::secret::SecretString;
 use pgprox_proto::backend::{AuthRequest, BackendMessage};
 use pgprox_proto::frame::{Decoded, Frame, Tag, decode};
 use pgprox_proto::{backend, encode_frontend};
@@ -111,16 +113,48 @@ pub struct Session<S> {
     prepared: HashSet<String>,
 }
 
+/// The mechanisms an `AuthenticationSASL` body offers.
+///
+/// The body is the four-byte subtype and then a run of null-terminated names
+/// ending in an empty one. Parsed rather than assumed, so a server offering
+/// only `SCRAM-SHA-256-PLUS` is refused by name instead of being answered with
+/// a mechanism it did not list.
+fn sasl_mechanisms(body: &[u8]) -> Vec<String> {
+    body.get(4..)
+        .unwrap_or_default()
+        .split(|byte| *byte == 0)
+        .map(|name| String::from_utf8_lossy(name).into_owned())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// The payload of a SASL challenge or result, after the four-byte subtype.
+///
+/// `from_utf8` rather than `from_utf8_lossy`: every field of a SCRAM message is
+/// base64 or a bare token, so bytes that are not UTF-8 mean this is not a SCRAM
+/// message, and replacing them would hand the exchange something that fails
+/// later with a worse error.
+fn sasl_payload(body: &[u8]) -> Result<String, SessionError> {
+    let bytes = body.get(4..).unwrap_or_default();
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|_| SessionError::Auth("the SASL payload is not UTF-8".to_owned()))
+}
+
 impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
     /// Sends the startup packet and answers whatever the server asks for.
     ///
     /// # Errors
     ///
-    /// Fails on a socket error, on a refusal, and on any authentication
-    /// method other than "none" or "send it in the clear". MD5 and SCRAM are
+    /// Fails on a socket error, on a refusal, and on any authentication method
+    /// other than "none", "send it in the clear", and SCRAM-SHA-256. MD5 is
     /// refused by name rather than silently: a load client that could not
     /// authenticate has to say why, since the alternative is a run reporting
     /// zero transactions and no reason.
+    ///
+    /// SCRAM was on that list until `M32.1`. It is here because `pgbouncer` and
+    /// `pgcat` both authenticate clients that way, so without it there was no
+    /// comparison to run against either.
     pub async fn start(
         io: S,
         user: &str,
@@ -147,7 +181,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         session.io.write_all(&packet).await?;
         session.io.flush().await?;
 
-        session.authenticate(password).await?;
+        session.authenticate(user, password).await?;
         Ok(session)
     }
 
@@ -295,7 +329,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
         outcome
     }
 
-    async fn authenticate(&mut self, password: &str) -> Result<(), SessionError> {
+    async fn authenticate(&mut self, user: &str, password: &str) -> Result<(), SessionError> {
+        // Built on the first `Sasl` and kept for the two messages after it. The
+        // exchange is `pgprox-auth`'s, which is where the proxy's own client
+        // half lives too: one SCRAM client in the workspace, because two would
+        // be two chances to get an authentication exchange wrong. `M32.1`.
+        let mut exchange = ClientExchange::default();
+        let secret = SecretString::new(password.to_owned());
+
         loop {
             let (tag, body) = self.frame().await?;
             let frame = Frame::new(tag, &body);
@@ -312,8 +353,47 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
                     AuthRequest::CleartextPassword => {
                         self.write.clear();
                         encode_frontend::password_message(&mut self.write, password);
-                        self.io.write_all(&self.write).await?;
-                        self.io.flush().await?;
+                        self.send().await?;
+                    }
+                    AuthRequest::Sasl => {
+                        // The body lists what the server offers and this client
+                        // has one mechanism, so a server offering only
+                        // `SCRAM-SHA-256-PLUS` is refused by name below rather
+                        // than answered with something it did not ask for.
+                        let offered = sasl_mechanisms(&body);
+                        if !offered.iter().any(|m| m == SCRAM_SHA_256) {
+                            return Err(SessionError::Auth(format!(
+                                "the server offers {offered:?} and this client has {SCRAM_SHA_256}"
+                            )));
+                        }
+                        let first = exchange.client_first(user);
+                        self.write.clear();
+                        encode_frontend::sasl_initial_response(
+                            &mut self.write,
+                            SCRAM_SHA_256,
+                            &first,
+                        );
+                        self.send().await?;
+                    }
+                    AuthRequest::SaslContinue => {
+                        let server_first = sasl_payload(&body)?;
+                        let final_message = exchange
+                            .client_final(&secret, &server_first)
+                            .map_err(|err| SessionError::Auth(err.to_string()))?;
+                        self.write.clear();
+                        encode_frontend::sasl_response(&mut self.write, &final_message);
+                        self.send().await?;
+                    }
+                    AuthRequest::SaslFinal => {
+                        // Checked rather than skipped. SCRAM is mutual, and a
+                        // client that does not verify the server's signature
+                        // completes a handshake with whatever answered the
+                        // socket. A load client has no secrets to lose and it
+                        // is still the wrong thing to demonstrate.
+                        let server_final = sasl_payload(&body)?;
+                        exchange
+                            .verify(&server_final)
+                            .map_err(|err| SessionError::Auth(err.to_string()))?;
                     }
                     other => {
                         return Err(SessionError::Auth(format!(
@@ -324,6 +404,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
                 _ => {}
             }
         }
+    }
+
+    /// Writes what is queued and flushes it.
+    async fn send(&mut self) -> Result<(), SessionError> {
+        self.io.write_all(&self.write).await?;
+        self.io.flush().await?;
+        Ok(())
     }
 
     /// Reads one tagged frame, filling from the socket as needed.
@@ -390,6 +477,20 @@ mod tests {
                 self.seen.push(text.trim_end_matches('\0').to_owned());
             }
             tag
+        }
+
+        /// Reads one frame and hands back its tag and body.
+        ///
+        /// `take` records a `Query`'s SQL and throws the rest away, which is
+        /// what every test before `M32.1` wanted. A SASL exchange needs the
+        /// bytes.
+        async fn take_body(&mut self) -> (Tag, Vec<u8>) {
+            let mut header = [0_u8; 5];
+            self.io.read_exact(&mut header).await.unwrap();
+            let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+            let mut body = vec![0; len - 4];
+            self.io.read_exact(&mut body).await.unwrap();
+            (Tag(header[0]), body)
         }
 
         async fn take_startup(&mut self) {
@@ -828,5 +929,136 @@ mod tests {
         let mut session = Session::start(client, "u", "d", "").await.unwrap();
         session.terminate().await.unwrap();
         assert_eq!(serving.await.unwrap(), Tag::TERMINATE);
+    }
+
+    /// A server that runs the other half of SCRAM, with real arithmetic.
+    ///
+    /// `pgprox-auth`'s server side, so the two halves of the exchange are the
+    /// two halves this workspace ships rather than a fake agreeing with itself.
+    /// A client that computed the proof wrongly fails `verify_client_proof`
+    /// here, and a client that skipped verification would still pass, which is
+    /// why the test below also drives a server whose signature is wrong.
+    async fn serve_scram(server: &mut FakeServer, password: &str, sign_correctly: bool) {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::STANDARD as BASE64;
+
+        server.take_startup().await;
+        let mut out = Vec::new();
+        encode::authentication_sasl(&mut out, &[SCRAM_SHA_256]);
+        server.send(&out).await;
+
+        // The client-first message, as the client sent it.
+        let (_, body) = server.take_body().await;
+        let initial = String::from_utf8(body).unwrap();
+        let client_first = initial
+            .split_once('\0')
+            .map_or(initial.clone(), |(_, rest)| {
+                // Mechanism, then a four-byte length, then the payload.
+                rest.get(4..).unwrap_or_default().to_owned()
+            });
+        let client_first_bare = client_first.trim_start_matches("n,,").to_owned();
+        let client_nonce = client_first_bare
+            .rsplit_once("r=")
+            .map(|(_, nonce)| nonce.to_owned())
+            .unwrap();
+
+        let salt = b"pgload-salt";
+        let iterations = 4_096;
+        let nonce = format!("{client_nonce}SERVERPART");
+        let server_first = format!("r={nonce},s={},i={iterations}", BASE64.encode(salt));
+
+        let mut out = Vec::new();
+        encode::authentication_sasl_continue(&mut out, &server_first);
+        server.send(&out).await;
+
+        // The client-final message, which is the one carrying the proof.
+        //
+        // No length prefix on this one. `SASLInitialResponse` names a mechanism
+        // and declares its payload length; `SASLResponse` is the payload and
+        // nothing else, and slicing four bytes off it here truncated `c=biws`
+        // to `iws` and failed verification with the arithmetic working
+        // perfectly.
+        let (_, body) = server.take_body().await;
+        let client_final = String::from_utf8(body).unwrap();
+        let (without_proof, proof) = client_final.rsplit_once(",p=").unwrap();
+
+        let keys =
+            pgprox_auth::scram::ScramKeys::derive(password.as_bytes(), salt, iterations).unwrap();
+        let auth_message =
+            pgprox_auth::scram::auth_message(&client_first_bare, &server_first, without_proof);
+
+        let proof = BASE64.decode(proof).unwrap();
+        pgprox_auth::scram::verify_client_proof(&proof, &keys.stored_key, &auth_message).unwrap();
+
+        let signature = if sign_correctly {
+            pgprox_auth::scram::server_signature(&keys, &auth_message).to_vec()
+        } else {
+            vec![0_u8; 32]
+        };
+
+        let mut out = Vec::new();
+        encode::authentication_sasl_final(&mut out, &format!("v={}", BASE64.encode(signature)));
+        encode::authentication_ok(&mut out);
+        server.send(&out).await;
+        server.ready().await;
+    }
+
+    #[tokio::test]
+    async fn a_scram_handshake_completes_and_leaves_a_usable_session() {
+        // `M32.1`. Without this there is no comparison to run: pgbouncer and
+        // pgcat both authenticate clients with SCRAM, and this client spoke
+        // trust and cleartext only.
+        let (client, mut server) = pair();
+        let serving = tokio::spawn(async move {
+            serve_scram(&mut server, "s3cret", true).await;
+        });
+
+        let session = Session::start(client, "acme_app", "tenant_acme", "s3cret").await;
+        assert!(session.is_ok(), "{:?}", session.err());
+        serving.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_server_that_cannot_prove_it_knew_the_password_is_refused() {
+        // SCRAM is mutual and the client half of that is easy to leave out,
+        // because a handshake that skips it still succeeds against a real
+        // server. This is the arm where the server signature is wrong.
+        let (client, mut server) = pair();
+        let serving = tokio::spawn(async move {
+            serve_scram(&mut server, "s3cret", false).await;
+        });
+
+        let Err(error) = Session::start(client, "acme_app", "tenant_acme", "s3cret").await else {
+            panic!("a server that signed wrongly was accepted");
+        };
+        assert!(
+            matches!(&error, SessionError::Auth(reason) if reason.contains("verification")),
+            "{error:?}"
+        );
+        serving.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_mechanism_this_client_does_not_have_is_refused_by_name() {
+        // The refusal has to name what was offered. A load run that reports
+        // zero transactions and no reason is a run nobody can act on, which is
+        // what the doc comment on `start` has said since this client existed.
+        let (client, mut server) = pair();
+        let serving = tokio::spawn(async move {
+            server.take_startup().await;
+            let mut out = Vec::new();
+            encode::authentication_sasl(&mut out, &["SCRAM-SHA-256-PLUS"]);
+            server.send(&out).await;
+        });
+
+        let Err(error) = Session::start(client, "u", "d", "pw").await else {
+            panic!("a mechanism this client cannot answer was accepted");
+        };
+        assert!(
+            matches!(&error, SessionError::Auth(reason)
+                if reason.contains("SCRAM-SHA-256-PLUS") && reason.contains("SCRAM-SHA-256")),
+            "{error:?}"
+        );
+        serving.await.unwrap();
     }
 }

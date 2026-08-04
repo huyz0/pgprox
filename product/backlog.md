@@ -7119,7 +7119,7 @@ recognised so it can be refused rather than read as a version.
   pooler that does not coordinate at all.
   Acceptance: this list, a roadmap section, and `scripts/m32-complete.sh` wired
   into CI.
-- [ ] `M32.1` `bin/pgload` cannot authenticate to either of the other two. It
+- [x] `M32.1` `bin/pgload` cannot authenticate to either of the other two. It
   speaks trust and cleartext only, and says so in a comment that calls MD5 and
   SCRAM "not implemented, and a client that cannot authenticate has to say
   why". `pgbouncer` and `pgcat` both authenticate clients with SCRAM against a

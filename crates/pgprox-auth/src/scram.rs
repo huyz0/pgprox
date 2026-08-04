@@ -19,6 +19,7 @@ use std::num::NonZeroU32;
 use aws_lc_rs::{digest, hmac, pbkdf2};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use pgprox_core::secret::SecretString;
 use subtle::ConstantTimeEq;
 
 /// Length of a SHA-256 digest, and therefore of every SCRAM key.
@@ -80,6 +81,14 @@ pub enum ScramError {
     /// The proof or signature did not verify.
     #[error("SCRAM verification failed")]
     VerificationFailed,
+    /// A message arrived before the one it depends on.
+    ///
+    /// Reached when a server sends its final message without having sent a
+    /// challenge, so no keys were ever derived. Its own variant rather than a
+    /// [`ScramError::Malformed`], because the message may be perfectly well
+    /// formed and it is the sequence that is wrong.
+    #[error("a SCRAM message arrived before the exchange was ready for it")]
+    OutOfOrder,
 }
 
 /// Computes `HMAC-SHA-256(key, message)`.
@@ -380,6 +389,97 @@ pub fn generate_nonce() -> String {
         return String::new();
     }
     BASE64.encode(bytes)
+}
+
+/// The SASL mechanism this module implements.
+///
+/// `pgprox-session` has a constant of the same value making a different claim:
+/// which mechanism the proxy *offers* to its clients, with `ADR 0014`'s reason
+/// for declining `SCRAM-SHA-256-PLUS` attached. This one names what the code
+/// below computes. They are not shared because `pgprox-session` does not depend
+/// on this crate, and adding the dependency to move a thirteen-byte literal
+/// would be the wrong trade.
+pub const SCRAM_SHA_256: &str = "SCRAM-SHA-256";
+
+/// The client half of a SCRAM exchange, sequenced across its three messages.
+///
+/// Everything above is a function over bytes. This is the small amount of state
+/// that has to survive between them: the nonce this client chose, the message
+/// the server has to sign, and the keys derived once the salt arrives.
+///
+/// # Why this is here and not in the two places that use it
+///
+/// It was in one of them. `bin/pgprox` had it, because the proxy authenticates
+/// to upstream servers, and `M32.1` needed the same three messages in
+/// `bin/pgload` so a load run could reach a pooler that asks for SCRAM. Writing
+/// them twice is the mistake `pgprox_core::sql` exists to prevent, one category
+/// up: two implementations of a rule are two chances to get it wrong, and an
+/// authentication exchange is a worse place to be wrong than a lexer.
+///
+/// The trait `bin/pgprox` drives this through lives in `pgprox-session`, which
+/// this crate may not depend on, so what is shared is the type and the trait
+/// implementation stays a wrapper.
+///
+/// # It verifies the server too
+///
+/// [`ClientExchange::verify`] is not optional politeness. SCRAM is mutual: the
+/// server proves it knew the password by signing the same auth message, and a
+/// client that skips the check will complete a handshake with anything that
+/// answered the socket.
+#[derive(Debug, Default)]
+pub struct ClientExchange {
+    nonce: String,
+    client_first_bare: String,
+    keys: Option<ScramKeys>,
+    auth_message: String,
+}
+
+impl ClientExchange {
+    /// The client-first message, with a fresh nonce.
+    pub fn client_first(&mut self, user: &str) -> String {
+        self.nonce = generate_nonce();
+        self.client_first_bare = client_first_bare(user, &self.nonce);
+        client_first(user, &self.nonce)
+    }
+
+    /// The client-final message, given what the server sent back.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the server's message is malformed, when its nonce does not
+    /// extend the one this exchange sent, or when the iteration count is
+    /// outside what [`MAX_ITERATIONS`] allows.
+    pub fn client_final(
+        &mut self,
+        password: &SecretString,
+        server_first: &str,
+    ) -> Result<String, ScramError> {
+        let parsed = parse_server_first(server_first, &self.nonce)?;
+        let keys = ScramKeys::derive(
+            password.expose().as_bytes(),
+            &parsed.salt,
+            parsed.iterations,
+        )?;
+
+        let without_proof = client_final_without_proof(&parsed.nonce);
+        self.auth_message = auth_message(&self.client_first_bare, server_first, &without_proof);
+        let proof = client_proof(&keys, &self.auth_message);
+        self.keys = Some(keys);
+
+        Ok(format!("{without_proof},p={}", BASE64.encode(proof)))
+    }
+
+    /// Checks the server proved it knew the password too.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the signature does not match, which means something other
+    /// than the database this connection meant to reach is answering, and when
+    /// called before [`ClientExchange::client_final`] has derived the keys.
+    pub fn verify(&mut self, server_final: &str) -> Result<(), ScramError> {
+        let keys = self.keys.as_ref().ok_or(ScramError::OutOfOrder)?;
+        verify_server_final(server_final, keys, &self.auth_message)
+    }
 }
 
 #[cfg(test)]

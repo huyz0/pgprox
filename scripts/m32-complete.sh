@@ -63,4 +63,30 @@ fi
 
 # --- the findings that have landed -------------------------------------------
 
+# --- M32.1: the load client can authenticate the way the other two require ----
+#
+# The handshake, against a fake server running `pgprox-auth`'s own server half,
+# so the two ends of the exchange are the two ends this workspace ships rather
+# than a fake agreeing with itself.
+run_finding pgload \
+  client::tests::a_scram_handshake_completes_and_leaves_a_usable_session \
+  "the load client completes a SCRAM handshake"
+
+# SCRAM is mutual and the client half of that is the easy part to leave out,
+# because a handshake that skips it still succeeds against an honest server.
+run_finding pgload \
+  client::tests::a_server_that_cannot_prove_it_knew_the_password_is_refused \
+  "and refuses a server that cannot prove it knew the password"
+
+# A run that reports zero transactions and no reason is a run nobody can act on.
+run_finding pgload \
+  client::tests::a_mechanism_this_client_does_not_have_is_refused_by_name \
+  "and names the mechanism when it cannot answer one"
+
+# One SCRAM client exchange in the workspace, not two. `bin/pgprox` drives the
+# same type through `pgprox-session`'s trait, and its own test runs that half
+# against the server half, so a divergence fails there rather than here.
+run_finding pgprox dial::tests::the_client_half_and_the_server_half_agree \
+  "the proxy drives the same exchange, and it agrees with the server half"
+
 finish
