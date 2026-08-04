@@ -83,4 +83,20 @@ fi
 
 # --- the findings that have landed -------------------------------------------
 
+# --- M24.1: a SET after a semicolon is recorded ------------------------------
+run_finding pgprox-pool \
+  params::tests::a_set_after_a_semicolon_is_recorded_too \
+  "a SET after a semicolon reaches the session's parameters"
+run_finding pgprox-pool \
+  params::tests::every_replayable_set_in_a_string_is_recorded_wherever_it_sits \
+  "no replayable SET is left both unrecorded and unpinned"
+run_finding pgprox-pool \
+  params::tests::a_reset_after_a_semicolon_is_heard_too \
+  "a RESET after a semicolon is heard rather than replayed over"
+# The split itself, in the crate that owns it. `M22.7`: a crate's decisions are
+# tested in that crate, and where a statement ends is `pgprox-core`'s decision.
+run_finding pgprox-core \
+  sql::tests::a_statement_is_split_on_a_separator_and_not_on_data \
+  "a semicolon inside quoted text does not split a statement"
+
 finish

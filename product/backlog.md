@@ -6623,7 +6623,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the roadmap has an M24 section and a status row, this list is
   written, and `scripts/m24-complete.sh` exists, is named in CI, and passes on
   this commit by checking what has landed rather than what is planned.
-- [ ] `M24.1` A `SET` after a semicolon is neither replayed nor pinned.
+- [x] `M24.1` A `SET` after a semicolon is neither replayed nor pinned.
   `SessionParams::observe_statement` calls `ParsedSet::parse`, which reads the
   first statement of the string and stops. `PinState::observe_statement` reads
   every statement. So `SET statement_timeout='5s'; SET search_path=tenant1`

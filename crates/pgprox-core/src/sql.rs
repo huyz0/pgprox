@@ -182,6 +182,62 @@ impl<'a> Iterator for Lexer<'a> {
     }
 }
 
+/// Each statement in `sql`, as the text between the separators.
+///
+/// [`statement_words`] is the shape a caller matching keywords wants, and it
+/// drops quoted text on purpose. A caller that needs the statement's own text,
+/// values and all, wants this instead: the split is the part that has to be
+/// right about lexical structure, and the part nobody should write twice.
+///
+/// The separators are not included, and a run of them contributes nothing, so
+/// a trailing `;` does not produce an empty statement.
+///
+/// ```
+/// use pgprox_core::sql::statements;
+///
+/// assert_eq!(statements("SET a = 1; SET b = 2"), ["SET a = 1", " SET b = 2"]);
+///
+/// // A semicolon inside a string is data, not a separator.
+/// assert_eq!(statements("SET a = 'x; y'"), ["SET a = 'x; y'"]);
+/// ```
+#[must_use]
+pub fn statements(sql: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut lexer = Lexer::new(sql);
+    let mut start = 0;
+
+    loop {
+        // Taken before the token is consumed, so a separator's own offset is
+        // knowable: the lexer only ever moves forward through this one string,
+        // so what is left says where it is.
+        let remaining = lexer.rest().len();
+        match lexer.next() {
+            Some(Token::Semicolon) => {
+                push_statement(&mut found, &sql[start..sql.len() - remaining]);
+                start = sql.len() - lexer.rest().len();
+            }
+            Some(_) => {}
+            None => break,
+        }
+    }
+
+    push_statement(&mut found, &sql[start..]);
+    found
+}
+
+/// Adds a statement unless it holds nothing a parser could read.
+///
+/// Trivia only, which is what a trailing semicolon and the gap between two of
+/// them leave behind. Checked with the lexer rather than by trimming, so a
+/// statement that is nothing but a comment is dropped for the same reason.
+fn push_statement<'a>(found: &mut Vec<&'a str>, text: &'a str) {
+    let mut lexer = Lexer::new(text);
+    lexer.skip_trivia();
+    if lexer.has_more() {
+        found.push(text);
+    }
+}
+
 /// The words of each statement, lowercased, with quoted text left out.
 ///
 /// The shape most callers want: keyword matching that a string literal cannot
@@ -435,6 +491,78 @@ mod tests {
     /// it. A quote boundary in the wrong place is a write classified as a read,
     /// or a `LISTEN` inside a string literal pinning a session that never asked
     /// for one.
+    #[test]
+    fn a_statement_is_split_on_a_separator_and_not_on_data() {
+        // The split `statement_words` already does internally, exposed for a
+        // caller that needs the text rather than the keywords. `M24.1`: the
+        // caller that needed it wrote its own and read only the first
+        // statement.
+        assert_eq!(statements("SET a = 1"), ["SET a = 1"]);
+        assert_eq!(
+            statements("SET a = 1; SET b = 2"),
+            ["SET a = 1", " SET b = 2"]
+        );
+
+        // The whole reason this belongs here. A semicolon inside quoted text of
+        // any form is data, and a scanner that split on the byte would cut a
+        // statement in half.
+        assert_eq!(statements("SET a = 'x; y'"), ["SET a = 'x; y'"]);
+        assert_eq!(statements(r"SET a = E'x\'; y'"), [r"SET a = E'x\'; y'"]);
+        assert_eq!(statements("SET \"a;b\" = 1"), ["SET \"a;b\" = 1"]);
+        assert_eq!(
+            statements("SELECT $tag$a; b$tag$"),
+            ["SELECT $tag$a; b$tag$"]
+        );
+        assert_eq!(
+            statements("SET a = 1 -- ; not a statement"),
+            ["SET a = 1 -- ; not a statement"]
+        );
+    }
+
+    #[test]
+    fn a_separator_with_nothing_behind_it_is_not_a_statement() {
+        // A trailing semicolon is what every client sends, and an empty
+        // statement between two of them would reach a parser as a statement
+        // that says nothing.
+        assert_eq!(statements("SET a = 1;"), ["SET a = 1"]);
+        assert_eq!(statements("SET a = 1;;"), ["SET a = 1"]);
+        assert_eq!(
+            statements("SET a = 1; ; SET b = 2"),
+            ["SET a = 1", " SET b = 2"]
+        );
+        assert_eq!(statements(";"), Vec::<&str>::new());
+        assert_eq!(statements(""), Vec::<&str>::new());
+        assert_eq!(statements("   \n\t "), Vec::<&str>::new());
+
+        // Trivia only, decided by the lexer rather than by trimming, so a
+        // statement that is nothing but a comment goes the same way.
+        assert_eq!(statements("/* nothing */"), Vec::<&str>::new());
+        assert_eq!(statements("SET a = 1; -- done"), ["SET a = 1"]);
+    }
+
+    #[test]
+    fn splitting_never_loses_or_invents_text() {
+        // The property that makes the offsets trustworthy: every statement is a
+        // slice of the input, in order, and the only bytes dropped are
+        // separators and trivia between them.
+        for sql in [
+            "SET a = 1; SET b = 2; RESET c",
+            "SELECT 'a; b'; LISTEN x;",
+            "  ;; SET a = 1 ;; ",
+        ] {
+            let parts = statements(sql);
+            let mut at = 0;
+            for part in &parts {
+                let found = sql[at..].find(part);
+                assert!(
+                    found.is_some(),
+                    "{part:?} is not a slice of {sql:?} at or after {at}"
+                );
+                at += found.unwrap_or(0) + part.len();
+            }
+        }
+    }
+
     #[test]
     fn a_word_ends_where_punctuation_starts_and_not_before() {
         // `word_end` has a `!byte.is_ascii()` whose `!` could be deleted, which

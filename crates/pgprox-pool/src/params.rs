@@ -114,7 +114,35 @@ impl SessionParams {
     /// Only parameters on `allowlist` are recorded. Anything else is left
     /// alone here and pins the session instead, so a parameter is never both
     /// replayed and pinned on, and never neither.
+    ///
+    /// # Every statement in the string
+    ///
+    /// The simple query protocol allows several, and
+    /// [`crate::pin::pin_reason`] reads all of them. This read the first and
+    /// stopped, so `SET statement_timeout='5s'; SET search_path=tenant1`
+    /// recorded the timeout, dropped the search path, and pinned on neither
+    /// because both names are replayable. The session was then moved onto a
+    /// connection carrying whoever used it last, which is the failure the
+    /// "never neither" sentence above exists to rule out. `M24.1`.
+    ///
+    /// The split comes from [`pgprox_core::sql`] rather than from a scan here,
+    /// for the reason this crate's `AGENTS.md` gives: a second scanner
+    /// disagrees with the first, and this is the second.
+    ///
+    /// Returns the last change the string made, which is what the session's
+    /// state now reflects, or [`None`] if it made none.
     pub fn observe_statement(&mut self, sql: &str, allowlist: Replayable) -> Option<ParamChange> {
+        let mut last = None;
+        for statement in pgprox_core::sql::statements(sql) {
+            if let Some(change) = self.observe_one(statement, allowlist) {
+                last = Some(change);
+            }
+        }
+        last
+    }
+
+    /// Records what one statement did.
+    fn observe_one(&mut self, sql: &str, allowlist: Replayable) -> Option<ParamChange> {
         let statement = ParsedSet::parse(sql)?;
         match statement {
             ParsedSet::Local => Some(ParamChange::TransactionScoped),
@@ -236,7 +264,7 @@ impl ParsedSet {
             if name.eq_ignore_ascii_case("all") {
                 return Some(Self::ResetAll);
             }
-            return Some(Self::Reset(name.trim_end_matches(';').to_owned()));
+            return Some(Self::Reset(name.to_owned()));
         }
 
         if verb != "set" {
@@ -276,7 +304,7 @@ impl ParsedSet {
             after
         };
 
-        let value = value.trim().trim_end_matches(';').trim();
+        let value = value.trim();
         Some(Self::Set(name.to_owned(), unquote(value).to_owned()))
     }
 }
@@ -663,6 +691,93 @@ mod tests {
 
         let pairs: Vec<(&str, &str)> = params.iter().collect();
         assert_eq!(pairs, vec![("search_path", "acme"), ("timezone", "UTC")]);
+    }
+
+    #[test]
+    fn a_set_after_a_semicolon_is_recorded_too() {
+        // `M24.1`. This read the first statement of the string and stopped,
+        // while `pin.rs` read every one. Both names below are replayable, so
+        // neither pins, and the search path was simply lost: the session was
+        // recorded as movable and came back on a connection carrying whatever
+        // the last session left there.
+        let mut params = SessionParams::new();
+        params.observe_statement(
+            "SET statement_timeout = '5s'; SET search_path = tenant1",
+            Replayable::DEFAULT,
+        );
+
+        assert_eq!(params.get("statement_timeout"), Some("5s"));
+        assert_eq!(
+            params.get("search_path"),
+            Some("tenant1"),
+            "a SET after a semicolon was neither recorded here nor pinned on"
+        );
+    }
+
+    #[test]
+    fn every_replayable_set_in_a_string_is_recorded_wherever_it_sits() {
+        // The promise `observe_statement`'s own documentation makes: a
+        // parameter is never both replayed and pinned on, and never neither.
+        // The dangerous half is "never neither", which only bites when nothing
+        // in the string pins, so every statement here is on the allowlist.
+        for sql in [
+            "SET search_path = tenant1; SET timezone = 'UTC'",
+            "SELECT 1; SET search_path = tenant1",
+            "BEGIN; SET search_path = tenant1; COMMIT",
+            "SET timezone = 'UTC'; SET search_path = tenant1;",
+        ] {
+            let mut params = SessionParams::new();
+            params.observe_statement(sql, Replayable::DEFAULT);
+
+            assert!(
+                crate::pin::pin_reason(sql, Replayable::DEFAULT).is_none(),
+                "{sql}: nothing here should pin, or the test proves nothing"
+            );
+            assert_eq!(
+                params.get("search_path"),
+                Some("tenant1"),
+                "{sql}: the session was left movable with its search_path lost"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reset_after_a_semicolon_is_heard_too() {
+        // The other direction, and the one that leaks rather than loses: a
+        // session that reset a parameter and was recorded as still holding it
+        // has the old value replayed onto its next connection.
+        let mut params = SessionParams::new();
+        params.record("search_path", "tenant1");
+        params.observe_statement("SELECT 1; RESET search_path", Replayable::DEFAULT);
+        assert_eq!(params.get("search_path"), None, "the reset was not heard");
+
+        let mut all = SessionParams::new();
+        all.record("search_path", "tenant1");
+        all.observe_statement("SELECT 1; DISCARD ALL", Replayable::DEFAULT);
+        assert!(all.is_empty(), "the DISCARD ALL was not heard");
+    }
+
+    #[test]
+    fn the_change_reported_is_the_last_one_the_string_made() {
+        // A string can make several. The session's state is what the last one
+        // left, so that is what is reported.
+        let mut params = SessionParams::new();
+        assert_eq!(
+            params.observe_statement(
+                "SET timezone = 'UTC'; SET search_path = tenant1",
+                Replayable::DEFAULT
+            ),
+            Some(ParamChange::Recorded {
+                name: "search_path".to_owned()
+            })
+        );
+
+        // And a string that changed nothing still reports nothing, so a caller
+        // can tell "not a parameter statement" from "one I ignored".
+        assert_eq!(
+            params.observe_statement("SELECT 1; SELECT 2", Replayable::DEFAULT),
+            None
+        );
     }
 
     #[test]
