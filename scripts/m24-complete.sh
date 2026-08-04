@@ -115,4 +115,17 @@ run_finding pgprox-pool \
   pin::tests::a_schema_qualified_advisory_lock_pins \
   "pg_catalog.pg_advisory_lock pins, and the _xact_ forms still do not"
 
+# --- M24.4: the cache key names the database and the role --------------------
+run_finding pgprox-cache \
+  store::tests::the_same_sql_against_a_different_database_is_a_different_entry \
+  "one tenant's two databases do not share a cache entry"
+run_finding pgprox-cache \
+  store::tests::the_same_sql_under_a_different_role_is_a_different_entry \
+  "two roles of one tenant do not share a cache entry"
+# The wiring half, in the crate that builds the key. The two above would pass
+# for a proxy that filled both fields with a constant.
+run_finding pgprox \
+  serve::tests::the_cache_key_carries_the_database_and_the_role_the_grant_resolved_to \
+  "the key is filled from the grant rather than invented"
+
 finish

@@ -784,6 +784,8 @@ mod tests {
             .cache
             .get(&pgprox_core::cache::CacheKey {
                 tenant: TenantId::new("acme"),
+                database: Arc::from("tenant_db"),
+                user: Arc::from("app"),
                 normalized_sql: Arc::from("select 1"),
                 params: Arc::from(&[][..]),
                 search_path: Arc::from("public"),

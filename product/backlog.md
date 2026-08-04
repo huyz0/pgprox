@@ -6655,7 +6655,7 @@ recognised so it can be refused rather than read as a version.
   A missed pin here returns a connection holding a session lock to the pool.
   Acceptance: the qualified form pins, the unqualified form still pins, the
   `_xact_` forms still do not, and the first of those fails before the fix.
-- [ ] `M24.4` The query cache key omits the database and the role.
+- [x] `M24.4` The query cache key omits the database and the role.
   `CacheKey` is tenant, normalized SQL, parameters and `search_path`. A grant
   resolves to a `Backend { server, database, user }`, and `PoolKey` carries all
   three because they vary within a tenant. Two sessions of one tenant on two

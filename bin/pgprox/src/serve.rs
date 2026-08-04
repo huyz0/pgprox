@@ -1343,6 +1343,12 @@ fn key_for(
 ) -> pgprox_core::cache::CacheKey {
     pgprox_core::cache::CacheKey {
         tenant: grant.tenant.clone(),
+        // From the grant rather than from the startup packet. The startup
+        // database is what the client asked for; this is what the sidecar
+        // resolved it to, which is where the rows actually came from, and it is
+        // the same pair `PoolKey` is built from. `M24.4`.
+        database: std::sync::Arc::clone(&grant.primary.database),
+        user: std::sync::Arc::clone(&grant.primary.user),
         normalized_sql: std::sync::Arc::from(pgprox_cache::normalize(sql)),
         params,
         search_path: std::sync::Arc::from(session.params.get("search_path").unwrap_or_default()),
@@ -2797,6 +2803,8 @@ mod tests {
         Recording {
             key: pgprox_core::cache::CacheKey {
                 tenant: pgprox_core::ids::TenantId::new("acme"),
+                database: Arc::from("acme"),
+                user: Arc::from("acme_app"),
                 normalized_sql: std::sync::Arc::from("select $1"),
                 params: std::sync::Arc::from(&b""[..]),
                 search_path: std::sync::Arc::from("public"),
@@ -3739,6 +3747,11 @@ mod tests {
     fn seed(cache: &Arc<FakeQueryCache>) -> pgprox_core::cache::CacheKey {
         let key = pgprox_core::cache::CacheKey {
             tenant: pgprox_core::ids::TenantId::new("acme"),
+            // What `grant_for` resolves to, because the proxy under test
+            // builds its keys from the grant rather than from the startup
+            // packet. `M24.4`.
+            database: Arc::from("acme"),
+            user: Arc::from("acme_app"),
             normalized_sql: Arc::from("select 1"),
             params: Arc::from(&[][..]),
             search_path: Arc::from("public"),
@@ -3893,6 +3906,11 @@ mod tests {
 
         let key = pgprox_core::cache::CacheKey {
             tenant: pgprox_core::ids::TenantId::new("acme"),
+            // What `grant_for` resolves to, because the proxy under test
+            // builds its keys from the grant rather than from the startup
+            // packet. `M24.4`.
+            database: Arc::from("acme"),
+            user: Arc::from("acme_app"),
             normalized_sql: Arc::from("select 1"),
             params: Arc::from(&[][..]),
             // Never set, so the server's own default, which every session on
@@ -4064,6 +4082,41 @@ mod tests {
         query_and_collect(Arc::new(context), "SELECT random()").await;
 
         assert_eq!(cache.len(), 0, "a volatile statement was cached");
+    }
+
+    #[test]
+    fn the_cache_key_carries_the_database_and_the_role_the_grant_resolved_to() {
+        // `M24.4`, the wiring half. `pgprox-cache` proves the two fields are
+        // part of the key; this proves the proxy fills them from the grant
+        // rather than leaving two sessions of one tenant to share an entry.
+        //
+        // From the grant and not from the startup packet: the startup database
+        // is what the client asked for, and this is what the sidecar resolved
+        // it to, which is where the rows actually came from.
+        let addr: SocketAddr = "127.0.0.1:5432".parse().unwrap();
+        let grant = grant_for(addr);
+        let session = pgprox_session::resume::SessionMemory::default();
+        let params: Arc<[u8]> = Arc::from(&[][..]);
+
+        let base = key_for(&grant, "SELECT 1", Arc::clone(&params), &session);
+        assert_eq!(base.database.as_ref(), "acme");
+        assert_eq!(base.user.as_ref(), "acme_app");
+
+        let mut elsewhere = grant_for(addr);
+        elsewhere.primary.database = "acme_reporting".into();
+        assert_ne!(
+            key_for(&elsewhere, "SELECT 1", Arc::clone(&params), &session),
+            base,
+            "one tenant's two databases built the same key"
+        );
+
+        let mut readonly = grant_for(addr);
+        readonly.primary.user = "acme_readonly".into();
+        assert_ne!(
+            key_for(&readonly, "SELECT 1", params, &session),
+            base,
+            "two roles of one tenant built the same key"
+        );
     }
 
     #[tokio::test]

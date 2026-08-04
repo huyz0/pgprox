@@ -356,6 +356,8 @@ fn weigh(key: &CacheKey, value: &CachedResult) -> usize {
     size_of::<CacheKey>()
         + size_of::<CachedResult>()
         + key.tenant.as_str().len()
+        + key.database.len()
+        + key.user.len()
         + key.normalized_sql.len()
         + key.search_path.len()
         + key.params.len()
@@ -375,6 +377,8 @@ mod tests {
     fn key(tenant: &str, sql: &str) -> CacheKey {
         CacheKey {
             tenant: TenantId::new(tenant),
+            database: Arc::from("tenant_db"),
+            user: Arc::from("app"),
             normalized_sql: Arc::from(sql),
             params: Arc::from(&[][..]),
             search_path: Arc::from("public"),
@@ -788,6 +792,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_same_sql_against_a_different_database_is_a_different_entry() {
+        // `M24.4`. A tenant is not one database. The grant resolves per startup
+        // database, so one tenant reaching two of them gets two backends, and
+        // `SELECT * FROM t` names a different table in each. `PoolKey` carries
+        // the database for exactly this reason and the cache key did not.
+        let (cache, _clock) = store(64 * 1024);
+        let mut other_database = key("acme", "SELECT * FROM t");
+        other_database.database = Arc::from("acme_reporting");
+
+        cache
+            .put(key("acme", "SELECT * FROM t"), result(16, 1000))
+            .await;
+        assert!(
+            cache.get(&other_database).await.is_none(),
+            "one tenant's two databases shared an entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_sql_under_a_different_role_is_a_different_entry() {
+        // The worse half. Row-level security and column privileges belong to
+        // the role, so the same statement under two roles is two different
+        // answers, and sharing an entry publishes rows one of them cannot see.
+        let (cache, _clock) = store(64 * 1024);
+        let mut other_role = key("acme", "SELECT * FROM t");
+        other_role.user = Arc::from("acme_readonly");
+
+        cache
+            .put(key("acme", "SELECT * FROM t"), result(16, 1000))
+            .await;
+        assert!(
+            cache.get(&other_role).await.is_none(),
+            "two roles of one tenant shared an entry"
+        );
+    }
+
+    #[tokio::test]
     async fn different_parameters_are_different_entries() {
         let (cache, _clock) = store(64 * 1024);
         let mut bound = key("acme", "SELECT $1");
@@ -837,6 +878,8 @@ mod tests {
             size_of::<CacheKey>()
                 + size_of::<CachedResult>()
                 + counted.tenant.as_str().len()
+                + counted.database.len()
+                + counted.user.len()
                 + counted.normalized_sql.len()
                 + counted.search_path.len()
                 + counted.params.len()

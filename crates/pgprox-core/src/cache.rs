@@ -16,12 +16,18 @@
 //! A proxy also cannot see a write that never passed through it, and a
 //! migration or an operator with psql never will.
 //!
-//! # The key includes `search_path`
+//! # The key names the connection that would have answered
 //!
-//! Omitting it is a correctness bug, not an optimization detail: the same SQL
-//! text resolves to different tables under different search paths, so two
-//! tenants running identical queries would share a cache entry pointing at
-//! different data.
+//! Omitting a field is a correctness bug, not an optimization detail. The same
+//! SQL text resolves to different tables under different search paths, so
+//! `search_path` is part of the key; the same SQL resolves to different tables
+//! in different databases and to different rows under different roles, so the
+//! database and the role are too.
+//!
+//! All three are the same observation, and only the first was carried far
+//! enough. A tenant is not one database and is not one role: a grant resolves
+//! per startup database and yields a `Backend`, which is why `PoolKey` carries
+//! both. See ADR 0024, and `M24.4` for what sharing them looked like.
 
 use std::fmt;
 use std::sync::Arc;
@@ -37,6 +43,20 @@ use crate::ids::TenantId;
 pub struct CacheKey {
     /// Whose query this was. Without this, tenants share entries.
     pub tenant: TenantId,
+    /// The database the answer came from.
+    ///
+    /// A tenant is not one database. A grant resolves per startup database, so
+    /// one tenant reaching two of them gets two backends, and `SELECT * FROM t`
+    /// names a different table in each. `M24.4`: this and [`CacheKey::user`]
+    /// were both absent, and `PoolKey` carries both precisely because they vary
+    /// within a tenant.
+    pub database: Arc<str>,
+    /// The role the answer was produced under.
+    ///
+    /// Row-level security and column privileges are properties of the role, so
+    /// the same statement under two roles is two different answers. Sharing an
+    /// entry between them publishes rows one of them cannot see.
+    pub user: Arc<str>,
     /// The statement, normalized so parameter placeholders are stable.
     pub normalized_sql: Arc<str>,
     /// Bound parameter values, as the `Bind` carried them.
@@ -226,6 +246,8 @@ mod tests {
     fn key(tenant: &str, sql: &str, search_path: &str) -> CacheKey {
         CacheKey {
             tenant: TenantId::new(tenant),
+            database: Arc::from("tenant_db"),
+            user: Arc::from("app"),
             normalized_sql: Arc::from(sql),
             params: Arc::from(&b"\0\0\0\x011"[..]),
             search_path: Arc::from(search_path),
