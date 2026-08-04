@@ -289,25 +289,40 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
             return Err(ShellError::Disconnected);
         };
 
-        // Read straight into uninitialised spare capacity.
+        // Read straight into uninitialised spare capacity, with no unsafe here
+        // and no memset before it.
         //
-        // This grew the buffer with `resize(.., 0)` and trimmed it after until
-        // `M30.4`, and the comment saying why named a rule that does not exist:
-        // that reading into uninitialised capacity needs `unsafe`, and that
-        // this workspace forbids it. `M27` made the second half false and the
-        // first half was never true. `read_buf` hands the spare capacity to
-        // the reader through `ReadBuf`, which is tokio's way of saying "write
-        // here and tell me how much", and `AsyncReadExt` has been imported at
-        // the top of this file the whole time.
+        // `read_buf` passes the spare capacity to the reader as a `ReadBuf`,
+        // which is tokio's way of saying "write here and tell me how much", and
+        // the `unsafe` that makes that sound lives in tokio where it is already
+        // verified. Nothing in this crate takes on an obligation.
         //
-        // What that comment cost was a 16 KiB memset before every read on this
-        // path, which is every read after a connection's first.
+        // `read_buf` fills the spare capacity that is there and asks for no
+        // more, so the size of a held read is decided by the line below and not
+        // by whatever the slab happened to leave over. `reserve(HELD_READ)`
+        // makes it the size it has always been, and cannot make the buffer
+        // larger than the `resize` it replaced did, since both ask for the same
+        // `len + HELD_READ`.
         //
-        // `reserve` rather than trusting what the slab lent, so the read is the
-        // same size it always was. It grows the buffer no further than the
-        // `resize` did, and the test below holds that.
+        // Until `M30.4` this grew the buffer with `resize(.., 0)` and trimmed
+        // after, and the comment saying why named a rule that does not exist:
+        // that reading into uninitialised capacity needs unsafe, and that this
+        // workspace forbids it. `M27` made the second half false, the first half
+        // was never true, and `AsyncReadExt` was imported at the top of this
+        // file throughout. It cost a 16 KiB memset on every read after a
+        // connection's first.
         let vec = buf.as_mut_vec();
         vec.reserve(HELD_READ);
+
+        // The claim above, in a form a test can fail on. Its absence is silent:
+        // the frame still assembles and the buffer still stays small, and the
+        // only symptom is a read that asks the kernel for sixty-four bytes.
+        // `M31.1`.
+        debug_assert!(
+            vec.capacity() - vec.len() >= HELD_READ,
+            "a held read has room for {} bytes, not {HELD_READ}",
+            vec.capacity() - vec.len()
+        );
 
         match self.io.read_buf(vec).await {
             // Nothing was appended, so there is nothing to trim back.

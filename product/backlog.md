@@ -7081,7 +7081,7 @@ recognised so it can be refused rather than read as a version.
   the five sites.
   Acceptance: this list, a roadmap section, and `scripts/m31-complete.sh` wired
   into CI.
-- [ ] `M31.1` Three comments refer the reader elsewhere, two describe the
+- [x] `M31.1` Three comments refer the reader elsewhere, two describe the
   operation instead of justifying it, and none has an executable form.
   The referrals: `matches_any` says "See `WordSet` for why", `Keyed`'s
   connection map says "for the reason given there", and `fill_held` ends on "the

@@ -81,8 +81,11 @@ struct Keyed<C> {
     /// Open connections by id. The pool tracks that they exist; this holds
     /// them.
     ///
-    /// Keyed on an id this node issues, so it takes `pgprox_core::hash`'s
-    /// hasher for the reason given there. `M30.3`.
+    /// [`IssuedIds`] rather than the default hasher. `UpstreamId` is a counter
+    /// `Pool` increments, so no peer chooses a key here and there is nothing
+    /// for `SipHash`'s per-process seed to defend against. `pgprox_core::hash`
+    /// states the rule and names the keys it does not cover, `PoolKey` among
+    /// them. `M30.3`.
     connections: HashMap<UpstreamId, C, IssuedIds>,
 }
 

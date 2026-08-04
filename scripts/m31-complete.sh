@@ -62,6 +62,43 @@ else
   fi
 fi
 
+# A baseline figure held at exactly what it was. Used because this milestone
+# changed no code: a `debug_assert!` compiles out of a release build, so a
+# figure that moved would mean one of these landed somewhere it costs.
+unmoved() {
+  local key="$1" expected="$2"
+  local measured
+  measured="$(python3 -c "import json; print(json.load(open('product/perf/baseline.json')).get('$key', -1))")"
+  if [[ "$measured" == "$expected" ]]; then
+    ok "$key is still $expected, so nothing here reached a release build"
+  else
+    fail "$key is $measured and M30 left it at $expected"
+    printf '       a comment milestone moved a benchmark, so it changed more than comments\n'
+  fi
+}
+
 # --- the findings that have landed -------------------------------------------
+
+# --- M31.1: the claims, in the form a test can fail on ------------------------
+#
+# Whether a comment states an invariant is a judgement and no script makes it.
+# What a script reads is the other half: each claim written twice, once in prose
+# and once as a `debug_assert!`. These are the tests that fail when one fires.
+#
+# Neither test is about the assertion. The filter's fires inside `matches_any`
+# on any word a debug build classifies, which is why breaking the mask reports
+# "the filter rejected \"SELECT\"" from the ordinary classification tests rather
+# than from a test written for it.
+run_finding pgprox-route \
+  classify::properties::the_filter_and_the_scan_agree_on_everything \
+  "the filter never rejects a word the scan would accept"
+run_finding pgprox-session \
+  shell::tests::a_held_read_makes_room_for_a_whole_read_before_it_reads \
+  "a reserve leaves room for a whole read"
+
+# And the figures M30 left, unchanged, which is what "comments only" means.
+unmoved pgprox-route::route_point_select 3716
+unmoved pgprox-pool::acquire_and_release 278
+unmoved pgprox-session::held_read 2263
 
 finish

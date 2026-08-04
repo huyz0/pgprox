@@ -156,21 +156,37 @@ impl WordSet {
 
     /// Whether the filter can rule `word` out without comparing it to anything.
     ///
-    /// Answers `true` for a word that might be on the list and `false` only for
-    /// one that certainly is not, which is the direction that has to be exact.
+    /// `false` only for a word that is certainly not on the list. That is the
+    /// direction that has to be exact, and it holds because [`WordSet::new`]
+    /// built these three masks from the list itself: every entry set its own
+    /// length bit, initial bit and final bit, so a word agreeing with an entry
+    /// on all three cannot be rejected here.
+    ///
+    /// The other direction is deliberately loose. A word may agree with three
+    /// different entries and match none of them, and [`matches_any`]'s scan is
+    /// what decides that.
     fn might_hold(&self, word: &str) -> bool {
         let bytes = word.as_bytes();
 
-        // Length first, and it also covers the empty word: no entry is empty,
-        // so bit zero is clear and the indexing below is unreachable for one.
+        // A length past 63 cannot be tested against a 64-bit mask, and
+        // `WordSet::new` refuses to build a set holding one, so falling through
+        // to `1 << len` here would shift past the width for a word no entry can
+        // match anyway.
+        //
+        // The empty word needs no case of its own: no entry is empty, so bit
+        // zero is always clear and this returns before the indexing below.
         if bytes.len() >= 64 || self.lengths & (1 << bytes.len()) == 0 {
             return false;
         }
 
-        // `| 0x20` lowercases an ASCII letter and moves everything else
-        // somewhere that is not one, which `is_ascii_lowercase` then refuses.
-        // A word starting with a digit, an underscore or a multi-byte character
-        // is on neither list, and Postgres identifiers may be any of the three.
+        // Folded because the scan behind this filter is `eq_ignore_ascii_case`.
+        // A case-sensitive filter would reject `SELECT` while the scan accepts
+        // `select`, which is the failure that turns a write into a read.
+        //
+        // `| 0x20` folds an ASCII letter and moves everything else off the
+        // letters, so the guard below refuses it: `_` and a digit are both
+        // legal at either end of a Postgres identifier and neither begins or
+        // ends an entry on any list, which `WordSet::new` asserts as it builds.
         let first = bytes[0] | 0x20;
         let last = bytes[bytes.len() - 1] | 0x20;
         if !first.is_ascii_lowercase() || !last.is_ascii_lowercase() {
@@ -374,15 +390,31 @@ fn classify_one(scanner: &mut Lexer<'_>) -> (StmtClass, bool) {
 
 /// ASCII case-insensitive membership, without allocating.
 ///
-/// The filter first, which answers most words. See [`WordSet`] for why: the
-/// scan below is the same one it always was, and it now runs on the words that
-/// could plausibly be on the list rather than on every word of every statement.
+/// The filter runs first and the scan is unchanged behind it, so the answer is
+/// the scan's answer whenever the filter lets a word through. What makes that
+/// safe to rely on is where the filter's masks come from: [`WordSet::new`]
+/// builds them by reading this same list, so an entry cannot exist without its
+/// own bits being set, and [`WordSet::might_hold`] can therefore only reject a
+/// word that disagrees with every entry on length, first letter or last letter.
+///
+/// The `debug_assert!` below is that sentence in a form a test can fail on.
 fn matches_any(word: &str, set: &WordSet) -> bool {
-    set.might_hold(word)
-        && set
-            .words
+    let scanned = || {
+        set.words
             .iter()
             .any(|candidate| word.eq_ignore_ascii_case(candidate))
+    };
+
+    // The filter may return `false` only for a word the scan would also reject.
+    // The other direction costs throughput; this one turns a write into a read,
+    // so it is checked on every call a debug build makes rather than only in
+    // the tests that were thought of. `M31.1`.
+    debug_assert!(
+        set.might_hold(word) || !scanned(),
+        "the filter rejected {word:?}, which is on the list"
+    );
+
+    set.might_hold(word) && scanned()
 }
 
 /// Whether a statement opens a transaction the server will refuse writes in.
@@ -409,13 +441,23 @@ fn matches_any(word: &str, set: &WordSet) -> bool {
 pub fn begins_read_only_transaction(sql: &str) -> bool {
     // One pass, no allocation, and it stops as soon as the answer is fixed.
     //
-    // The stopping is the part that matters. This runs on the route decision's
-    // hot path for every statement outside a transaction, next to `classify`,
-    // which lexes the same text; reading to the end here made that two full
-    // passes over every statement the router sees. Three words can open a
-    // transaction and nothing later in the statement can change that, so a
-    // statement beginning with any other word is answered after one token.
-    // `M30.1` measured the difference on the reference point select.
+    // What licenses the stopping: the three words below are the only ones
+    // Postgres lets open a transaction, and a statement's first word is fixed
+    // by its first word. No token further along can turn a `SELECT` into a
+    // `BEGIN`, so once the opener is read and rejected the rest of the
+    // statement cannot change the answer and is not read.
+    //
+    // That is a claim about the grammar, not about any state this function can
+    // look at, so there is no `debug_assert!` for it and its absence here is
+    // deliberate rather than forgotten. The executable form is
+    // `a_statement_that_cannot_open_a_transaction_is_answered_by_its_first_words`
+    // below, which is built from statements saying READ ONLY after an opener
+    // that rules them out.
+    //
+    // It matters because this runs on the route decision's hot path for every
+    // statement outside a transaction, beside `classify`, which lexes the same
+    // text. Reading to the end made that two full passes over every statement
+    // the router sees. `M30.1`.
     let mut lexer = Lexer::new(sql);
 
     let opener = loop {
