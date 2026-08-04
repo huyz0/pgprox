@@ -48,7 +48,10 @@ const TENANTS: usize = 64;
 /// measurement.
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     use std::task::{Context, Poll, Waker};
-    let mut future = Box::pin(future);
+    // `pin!` rather than `Box::pin`. Boxing allocates once per call, which in
+    // a budget test is the harness failing its own assertion and in a bench is
+    // a malloc inside every measurement.
+    let mut future = std::pin::pin!(future);
     let mut cx = Context::from_waker(Waker::noop());
     match future.as_mut().poll(&mut cx) {
         Poll::Ready(value) => value,

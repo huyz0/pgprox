@@ -6830,7 +6830,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the count falls by an order of magnitude at the same entry
   count, the byte total and the recency order still agree with the entry map
   afterwards, and the improvement is stated as a number against the baseline.
-- [ ] `M26.2` A hit costs two and a half times a miss. 4,144 instructions
+- [x] `M26.2` A hit costs two and a half times a miss. 4,144 instructions
   against 1,605, and the whole argument for a cache is that a hit is the cheap
   path. The difference is the recency bookkeeping: `touch` clones the key into
   the `lru` map, which is six `Arc` increments and two `BTreeMap` traversals,
@@ -6838,7 +6838,29 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a hit costs measurably less than it does now, the LRU order is
   still an order and eviction still takes the least recently used, and the
   number is stated against the baseline.
-- [ ] `M26.3` Close M26, on the terms `M18.4` through `M25.4` closed on.
+- [ ] `M26.3` A lookup through an `Arc` boxes twice. `pgprox-core` implements
+  `QueryCache` for `Arc<T>` so a caller holding one can use the trait, and the
+  composition root holds `Option<Arc<dyn QueryCache>>`. Every statement
+  therefore boxes once for the forwarding call and once for the real one, and
+  the forwarding impl exists to save a deref.
+  Found by the allocation budget `M26.2` added, not by reading: a *miss*, which
+  touches nothing and returns `None`, allocated two heap blocks.
+  Acceptance: a statement costs one block rather than two, the budget test says
+  so, and the blanket impl either keeps its callers or loses them with the
+  reason written down.
+- [ ] `M26.4` The recency order allocates on every hit. `lru` is a `BTreeMap`
+  keyed by a monotonic sequence, and a hit removes the entry's old sequence and
+  inserts a new higher one, so nodes merge at the low end and split at the high
+  end for as long as the cache is used. Roughly one block per seven hits on top
+  of the trait's two, plus two O(log n) traversals, on the path a cache exists
+  to make cheap.
+  The fix is the shape every LRU ends up with: an intrusive order the entries
+  hold themselves, so a touch is pointer surgery rather than a tree edit. It is
+  a real rewrite of this file's bookkeeping and it needs its own commit for
+  that reason, not because it is uncertain.
+  Acceptance: a hit allocates exactly what a miss does, `cache_hit` falls
+  again against the baseline, and eviction still takes the least recently used.
+- [ ] `M26.5` Close M26, on the terms `M18.4` through `M25.4` closed on.
   Acceptance: the gate passes, the status row says complete, the section
   records what the numbers were before and after, and it says plainly which of
   the store's documented worries the measurement found and which it did not.

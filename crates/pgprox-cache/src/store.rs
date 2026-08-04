@@ -69,18 +69,31 @@ struct Entry {
     seq: u64,
     /// What it costs, by the accounting in [`weigh`].
     bytes: usize,
+    /// A second handle on the key this is filed under.
+    ///
+    /// The same allocation the entry map is keyed by, not a copy. It is here
+    /// because a hit has to move the entry to the front of the recency order,
+    /// which means writing the key into `lru`, and `HashMap::get_mut` hands
+    /// back the value without the key. Reaching for it separately meant
+    /// hashing all six of the key's fields a second time on the one path that
+    /// is supposed to be cheap. `M26.2`.
+    key: Arc<CacheKey>,
 }
 
 /// The parts behind the lock.
 #[derive(Debug, Default)]
 struct Inner {
-    entries: HashMap<CacheKey, Entry>,
+    /// Keyed by a shared `Arc` rather than by the key itself, so the three
+    /// places an entry is referenced from hold one allocation between them.
+    /// A hit then costs one atomic increment where it used to cost six, and
+    /// the map stores a pointer where it used to store six words. `M26.2`.
+    entries: HashMap<Arc<CacheKey>, Entry>,
     /// Recency order, least recent first.
     ///
     /// A `BTreeMap` keyed by a monotonic sequence rather than a scan for the
     /// minimum: eviction happens on the insert path, and a linear scan there
     /// would make the cost of a `put` depend on how full the cache is.
-    lru: BTreeMap<u64, CacheKey>,
+    lru: BTreeMap<u64, Arc<CacheKey>>,
     /// Which keys each tenant holds.
     ///
     /// A second index, and it exists because of one number. Invalidation ran
@@ -167,7 +180,7 @@ impl Store {
         }
 
         let mut inner = self.lock();
-        let doomed: Vec<CacheKey> = inner
+        let doomed: Vec<Arc<CacheKey>> = inner
             .entries
             .keys()
             .filter(|key| !config.serves(&key.tenant))
@@ -249,15 +262,18 @@ impl Inner {
             .insert(seq);
     }
 
-    /// Moves an entry to the front of the recency order.
-    fn touch(&mut self, key: &CacheKey) {
-        let seq = self.next_seq;
+    /// Moves an entry the caller has already found to the front of the
+    /// recency order.
+    ///
+    /// Takes what it needs rather than the key, because the caller has just
+    /// looked the entry up and a second lookup here means hashing all six of
+    /// the key's fields again. That was 2,538 instructions of the difference
+    /// between a hit and a miss, on the path a cache exists to make cheap.
+    /// `M26.2`.
+    fn touch(&mut self, key: Arc<CacheKey>, was: u64) {
+        self.lru.remove(&was);
+        self.lru.insert(self.next_seq, key);
         self.next_seq += 1;
-        if let Some(entry) = self.entries.get_mut(key) {
-            self.lru.remove(&entry.seq);
-            entry.seq = seq;
-            self.lru.insert(seq, key.clone());
-        }
     }
 
     /// Throws out least-recently-used entries until the budget is met.
@@ -267,7 +283,7 @@ impl Inner {
             // unreachable while `bytes` and `entries` agree, and returning
             // rather than looping is what keeps a drift between them from
             // becoming a hang.
-            let Some((_, key)) = self.lru.iter().next().map(|(s, k)| (*s, k.clone())) else {
+            let Some(key) = self.lru.values().next().cloned() else {
                 return;
             };
             self.remove(&key);
@@ -292,8 +308,16 @@ impl QueryCache for Store {
 
         let now = self.clock.now();
         let mut inner = self.lock();
+        // Read before the entry is borrowed, because the borrow holds the
+        // whole of `inner` and this is a field beside the map.
+        let next = inner.next_seq;
 
-        let Some(entry) = inner.entries.get(key) else {
+        // One lookup, and everything a hit needs taken out of it before the
+        // borrow ends. `get` then `touch(key)` hashed all six of the key's
+        // fields twice per hit, which was most of why a hit cost two and a
+        // half times a miss on a structure whose whole argument is that a hit
+        // is the cheap path. `M26.2`.
+        let Some(entry) = inner.entries.get_mut(key) else {
             inner.stats.misses += 1;
             return None;
         };
@@ -308,7 +332,12 @@ impl QueryCache for Store {
         }
 
         let value = entry.value.clone();
-        inner.touch(key);
+        let was = entry.seq;
+        // Read while the entry is still borrowed, since `touch` needs the map.
+        let held = Arc::clone(&entry.key);
+        entry.seq = next;
+
+        inner.touch(held, was);
         inner.stats.hits += 1;
         Some(value)
     }
@@ -356,18 +385,22 @@ impl QueryCache for Store {
         // result that changed size.
         inner.remove(&key);
 
+        // One allocation, shared by the entry map, the recency order and the
+        // entry's own handle on it. See `Entry::key`.
+        let key = Arc::new(key);
         let seq = inner.next_seq;
         inner.next_seq += 1;
         inner.bytes += bytes;
-        inner.lru.insert(seq, key.clone());
+        inner.lru.insert(seq, Arc::clone(&key));
         inner.index(&key.tenant, seq);
         inner.entries.insert(
-            key,
+            Arc::clone(&key),
             Entry {
                 value,
                 expires_at,
                 seq,
                 bytes,
+                key,
             },
         );
 

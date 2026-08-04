@@ -58,12 +58,12 @@ run_finding() {
 # the gate would go on reporting green for the ones that did land.
 #
 # Two tasks are about the milestone rather than about a finding, and neither has
-# a test to run: `M26.0` records the baseline and `M26.3` closed it. Excluded by name
+# a test to run: `M26.0` records the baseline and `M26.5` closed it. Excluded by name
 # rather than by a rule about which tasks have tests, so a third exclusion has
 # to be written down here to exist.
 finished="$(sed -n '/^## M26:/,/^## /p' "$BACKLOG" \
   | sed -n 's/^- \[x\] `\(M26\.[0-9]*\)`.*/\1/p' \
-  | grep -vE '^M26\.(0|3)$' || true)"
+  | grep -vE '^M26\.(0|5)$' || true)"
 
 if [[ -z "$finished" ]]; then
   ok "no finding has been ticked yet, so none can be unchecked"
@@ -102,5 +102,26 @@ run_finding pgprox-cache \
 run_finding pgprox-cache \
   store::tests::invalidating_a_tenant_gives_its_bytes_back \
   "the byte total still follows what invalidation removed"
+
+# --- M26.2: a hit stops paying for a second lookup ----------------------------
+#
+# The number is in the baseline. What a test holds is that the recency order is
+# still an order after a hit stopped writing the key into it by hand, and that
+# eviction still takes the least recently used.
+run_finding pgprox-cache \
+  store::tests::a_hit_makes_an_entry_the_last_one_evicted \
+  "a hit still moves an entry to the back of the eviction queue"
+run_finding pgprox-cache \
+  store::tests::the_recency_index_holds_one_place_per_entry \
+  "every entry still has exactly one place in the recency order"
+run_finding pgprox-cache \
+  store::tests::eviction_takes_the_least_recently_used \
+  "eviction still takes the least recently used"
+# And the budget, which is where the blocks a lookup costs are written down.
+# It found what M26.3 and M26.4 are for: a miss that touches nothing allocated
+# twice, and it was the trait rather than the store.
+run_finding pgprox-cache \
+  a_hit_serves_an_answer_without_building_anything \
+  "a lookup allocates what the trait costs and nothing more"
 
 finish

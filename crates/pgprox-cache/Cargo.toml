@@ -15,6 +15,7 @@ async-trait.workspace = true
 [dev-dependencies]
 pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
 tokio = { workspace = true, features = ["rt", "macros"] }
+dhat = "0.3"
 
 [[bench]]
 name = "hot_paths"
