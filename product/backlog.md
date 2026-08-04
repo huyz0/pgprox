@@ -7045,7 +7045,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the memset is gone with no unsafe anywhere, the buffer still
   grows no further than the slab lends, and the measurement is stated for what
   it is, including whether instruction counts can see a memset at all.
-- [ ] `M30.5` Two thirds of the query decode is a validation the policy will
+- [x] `M30.5` Two thirds of the query decode is a validation the policy will
   not let anyone skip. `str::from_utf8` is 262 of `decode_query`'s 390
   instructions, and the fix is `from_utf8_unchecked` in `pgprox-proto`, which
   is first on `ADR 0026`'s closed list. That is the correct answer and it costs

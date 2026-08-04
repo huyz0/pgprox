@@ -204,6 +204,32 @@ else
   fail "scripts/check-unsafe.sh does not pass"
 fi
 
+# --- M30.5: the validation the policy will not let anyone skip ----------------
+#
+# The milestone's one negative result, so the check is the negative: the
+# document exists, the crate it is about is still shut, and the two figures it
+# compares against have not moved underneath it.
+RUN="${PGPROX_RUN_DOC:-product/perf/run-2026-08-05-utf8-validation.md}"
+if [[ -f "$RUN" ]]; then
+  ok "$RUN records what the closed list costs"
+else
+  fail "$RUN is missing, so the price of the closed list is a claim in a commit message"
+fi
+
+# `#![forbid(unsafe_code)]` in the crate's own lib.rs is what refused the
+# exception. check-unsafe.sh holds the whole list; this names the one crate this
+# document is about, so a change that took pgprox-proto off the list fails here
+# with the reason rather than only there.
+if grep -q '^#!\[forbid(unsafe_code)\]' crates/pgprox-proto/src/lib.rs; then
+  ok "pgprox-proto still forbids unsafe in its own lib.rs"
+else
+  fail "pgprox-proto no longer forbids unsafe, so the document describes a refusal"
+  printf '       that did not happen\n'
+fi
+
+under pgprox-proto::decode_query 420
+under pgprox-proto::decode_error_response 2000
+
 # --- M30.6: a second benchmark that moved with a random seed ------------------
 #
 # Not `run_finding`: what landed is the shape of a measurement, and the place
