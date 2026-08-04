@@ -165,4 +165,17 @@ run_finding pgprox-pool \
   statements::tests::the_name_is_stable_across_builds \
   "the name is pinned rather than merely computed"
 
+# --- M24.8: an unused pool is forgotten --------------------------------------
+run_finding pgprox-pool \
+  live::tests::a_pool_nobody_is_using_is_forgotten_rather_than_kept_forever \
+  "a pool with nothing in it is forgotten rather than held for the process"
+run_finding pgprox-pool \
+  live::tests::a_pool_still_holding_something_is_not_forgotten \
+  "a pool holding a connection or a warm one is kept"
+# The hazard in forgetting, which the two above would pass without: a waiter
+# parked on a doorbell the map then dropped sleeps until its own deadline.
+run_finding pgprox-pool \
+  live::tests::a_doorbell_somebody_is_holding_is_not_dropped \
+  "a waiter's doorbell survives the reaper and still wakes them"
+
 finish

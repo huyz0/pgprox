@@ -310,6 +310,21 @@ impl Pool {
         self.idle.iter()
     }
 
+    /// Whether nothing at all is happening here.
+    ///
+    /// Nothing open, nothing being opened, nothing checked out, nobody waiting.
+    /// A pool in this state is indistinguishable from one that has never
+    /// existed, which is what lets the reaper forget it: the next client of the
+    /// key builds another. `M24.8`.
+    ///
+    /// The waiter count is the part that is easy to leave out and the part that
+    /// matters, because a pool with a zero limit answers every acquire with
+    /// `Wait` while holding nothing at all.
+    #[must_use]
+    pub fn is_unused(&self) -> bool {
+        self.total() == 0 && self.waiting == 0
+    }
+
     /// Drops an idle connection, after the reaper has named it and the caller
     /// has closed its socket.
     ///

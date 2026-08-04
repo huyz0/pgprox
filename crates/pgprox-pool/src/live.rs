@@ -82,6 +82,17 @@ struct Keyed<C> {
     connections: HashMap<UpstreamId, C>,
 }
 
+impl<C> Keyed<C> {
+    /// Whether this key holds nothing and nobody is in it.
+    ///
+    /// Both halves, because the two maps can disagree: a payload the reaper
+    /// took out leaves the pool's own count at zero a moment before the
+    /// connection map is empty.
+    fn is_unused(&self) -> bool {
+        self.pool.is_unused() && self.connections.is_empty()
+    }
+}
+
 /// An [`UpstreamPool`] over a [`Connector`].
 pub struct LivePool<K: Connector> {
     /// A handle to this pool's own `Arc`.
@@ -238,7 +249,50 @@ impl<K: Connector + 'static> LivePool<K> {
             }
         }
 
+        // And the pools themselves. A `Keyed` was created by the first client
+        // of a key and dropped never, so a node that served a tenant which no
+        // longer exists held its pool until the process ended: small per key
+        // and unbounded in the number of keys. `M24.8`.
+        //
+        // Safe because `with_pool` creates on demand, so forgetting a key costs
+        // the next client of it one map insert and nothing else.
+        keyed.retain(|_, entry| !entry.is_unused());
+        drop(keyed);
+
+        self.forget_unheld_doorbells();
         closed
+    }
+
+    /// Drops the doorbells nobody is holding.
+    ///
+    /// A separate pass rather than part of the one above, because the hazard is
+    /// not the same one. A waiter parks on the `Notify` it took out of this map;
+    /// if the map drops it, the next release creates a fresh one and rings that,
+    /// and the waiter sleeps until its own deadline instead.
+    ///
+    /// `strong_count == 1` is the exact question, and asking it under this lock
+    /// is what makes it exact: every other way to get a handle takes the same
+    /// lock, so a count of one means nobody else can be about to wait either.
+    /// Reading the pool's `waiting` count instead would have a window between a
+    /// caller taking the doorbell and registering as a waiter.
+    fn forget_unheld_doorbells(&self) {
+        let mut bells = self
+            .doorbells
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        bells.retain(|_, bell| Arc::strong_count(bell) > 1);
+    }
+
+    /// How many doorbells this pool is holding.
+    ///
+    /// For the tests that the two maps shrink together, since a key forgotten
+    /// from one and kept in the other is half a fix.
+    #[must_use]
+    pub fn doorbells_held(&self) -> usize {
+        self.doorbells
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     /// The open connection behind a guard, for the caller to actually use.
@@ -1035,6 +1089,110 @@ mod tests {
             None,
             "a reaped connection's socket was kept open"
         );
+    }
+
+    #[tokio::test]
+    async fn a_pool_nobody_is_using_is_forgotten_rather_than_kept_forever() {
+        // `M24.8`. A `Keyed` was created by the first client of a key and
+        // dropped never: `reap_idle` closed the connections and left the
+        // `Pool`, and the doorbell map only ever grew. A node that served a
+        // tenant which no longer exists held its pool until the process ended,
+        // which is small per key and unbounded in the number of keys.
+        let (pool, clock) = pool(4);
+        let reaping = ReapConfig::default();
+
+        let mut guard = pool.acquire(&key(), never(&clock)).await.unwrap();
+        guard.release_clean();
+        drop(guard);
+        assert_eq!(pool.all_stats().len(), 1);
+
+        clock.advance(reaping.idle_timeout);
+        assert_eq!(pool.reap_idle(&reaping).len(), 1);
+
+        assert!(
+            pool.all_stats().is_empty(),
+            "a pool with nothing open, nobody waiting and nothing checked out \
+             was kept: {:?}",
+            pool.all_stats()
+        );
+        assert_eq!(pool.doorbells_held(), 0, "its doorbell outlived it");
+
+        // And it comes back on demand, which is what makes forgetting safe:
+        // a pool is created by the first client of a key either way.
+        let guard = pool.acquire(&key(), never(&clock)).await.unwrap();
+        assert_eq!(pool.all_stats().len(), 1);
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn a_pool_still_holding_something_is_not_forgotten() {
+        // The other half. Forgetting a key with a connection checked out would
+        // lose the connection; forgetting one with an idle connection that is
+        // not yet old enough would close it early. Neither is reachable through
+        // `reap_idle`, and this is what says so.
+        let (pool, clock) = pool(4);
+        let reaping = ReapConfig::default();
+
+        // Checked out.
+        let mut guard = pool.acquire(&key(), never(&clock)).await.unwrap();
+        clock.advance(reaping.idle_timeout * 100);
+        assert_eq!(pool.reap_idle(&reaping).len(), 0);
+        assert_eq!(pool.all_stats().len(), 1, "a pool in use was forgotten");
+
+        // Idle, and younger than the timeout.
+        guard.release_clean();
+        drop(guard);
+        assert_eq!(pool.reap_idle(&reaping).len(), 0);
+        assert_eq!(
+            pool.all_stats().len(),
+            1,
+            "a pool holding a warm connection was forgotten"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_doorbell_somebody_is_holding_is_not_dropped() {
+        // The hazard in forgetting a key. A waiter parks on the `Notify` it
+        // took out of the map; if the map then drops it, the next release
+        // creates a fresh one and rings that, and the waiter sleeps until its
+        // own deadline instead.
+        //
+        // A zero limit is the way to reach it: `acquire` answers `Wait` with
+        // nothing open at all, so the pool looks unused while somebody is in it.
+        let (pool, clock) = pool(4);
+        pool.set_limit(&key(), 0);
+
+        let waiter = {
+            let pool = Arc::clone(&pool);
+            let deadline = clock.now() + Duration::from_secs(30);
+            tokio::spawn(async move { pool.acquire(&key(), deadline).await })
+        };
+        while pool.stats(&key()).waiting == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        clock.advance(ReapConfig::default().idle_timeout * 100);
+        assert!(pool.reap_idle(&ReapConfig::default()).is_empty());
+
+        assert_eq!(
+            pool.all_stats().len(),
+            1,
+            "a pool with a caller waiting in it was forgotten"
+        );
+        assert_eq!(
+            pool.doorbells_held(),
+            1,
+            "the waiter's doorbell was dropped"
+        );
+
+        // And it is still the doorbell that wakes them.
+        pool.set_limit(&key(), 4);
+        let guard = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("the waiter was never woken")
+            .unwrap()
+            .unwrap();
+        drop(guard);
     }
 
     #[tokio::test]

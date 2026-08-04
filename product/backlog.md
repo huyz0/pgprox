@@ -6705,7 +6705,7 @@ recognised so it can be refused rather than read as a version.
   in the file would pass; the name fits an identifier Postgres will not
   truncate, which nothing checked; and the half that was **not** fixed says so
   with the measurement that decided it.
-- [ ] `M24.8` `LivePool` never forgets a pool key. `keyed` and `doorbells` gain
+- [x] `M24.8` `LivePool` never forgets a pool key. `keyed` and `doorbells` gain
   an entry per `PoolKey` and lose one never: `reap_idle` closes the connections
   and leaves the `Pool`. A node that has served a tenant that no longer exists
   holds its pool until the process ends.
