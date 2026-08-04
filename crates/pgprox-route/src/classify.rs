@@ -300,14 +300,43 @@ fn matches_any(word: &str, set: &[&str]) -> bool {
 /// ```
 #[must_use]
 pub fn begins_read_only_transaction(sql: &str) -> bool {
-    // One pass, no allocation: this runs on the route decision's hot path, on
-    // every statement outside a transaction.
-    let mut first: Option<&str> = None;
-    let mut second: Option<&str> = None;
+    // One pass, no allocation, and it stops as soon as the answer is fixed.
+    //
+    // The stopping is the part that matters. This runs on the route decision's
+    // hot path for every statement outside a transaction, next to `classify`,
+    // which lexes the same text; reading to the end here made that two full
+    // passes over every statement the router sees. Three words can open a
+    // transaction and nothing later in the statement can change that, so a
+    // statement beginning with any other word is answered after one token.
+    // `M30.1` measured the difference on the reference point select.
+    let mut lexer = Lexer::new(sql);
+
+    let opener = loop {
+        match lexer.next() {
+            Some(Token::Word(word)) => break word,
+            // Punctuation says nothing: `(BEGIN` is not valid SQL, but leading
+            // punctuation must not be read as the statement's first word.
+            Some(Token::Punct(_)) => {}
+            // Quoted text, a leading separator, or nothing at all. A
+            // transaction-opening statement is none of those.
+            _ => return false,
+        }
+    };
+
+    // `SET` opens one only as `SET TRANSACTION`. Every other `SET` assigns a
+    // parameter, including `SET SESSION CHARACTERISTICS AS TRANSACTION READ
+    // ONLY`, which says what later transactions will do rather than opening
+    // one, so the second word has to be checked rather than searched for.
+    let sets = opener.eq_ignore_ascii_case("set");
+    if !sets && !opener.eq_ignore_ascii_case("begin") && !opener.eq_ignore_ascii_case("start") {
+        return false;
+    }
+
     let mut previous: Option<&str> = None;
+    let mut at_second_word = true;
     let mut read_only = false;
 
-    for token in Lexer::new(sql) {
+    for token in lexer {
         match token {
             // Only the first statement can open the transaction.
             Token::Semicolon => break,
@@ -316,10 +345,11 @@ pub fn begins_read_only_transaction(sql: &str) -> bool {
             Token::Quoted => return false,
             Token::Punct(_) => {}
             Token::Word(word) => {
-                if first.is_none() {
-                    first = Some(word);
-                } else if second.is_none() {
-                    second = Some(word);
+                if at_second_word {
+                    at_second_word = false;
+                    if sets && !word.eq_ignore_ascii_case("transaction") {
+                        return false;
+                    }
                 }
                 // `READ ONLY` as adjacent words. `READ WRITE` says the
                 // opposite, which is why this looks at the pair rather than
@@ -334,14 +364,7 @@ pub fn begins_read_only_transaction(sql: &str) -> bool {
         }
     }
 
-    let opens = first.is_some_and(|w| {
-        w.eq_ignore_ascii_case("begin")
-            || w.eq_ignore_ascii_case("start")
-            || (w.eq_ignore_ascii_case("set")
-                && second.is_some_and(|s| s.eq_ignore_ascii_case("transaction")))
-    });
-
-    opens && read_only
+    read_only
 }
 
 #[cfg(test)]
@@ -833,6 +856,41 @@ mod tests {
         ] {
             assert!(!begins_read_only_transaction(sql), "{sql:?}");
         }
+    }
+
+    #[test]
+    fn a_statement_that_cannot_open_a_transaction_is_answered_by_its_first_words() {
+        // `M30.1` made this stop as soon as the answer is fixed, because the
+        // route decision was lexing every statement twice: once here and once
+        // in `classify`. The stopping is only sound if no later word can change
+        // the answer, so these are the cases where a later word tries to.
+        //
+        // Every one of them says READ ONLY somewhere and none of them opens a
+        // read-only transaction. Reading further would find those two words and
+        // has to not matter.
+        for sql in [
+            // The first word is not one of the three that can open one.
+            // `read` and `only` are legal unquoted column names, which is what
+            // makes the first of these a query somebody writes rather than a
+            // shape invented to fail.
+            "SELECT read, only FROM t",
+            "SELECT 1 WHERE mode = 'READ ONLY'",
+            "UPDATE t SET note = 'read only'",
+            "COMMIT AND CHAIN /* READ ONLY */",
+            // The first word is `SET`, so the second decides. Neither of these
+            // is `SET TRANSACTION`, and both continue into words that would
+            // otherwise say yes.
+            "SET search_path = read, only",
+            "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY",
+        ] {
+            assert!(!begins_read_only_transaction(sql), "{sql:?}");
+        }
+
+        // And the one that does have to read past its second word, so the
+        // early exit cannot be a blanket one.
+        assert!(begins_read_only_transaction(
+            "START TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ ONLY"
+        ));
     }
 
     #[test]

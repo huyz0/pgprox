@@ -5,14 +5,14 @@
   "pgprox-proto::relay_frame": 167,
   "pgprox-proto::decode_query": 390,
   "pgprox-proto::decode_error_response": 1884,
-  "pgprox-route::route_point_select": 6444,
-  "pgprox-route::route_update": 6717,
-  "pgprox-route::route_begin": 1294,
+  "pgprox-route::route_point_select": 4732,
+  "pgprox-route::route_update": 4308,
+  "pgprox-route::route_begin": 1280,
   "pgprox-pool::acquire_and_release": 443,
-  "pgprox-cache::cache_hit": 1471,
-  "pgprox-cache::cache_hit_rotating": 1820,
-  "pgprox-cache::cache_miss": 1245,
-  "pgprox-cache::cache_put": 3762,
-  "pgprox-cache::invalidate_a_tenants_entries": 85873,
-  "pgprox-cache::serves_a_mix_of_tenants": 38308
+  "pgprox-cache::cache_hit": 1467,
+  "pgprox-cache::cache_hit_rotating": 1812,
+  "pgprox-cache::cache_miss": 1235,
+  "pgprox-cache::cache_put": 3754,
+  "pgprox-cache::invalidate_a_tenants_entries": 85727,
+  "pgprox-cache::serves_a_mix_of_tenants": 38303
 }

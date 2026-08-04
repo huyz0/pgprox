@@ -6995,7 +6995,7 @@ recognised so it can be refused rather than read as a version.
   is inside the closed list on purpose.
   Acceptance: this list, a roadmap section, and `scripts/m30-complete.sh` wired
   into CI.
-- [ ] `M30.1` `begins_read_only_transaction` lexes a whole statement to learn
+- [x] `M30.1` `begins_read_only_transaction` lexes a whole statement to learn
   its first word. It runs on the route decision's hot path for every statement
   outside a transaction, and its own comment claims one pass and no allocation,
   which is true and is not the point: the answer depends only on the first word

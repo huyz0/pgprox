@@ -92,6 +92,21 @@ fi
 
 # --- the findings that have landed -------------------------------------------
 
+# --- M30.1: a statement lexed twice to read one word --------------------------
+#
+# The behaviour, by the test that fails if the early exit stops being sound.
+# Two mutations were run against it before it was trusted: dropping the `SET`
+# second-word guard, and dropping the opener check. Both fail it.
+run_finding pgprox-route \
+  classify::tests::a_statement_that_cannot_open_a_transaction_is_answered_by_its_first_words \
+  "a statement that cannot open a transaction is answered by its first words"
+
+# And the number, so a later change that quietly puts the second pass back is
+# caught here rather than in a profile nobody runs. The figures before were
+# 6,444 and 6,717.
+under pgprox-route::route_point_select 5200
+under pgprox-route::route_update 4800
+
 # --- M30.6: a second benchmark that moved with a random seed ------------------
 #
 # Not `run_finding`: what landed is the shape of a measurement, and the place
