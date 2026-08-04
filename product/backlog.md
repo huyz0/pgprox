@@ -7153,7 +7153,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the script runs all four arms, refuses to report a number it did
   not get, names which arm each figure came from, and its own failure mode is
   a named arm rather than an exit code.
-- [ ] `M32.4` The run, recorded, including what it does not say.
+- [x] `M32.4` The run, recorded, including what it does not say.
   Acceptance: a document in `product/perf` with every arm's figures, the
   configuration each ran under, and the arms it is not fair to compare.
 - [x] `M32.6` `pgcat` only offers MD5 to clients, so `M32.1` was half the work.

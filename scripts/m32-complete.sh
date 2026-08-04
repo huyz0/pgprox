@@ -192,4 +192,26 @@ else
   fail "the run defaults to $rounds rounds, which is not enough for a median"
 fi
 
+# --- M32.4: the run, recorded ------------------------------------------------
+#
+# The run needs four containers. What a per-commit gate reads is the document,
+# and the two things in it that a later change could quietly make false: the cap
+# every arm was held to, and the versions the other two arms were.
+RUN="${PGPROX_RUN_DOC:-product/perf/run-2026-08-05-pgbouncer-pgcat.md}"
+if [[ -f "$RUN" ]]; then
+  ok "$RUN records every arm's figures"
+else
+  fail "$RUN is missing, so the comparison is a claim in a commit message"
+fi
+
+# The cap the document reports is the cap the files still carry. A document
+# saying sixty beside configuration saying ninety is worse than no document.
+doc_cap="$(grep -o 'Upstream cap | [0-9]*' "$RUN" 2>/dev/null | grep -o '[0-9]*' || true)"
+file_cap="$(awk '/max_connections:/ { print $2; exit }' deploy/config/compare.yaml)"
+if [[ -n "$doc_cap" && "$doc_cap" == "$file_cap" ]]; then
+  ok "the document and the configuration agree the cap was $doc_cap"
+else
+  fail "the document says cap ${doc_cap:-none} and the configuration says $file_cap"
+fi
+
 finish
