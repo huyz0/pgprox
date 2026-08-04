@@ -44,7 +44,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M25 | The query cache against pgpool-II | complete; three findings, all one constant, and the two places pgpool is ahead stay open as limits rather than becoming tasks |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
-| M26 | What the query cache costs, measured for the first time | open |
+| M26 | What the query cache costs, measured for the first time | complete; a hit is 65% cheaper and allocates nothing, a write is 97% cheaper, and the lock the store worried about was never the problem |
 
 ## M-1: AI development system (complete)
 
@@ -1593,7 +1593,7 @@ an operator may write the section down before deciding who gets it. The check is
 conditional on the cache being on, and that test is in the gate for `M25.3` as
 well as its own.
 
-## M26: what the query cache costs, measured for the first time
+## M26: what the query cache costs, measured for the first time (complete)
 
 ```bash
 scripts/m26-complete.sh
@@ -1633,3 +1633,59 @@ is that a hit is the cheap path.
 Completion condition: `scripts/m26-complete.sh`, which runs a named test per
 finding and reads its exit status, and refuses to pass with a ticked task it
 does not name.
+
+### Where it got to
+
+| bench | before | after | |
+| --- | --- | --- | --- |
+| `cache_hit` | 4,144 | 1,460 | **-65%** |
+| `cache_hit_rotating` | n/a | 1,823 | new, and the honest one |
+| `cache_miss` | 1,605 | 1,256 | -22% |
+| `cache_put` | 4,269 | 3,783 | -11% |
+| `invalidate_after_one_put` | 204,255 | 5,689 | **-97%** |
+| heap blocks per lookup | 2 | **0** | |
+
+**The lock was never the problem.** `store.rs` has promised since M9 that if a
+profile ever found its single mutex, the answer was to shard by the hash of the
+key. No profile could have: `scripts/bench.sh` ran three crates and this was not
+one of them. The first thing a number did was point somewhere else entirely.
+
+**Invalidation was the cost, by two orders of magnitude.** `invalidate_tenant`
+filtered `entries.keys()` by `&key.tenant == tenant`, which compares an
+`Arc<str>` by its contents, so a write was a string compare against every entry
+on the node. One write cost 48 hits. On `M9.10`'s counts, 10,700 invalidations
+against 20,000 lookups, that was roughly thirty-six times what every lookup on
+the node cost put together.
+
+**Three things the measurement decided rather than judgement did:**
+
+- The tenant index holds sequence numbers, not keys. Holding keys meant hashing
+  six fields a second time on every `put`, and `cache_put` went to 6,951
+  instead of 5,238.
+- `index()` uses `entry()` rather than a `get_mut` that falls back to it. The
+  fallback is obviously cheaper and is measurably slower.
+- The recency links live in the slab, not in the entries. With them inside
+  `Entry`, editing a neighbour means finding it by key, and `cache_put` went the
+  wrong way by 48% before the second attempt.
+
+**What the allocation budget found that reading did not.** The crate had none,
+while `pgprox-proto` and `pgprox-pool` both did. Adding one showed a *miss* —
+which hashes a key and returns `None` — allocating two heap blocks. Neither was
+the store's: `QueryCache` was an `#[async_trait]` over a store whose own docs
+say "Nothing here waits", and `pgprox-core` also implements the trait for
+`Arc<T>`, so a caller holding an `Arc<dyn QueryCache>` boxed twice. ADR 0025
+made the contract synchronous, and two `block_on` helpers written to poll a
+future that never yields were deleted outright.
+
+**Two corrections to the measurement itself, both mine.** `block_on` used
+`Box::pin`, which put a malloc inside every bench iteration and made the budget
+test fail its own assertion. And `cache_hit` asks for the same key every time,
+so it measured `touch`'s early return rather than `touch`; `cache_hit_rotating`
+exists because of that and is the number to watch.
+
+One bench had to change shape rather than improve. `invalidate_one_tenant`
+measured a walk; with the walk gone it measured a failed hash lookup, and moved
+15% between two runs of the same binary because how many probes a `HashMap` miss
+takes depends on a per-process random seed. It stores one entry per iteration
+now, is stable to 0.01%, and still guards what matters: against five thousand
+instructions, a reintroduced walk is two hundred thousand.

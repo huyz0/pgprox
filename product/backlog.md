@@ -6860,7 +6860,7 @@ recognised so it can be refused rather than read as a version.
   that reason, not because it is uncertain.
   Acceptance: a hit allocates exactly what a miss does, `cache_hit` falls
   again against the baseline, and eviction still takes the least recently used.
-- [ ] `M26.5` Close M26, on the terms `M18.4` through `M25.4` closed on.
+- [x] `M26.5` Close M26, on the terms `M18.4` through `M25.4` closed on.
   Acceptance: the gate passes, the status row says complete, the section
   records what the numbers were before and after, and it says plainly which of
   the store's documented worries the measurement found and which it did not.
