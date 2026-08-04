@@ -6787,7 +6787,7 @@ recognised so it can be refused rather than read as a version.
   tick loop the way `max_client_conns` reaches the gate, the default is the
   constant it replaces, and a test shows a raised value caching an answer the
   default refuses.
-- [ ] `M25.3` Nothing checks the two limits against each other. A
+- [x] `M25.3` Nothing checks the two limits against each other. A
   `max_entry_bytes` above `max_bytes` is a node that records answers to the
   cap and then rejects every one of them at `put`: work done, memory held,
   nothing stored, and two counters that each look explainable on their own.

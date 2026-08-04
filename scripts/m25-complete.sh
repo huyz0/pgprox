@@ -110,4 +110,22 @@ run_finding pgprox \
   run::tests::the_per_answer_cap_reaches_a_running_node_from_the_document \
   "a rewritten cap reaches the recorder without a restart"
 
+# --- M25.3: the two limits are checked against each other ---------------------
+run_finding pgprox-core \
+  config::tests::a_per_answer_cap_above_the_budget_is_refused \
+  "a cap above the budget is refused, and the boundary is not"
+run_finding pgprox-core \
+  config::tests::a_per_answer_cap_of_zero_is_refused_the_way_a_budget_of_zero_is \
+  "a cap of zero is refused the way a budget of zero is"
+# Through a real document, because the two are written by one operator in one
+# section and this is the shape they get wrong.
+run_finding pgprox-config \
+  document::tests::a_cache_section_that_parses_but_is_invalid_is_still_rejected \
+  "a document setting the pair that way is refused by field"
+# The case an unconditional pair check would have refused, which is the one
+# `a_budget_of_zero_is_allowed_while_nothing_is_cached` exists to permit.
+run_finding pgprox-core \
+  config::tests::a_budget_of_zero_is_allowed_while_nothing_is_cached \
+  "a section written down before anybody is opted in still validates"
+
 finish

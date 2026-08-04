@@ -244,6 +244,44 @@ impl Config {
                     .into(),
             });
         }
+        // The same sentence one field along. A cap of zero records nothing, so
+        // a document that lists tenants and sets it is a cache that is off
+        // while saying it is on. `M25.3`.
+        if cache.max_entry_bytes == 0 && !cache.is_off() {
+            return Err(ConfigError::Invalid {
+                field: "query_cache.max_entry_bytes".into(),
+                reason: "must be greater than zero when a tenant has opted in, \
+                         or no answer is ever held long enough to be stored"
+                    .into(),
+            });
+        }
+        // The two against each other, which neither check above can see. A
+        // node with a cap above its budget records answers to the cap and then
+        // rejects every one of them at the moment it tries to store them: work
+        // done, memory held, nothing kept, and two counters that each look
+        // explainable on their own.
+        //
+        // Refused only above, not at, the budget. An answer of exactly the
+        // budget is still turned away, because the key and the two structs
+        // weigh something, but that is a matter of bytes rather than a
+        // configuration that can never store anything.
+        //
+        // Only while the cache is on, unlike the `ttl_cap` check above it. A
+        // budget of zero is deliberately allowed while nothing is cached, so
+        // an operator can write the section down before deciding who gets it,
+        // and a pair check that fired on that would refuse the case the check
+        // above it exists to permit.
+        if !cache.is_off() && cache.max_entry_bytes > cache.max_bytes {
+            return Err(ConfigError::Invalid {
+                field: "query_cache.max_entry_bytes".into(),
+                reason: format!(
+                    "{} is larger than query_cache.max_bytes, which is {}: \
+                     every answer that fits the cap would be refused by the \
+                     budget, so nothing would ever be cached",
+                    cache.max_entry_bytes, cache.max_bytes
+                ),
+            });
+        }
         for (tenant, asked) in &cache.tenants {
             if asked.ttl.is_zero() {
                 return Err(ConfigError::Invalid {
@@ -690,6 +728,92 @@ mod tests {
         let err = zero_ttl.validate().unwrap_err();
         assert_eq!(field_of(&err), "query_cache.tenants.acme.ttl");
         assert!(err.to_string().contains("remove the tenant"), "got {err}");
+    }
+
+    #[test]
+    fn a_per_answer_cap_above_the_budget_is_refused() {
+        // `M25.3`. A node in this state records answers to the cap and then
+        // rejects every one of them at `put`: work done, memory held, nothing
+        // stored, and two counters that each look explainable on their own.
+        // pgpool-II documents the same interaction between memqcache_maxcache
+        // and memqcache_cache_block_size and leaves it to the operator.
+        let over = Config {
+            query_cache: QueryCacheConfig {
+                max_bytes: 1024 * 1024,
+                max_entry_bytes: 2 * 1024 * 1024,
+                ..with_cache("acme", Duration::from_secs(5), Duration::from_secs(30)).query_cache
+            },
+            ..valid()
+        };
+        let err = over.validate().unwrap_err();
+        assert_eq!(field_of(&err), "query_cache.max_entry_bytes");
+        let text = err.to_string();
+        assert!(
+            text.contains("max_bytes"),
+            "the reason names one field and the operator has to change one of \
+             two: {text}"
+        );
+
+        // Equal is the boundary and it is accepted. An answer of exactly the
+        // budget is still refused at `put`, because the key and the two structs
+        // weigh something, but that is a matter of bytes rather than a
+        // configuration that can never store anything.
+        let equal = Config {
+            query_cache: QueryCacheConfig {
+                max_bytes: 1024 * 1024,
+                max_entry_bytes: 1024 * 1024,
+                ..with_cache("acme", Duration::from_secs(5), Duration::from_secs(30)).query_cache
+            },
+            ..valid()
+        };
+        assert!(equal.validate().is_ok(), "the boundary itself was refused");
+
+        // And the default pair, which is what most nodes run.
+        assert!(valid().validate().is_ok());
+
+        // A cap above a budget of zero is allowed while nothing is cached, for
+        // the reason the budget itself is: the section may be written down
+        // before anybody is opted in. Checked here rather than left implicit,
+        // because an unconditional pair check refuses exactly the case
+        // `a_budget_of_zero_is_allowed_while_nothing_is_cached` exists to
+        // permit, and it did until this line was written.
+        let idle = Config {
+            query_cache: QueryCacheConfig {
+                max_bytes: 0,
+                max_entry_bytes: 1024 * 1024,
+                ..QueryCacheConfig::default()
+            },
+            ..valid()
+        };
+        assert!(idle.validate().is_ok());
+    }
+
+    #[test]
+    fn a_per_answer_cap_of_zero_is_refused_the_way_a_budget_of_zero_is() {
+        // The same check one field along. A cap of zero records nothing, so a
+        // document listing tenants and setting it is a cache that is off while
+        // saying it is on, which is exactly what the `max_bytes` check above
+        // exists to refuse.
+        let none = Config {
+            query_cache: QueryCacheConfig {
+                max_entry_bytes: 0,
+                ..with_cache("acme", Duration::from_secs(5), Duration::from_secs(30)).query_cache
+            },
+            ..valid()
+        };
+        let err = none.validate().unwrap_err();
+        assert_eq!(field_of(&err), "query_cache.max_entry_bytes");
+
+        // Allowed while nothing is cached, for the reason a zero budget is:
+        // an operator may write the section down before deciding who gets it.
+        let idle = Config {
+            query_cache: QueryCacheConfig {
+                max_entry_bytes: 0,
+                ..QueryCacheConfig::default()
+            },
+            ..valid()
+        };
+        assert!(idle.validate().is_ok());
     }
 
     #[test]

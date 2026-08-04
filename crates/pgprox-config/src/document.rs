@@ -835,6 +835,16 @@ query_cache:
         let text = "query_cache:\n  max_bytes: 0B\n  tenants:\n    acme: { ttl: 5s }\n";
         let err = parse(text).unwrap_err();
         assert_eq!(field_of(&err), "query_cache.max_bytes");
+
+        // `M25.3`. The pair, through a real document, because the two limits
+        // are written by the same operator in the same section and this is the
+        // shape they get wrong: raise the one they read about and leave the
+        // other where it was.
+        let text = "query_cache:\n  max_bytes: 1MiB\n  max_entry_bytes: 4MiB\n  \
+                    tenants:\n    acme: { ttl: 5s }\n";
+        let err = parse(text).unwrap_err();
+        assert_eq!(field_of(&err), "query_cache.max_entry_bytes");
+        assert!(err.to_string().contains("max_bytes"), "got {err}");
     }
 
     #[test]
