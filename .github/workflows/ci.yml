@@ -312,3 +312,9 @@ jobs:
       # M22 were: it checks what has landed rather than what is planned.
       - name: M23
         run: scripts/m23-complete.sh
+      # M24 is open, and its gate runs anyway, on the same terms M19 through
+      # M23 were: it checks what has landed rather than what is planned. Its
+      # first check is that nothing ticked in the backlog is missing from it,
+      # which is what stops "what has landed" from meaning "whatever is easy".
+      - name: M24
+        run: scripts/m24-complete.sh

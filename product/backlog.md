@@ -6609,3 +6609,112 @@ recognised so it can be refused rather than read as a version.
   `M16` is still blocked and why. The last of those matters most: this
   milestone narrows an open question and a section that read as closing it
   would be worse than no section.
+
+## M24: a reading of every crate, and the nine things it found
+
+- [ ] `M24.0` Plan M24, and give it a gate that passes from this commit.
+  A read of all sixteen crates against correctness, completeness, design,
+  performance and test quality. Nine findings, filed below in the order of what
+  they cost rather than the order they were found.
+  Four of them are one shape: **a decision that reads SQL, taken by a scanner
+  that is not the shared one.** `pgprox-pool` and `pgprox-route` both carry a
+  written rule against exactly that, and `pgprox-pool/src/params.rs` has its
+  own scanner anyway.
+  Acceptance: the roadmap has an M24 section and a status row, this list is
+  written, and `scripts/m24-complete.sh` exists, is named in CI, and passes on
+  this commit by checking what has landed rather than what is planned.
+- [ ] `M24.1` A `SET` after a semicolon is neither replayed nor pinned.
+  `SessionParams::observe_statement` calls `ParsedSet::parse`, which reads the
+  first statement of the string and stops. `PinState::observe_statement` reads
+  every statement. So `SET statement_timeout='5s'; SET search_path=tenant1`
+  records the timeout, does not record the search path, and does not pin,
+  because both names are on the replayable list and pinning is decided per
+  name. The session is then moved to a connection carrying somebody else's
+  `search_path`, and nothing errors.
+  This is the bug `Replayable`'s own doc comment says the type exists to
+  prevent: "a session recorded as movable whose settings are never replayed".
+  It guards the list and not the parse.
+  Acceptance: a test that a `SET` after a semicolon is recorded, a test that a
+  string mixing a replayable and an unreplayable `SET` still pins whichever
+  order they arrive in, and both failing before the fix.
+- [ ] `M24.2` A `SET` whose parameter name is quoted is neither replayed nor
+  pinned. `SET "search_path" = tenant1` is valid Postgres. `params.rs` keeps the
+  quotes, so the name misses the allowlist and is not recorded; `pin.rs` reads
+  `statement_words`, which drops a quoted token entirely, so the statement has
+  one word and `set_pin_reason` returns before it looks at anything. Neither
+  half of the promise holds.
+  Acceptance: the setting is either recorded or the session is pinned, tested
+  both ways, with the test failing on the current build.
+- [ ] `M24.3` A schema-qualified advisory lock does not pin.
+  `SELECT pg_catalog.pg_advisory_lock(1)` takes a session-level lock.
+  `is_session_advisory_lock` matches `starts_with("pg_advisory")` against words
+  from `statement_words(sql, true)`, which joins a qualified name into one
+  token, so the word is `pg_catalog.pg_advisory_lock` and the prefix does not
+  match. The classifier gets this right on the same text, because it reads raw
+  tokens rather than joined ones. Two readings of one function, disagreeing.
+  A missed pin here returns a connection holding a session lock to the pool.
+  Acceptance: the qualified form pins, the unqualified form still pins, the
+  `_xact_` forms still do not, and the first of those fails before the fix.
+- [ ] `M24.4` The query cache key omits the database and the role.
+  `CacheKey` is tenant, normalized SQL, parameters and `search_path`. A grant
+  resolves to a `Backend { server, database, user }`, and `PoolKey` carries all
+  three because they vary within a tenant. Two sessions of one tenant on two
+  databases, or as two roles, share an entry: the same SQL against a different
+  database is a different table, and against a different role is a different
+  set of rows under RLS.
+  The type's own doc says "Every field is part of the key. Dropping one is how
+  a cache starts returning another tenant's data."
+  A `pgprox-core` DTO, so non-negotiable 6 applies: the type, every
+  construction, every fake and an ADR in one commit.
+  Acceptance: two grants differing only in database do not share an entry, two
+  differing only in user do not either, and both fail before the fix.
+- [ ] `M24.5` The grant cache stops admitting once it is full, permanently.
+  An entry leaves `CachingResolver` only when the same key is looked up again
+  and found expired, or on `clear()`. Tokens rotate, so a key is rarely looked
+  up twice past its expiry. After 100,000 distinct tokens the map is at
+  `capacity`, every entry in it is dead, and `store` refuses every new one for
+  the life of the process. Every connection then makes a sidecar RPC, on the
+  path this crate's `AGENTS.md` calls a declared hot path.
+  Acceptance: a test that fills the cache with entries that then expire and
+  shows a new one is admitted, failing before the fix.
+- [ ] `M24.6` No upper bound on the SCRAM iteration count.
+  `ScramError::BadIterationCount` documents itself as "absent, zero, or
+  absurd" and `parse_server_first` checks only for zero. The count comes from
+  the peer, and `ScramKeys::derive` runs PBKDF2 for that many rounds inline on
+  the dial path, so `i=4294967295` is a connection attempt that occupies a
+  runtime worker for hours.
+  Acceptance: a count past the bound is refused with `BadIterationCount`, the
+  bound is a constant no environment can move, and the RFC 7677 vectors at
+  4,096 still pass.
+- [ ] `M24.7` A prepared statement's global name is a 64-bit hash of the SQL,
+  and nothing checks the SQL. `GlobalName::for_sql` is FNV-1a with a bijective
+  finalizer, so colliding the name is colliding FNV-1a-64, which is cheap to do
+  on purpose. `ConnectionStatements` keeps the name and not the text, so a
+  second `Parse` that collides is answered `AlreadyHeld` and the client's
+  `Bind` runs the first statement instead.
+  Contained to one tenant's own pool, since `PoolKey` carries the database and
+  the role, so this is wrong answers rather than a crossing. It is still wrong
+  answers with nothing to see.
+  Acceptance: two different statements that hash alike do not share a
+  preparation, tested against a constructed collision rather than an argument.
+- [ ] `M24.8` `LivePool` never forgets a pool key. `keyed` and `doorbells` gain
+  an entry per `PoolKey` and lose one never: `reap_idle` closes the connections
+  and leaves the `Pool`. A node that has served a tenant that no longer exists
+  holds its pool until the process ends.
+  Small per key and unbounded in the number of keys, which is the shape this
+  project rejects elsewhere.
+  Acceptance: a pool with nothing open, nobody waiting and nothing checked out
+  is forgotten by the reaper, and one with any of those three is not.
+- [ ] `M24.9` Certificate hot reload is claimed twice and does not exist.
+  `product/architecture.md` gives `pgprox-tls` "rustls setup, FIPS feature
+  gate, cert hot-reload" and the crate's own `AGENTS.md` repeats it. Nothing in
+  the workspace re-reads a certificate: `server_config` is called once from
+  `entry.rs` and the `ServerConfig` it returns is fixed for the life of the
+  process. A cert-manager rotation therefore serves an expired certificate
+  until somebody restarts the pod.
+  This is `M13`'s subject arriving from the other side: not a rule with no
+  script, but a capability with no code and two documents asserting it.
+  Acceptance: the listener picks up a rewritten certificate without a restart,
+  a rewritten file that does not parse leaves the previous one serving rather
+  than taking the listener down, and the gate runs the test rather than looking
+  for the file.

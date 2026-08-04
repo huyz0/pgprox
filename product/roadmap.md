@@ -40,6 +40,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M21 | The driver matrix does not cover what M20 changed | complete; the suite it proposed building already existed, and three of its four cases were wrong in ways only a reverted build could show |
 | M22 | The mutants nobody has swept since M17 | complete; 3,835 mutants across all sixteen crates, nine new survivors, and no two of them had the same cause |
 | M23 | The streaming question M16 left open, at the scale one machine has | complete; no measurable per-connection cost to a megabyte row at 600 connections, and the second pair corrected what the first appeared to show |
+| M24 | A reading of every crate, and the nine things it found | open |
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 
@@ -1408,3 +1409,30 @@ numbers: that the two workloads differ where they claim to and nowhere else.
 Every derived workload in `product/perf/` asserts that in its header, including
 the pair `M7.55`'s conclusion rests on, and until this milestone nothing checked
 one of them.
+
+## M24: a reading of every crate, and the nine things it found
+
+```bash
+scripts/m24-complete.sh
+```
+
+Sixteen crates read against correctness, completeness, design, performance and
+test quality. Nine findings. The test quality question came back empty, which is
+worth saying: seven test functions in the workspace assert nothing, and six of
+those are "this input does not panic" and "this input does not hang", which is
+the assertion.
+
+**Four of the nine are one shape.** A decision that reads SQL, taken by a
+scanner that is not the shared one, or by the shared one asked the wrong way.
+`pgprox-pool` and `pgprox-route` each carry a written rule against this, in the
+same words, because the two crates once had a scanner each and the two
+disagreed about where an `E'...'` string ends. `pgprox-pool/src/params.rs` has
+its own scanner anyway, and `pgprox-pool/src/pin.rs` reads the shared one
+through `statement_words(sql, true)` while `pgprox-route` reads it raw, so the
+two answer differently about the same text.
+
+The rule was right and it was applied to the two places that had already been
+caught. Nothing looked for a third.
+
+Completion condition: `scripts/m24-complete.sh`, which runs a named test for
+each finding and reads its exit status, per `M12.8`.
