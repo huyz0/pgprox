@@ -369,3 +369,6 @@ jobs:
         run: scripts/m30-complete.sh
       - name: M31
         run: scripts/m31-complete.sh
+      # M32 is open, and its gate runs anyway, on M24's terms.
+      - name: M32
+        run: scripts/m32-complete.sh

@@ -7104,3 +7104,56 @@ recognised so it can be refused rather than read as a version.
   checkable claim has a `debug_assert!` that fails when the claim is broken,
   and the benchmarks are unmoved because none of this is a code change.
 - [x] `M31.2` Close M31.
+
+## M32: the comparison against pgbouncer and pgcat
+
+- [x] `M32.0` Plan M32. Every claim this project makes about pooling is against
+  its own baseline. `product/perf` holds twenty run documents and not one of
+  them has another pooler in it, so "absorbs the ratio" is measured against
+  pgprox at a different connection count rather than against the thing an
+  operator would otherwise deploy.
+  Four arms on one machine, one workload, one Postgres: direct, `pgbouncer`,
+  `pgcat`, `pgprox`. What it has to answer is narrow and worth having. Does
+  per-connection memory beat a C pooler that has been tuned for it since 2007,
+  and what does holding a fleet-wide cap cost in acquire latency next to a
+  pooler that does not coordinate at all.
+  Acceptance: this list, a roadmap section, and `scripts/m32-complete.sh` wired
+  into CI.
+- [ ] `M32.1` `bin/pgload` cannot authenticate to either of the other two. It
+  speaks trust and cleartext only, and says so in a comment that calls MD5 and
+  SCRAM "not implemented, and a client that cannot authenticate has to say
+  why". `pgbouncer` and `pgcat` both authenticate clients with SCRAM against a
+  configured password, so without this there is no comparison to run.
+  `pgprox-auth::scram` is already a client-side SCRAM implementation, used by
+  the proxy to authenticate to upstream servers. `bin/pgload` is a listed
+  composer, so it may depend on it, and it must: a second SCRAM implementation
+  in this workspace is the thing `pgprox_core::sql` exists to prevent, one
+  category up.
+  Acceptance: `pgload` completes a SCRAM handshake against a real Postgres,
+  the implementation is `pgprox-auth`'s with no crypto written here, and a
+  server offering a mechanism it does not have still fails with a reason.
+- [ ] `M32.2` The other two arms, configured so the comparison is about
+  pooling. Same upstream cap, same pool mode, same database and role, same
+  machine. `pgprox` runs with its query cache off and one upstream rather than
+  three, because a run that let it answer from cache or spread reads over
+  replicas would be measuring features the other two do not have and calling it
+  a pooling result.
+  What cannot be equalised is stated rather than hidden. `pgprox` resolves a
+  grant through a sidecar on every connect and the other two read a static
+  password file, so connection establishment is not the same work. The run
+  therefore reports the ramp separately from the steady state.
+  Acceptance: a compose overlay bringing up all three against one primary, each
+  reachable on its own port, each holding the same cap, and a check that the
+  three caps are equal read from the files rather than restated.
+- [ ] `M32.3` `scripts/compare.sh`, the run. One workload replayed against each
+  arm in turn with the same seed and the same connection count, sampling the
+  proxy's resident memory and the primary's connection count while it runs, and
+  reporting a table. Arms run one at a time, because three proxies under load
+  on one machine measure the machine.
+  Acceptance: the script runs all four arms, refuses to report a number it did
+  not get, names which arm each figure came from, and its own failure mode is
+  a named arm rather than an exit code.
+- [ ] `M32.4` The run, recorded, including what it does not say.
+  Acceptance: a document in `product/perf` with every arm's figures, the
+  configuration each ran under, and the arms it is not fair to compare.
+- [ ] `M32.5` Close M32.

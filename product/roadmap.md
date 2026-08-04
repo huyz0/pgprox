@@ -2002,3 +2002,33 @@ exactly what `M30` left them. A `debug_assert!` compiles out of a release build,
 and a figure that moved would mean one of these had reached one.
 
 Completion condition: `scripts/m31-complete.sh`.
+
+## M32: the comparison against pgbouncer and pgcat
+
+```bash
+scripts/compare.sh [connections]
+```
+
+Every claim this project makes about pooling is against its own baseline.
+`product/perf` holds twenty run documents and not one of them has another
+pooler in it, so "absorbs the ratio" means measured against pgprox at a
+different connection count, not against what an operator would otherwise
+deploy.
+
+Four arms on one machine, one workload, one Postgres: direct, `pgbouncer`,
+`pgcat`, `pgprox`. Two questions worth the machinery. Does per-connection
+memory beat a C pooler tuned for it since 2007, and what does holding a
+fleet-wide cap cost in acquire latency next to a pooler that does not
+coordinate at all.
+
+The comparison is deliberately narrowed to pooling. `pgprox` runs with its
+query cache off and one upstream rather than three, because a run that let it
+answer from cache or spread reads over replicas would be measuring features the
+other two do not have and calling it a pooling result.
+
+What cannot be equalised is reported rather than hidden. `pgprox` resolves a
+grant through a sidecar on every connect where the other two read a static
+password file, so the ramp is not the same work in each arm and is reported
+apart from the steady state.
+
+Completion condition: `scripts/m32-complete.sh`.
