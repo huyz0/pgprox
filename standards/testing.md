@@ -142,6 +142,23 @@ the question enough times per iteration that the seed is noise, and ask it of a
 working set rather than of one key. A wider tolerance would hide the next real
 regression instead.
 
+**An instruction count is not a time, and for bulk memory it is off by about
+four.** `callgrind` counts each iteration of a `rep` prefix as an instruction,
+so a 16 KiB `memset` reads as roughly 16,000 of them. It is one instruction's
+worth of decode and 16 KiB of store bandwidth, and the two do not divide the
+same way.
+
+`M30.4` removed a 16 KiB memset from every held read. The instruction count
+fell 88%, from 18,669 to 2,263, and the wall clock over two million reads fell
+22%, from 0.49s to 0.38s. Both are true and neither is the other.
+
+Which one to quote depends on the claim. Instruction counts are what this repo
+gates on, and the reason stands: they are the same on a busy machine as on an
+idle one, so a 3% regression is visible where a timing would report noise. What
+they cannot do is tell you how much faster something got when the work is bulk
+memory. When a benchmark's dominant term is a copy or a fill, state the wall
+clock beside the count, and say which one the claim rests on.
+
 **Gate on allocation counts and instruction counts, never wall clock.**
 `dhat-rs` asserting "relaying a 1 KiB DataRow allocates zero times" and
 `iai-callgrind` instruction counts are deterministic, so a 3% regression is

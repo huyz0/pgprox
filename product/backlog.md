@@ -7032,7 +7032,7 @@ recognised so it can be refused rather than read as a version.
   the pool and the cache's slot set, `acquire_and_release` falls, every
   peer-keyed map is still on `RandomState`, and the rule is written down where
   the next person adding a map will read it.
-- [ ] `M30.4` The held read path zeroes 16 KiB before every read, for a reason
+- [x] `M30.4` The held read path zeroes 16 KiB before every read, for a reason
   that is no longer true. `Wire::fill_held` grows its buffer with
   `resize(start + HELD_READ, 0)` and trims after, and the comment says it is
   written that way "because reading into uninitialised capacity needs `unsafe`

@@ -289,29 +289,34 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
             return Err(ShellError::Disconnected);
         };
 
-        // Grown before the read and trimmed after, because reading into
-        // uninitialised capacity needs `unsafe` and this workspace forbids it.
-        // The zeroing costs a memset of the read size; the alternative costs a
-        // stack array in every connection's future.
+        // Read straight into uninitialised spare capacity.
+        //
+        // This grew the buffer with `resize(.., 0)` and trimmed it after until
+        // `M30.4`, and the comment saying why named a rule that does not exist:
+        // that reading into uninitialised capacity needs `unsafe`, and that
+        // this workspace forbids it. `M27` made the second half false and the
+        // first half was never true. `read_buf` hands the spare capacity to
+        // the reader through `ReadBuf`, which is tokio's way of saying "write
+        // here and tell me how much", and `AsyncReadExt` has been imported at
+        // the top of this file the whole time.
+        //
+        // What that comment cost was a 16 KiB memset before every read on this
+        // path, which is every read after a connection's first.
+        //
+        // `reserve` rather than trusting what the slab lent, so the read is the
+        // same size it always was. It grows the buffer no further than the
+        // `resize` did, and the test below holds that.
         let vec = buf.as_mut_vec();
-        let start = vec.len();
-        vec.resize(start + HELD_READ, 0);
-        let read = self.io.read(&mut vec[start..]).await;
+        vec.reserve(HELD_READ);
 
-        match read {
+        match self.io.read_buf(vec).await {
+            // Nothing was appended, so there is nothing to trim back.
             Ok(0) => {
-                vec.truncate(start);
                 self.read = None;
                 Err(ShellError::Disconnected)
             }
-            Ok(count) => {
-                vec.truncate(start + count);
-                Ok(())
-            }
-            Err(error) => {
-                vec.truncate(start);
-                Err(error.into())
-            }
+            Ok(_) => Ok(()),
+            Err(error) => Err(error.into()),
         }
     }
 
@@ -1234,6 +1239,35 @@ mod tests {
         assert!(
             capacity <= 2 * HELD_READ,
             "one read grew the buffer to {capacity} bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_held_read_makes_room_for_a_whole_read_before_it_reads() {
+        // `reserve(HELD_READ)` is what keeps a held read the size it always
+        // was. `read_buf` fills whatever spare capacity is there and asks for
+        // no more, so without the reserve a buffer holding a partial frame
+        // reads only what the slab happened to leave over, and a large result
+        // row would arrive in a hundred syscalls instead of one.
+        //
+        // Nothing else here would notice: the frame still assembles, the test
+        // above still sees the buffer stay small, and the only symptom is the
+        // syscall count. `M30.4`.
+        let (mut wire, mut peer) = pair();
+        let mut buf = Wire::<DuplexStream>::borrow(&wire.slab).await.unwrap();
+        let prefix = vec![b'p'; 1024];
+        buf.extend_from_slice(&prefix);
+        wire.read = Some(buf);
+
+        peer.send(b"next").await;
+        wire.fill_held().await.unwrap();
+
+        let capacity = wire.read.as_mut().unwrap().as_mut_vec().capacity();
+        assert!(
+            capacity >= prefix.len() + HELD_READ,
+            "the read had room for {} bytes past the {} already held, not {HELD_READ}",
+            capacity - prefix.len(),
+            prefix.len()
         );
     }
 

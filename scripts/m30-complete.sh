@@ -180,6 +180,30 @@ else
   printf '       who chooses the key decides the hasher, see standards/security.md\n'
 fi
 
+# --- M30.4: a 16 KiB memset before every read ---------------------------------
+#
+# The behaviour first. `read_buf` fills the spare capacity that is there and
+# asks for no more, so the reserve is what keeps a held read the size it was.
+# Nothing else notices its absence: the frame still assembles and the buffer
+# still stays small, and the only symptom is the syscall count.
+run_finding pgprox-session \
+  shell::tests::a_held_read_makes_room_for_a_whole_read_before_it_reads \
+  "a held read makes room for a whole read before it reads"
+run_finding pgprox-session \
+  shell::tests::a_mid_frame_read_grows_the_buffer_by_one_read_and_no_more \
+  "and grows the buffer by one read and no more"
+
+# And the number. It was 18,669, of which 16,406 was the memset.
+under pgprox-session::held_read 4000
+
+# The whole finding is that no unsafe was needed for any of it, so the policy
+# that would have governed it still reports nothing to govern.
+if scripts/check-unsafe.sh >/dev/null 2>&1; then
+  ok "the memset went without an exception to the unsafe policy"
+else
+  fail "scripts/check-unsafe.sh does not pass"
+fi
+
 # --- M30.6: a second benchmark that moved with a random seed ------------------
 #
 # Not `run_finding`: what landed is the shape of a measurement, and the place
