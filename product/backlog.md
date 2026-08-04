@@ -7067,4 +7067,4 @@ recognised so it can be refused rather than read as a version.
   spread across four runs is inside a percent, it asks both answers rather
   than only the one that says yes, and the rule that catches this class is
   written where the next benchmark will be read against it.
-- [ ] `M30.7` Close M30, on the terms `M18.4` through `M29.2` closed on.
+- [x] `M30.7` Close M30, on the terms `M18.4` through `M29.2` closed on.

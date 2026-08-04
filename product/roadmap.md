@@ -1869,36 +1869,96 @@ untested here, and none of them has a candidate with a number behind it yet.
 
 Completion condition: `scripts/m29-complete.sh`.
 
-## M30: the same procedure, applied to every crate
+## M30: the same procedure, applied to every crate (complete)
 
 ```bash
 scripts/m30-complete.sh
 ```
 
-`M29` ran the unsafe procedure on one candidate in one crate, found nothing,
-and said so in its own closing text: four of the five patterns were untested
-and none had a number behind it. This runs the procedure across the workspace
-instead, and starts where it is supposed to start, which is a measurement.
+`M29` ran the unsafe procedure on one candidate in one crate, found nothing, and
+said so in its own closing text: four of the five patterns were untested and
+none had a number behind it. This ran the procedure across the workspace, and
+started where the procedure says to start, which is a measurement.
 
 The measurement is a callgrind run at N iterations subtracted from one at 2N,
-per function rather than per binary, so fixture construction cancels the same
-way `scripts/bench.sh` already cancels it for the total.
+taken per function instead of per binary, so fixture construction cancels the
+same way `scripts/bench.sh` already cancels it for the total. Without the
+subtraction the cache profile reports its own 4,096-entry fixture as the loop.
 
-| path | total | where it goes |
-| --- | --- | --- |
-| `route_point_select` | 6,444 | `sql::Lexer::next` 3,404, `matches_any` 1,935, `SessionRouter::route` 985 |
-| `decode_query` | 390 | `str::from_utf8` 262, `memchr` 106 |
-| `acquire_and_release` | 443 | SipHash over `UpstreamId` 174, `release` 117, `HashMap::insert` 81 |
+| path | before | after | |
+| --- | --- | --- | --- |
+| `route_point_select` | 6,444 | 3,716 | -42% |
+| `route_update` | 6,717 | 3,969 | -41% |
+| `route_begin` | 1,294 | 1,165 | -10% |
+| `acquire_and_release` | 443 | 278 | -37% |
+| `held_read` | 18,669 | 2,263 | -88% |
+| `cache_put` | 3,770 | 3,544 | -6% |
+| `invalidate_a_tenants_entries` | 86,088 | 83,378 | -3% |
+| `decode_query` | 390 | 390 | unchanged, and see below |
 
-Not one of those is a bounds check, which is the first thing worth saying about
-a procedure whose best-known pattern is unchecked indexing. Three of them are
-work that does not need doing at all: a statement lexed twice when the second
-pass reads one word, a keyword scan that compares every word against every
-keyword, and a cryptographic hash over an integer this process handed out.
+**Not one line of unsafe was written, and not one of the four costs was a bounds
+check.** That is the first thing worth saying about a procedure whose
+best-known pattern is unchecked indexing. Three were work that did not need
+doing at all, and the fourth is the one place unsafe would pay.
 
-The fourth is the one place unsafe would pay, and it is the first entry on
-`ADR 0026`'s closed list. That is the right answer and it has a price, and this
-milestone writes the price down rather than leaving the list justified only in
-the abstract.
+- **`M30.1`** The router lexed every statement twice to read one word.
+  `begins_read_only_transaction` ran beside `classify` over the same text and
+  read every token to answer a question the first word fixes.
+- **`M30.2`** Every word was compared against every keyword. About 290
+  `eq_ignore_ascii_case` calls per point select, to find no match. A filter over
+  length, first letter and last letter, computed at compile time from the lists
+  themselves, cut `matches_any` by 52% without touching an entry or a comment.
+- **`M30.3`** The pool hashed an integer it made up with `SipHash`, at 39% of
+  `acquire_and_release`. The rule that fell out is the durable part: who chooses
+  the key decides its hasher, and the four peer-chosen keys that keep
+  `RandomState` are named in `pgprox_core::hash`.
+- **`M30.4`** A 16 KiB memset before every held read, justified by a comment
+  saying unsafe was needed and forbidden. `M27` made the second half false; the
+  first half was never true, because `AsyncReadExt::read_buf` was imported in
+  that file the whole time.
+- **`M30.5`** Two thirds of the query decode is a UTF-8 validation that only
+  `from_utf8_unchecked` removes, in the first crate on `ADR 0026`'s closed list.
+  Refused, correctly, by a script that did not have to be argued with.
+
+## What the sweep says about the tool
+
+Three of the five findings were about something written down that had stopped
+being true, and none of them would have been found by reading the code alone.
+
+`M30.4` is the clearest. The comment gave a reason, the reason named a rule, and
+the rule had been changed three milestones earlier by this same line of work.
+Nobody reread the comments that cited the policy when the policy moved. The
+safe API it claimed did not exist had been in the file's imports since it was
+written.
+
+`M30.6` is the same shape in the measurement rather than the code. `M28.2` wrote
+down that a benchmark under a thousand instructions measures `scripts/bench.sh`
+as much as the code, and put it in a roadmap section, where it read as a note
+about one milestone. Nobody held the existing benchmarks against it, and
+`serves` was 141. It now sits in `standards/testing.md`, with all three
+instances named.
+
+## What it says about the procedure
+
+The procedure's own second and third steps did the work. Step two is "look at
+the assembly, LLVM has probably already elided the check", which is what `M29`
+found. Step three is "try the safe construct first", which is every one of
+`M30.1` through `M30.4`. Step four, the unsafe patterns themselves, has now been
+reached twice in this repo and turned back twice: once because the bounds checks
+were already gone, and once because the crate is closed and should be.
+
+## What was not swept, and why
+
+Six crates were profiled: `pgprox-proto`, `pgprox-core`, `pgprox-route`,
+`pgprox-pool`, `pgprox-cache` and `pgprox-session`. The rest were read for the
+five patterns and hold none of them. `pgprox-auth`'s only index loop is a 32-byte
+xor over a fixed-size array after a length check, and `bin/pgprox`'s is a
+three-element array indexed by a match. Neither is on a per-statement path and
+neither carries a bounds check LLVM cannot see through.
+
+`pgprox-session` had no benchmark at all before this, which is why `M30.4` went
+unseen for twenty-nine milestones: the crates with benchmarks were the sans-I/O
+ones, and this one reads a socket. It has one now, over `tokio::io::duplex`, and
+it is in the gated baseline.
 
 Completion condition: `scripts/m30-complete.sh`.
