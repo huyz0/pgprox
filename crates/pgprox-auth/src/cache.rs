@@ -86,12 +86,58 @@ struct Entry {
     expires_at: Instant,
 }
 
+/// How often a full cache walks itself for entries that have expired.
+///
+/// A constant, and rate limiting rather than a policy. The sweep exists because
+/// an entry otherwise leaves only when its own key is looked up again, and a
+/// rotating token's key never is: the map fills with dead entries and refuses
+/// every live one from then on. See [`Entries::sweep`].
+///
+/// It walks the whole map, and it runs from `store`, which is on the connection
+/// path. At capacity with every entry live it would find nothing and do it
+/// again for the next connection, so once an interval is the bound. One second
+/// at a hundred thousand entries is a millisecond of a second.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+
+/// The entry map, and when it was last walked.
+///
+/// One lock rather than two, because the sweep decision is made from inside the
+/// map's own lock and a second one taken there is a second one to get wrong.
+#[derive(Debug, Default)]
+struct Entries {
+    map: HashMap<CacheKey, Entry>,
+    /// When the last sweep ran, or [`None`] if none has.
+    swept_at: Option<Instant>,
+    /// How many have run, for the test that the rate limit is a rate.
+    sweeps: u64,
+}
+
+impl Entries {
+    /// Drops every expired entry, at most once per [`SWEEP_INTERVAL`].
+    ///
+    /// Expired only. Refusing at capacity rather than evicting is deliberate,
+    /// for the reason [`CachingResolver::store`] gives, and a sweep that
+    /// started throwing out live entries would have quietly made that decision
+    /// on its own.
+    fn sweep(&mut self, now: Instant) {
+        if self
+            .swept_at
+            .is_some_and(|last| now.saturating_duration_since(last) < SWEEP_INTERVAL)
+        {
+            return;
+        }
+        self.swept_at = Some(now);
+        self.sweeps += 1;
+        self.map.retain(|_, entry| entry.expires_at > now);
+    }
+}
+
 /// A [`CredentialResolver`] that caches, collapses, and remembers refusals.
 pub struct CachingResolver<R> {
     inner: R,
     clock: Arc<dyn Clock>,
     config: CacheConfig,
-    entries: Mutex<HashMap<CacheKey, Entry>>,
+    entries: Mutex<Entries>,
     /// Lookups currently in flight, so concurrent callers for the same key
     /// wait rather than each making their own call.
     inflight: Mutex<HashMap<CacheKey, broadcast::Sender<()>>>,
@@ -101,7 +147,7 @@ impl<R> std::fmt::Debug for CachingResolver<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CachingResolver")
             .field("config", &self.config)
-            .field("entries", &self.entries.lock().map_or(0, |e| e.len()))
+            .field("entries", &self.entries.lock().map_or(0, |e| e.map.len()))
             .finish_non_exhaustive()
     }
 }
@@ -114,7 +160,7 @@ impl<R: CredentialResolver> CachingResolver<R> {
             inner,
             clock,
             config,
-            entries: Mutex::new(HashMap::new()),
+            entries: Mutex::new(Entries::default()),
             inflight: Mutex::new(HashMap::new()),
         })
     }
@@ -122,7 +168,7 @@ impl<R: CredentialResolver> CachingResolver<R> {
     /// How many entries are held, expired ones included.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.lock_entries().len()
+        self.lock_entries().map.len()
     }
 
     /// Whether the cache holds nothing.
@@ -133,10 +179,23 @@ impl<R: CredentialResolver> CachingResolver<R> {
 
     /// Drops every entry. Used when configuration changes invalidate them.
     pub fn clear(&self) {
-        self.lock_entries().clear();
+        let mut entries = self.lock_entries();
+        entries.map.clear();
+        entries.swept_at = None;
     }
 
-    fn lock_entries(&self) -> std::sync::MutexGuard<'_, HashMap<CacheKey, Entry>> {
+    /// How many sweeps have run.
+    ///
+    /// The rate limit on the sweep is the difference between a cache
+    /// that recovers and one that walks a hundred thousand entries per
+    /// connection, and a test that only proved the sweep happens would not see
+    /// the difference. See `a_full_cache_does_not_sweep_on_every_miss`.
+    #[must_use]
+    pub fn sweeps(&self) -> u64 {
+        self.lock_entries().sweeps
+    }
+
+    fn lock_entries(&self) -> std::sync::MutexGuard<'_, Entries> {
         self.entries.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -148,10 +207,10 @@ impl<R: CredentialResolver> CachingResolver<R> {
     fn lookup(&self, key: &CacheKey) -> Option<Outcome> {
         let now = self.clock.now();
         let mut entries = self.lock_entries();
-        match entries.get(key) {
+        match entries.map.get(key) {
             Some(entry) if entry.expires_at > now => Some(entry.outcome.clone()),
             Some(_) => {
-                entries.remove(key);
+                entries.map.remove(key);
                 None
             }
             None => None,
@@ -166,18 +225,30 @@ impl<R: CredentialResolver> CachingResolver<R> {
             return;
         }
 
+        let now = self.clock.now();
         let mut entries = self.lock_entries();
-        if entries.len() >= self.config.capacity && !entries.contains_key(&key) {
-            // Refuse rather than evict. An eviction policy is a decision that
-            // needs measurement, and admitting past capacity is the one option
-            // that is definitely wrong.
+
+        if entries.map.len() >= self.config.capacity && !entries.map.contains_key(&key) {
+            // Dead entries first. One leaves on its own only when its own key
+            // is looked up again, and a rotating token's key never is, so
+            // without this the map filled with expired entries and refused
+            // every live one from then on. `M24.5`.
+            entries.sweep(now);
+        }
+
+        if entries.map.len() >= self.config.capacity && !entries.map.contains_key(&key) {
+            // Still full, so every entry in it is live. Refuse rather than
+            // evict: an eviction policy is a decision that needs measurement,
+            // and admitting past capacity is the one option that is definitely
+            // wrong.
             return;
         }
-        entries.insert(
+
+        entries.map.insert(
             key,
             Entry {
                 outcome,
-                expires_at: self.clock.now() + ttl,
+                expires_at: now + ttl,
             },
         );
     }
@@ -588,6 +659,102 @@ mod tests {
             f.cache.resolve(request(&tok, "db")).await.unwrap();
         }
         assert_eq!(f.cache.len(), 3, "cache grew past its capacity");
+    }
+
+    #[tokio::test]
+    async fn a_full_cache_of_dead_entries_admits_a_live_one() {
+        // `M24.5`. An entry left this cache only when the same key was looked
+        // up again and found expired, or on `clear`. Tokens rotate, so a key is
+        // rarely looked up twice past its expiry: the map reached `capacity`,
+        // every entry in it was dead, and `store` refused every new one for the
+        // life of the process. Every connection then made a sidecar RPC, on
+        // what this crate's `AGENTS.md` calls a declared hot path.
+        //
+        // Nothing failed. It got slower, permanently, and only under the load
+        // that fills it.
+        let config = CacheConfig {
+            capacity: 3,
+            ..CacheConfig::default()
+        };
+        let f = fixture(config);
+
+        for i in 0..3 {
+            let tok = token(&format!("old-{i}"));
+            f.inner.insert(&tok, grant(Duration::from_secs(60), None));
+            f.cache.resolve(request(&tok, "db")).await.unwrap();
+        }
+        assert_eq!(f.cache.len(), 3, "the cache did not fill");
+
+        // Every one of them expires, and none is ever asked for again. That is
+        // what token rotation looks like from in here.
+        f.clock.advance(Duration::from_secs(61));
+
+        let fresh = token("new");
+        f.inner.insert(&fresh, grant(Duration::from_secs(60), None));
+        f.cache.resolve(request(&fresh, "db")).await.unwrap();
+        f.cache.resolve(request(&fresh, "db")).await.unwrap();
+
+        assert_eq!(
+            f.inner.call_count(),
+            4,
+            "the new token was resolved twice, so it was never cached"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_full_cache_of_live_entries_still_refuses() {
+        // The other half, and the reason the sweep is not an eviction policy.
+        // Refusing at capacity is deliberate: an eviction policy is a decision
+        // that needs measurement, and admitting past capacity is the one option
+        // that is definitely wrong. A sweep that started throwing out live
+        // entries would have quietly made that decision.
+        let f = fixture(CacheConfig {
+            capacity: 3,
+            ..CacheConfig::default()
+        });
+        for i in 0..10 {
+            let tok = token(&format!("live-{i}"));
+            f.inner.insert(&tok, grant(Duration::from_secs(600), None));
+            f.cache.resolve(request(&tok, "db")).await.unwrap();
+        }
+        assert_eq!(f.cache.len(), 3, "a live entry was evicted to make room");
+    }
+
+    #[tokio::test]
+    async fn a_full_cache_does_not_sweep_on_every_miss() {
+        // The sweep walks the whole map, and `store` runs on the connection
+        // path. At capacity with every entry live it would find nothing every
+        // time, so it is rate limited, and a test that only proved the sweep
+        // happens would not notice it happening a hundred thousand times a
+        // second.
+        let f = fixture(CacheConfig {
+            capacity: 2,
+            ..CacheConfig::default()
+        });
+        for i in 0..2 {
+            let tok = token(&format!("live-{i}"));
+            f.inner.insert(&tok, grant(Duration::from_secs(600), None));
+            f.cache.resolve(request(&tok, "db")).await.unwrap();
+        }
+
+        assert_eq!(f.cache.sweeps(), 0, "nothing was full yet");
+
+        // Ten misses against a full cache, inside one interval.
+        for i in 0..10 {
+            let tok = token(&format!("miss-{i}"));
+            f.inner.insert(&tok, grant(Duration::from_secs(600), None));
+            f.cache.resolve(request(&tok, "db")).await.unwrap();
+        }
+        assert_eq!(f.cache.sweeps(), 1, "the sweep ran on every miss");
+
+        // And it is a rate rather than a one-off: past the interval it runs
+        // again, which is what keeps a cache that fills with dead entries
+        // recoverable rather than recoverable once.
+        f.clock.advance(SWEEP_INTERVAL);
+        let tok = token("later");
+        f.inner.insert(&tok, grant(Duration::from_secs(600), None));
+        f.cache.resolve(request(&tok, "db")).await.unwrap();
+        assert_eq!(f.cache.sweeps(), 2, "the sweep never ran again");
     }
 
     #[tokio::test]

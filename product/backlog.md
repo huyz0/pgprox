@@ -6668,7 +6668,7 @@ recognised so it can be refused rather than read as a version.
   construction, every fake and an ADR in one commit.
   Acceptance: two grants differing only in database do not share an entry, two
   differing only in user do not either, and both fail before the fix.
-- [ ] `M24.5` The grant cache stops admitting once it is full, permanently.
+- [x] `M24.5` The grant cache stops admitting once it is full, permanently.
   An entry leaves `CachingResolver` only when the same key is looked up again
   and found expired, or on `clear()`. Tokens rotate, so a key is rarely looked
   up twice past its expiry. After 100,000 distinct tokens the map is at

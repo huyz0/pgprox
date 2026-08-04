@@ -128,4 +128,15 @@ run_finding pgprox \
   serve::tests::the_cache_key_carries_the_database_and_the_role_the_grant_resolved_to \
   "the key is filled from the grant rather than invented"
 
+# --- M24.5: a full grant cache recovers --------------------------------------
+run_finding pgprox-auth \
+  cache::tests::a_full_cache_of_dead_entries_admits_a_live_one \
+  "a grant cache full of expired entries admits a new one"
+run_finding pgprox-auth \
+  cache::tests::a_full_cache_of_live_entries_still_refuses \
+  "the sweep drops the dead and never a live entry"
+run_finding pgprox-auth \
+  cache::tests::a_full_cache_does_not_sweep_on_every_miss \
+  "the sweep is rate limited rather than run per connection"
+
 finish
