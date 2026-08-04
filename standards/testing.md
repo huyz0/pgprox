@@ -124,6 +124,24 @@ that each imply a different action:
 - **Cold and complex**: near-zero count, high complexity or visible
   hand-optimization. Candidates for deletion.
 
+**A gated benchmark measures at least a thousand instructions.** Below that it
+is measuring `scripts/bench.sh` as much as the code. The specific mechanism is a
+`HashMap` probe count, which depends on a per-process random seed: at small
+sizes the difference between a lookup that probes once and one that probes three
+times is a measurable share of the total, so the same binary reports different
+numbers on different runs.
+
+This has now happened three times, and each time it was found by a benchmark
+failing on a change to a different crate. `M26.4` found `cache_hit` measuring an
+early return. `M28.2` found `invalidate_after_one_put` swinging 6% around code
+nobody had touched. `M30.6` found `serves` reading 135 to 154, a 14% spread
+against a 5% gate, and it failed on a change to `pgprox-route`.
+
+The fix each time was the shape of the measurement and never the tolerance. Ask
+the question enough times per iteration that the seed is noise, and ask it of a
+working set rather than of one key. A wider tolerance would hide the next real
+regression instead.
+
 **Gate on allocation counts and instruction counts, never wall clock.**
 `dhat-rs` asserting "relaying a 1 KiB DataRow allocates zero times" and
 `iai-callgrind` instruction counts are deterministic, so a 3% regression is

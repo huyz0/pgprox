@@ -188,12 +188,34 @@ fn invalidate_a_tenants_entries(iterations: u64) {
 }
 
 /// Whether a tenant is served, which every statement asks before anything else.
-fn serves(iterations: u64) {
+///
+/// Asked about every configured tenant and about as many that are not, once
+/// each, per iteration.
+///
+/// Not one tenant. At one it read 147, 148, 135 and 154 across four runs of the
+/// same binary, a 14% spread against a 5% tolerance, and it failed a run whose
+/// only change was in `pgprox-route`. One call is one `HashMap` probe and a
+/// probe count depends on a per-process random seed, which is `M26.4`'s finding
+/// and `M28.2`'s, reaching a third benchmark. `M30.6`.
+///
+/// Both answers, because a node runs both: a tenant that opted into the cache
+/// and a tenant that did not are different paths through the same lookup, and
+/// measuring only the one that says yes measures half of what this costs.
+///
+/// The lock is taken per call rather than once for the batch, because that is
+/// what a statement pays. Dividing this by `2 * TENANTS` gives the per-statement
+/// figure.
+fn serves_a_mix_of_tenants(iterations: u64) {
     let store = populated();
-    let known = tenant(0);
+    let asked: Vec<TenantId> = (0..TENANTS)
+        .map(tenant)
+        .chain((0..TENANTS).map(|i| TenantId::new(format!("absent-{i:04}"))))
+        .collect();
 
     for _ in 0..iterations {
-        std::hint::black_box(store.serves(&known));
+        for one in &asked {
+            std::hint::black_box(store.serves(std::hint::black_box(one)));
+        }
     }
 }
 
@@ -208,7 +230,7 @@ fn main() {
         "cache_miss" => cache_miss(iterations),
         "cache_put" => cache_put(iterations),
         "invalidate_a_tenants_entries" => invalidate_a_tenants_entries(iterations),
-        "serves" => serves(iterations),
+        "serves_a_mix_of_tenants" => serves_a_mix_of_tenants(iterations),
         _ => print_names(),
     }
 }
@@ -221,6 +243,6 @@ fn print_names() {
         println!("cache_miss");
         println!("cache_put");
         println!("invalidate_a_tenants_entries");
-        println!("serves");
+        println!("serves_a_mix_of_tenants");
     }
 }

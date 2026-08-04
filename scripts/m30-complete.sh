@@ -67,11 +67,11 @@ under() {
 # the ones that did land.
 #
 # Two tasks are about the milestone rather than about a finding: `M30.0`
-# planned it and `M30.6` closes it. Excluded by name rather than by a rule, so
+# planned it and `M30.7` closes it. Excluded by name rather than by a rule, so
 # a third exclusion has to be written down here to exist.
 finished="$(sed -n '/^## M30:/,/^## /p' "$BACKLOG" \
   | sed -n 's/^- \[x\] `\(M30\.[0-9]*\)`.*/\1/p' \
-  | grep -vE '^M30\.(0|6)$' || true)"
+  | grep -vE '^M30\.(0|7)$' || true)"
 
 if [[ -z "$finished" ]]; then
   ok "no finding has been ticked yet, so none can be unchecked"
@@ -91,5 +91,28 @@ else
 fi
 
 # --- the findings that have landed -------------------------------------------
+
+# --- M30.6: a second benchmark that moved with a random seed ------------------
+#
+# Not `run_finding`: what landed is the shape of a measurement, and the place
+# that is visible is the baseline. The check is `M28.2`'s, against the rule
+# `standards/testing.md` now states: a gated benchmark measures at least a
+# thousand instructions, because below that a `HashMap` probe count decides
+# whether it passes.
+served="$(python3 -c "import json; print(json.load(open('product/perf/baseline.json')).get('pgprox-cache::serves_a_mix_of_tenants', 0))")"
+if (( served > 10000 )); then
+  ok "the serves benchmark measures $served instructions, well past seed noise"
+else
+  fail "the serves benchmark is $served instructions, back in the range where"
+  printf '       a HashMap probe count decides whether it passes\n'
+fi
+
+# And the unstable one is gone rather than carried beside its replacement, which
+# would leave it still gating CI.
+if grep -q '"pgprox-cache::serves"' product/perf/baseline.json; then
+  fail "the baseline still carries pgprox-cache::serves, which is the unstable one"
+else
+  ok "the unstable benchmark is gone rather than kept beside its replacement"
+fi
 
 finish

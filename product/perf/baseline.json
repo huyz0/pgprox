@@ -9,10 +9,10 @@
   "pgprox-route::route_update": 6717,
   "pgprox-route::route_begin": 1294,
   "pgprox-pool::acquire_and_release": 443,
-  "pgprox-cache::cache_hit": 1470,
-  "pgprox-cache::cache_hit_rotating": 1811,
-  "pgprox-cache::cache_miss": 1230,
-  "pgprox-cache::cache_put": 3770,
-  "pgprox-cache::invalidate_a_tenants_entries": 86088,
-  "pgprox-cache::serves": 141
+  "pgprox-cache::cache_hit": 1471,
+  "pgprox-cache::cache_hit_rotating": 1820,
+  "pgprox-cache::cache_miss": 1245,
+  "pgprox-cache::cache_put": 3762,
+  "pgprox-cache::invalidate_a_tenants_entries": 85873,
+  "pgprox-cache::serves_a_mix_of_tenants": 38308
 }

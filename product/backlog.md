@@ -7053,4 +7053,18 @@ recognised so it can be refused rather than read as a version.
   the abstract and this is the number it was bought with.
   Acceptance: a run document holding the number and the reasoning, and no code
   change.
-- [ ] `M30.6` Close M30, on the terms `M18.4` through `M29.2` closed on.
+- [x] `M30.6` A second benchmark in the gated baseline moves with a random
+  seed. `serves` read 147, 148, 135 and 154 across four runs that differ in
+  nothing it measures. That is a 14% spread against a 5% tolerance, and it
+  failed `scripts/bench.sh` during `M30.1` on a change to a different crate.
+  This is `M28.2` again, in a benchmark `M28.2` did not look at. The rule it
+  wrote down is in the roadmap: a benchmark under about a thousand
+  instructions is measuring `scripts/bench.sh` as much as the code. `serves`
+  is 141 and was never held against it.
+  It asks one question about one tenant, so what it measures is one `HashMap`
+  probe, and how many probes a lookup takes depends on a per-process seed.
+  Acceptance: the benchmark measures enough work that the seed is noise, its
+  spread across four runs is inside a percent, it asks both answers rather
+  than only the one that says yes, and the rule that catches this class is
+  written where the next benchmark will be read against it.
+- [ ] `M30.7` Close M30, on the terms `M18.4` through `M29.2` closed on.
