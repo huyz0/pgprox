@@ -31,6 +31,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
+use pgprox_core::hash::IssuedIds;
 use pgprox_core::ids::{PoolKey, ServerId};
 use pgprox_core::pool::{PoolError, PoolStats, ReleaseOutcome, UpstreamId};
 
@@ -117,7 +118,12 @@ pub struct Pool {
     /// connection in turn and keep them all just barely alive.
     idle: VecDeque<Connection>,
     /// Connections currently checked out.
-    checked_out: HashMap<UpstreamId, Connection>,
+    ///
+    /// [`IssuedIds`] rather than the default hasher. `UpstreamId` is a counter
+    /// this node increments, so there is nobody to defend against, and `SipHash`
+    /// over it was 39% of `acquire_and_release`. See `pgprox_core::hash` for
+    /// the rule and for the keys it does not cover. `M30.3`.
+    checked_out: HashMap<UpstreamId, Connection, IssuedIds>,
     /// Slots reserved for connections being opened right now.
     opening: u32,
     /// Callers waiting for a connection.
@@ -135,7 +141,7 @@ impl Pool {
             config,
             key,
             idle: VecDeque::new(),
-            checked_out: HashMap::new(),
+            checked_out: HashMap::default(),
             opening: 0,
             waiting: 0,
             limit: config.max_size,

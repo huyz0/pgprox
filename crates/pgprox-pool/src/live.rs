@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use pgprox_core::clock::Clock;
+use pgprox_core::hash::IssuedIds;
 use pgprox_core::ids::PoolKey;
 use pgprox_core::pool::{
     ConnectionRelease, PoolError, PoolStats, ReleaseOutcome, UpstreamGuard, UpstreamId,
@@ -79,7 +80,10 @@ struct Keyed<C> {
     pool: Pool,
     /// Open connections by id. The pool tracks that they exist; this holds
     /// them.
-    connections: HashMap<UpstreamId, C>,
+    ///
+    /// Keyed on an id this node issues, so it takes `pgprox_core::hash`'s
+    /// hasher for the reason given there. `M30.3`.
+    connections: HashMap<UpstreamId, C, IssuedIds>,
 }
 
 impl<C> Keyed<C> {
@@ -193,7 +197,7 @@ impl<K: Connector + 'static> LivePool<K> {
         let mut keyed = self.lock();
         let entry = keyed.entry(key.clone()).or_insert_with(|| Keyed {
             pool: Pool::new(key.clone(), self.config),
-            connections: HashMap::new(),
+            connections: HashMap::default(),
         });
         f(&mut entry.pool)
     }
@@ -413,7 +417,7 @@ impl<K: Connector + 'static> LivePool<K> {
         let mut keyed = self.lock();
         let entry = keyed.entry(key.clone()).or_insert_with(|| Keyed {
             pool: Pool::new(key.clone(), self.config),
-            connections: HashMap::new(),
+            connections: HashMap::default(),
         });
         let id = entry.pool.opened();
         entry.connections.insert(id, connection);

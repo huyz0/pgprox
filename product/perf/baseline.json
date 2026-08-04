@@ -8,11 +8,11 @@
   "pgprox-route::route_point_select": 3716,
   "pgprox-route::route_update": 3969,
   "pgprox-route::route_begin": 1165,
-  "pgprox-pool::acquire_and_release": 442,
-  "pgprox-cache::cache_hit": 1463,
-  "pgprox-cache::cache_hit_rotating": 1810,
-  "pgprox-cache::cache_miss": 1233,
-  "pgprox-cache::cache_put": 3760,
-  "pgprox-cache::invalidate_a_tenants_entries": 85365,
-  "pgprox-cache::serves_a_mix_of_tenants": 38315
+  "pgprox-pool::acquire_and_release": 278,
+  "pgprox-cache::cache_hit": 1469,
+  "pgprox-cache::cache_hit_rotating": 1817,
+  "pgprox-cache::cache_miss": 1239,
+  "pgprox-cache::cache_put": 3537,
+  "pgprox-cache::invalidate_a_tenants_entries": 83781,
+  "pgprox-cache::serves_a_mix_of_tenants": 38270
 }

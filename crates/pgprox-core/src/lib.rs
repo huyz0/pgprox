@@ -59,6 +59,7 @@ pub mod clock;
 pub mod cluster;
 pub mod config;
 pub mod error;
+pub mod hash;
 pub mod ids;
 pub mod pool;
 pub mod route;

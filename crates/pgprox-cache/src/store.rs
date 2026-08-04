@@ -28,6 +28,7 @@ use std::time::Instant;
 use pgprox_core::cache::{CacheKey, CachedResult, QueryCache};
 use pgprox_core::clock::Clock;
 use pgprox_core::config::QueryCacheConfig;
+use pgprox_core::hash::IssuedIds;
 use pgprox_core::ids::TenantId;
 
 /// What the cache has been doing, for metrics and for `SHOW CACHE`.
@@ -145,7 +146,13 @@ struct Inner {
     /// A tenant with nothing left is removed rather than left holding an empty
     /// set, so a node that has served five thousand tenants and now serves one
     /// does not keep five thousand entries here.
-    by_tenant: HashMap<TenantId, HashSet<Slot>>,
+    ///
+    /// The outer key keeps the default hasher and the inner set does not.
+    /// `TenantId` arrives in a client's token, so a map keyed on it is exactly
+    /// what `SipHash`'s per-process seed defends; a `Slot` is an index this file
+    /// issues and there is nobody to defend against. `pgprox_core::hash` states
+    /// the rule and this is both halves of it in one declaration. `M30.3`.
+    by_tenant: HashMap<TenantId, HashSet<Slot, IssuedIds>>,
     /// The recency links and the key, by slot.
     ///
     /// Eviction and invalidation both start from a slot and need the key to

@@ -42,6 +42,19 @@ allocating it.
   about the query cache's slab. Elsewhere unsafe is a governed exception with
   five conditions, in [rust-style.md](rust-style.md) and enforced by
   `scripts/check-unsafe.sh`.
+- **Who chooses a map key decides its hasher.** A key a peer chooses keeps
+  `RandomState`, the default, which is SipHash under a per-process seed: that
+  seed is what stops a client sending a thousand keys that land in one bucket
+  and turning every lookup into a scan. A key this process hands out gets
+  `pgprox_core::hash::IssuedIds`, which is unseeded and much cheaper, because
+  there is nobody to defend against.
+  It is a rule about the key and not about the map, and the hard cases are the
+  values this process computes from something a peer supplied. A prepared
+  statement's global name is a hash of a name the client picked, and a hash of
+  peer input is peer input. Those keep `RandomState`.
+  Reaching for the fast hasher because a map looked slow in a profile is the
+  mistake this is written to prevent. `M30.3` moved two maps and left four,
+  and the four are named in `pgprox_core::hash`.
 - The statement classifier parses untrusted SQL. When it cannot classify with
   confidence it returns unknown and the router sends the statement to the
   primary. Guessing read-only on an ambiguous statement is a correctness bug and

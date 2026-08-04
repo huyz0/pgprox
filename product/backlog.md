@@ -7019,7 +7019,7 @@ recognised so it can be refused rather than read as a version.
   word that cannot match before any comparison happens, `matches_any` falls by
   more than half, no list entry or comment is edited, and a test shows the
   filter and the scan agree on every entry in every list.
-- [ ] `M30.3` The pool hashes a proxy-issued integer with a cryptographic hash.
+- [x] `M30.3` The pool hashes a proxy-issued integer with a cryptographic hash.
   `UpstreamId` is a `u64` this process hands out. It is the key of the pool's
   `checked_out` map, and SipHash over it is 174 instructions, 39% of
   `acquire_and_release`. The same is true of the cache's `HashSet<Slot>`, whose

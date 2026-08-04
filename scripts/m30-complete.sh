@@ -128,6 +128,58 @@ run_finding pgprox-route \
 under pgprox-route::route_point_select 4000
 under pgprox-route::route_update 4200
 
+# --- M30.3: a cryptographic hash over an integer this process issued ----------
+#
+# The hasher itself, by the test that says it is a hash rather than an identity
+# function. A `HashMap` takes its bucket from the low bits and its control byte
+# from the top seven, so a mixer that scrambles one end and not the other keeps
+# working and quietly compares more keys on every lookup.
+run_finding pgprox-core hash::tests::every_output_bit_moves \
+  "every output bit of the issued-id mixer moves"
+run_finding pgprox-core hash::tests::consecutive_ids_do_not_collide \
+  "ids off one counter do not collide"
+run_finding pgprox-core hash::tests::the_whole_hasher_avalanches_and_not_just_its_finalizer \
+  "the whole hasher avalanches, and not just its finalizer"
+run_finding pgprox-core hash::tests::every_field_reaches_the_hash \
+  "every field of a key reaches the hash"
+
+# And the number.
+under pgprox-pool::acquire_and_release 350
+
+# The rule is that peer-chosen keys keep RandomState, so the check is on where
+# the fast hasher is allowed to appear at all. A file, not a line: the cache
+# holds both halves of the rule in one declaration, `HashMap<TenantId,
+# HashSet<Slot, IssuedIds>>`, where the outer key is a tenant from a client's
+# token and the inner one is an index this file issues. A line-level check reads
+# that as a violation and a file-level one asks the right question, which is
+# whether somebody decided who chooses the key.
+#
+# Adding a file here is the friction, and it is the point: putting this hasher
+# on a map is a decision about the key, and it should cost a line in a gate.
+ALLOWED_TO_HASH_FAST=(
+  crates/pgprox-core/src/hash.rs      # where it is defined
+  crates/pgprox-pool/src/pool.rs      # checked_out, keyed on UpstreamId
+  crates/pgprox-pool/src/live.rs      # connections, keyed on UpstreamId
+  crates/pgprox-cache/src/store.rs    # the slot set inside by_tenant
+)
+
+stray=""
+while read -r file; do
+  [[ -n "$file" ]] || continue
+  found=""
+  for allowed in "${ALLOWED_TO_HASH_FAST[@]}"; do
+    [[ "$file" == "$allowed" ]] && found=1
+  done
+  [[ -n "$found" ]] || stray+=" $file"
+done <<<"$(grep -rl --include='*.rs' 'IssuedIds' crates bin 2>/dev/null || true)"
+
+if [[ -z "$stray" ]]; then
+  ok "the unseeded hasher appears only where a key this process issues is"
+else
+  fail "these files reach for the unseeded hasher and nothing decided about their keys:$stray"
+  printf '       who chooses the key decides the hasher, see standards/security.md\n'
+fi
+
 # --- M30.6: a second benchmark that moved with a random seed ------------------
 #
 # Not `run_finding`: what landed is the shape of a measurement, and the place
