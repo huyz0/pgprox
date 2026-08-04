@@ -6805,7 +6805,7 @@ recognised so it can be refused rather than read as a version.
 
 ## M26: what the query cache costs, measured for the first time
 
-- [ ] `M26.0` A bench and a baseline for the query cache, because there is
+- [x] `M26.0` A bench and a baseline for the query cache, because there is
   none. `run-2026-07-29-cache.md` measured what the cache is *worth* end to
   end and nothing has ever measured what it *costs* per call. The store's own
   module docs say that if a profile finds its single lock, the answer is to
@@ -6815,7 +6815,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `crates/pgprox-cache/benches/hot_paths.rs` covers the paths a
   statement takes, `bench.sh` runs it, the five counts are in
   `product/perf/baseline.json`, and this milestone has a gate wired into CI.
-- [ ] `M26.1` A write walks every entry on the node and compares a string per
+- [x] `M26.1` A write walks every entry on the node and compares a string per
   entry. `invalidate_tenant` filters `entries.keys()` by `&key.tenant ==
   tenant`, which is an `Arc<str>` comparison, so it is a string compare per
   entry across every tenant's entries, then clones each match.

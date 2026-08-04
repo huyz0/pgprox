@@ -141,15 +141,30 @@ fn cache_put(iterations: u64) {
 
 /// What one write costs a node holding other tenants' entries.
 ///
-/// The tenant named has nothing stored, so the walk runs and removes nothing,
-/// which is both idempotent and the case that matters: a node serving five
-/// thousand tenants spends every invalidation walking the other four thousand
-/// nine hundred and ninety-nine.
-fn invalidate_one_tenant(iterations: u64) {
+/// One entry stored and its tenant invalidated, on a node holding `ENTRIES`
+/// entries for `TENANTS` other tenants. That is the case the cost was always
+/// about: a node serving five thousand tenants used to spend every
+/// invalidation walking the other four thousand nine hundred and ninety-nine.
+///
+/// # Why the put is inside the measurement
+///
+/// The N and 2N subtraction needs every iteration to do the same work, so the
+/// tenant has to be back to holding something before the next one. That makes
+/// this the sum of a `put` and an invalidation rather than an invalidation
+/// alone, and the alternative was worse: with the walk gone, invalidating a
+/// tenant that holds nothing is one failed hash lookup, and at that size the
+/// number moved 15% between two runs of the same binary because how many
+/// probes a `HashMap` miss takes depends on a per-process random seed.
+///
+/// What this guards is the walk coming back. Against roughly six thousand
+/// instructions, a reintroduced walk is two hundred thousand.
+fn invalidate_after_one_put(iterations: u64) {
     let store = populated();
     let quiet = tenant(TENANTS);
+    let only = key(&quiet, ENTRIES + 7);
 
     for _ in 0..iterations {
+        block_on(store.put(only.clone(), result()));
         block_on(store.invalidate_tenant(std::hint::black_box(&quiet)));
     }
 }
@@ -173,7 +188,7 @@ fn main() {
         "cache_hit" => cache_hit(iterations),
         "cache_miss" => cache_miss(iterations),
         "cache_put" => cache_put(iterations),
-        "invalidate_one_tenant" => invalidate_one_tenant(iterations),
+        "invalidate_after_one_put" => invalidate_after_one_put(iterations),
         "serves" => serves(iterations),
         _ => print_names(),
     }
@@ -185,7 +200,7 @@ fn print_names() {
         println!("cache_hit");
         println!("cache_miss");
         println!("cache_put");
-        println!("invalidate_one_tenant");
+        println!("invalidate_after_one_put");
         println!("serves");
     }
 }

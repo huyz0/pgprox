@@ -84,4 +84,23 @@ fi
 
 # --- the findings that have landed -------------------------------------------
 
+# --- M26.1: a write stops walking the whole node ------------------------------
+#
+# The number is in product/perf/baseline.json and scripts/bench.sh is what
+# holds it. What a test can hold is the invariant a second index introduces:
+# every path that removes an entry has to remove it from both, and the ones
+# that do it least visibly are eviction, expiry on read, and a tenant dropped
+# by a reconfigure.
+run_finding pgprox-cache \
+  store::tests::the_tenant_index_holds_exactly_what_the_entry_map_holds \
+  "the tenant index and the entry map cannot drift apart"
+# And the behaviour the index exists to make cheap, which would still have to
+# be right if it were free.
+run_finding pgprox-cache \
+  store::tests::invalidating_a_tenant_leaves_every_other_tenant_alone \
+  "invalidating one tenant leaves the others alone"
+run_finding pgprox-cache \
+  store::tests::invalidating_a_tenant_gives_its_bytes_back \
+  "the byte total still follows what invalidation removed"
+
 finish

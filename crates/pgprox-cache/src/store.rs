@@ -21,7 +21,7 @@
 //! is why nothing outside this module knows there is one lock rather than
 //! sixteen.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::Instant;
 
@@ -81,6 +81,27 @@ struct Inner {
     /// minimum: eviction happens on the insert path, and a linear scan there
     /// would make the cost of a `put` depend on how full the cache is.
     lru: BTreeMap<u64, CacheKey>,
+    /// Which keys each tenant holds.
+    ///
+    /// A second index, and it exists because of one number. Invalidation ran
+    /// `entries.keys().filter(|k| &k.tenant == tenant)`, which walks every
+    /// entry on the node and compares an `Arc<str>` by its contents, so a
+    /// write cost 198,283 instructions at 4,096 entries across 64 tenants
+    /// against 4,144 for a hit. Linear in the whole node rather than in the
+    /// tenant, on the path `M9.10` counted 10,700 of against 20,000 lookups.
+    /// `M26.1`.
+    ///
+    /// Sequence numbers rather than keys, and that is the whole cost of this
+    /// index. Holding `CacheKey`s meant hashing all six of its fields a second
+    /// time on every `put`, which the entry map had just done, and it showed:
+    /// `put` went from 4,269 instructions to 6,951. A sequence is a `u64` the
+    /// entry already has, so the set costs a `u64` hash, and invalidation
+    /// reads the key back out of `lru`, where it already is.
+    ///
+    /// A tenant with nothing left is removed rather than left holding an empty
+    /// set, so a node that has served five thousand tenants and now serves one
+    /// does not keep five thousand entries here.
+    by_tenant: HashMap<TenantId, HashSet<u64>>,
     next_seq: u64,
     bytes: usize,
     stats: CacheStats,
@@ -200,8 +221,32 @@ impl Inner {
     fn remove(&mut self, key: &CacheKey) -> Option<Entry> {
         let entry = self.entries.remove(key)?;
         self.lru.remove(&entry.seq);
+        // Both indexes, or the next invalidation walks a key the entry map no
+        // longer holds. An empty set goes with it: a node that has served five
+        // thousand tenants and now serves one must not keep five thousand
+        // entries here.
+        if let Some(seqs) = self.by_tenant.get_mut(&key.tenant) {
+            seqs.remove(&entry.seq);
+            if seqs.is_empty() {
+                self.by_tenant.remove(&key.tenant);
+            }
+        }
         self.bytes -= entry.bytes;
         Some(entry)
+    }
+
+    /// Files an entry's place under its tenant.
+    ///
+    /// `entry` rather than a `get_mut` that falls back to it. The fallback
+    /// looks cheaper, since a tenant is new to this map once and stores
+    /// answers thousands of times, and it was measured and is not: two hash
+    /// lookups on the cold path cost more than the `Arc` increment it saves,
+    /// and `cache_put` went from 5,246 instructions to 5,284.
+    fn index(&mut self, tenant: &TenantId, seq: u64) {
+        self.by_tenant
+            .entry(tenant.clone())
+            .or_default()
+            .insert(seq);
     }
 
     /// Moves an entry to the front of the recency order.
@@ -315,6 +360,7 @@ impl QueryCache for Store {
         inner.next_seq += 1;
         inner.bytes += bytes;
         inner.lru.insert(seq, key.clone());
+        inner.index(&key.tenant, seq);
         inner.entries.insert(
             key,
             Entry {
@@ -330,14 +376,28 @@ impl QueryCache for Store {
 
     async fn invalidate_tenant(&self, tenant: &TenantId) {
         let mut inner = self.lock();
-        let doomed: Vec<CacheKey> = inner
-            .entries
-            .keys()
-            .filter(|key| &key.tenant == tenant)
-            .cloned()
-            .collect();
 
-        for key in doomed {
+        // The tenant's own keys, taken whole. This walked every entry on the
+        // node and compared a string per entry until `M26.1`, which is a cost
+        // paid by every write on behalf of every other tenant.
+        //
+        // Taken out rather than borrowed, because `remove` needs the map and
+        // would otherwise be borrowing it twice. It also leaves the index
+        // correct if this returns early: the entry for a tenant being emptied
+        // is exactly the one `remove` would have deleted anyway.
+        let Some(doomed) = inner.by_tenant.remove(tenant) else {
+            return;
+        };
+
+        for seq in doomed {
+            // The key is in `lru` under the same sequence, so this reads it
+            // back rather than storing a second copy. A sequence with no place
+            // there would be the two indexes disagreeing, which
+            // `the_tenant_index_holds_exactly_what_the_entry_map_holds` is
+            // what stops.
+            let Some(key) = inner.lru.get(&seq).cloned() else {
+                continue;
+            };
             inner.remove(&key);
             inner.stats.invalidated += 1;
         }
@@ -1000,6 +1060,77 @@ mod tests {
             inner.entries.len(),
             "an entry has no place in the recency order, or two share one"
         );
+    }
+
+    #[tokio::test]
+    async fn the_tenant_index_holds_exactly_what_the_entry_map_holds() {
+        // `M26.1` added a second index so a write stops walking every entry on
+        // the node, and a second index is a second thing to drift. Every path
+        // that removes an entry has to remove it from both, and the ones that
+        // do it least visibly are eviction, expiry on read, and a tenant
+        // dropped by a reconfigure.
+        let (cache, clock) = store(64 * 1024);
+
+        // Put, across two tenants.
+        for tenant in ["acme", "other"] {
+            for sql in ["select 1", "select 2", "select 3"] {
+                cache.put(key(tenant, sql), result(16, 1000)).await;
+            }
+        }
+        assert_indexed(&cache, 6);
+
+        // Replacing a key already held must not add a second place for it.
+        cache.put(key("acme", "select 1"), result(32, 1000)).await;
+        assert_indexed(&cache, 6);
+
+        // Expiry, found on read.
+        clock.advance(Duration::from_millis(1001));
+        assert!(cache.get(&key("acme", "select 1")).await.is_none());
+        assert_indexed(&cache, 5);
+
+        // Eviction, down to a budget that fits one.
+        cache.reconfigure(&config(600, &["acme", "other"]));
+        assert_indexed(&cache, usize::try_from(cache.stats().entries).unwrap());
+
+        // A tenant taken out of the document.
+        cache.reconfigure(&config(64 * 1024, &["other"]));
+        assert_indexed(&cache, usize::try_from(cache.stats().entries).unwrap());
+
+        // And invalidation itself.
+        cache.invalidate_tenant(&TenantId::new("other")).await;
+        assert_indexed(&cache, 0);
+    }
+
+    /// Asserts the entry map, the recency order and the tenant index agree.
+    ///
+    /// All three, because the failure mode of a second index is that it holds
+    /// a key the entry map no longer does, and the next invalidation then
+    /// walks a key that is not there. Nothing about that looks wrong until the
+    /// byte total drifts.
+    fn assert_indexed(cache: &Store, expected: usize) {
+        let inner = cache.lock();
+        assert_eq!(inner.entries.len(), expected, "the entry map");
+        assert_eq!(inner.lru.len(), expected, "the recency order");
+
+        let indexed: usize = inner.by_tenant.values().map(HashSet::len).sum();
+        assert_eq!(indexed, expected, "the tenant index");
+
+        for (tenant, seqs) in &inner.by_tenant {
+            assert!(!seqs.is_empty(), "{tenant} is indexed with nothing in it");
+            for seq in seqs {
+                let found = inner.lru.get(seq);
+                assert!(
+                    found.is_some(),
+                    "the tenant index holds a place the recency order does not"
+                );
+                let Some(key) = found else { continue };
+                assert!(
+                    inner.entries.contains_key(key),
+                    "the tenant index holds a key the entry map does not"
+                );
+                assert_eq!(&key.tenant, tenant, "a key is filed under another tenant");
+            }
+        }
     }
 
     #[tokio::test]
