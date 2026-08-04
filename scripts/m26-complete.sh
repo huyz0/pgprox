@@ -124,4 +124,22 @@ run_finding pgprox-cache \
   a_hit_serves_an_answer_without_building_anything \
   "a lookup allocates what the trait costs and nothing more"
 
+# --- M26.3: a lookup allocates nothing ----------------------------------------
+#
+# The budget is the check, and it says zero where it used to describe where two
+# blocks came from. The instruction counts moved with it and are in the
+# baseline; scripts/bench.sh is what holds those.
+run_finding pgprox-cache \
+  a_hit_serves_an_answer_without_building_anything \
+  "a miss allocates nothing, through the Arc and through the store alike"
+# The trait's own fake, because a contract change that left the fake behaving
+# differently would be the one thing worse than the boxing.
+run_finding pgprox-core \
+  cache::tests::the_fake_reports_emptiness_from_its_contents \
+  "the fake still behaves like the store it stands in for"
+# And the blanket impl the forwarding cost came from, which still forwards.
+run_finding pgprox-core \
+  cache::tests::a_cache_behind_an_arc_is_the_same_cache \
+  "an Arc around a cache is still that cache"
+
 finish

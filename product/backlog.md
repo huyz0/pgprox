@@ -6838,7 +6838,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a hit costs measurably less than it does now, the LRU order is
   still an order and eviction still takes the least recently used, and the
   number is stated against the baseline.
-- [ ] `M26.3` A lookup through an `Arc` boxes twice. `pgprox-core` implements
+- [x] `M26.3` A lookup through an `Arc` boxes twice. `pgprox-core` implements
   `QueryCache` for `Arc<T>` so a caller holding one can use the trait, and the
   composition root holds `Option<Arc<dyn QueryCache>>`. Every statement
   therefore boxes once for the forwarding call and once for the real one, and

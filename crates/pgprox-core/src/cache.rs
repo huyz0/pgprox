@@ -93,16 +93,28 @@ pub struct CachedResult {
 
 /// A query result cache.
 ///
+/// # Synchronous, because no implementation waits
+///
+/// The store this contract exists for holds a `std::sync::Mutex` and a hash
+/// map, and its own module docs say "Nothing here waits". An `#[async_trait]`
+/// over that boxed the future of every method, and `pgprox-core` also
+/// implements the trait for `Arc<T>`, so a caller holding an
+/// `Arc<dyn QueryCache>` paid two heap allocations per statement to express
+/// something no implementation does. `M26.3` measured it: a *miss*, which
+/// touches nothing and returns `None`, allocated twice.
+///
+/// What this forecloses is an implementation that reaches the network. ADR 0025
+/// argues that rather than assuming it, and ADR 0021 had already decided this
+/// cache is one node's own.
+///
 /// An implementation may return an entry up to its TTL old and no older. It may
 /// not return one to a session that has written, or for a statement the caller
 /// has not established is cacheable: those are the caller's obligations, and
 /// they are the ones a TTL cannot repair. See ADR 0021.
-#[async_trait::async_trait]
 pub trait QueryCache: Send + Sync + fmt::Debug {
     /// Whether this cache would hold anything for a tenant.
     ///
-    /// Not async, and cheap enough to call before deciding to build a
-    /// [`CacheKey`]. That is what it is for: normalizing a statement allocates,
+    /// Cheap enough to call before deciding to build a [`CacheKey`]. That is what it is for: normalizing a statement allocates,
     /// and off is the default, so on most nodes every statement would pay to
     /// discover there was nothing to look it up in.
     ///
@@ -120,17 +132,16 @@ pub trait QueryCache: Send + Sync + fmt::Debug {
     }
 
     /// Looks up a result.
-    async fn get(&self, key: &CacheKey) -> Option<CachedResult>;
+    fn get(&self, key: &CacheKey) -> Option<CachedResult>;
 
     /// Stores a result.
-    async fn put(&self, key: CacheKey, value: CachedResult);
+    fn put(&self, key: CacheKey, value: CachedResult);
 
     /// Drops every entry for a tenant, for invalidation and for eviction on
     /// tenant removal.
-    async fn invalidate_tenant(&self, tenant: &TenantId);
+    fn invalidate_tenant(&self, tenant: &TenantId);
 }
 
-#[async_trait::async_trait]
 impl<T: QueryCache + ?Sized> QueryCache for Arc<T> {
     // Forwarded rather than defaulted: an `Arc` around a cache that serves
     // nobody serves nobody, and taking the default here would tell every
@@ -139,16 +150,16 @@ impl<T: QueryCache + ?Sized> QueryCache for Arc<T> {
         (**self).serves(tenant)
     }
 
-    async fn get(&self, key: &CacheKey) -> Option<CachedResult> {
-        (**self).get(key).await
+    fn get(&self, key: &CacheKey) -> Option<CachedResult> {
+        (**self).get(key)
     }
 
-    async fn put(&self, key: CacheKey, value: CachedResult) {
-        (**self).put(key, value).await;
+    fn put(&self, key: CacheKey, value: CachedResult) {
+        (**self).put(key, value);
     }
 
-    async fn invalidate_tenant(&self, tenant: &TenantId) {
-        (**self).invalidate_tenant(tenant).await;
+    fn invalidate_tenant(&self, tenant: &TenantId) {
+        (**self).invalidate_tenant(tenant);
     }
 }
 
@@ -208,7 +219,6 @@ mod fake {
         }
     }
 
-    #[async_trait::async_trait]
     impl QueryCache for FakeQueryCache {
         fn serves(&self, tenant: &TenantId) -> bool {
             self.served
@@ -218,21 +228,21 @@ mod fake {
                 .is_none_or(|allowed| allowed.contains(tenant))
         }
 
-        async fn get(&self, key: &CacheKey) -> Option<CachedResult> {
+        fn get(&self, key: &CacheKey) -> Option<CachedResult> {
             if !self.serves(&key.tenant) {
                 return None;
             }
             self.lock().get(key).cloned()
         }
 
-        async fn put(&self, key: CacheKey, value: CachedResult) {
+        fn put(&self, key: CacheKey, value: CachedResult) {
             if !self.serves(&key.tenant) {
                 return;
             }
             self.lock().insert(key, value);
         }
 
-        async fn invalidate_tenant(&self, tenant: &TenantId) {
+        fn invalidate_tenant(&self, tenant: &TenantId) {
             self.lock().retain(|key, _| &key.tenant != tenant);
         }
     }
@@ -268,13 +278,12 @@ mod tests {
         #[derive(Debug)]
         struct MinimalCache;
 
-        #[async_trait::async_trait]
         impl QueryCache for MinimalCache {
-            async fn get(&self, _key: &CacheKey) -> Option<CachedResult> {
+            fn get(&self, _key: &CacheKey) -> Option<CachedResult> {
                 None
             }
-            async fn put(&self, _key: CacheKey, _value: CachedResult) {}
-            async fn invalidate_tenant(&self, _tenant: &TenantId) {}
+            fn put(&self, _key: CacheKey, _value: CachedResult) {}
+            fn invalidate_tenant(&self, _tenant: &TenantId) {}
         }
 
         assert!(
@@ -283,8 +292,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn the_fake_reports_emptiness_from_its_contents() {
+    #[test]
+    fn the_fake_reports_emptiness_from_its_contents() {
         // `FakeQueryCache::is_empty` could return `true` unconditionally, which
         // would make every assertion of the form "nothing was cached" pass
         // whether or not anything was.
@@ -292,15 +301,43 @@ mod tests {
         assert!(cache.is_empty());
         assert_eq!(cache.len(), 0);
 
-        cache.put(key("acme", "SELECT 1", "public"), result()).await;
+        cache.put(key("acme", "SELECT 1", "public"), result());
         assert!(
             !cache.is_empty(),
             "a cache holding an entry called itself empty"
         );
         assert_eq!(cache.len(), 1);
 
-        cache.invalidate_tenant(&TenantId::new("acme")).await;
+        cache.invalidate_tenant(&TenantId::new("acme"));
         assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn a_cache_behind_an_arc_is_the_same_cache() {
+        // The forwarding impl, which nothing covered until `M26.3` changed it.
+        // Every method has to reach the inner cache, and `serves` is the one
+        // the comment beside the impl argues about: taking the trait's default
+        // here would tell a caller holding an `Arc` around a cache that serves
+        // nobody to go on and build a key.
+        let inner = Arc::new(FakeQueryCache::new());
+        inner.serve_only([TenantId::new("acme")]);
+        let behind: Arc<dyn QueryCache> = inner.clone();
+
+        assert!(behind.serves(&TenantId::new("acme")));
+        assert!(
+            !behind.serves(&TenantId::new("globex")),
+            "an Arc around a cache that serves nobody served somebody"
+        );
+
+        behind.put(key("acme", "SELECT 1", "public"), result());
+        assert_eq!(inner.len(), 1, "the put did not reach the inner cache");
+        assert_eq!(
+            behind.get(&key("acme", "SELECT 1", "public")),
+            Some(result())
+        );
+
+        behind.invalidate_tenant(&TenantId::new("acme"));
+        assert!(inner.is_empty(), "the invalidation did not reach it");
     }
 
     #[test]
@@ -323,109 +360,84 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn a_stored_result_comes_back() {
+    #[test]
+    fn a_stored_result_comes_back() {
         let cache = FakeQueryCache::new();
         assert!(cache.is_empty());
 
-        cache.put(key("acme", "SELECT 1", "public"), result()).await;
+        cache.put(key("acme", "SELECT 1", "public"), result());
         assert_eq!(
-            cache.get(&key("acme", "SELECT 1", "public")).await,
+            cache.get(&key("acme", "SELECT 1", "public")),
             Some(result())
         );
         assert_eq!(cache.len(), 1);
     }
 
-    #[tokio::test]
-    async fn tenants_never_share_an_entry() {
+    #[test]
+    fn tenants_never_share_an_entry() {
         // Identical SQL from two tenants must not collide.
         let cache = FakeQueryCache::new();
-        cache.put(key("acme", "SELECT 1", "public"), result()).await;
+        cache.put(key("acme", "SELECT 1", "public"), result());
         assert!(
-            cache
-                .get(&key("globex", "SELECT 1", "public"))
-                .await
-                .is_none(),
+            cache.get(&key("globex", "SELECT 1", "public")).is_none(),
             "one tenant read another's cached result"
         );
     }
 
-    #[tokio::test]
-    async fn search_path_is_part_of_the_key() {
+    #[test]
+    fn search_path_is_part_of_the_key() {
         // The same SQL resolves to different tables under different search
         // paths. Omitting it from the key is a correctness bug.
         let cache = FakeQueryCache::new();
-        cache
-            .put(key("acme", "SELECT * FROM orders", "tenant_a"), result())
-            .await;
+        cache.put(key("acme", "SELECT * FROM orders", "tenant_a"), result());
         assert!(
             cache
                 .get(&key("acme", "SELECT * FROM orders", "tenant_b"))
-                .await
                 .is_none(),
             "a different search_path hit the same entry"
         );
     }
 
-    #[tokio::test]
-    async fn parameters_are_part_of_the_key() {
+    #[test]
+    fn parameters_are_part_of_the_key() {
         let cache = FakeQueryCache::new();
         let mut other = key("acme", "SELECT $1", "public");
         other.params = Arc::from(&b"\0\0\0\x012"[..]);
 
-        cache
-            .put(key("acme", "SELECT $1", "public"), result())
-            .await;
-        assert!(cache.get(&other).await.is_none(), "parameters were ignored");
+        cache.put(key("acme", "SELECT $1", "public"), result());
+        assert!(cache.get(&other).is_none(), "parameters were ignored");
     }
 
-    #[tokio::test]
-    async fn invalidating_a_tenant_leaves_others_alone() {
+    #[test]
+    fn invalidating_a_tenant_leaves_others_alone() {
         let cache = FakeQueryCache::new();
-        cache.put(key("acme", "SELECT 1", "public"), result()).await;
-        cache
-            .put(key("globex", "SELECT 1", "public"), result())
-            .await;
+        cache.put(key("acme", "SELECT 1", "public"), result());
+        cache.put(key("globex", "SELECT 1", "public"), result());
 
-        cache.invalidate_tenant(&TenantId::new("acme")).await;
+        cache.invalidate_tenant(&TenantId::new("acme"));
+        assert!(cache.get(&key("acme", "SELECT 1", "public")).is_none());
         assert!(
-            cache
-                .get(&key("acme", "SELECT 1", "public"))
-                .await
-                .is_none()
-        );
-        assert!(
-            cache
-                .get(&key("globex", "SELECT 1", "public"))
-                .await
-                .is_some(),
+            cache.get(&key("globex", "SELECT 1", "public")).is_some(),
             "invalidation hit the wrong tenant"
         );
     }
 
-    #[tokio::test]
-    async fn cache_works_through_an_arc_dyn() {
+    #[test]
+    fn cache_works_through_an_arc_dyn() {
         let cache: Arc<dyn QueryCache> = FakeQueryCache::new();
         assert!(cache.serves(&TenantId::new("acme")));
-        cache.put(key("acme", "SELECT 1", "public"), result()).await;
-        assert!(
-            cache
-                .get(&key("acme", "SELECT 1", "public"))
-                .await
-                .is_some()
-        );
+        cache.put(key("acme", "SELECT 1", "public"), result());
+        assert!(cache.get(&key("acme", "SELECT 1", "public")).is_some());
     }
 
-    #[tokio::test]
-    async fn a_cache_that_does_not_serve_a_tenant_says_so_before_being_asked() {
+    #[test]
+    fn a_cache_that_does_not_serve_a_tenant_says_so_before_being_asked() {
         // The question the relay asks before it builds a key, because building
         // one allocates and off is the default. The fake answers it the way the
         // real store does, so a test of the gate is a test of the gate.
         let cache = FakeQueryCache::new();
-        cache.put(key("acme", "SELECT 1", "public"), result()).await;
-        cache
-            .put(key("globex", "SELECT 1", "public"), result())
-            .await;
+        cache.put(key("acme", "SELECT 1", "public"), result());
+        cache.put(key("globex", "SELECT 1", "public"), result());
 
         cache.serve_only([TenantId::new("acme")]);
 
@@ -435,26 +447,19 @@ mod tests {
         // And narrowing dropped what the tenant that left had, rather than
         // leaving its rows resident on a node that no longer serves it.
         assert_eq!(cache.len(), 1);
-        assert!(
-            cache
-                .get(&key("globex", "SELECT 1", "public"))
-                .await
-                .is_none()
-        );
+        assert!(cache.get(&key("globex", "SELECT 1", "public")).is_none());
     }
 
-    #[tokio::test]
-    async fn a_tenant_that_is_not_served_stores_nothing() {
+    #[test]
+    fn a_tenant_that_is_not_served_stores_nothing() {
         let cache = FakeQueryCache::new();
         cache.serve_only([TenantId::new("acme")]);
-        cache
-            .put(key("globex", "SELECT 1", "public"), result())
-            .await;
+        cache.put(key("globex", "SELECT 1", "public"), result());
         assert!(cache.is_empty(), "a cache stored for a tenant it refuses");
     }
 
-    #[tokio::test]
-    async fn serving_everybody_is_what_an_unconfigured_cache_does() {
+    #[test]
+    fn serving_everybody_is_what_an_unconfigured_cache_does() {
         // The default the trait takes, checked through the fake: a cache that
         // was never narrowed answers for anyone.
         let cache: Arc<dyn QueryCache> = FakeQueryCache::new();

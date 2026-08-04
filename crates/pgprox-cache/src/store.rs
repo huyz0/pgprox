@@ -292,13 +292,12 @@ impl Inner {
     }
 }
 
-#[async_trait::async_trait]
 impl QueryCache for Store {
     fn serves(&self, tenant: &TenantId) -> bool {
         self.with_settings(|settings| settings.serves(tenant))
     }
 
-    async fn get(&self, key: &CacheKey) -> Option<CachedResult> {
+    fn get(&self, key: &CacheKey) -> Option<CachedResult> {
         // Not counted as a miss. A miss says the working set does not fit;
         // this says the tenant is not using the cache, and mixing them makes
         // the hit rate of the tenants that did opt in unreadable.
@@ -342,7 +341,7 @@ impl QueryCache for Store {
         Some(value)
     }
 
-    async fn put(&self, key: CacheKey, value: CachedResult) {
+    fn put(&self, key: CacheKey, value: CachedResult) {
         // What the tenant is configured for, and nothing stored for a tenant
         // that is not. This is where ADR 0021's bound is actually applied:
         // whatever the caller asked for, the entry expires no later than the
@@ -407,7 +406,7 @@ impl QueryCache for Store {
         inner.evict_to_fit(max_bytes);
     }
 
-    async fn invalidate_tenant(&self, tenant: &TenantId) {
+    fn invalidate_tenant(&self, tenant: &TenantId) {
         let mut inner = self.lock();
 
         // The tenant's own keys, taken whole. This walked every entry on the
@@ -516,86 +515,83 @@ mod tests {
         (store, clock)
     }
 
-    #[tokio::test]
-    async fn a_stored_result_comes_back() {
+    #[test]
+    fn a_stored_result_comes_back() {
         let (cache, _clock) = store(64 * 1024);
-        cache.put(key("acme", "SELECT 1"), result(16, 1000)).await;
-        assert_eq!(
-            cache.get(&key("acme", "SELECT 1")).await,
-            Some(result(16, 1000))
-        );
+        cache.put(key("acme", "SELECT 1"), result(16, 1000));
+        assert_eq!(cache.get(&key("acme", "SELECT 1")), Some(result(16, 1000)));
         assert_eq!(cache.stats().hits, 1);
     }
 
-    #[tokio::test]
-    async fn a_key_that_was_never_stored_is_a_miss_rather_than_an_expiry() {
+    #[test]
+    fn a_key_that_was_never_stored_is_a_miss_rather_than_an_expiry() {
         // The two are counted apart because they say different things: misses
         // mean the working set does not fit, expiries mean the TTL is shorter
         // than the reuse interval, and those have opposite fixes.
         let (cache, _clock) = store(64 * 1024);
-        assert!(cache.get(&key("acme", "SELECT 1")).await.is_none());
+        assert!(cache.get(&key("acme", "SELECT 1")).is_none());
         let stats = cache.stats();
         assert_eq!(stats.misses, 1);
         assert_eq!(stats.expired, 0);
     }
 
-    #[tokio::test]
-    async fn an_entry_past_its_ttl_is_never_served() {
+    #[test]
+    fn an_entry_past_its_ttl_is_never_served() {
         // ADR 0021's whole guarantee, and the only one this cache makes.
         let (cache, clock) = store(64 * 1024);
-        cache.put(key("acme", "SELECT 1"), result(16, 1000)).await;
+        cache.put(key("acme", "SELECT 1"), result(16, 1000));
 
         clock.advance(Duration::from_millis(999));
         assert!(
-            cache.get(&key("acme", "SELECT 1")).await.is_some(),
+            cache.get(&key("acme", "SELECT 1")).is_some(),
             "expired a millisecond early"
         );
 
         clock.advance(Duration::from_millis(1));
         assert!(
-            cache.get(&key("acme", "SELECT 1")).await.is_none(),
+            cache.get(&key("acme", "SELECT 1")).is_none(),
             "served an entry at exactly its TTL"
         );
         assert_eq!(cache.stats().expired, 1);
     }
 
-    #[tokio::test]
-    async fn an_expired_entry_stops_costing_memory_when_it_is_found() {
+    #[test]
+    fn an_expired_entry_stops_costing_memory_when_it_is_found() {
         // Left resident, it is memory spent on something that can never be
         // served, and the budget would evict live entries to make room for it.
         let (cache, clock) = store(64 * 1024);
-        cache.put(key("acme", "SELECT 1"), result(1024, 10)).await;
+        cache.put(key("acme", "SELECT 1"), result(1024, 10));
         assert!(cache.stats().bytes >= 1024);
 
         clock.advance(Duration::from_millis(11));
-        cache.get(&key("acme", "SELECT 1")).await;
+        cache.get(&key("acme", "SELECT 1"));
 
         let stats = cache.stats();
         assert_eq!(stats.entries, 0);
         assert_eq!(stats.bytes, 0, "an expired entry kept its bytes");
     }
 
-    #[tokio::test]
-    async fn the_budget_is_bytes_rather_than_entries() {
+    #[test]
+    fn the_budget_is_bytes_rather_than_entries() {
         // One large result costs what ten small ones do. A cache bounded by
         // count would hold either without noticing the difference.
         let (cache, _clock) = store(4096);
-        cache.put(key("acme", "big"), result(3000, 1000)).await;
+        cache.put(key("acme", "big"), result(3000, 1000));
         assert_eq!(cache.stats().entries, 1);
 
-        cache.put(key("acme", "also-big"), result(3000, 1000)).await;
+        cache.put(key("acme", "also-big"), result(3000, 1000));
         let stats = cache.stats();
         assert_eq!(stats.entries, 1, "two results over budget both stayed");
         assert!(stats.bytes <= 4096, "over budget: {} bytes", stats.bytes);
         assert_eq!(stats.evicted, 1);
     }
 
-    #[tokio::test]
-    async fn eviction_takes_the_least_recently_used() {
+    #[test]
+    fn eviction_takes_the_least_recently_used() {
         let (cache, _clock) = store(4000);
-        cache.put(key("acme", "a"), result(900, 1000)).await;
-        cache.put(key("acme", "b"), result(900, 1000)).await;
-        cache.put(key("acme", "c"), result(900, 1000)).await;
+        cache.put(key("acme", "a"), result(900, 1000));
+        cache.put(key("acme", "b"), result(900, 1000));
+        cache.put(key("acme", "c"), result(900, 1000));
 
         // The setup, asserted rather than assumed. A budget that turned out to
         // fit two rather than three would make every conclusion below true for
@@ -606,39 +602,33 @@ mod tests {
 
         // Reading `a` makes `b` the oldest, so `b` is what the next insert
         // throws out. Without the touch on the read path this would evict `a`.
-        assert!(cache.get(&key("acme", "a")).await.is_some());
-        cache.put(key("acme", "d"), result(900, 1000)).await;
+        assert!(cache.get(&key("acme", "a")).is_some());
+        cache.put(key("acme", "d"), result(900, 1000));
 
-        assert!(
-            cache.get(&key("acme", "a")).await.is_some(),
-            "a was evicted"
-        );
-        assert!(cache.get(&key("acme", "b")).await.is_none(), "b survived");
-        assert!(
-            cache.get(&key("acme", "d")).await.is_some(),
-            "d was not stored"
-        );
+        assert!(cache.get(&key("acme", "a")).is_some(), "a was evicted");
+        assert!(cache.get(&key("acme", "b")).is_none(), "b survived");
+        assert!(cache.get(&key("acme", "d")).is_some(), "d was not stored");
     }
 
-    #[tokio::test]
-    async fn a_result_larger_than_the_whole_budget_is_refused() {
+    #[test]
+    fn a_result_larger_than_the_whole_budget_is_refused() {
         // Storing it would evict everything and then be evicted by the next
         // insert, which is a cache that does nothing but churn.
         let (cache, _clock) = store(1024);
-        cache.put(key("acme", "small"), result(64, 1000)).await;
-        cache.put(key("acme", "huge"), result(8192, 1000)).await;
+        cache.put(key("acme", "small"), result(64, 1000));
+        cache.put(key("acme", "huge"), result(8192, 1000));
 
         let stats = cache.stats();
         assert_eq!(stats.rejected, 1);
         assert_eq!(stats.evicted, 0, "the refusal evicted something");
         assert!(
-            cache.get(&key("acme", "small")).await.is_some(),
+            cache.get(&key("acme", "small")).is_some(),
             "refusing a large result threw out a small one"
         );
     }
 
-    #[tokio::test]
-    async fn a_caller_asking_to_keep_something_forever_gets_the_configured_ttl() {
+    #[test]
+    fn a_caller_asking_to_keep_something_forever_gets_the_configured_ttl() {
         // The relay asks for `Duration::MAX`, meaning it has no staleness
         // bound of its own. ADR 0021's bound is the configured one, applied
         // here, and this is what makes an entry that never expires
@@ -654,46 +644,46 @@ mod tests {
             frames: Arc::from(vec![0_u8; 16].as_slice()),
             ttl: Duration::MAX,
         };
-        cache.put(key("acme", "forever"), forever).await;
+        cache.put(key("acme", "forever"), forever);
 
         assert_eq!(cache.stats().rejected, 0, "the entry was refused, not cut");
         // Cut to the cap, and reported as the TTL it actually got rather than
         // the one that was asked for.
         assert_eq!(
-            cache.get(&key("acme", "forever")).await.unwrap().ttl,
+            cache.get(&key("acme", "forever")).unwrap().ttl,
             Duration::from_secs(30)
         );
 
         clock.advance(Duration::from_secs(30));
         assert!(
-            cache.get(&key("acme", "forever")).await.is_none(),
+            cache.get(&key("acme", "forever")).is_none(),
             "an entry outlived the cap"
         );
     }
 
-    #[tokio::test]
-    async fn a_caller_asking_for_less_than_the_cap_keeps_its_own_number() {
+    #[test]
+    fn a_caller_asking_for_less_than_the_cap_keeps_its_own_number() {
         // The cap is a ceiling, not a setting. A caller with a shorter bound
         // of its own keeps it.
         let (cache, clock) = store(64 * 1024);
-        cache.put(key("acme", "brief"), result(16, 50)).await;
+        cache.put(key("acme", "brief"), result(16, 50));
 
         clock.advance(Duration::from_millis(50));
         assert!(
-            cache.get(&key("acme", "brief")).await.is_none(),
+            cache.get(&key("acme", "brief")).is_none(),
             "a short TTL was stretched to the configured one"
         );
     }
 
-    #[tokio::test]
-    async fn a_fresh_store_serves_nobody() {
+    #[test]
+    fn a_fresh_store_serves_nobody() {
         // What the composition root builds before it has read a document, and
         // what a node with no `query_cache` section keeps for its whole life.
         let cache = Store::new(Arc::new(FakeClock::new()));
         assert!(!cache.serves(&TenantId::new("acme")));
 
-        cache.put(key("acme", "SELECT 1"), result(16, 1000)).await;
-        assert!(cache.get(&key("acme", "SELECT 1")).await.is_none());
+        cache.put(key("acme", "SELECT 1"), result(16, 1000));
+        assert!(cache.get(&key("acme", "SELECT 1")).is_none());
 
         let stats = cache.stats();
         assert_eq!(stats.entries, 0);
@@ -705,19 +695,19 @@ mod tests {
         assert_eq!(stats.rejected, 0);
     }
 
-    #[tokio::test]
-    async fn a_tenant_that_never_opted_in_is_not_served_by_a_store_that_is_on() {
+    #[test]
+    fn a_tenant_that_never_opted_in_is_not_served_by_a_store_that_is_on() {
         let (cache, _clock) = store(64 * 1024);
         assert!(cache.serves(&TenantId::new("acme")));
         assert!(!cache.serves(&TenantId::new("globex")));
 
-        cache.put(key("globex", "SELECT 1"), result(16, 1000)).await;
-        assert!(cache.get(&key("globex", "SELECT 1")).await.is_none());
+        cache.put(key("globex", "SELECT 1"), result(16, 1000));
+        assert!(cache.get(&key("globex", "SELECT 1")).is_none());
         assert_eq!(cache.stats().entries, 0);
     }
 
-    #[tokio::test]
-    async fn a_document_adding_a_tenant_starts_serving_it_without_a_restart() {
+    #[test]
+    fn a_document_adding_a_tenant_starts_serving_it_without_a_restart() {
         // The acceptance for hot reload, at the level this crate owns: the
         // same store, no rebuild, and a tenant that was refused a moment ago.
         let (cache, _clock) = store(64 * 1024);
@@ -726,20 +716,18 @@ mod tests {
         cache.reconfigure(&config(64 * 1024, &["acme", "other", "globex"]));
 
         assert!(cache.serves(&TenantId::new("globex")));
-        cache.put(key("globex", "SELECT 1"), result(16, 1000)).await;
-        assert!(cache.get(&key("globex", "SELECT 1")).await.is_some());
+        cache.put(key("globex", "SELECT 1"), result(16, 1000));
+        assert!(cache.get(&key("globex", "SELECT 1")).is_some());
     }
 
-    #[tokio::test]
-    async fn a_tenant_taken_out_of_the_document_leaves_nothing_behind() {
+    #[test]
+    fn a_tenant_taken_out_of_the_document_leaves_nothing_behind() {
         // An opt-in that was revoked. Leaving the entries resident would mean
         // an operator who turned a tenant's cache off still had a node holding
         // that tenant's rows, which is the thing they turned it off to stop.
         let (cache, _clock) = store(64 * 1024);
-        cache.put(key("acme", "SELECT 1"), result(1024, 1000)).await;
-        cache
-            .put(key("other", "SELECT 1"), result(1024, 1000))
-            .await;
+        cache.put(key("acme", "SELECT 1"), result(1024, 1000));
+        cache.put(key("other", "SELECT 1"), result(1024, 1000));
         assert_eq!(cache.stats().entries, 2);
 
         cache.reconfigure(&config(64 * 1024, &["other"]));
@@ -747,7 +735,7 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.entries, 1);
         assert!(
-            cache.get(&key("other", "SELECT 1")).await.is_some(),
+            cache.get(&key("other", "SELECT 1")).is_some(),
             "the tenant that stayed lost its entries"
         );
         assert_eq!(stats.invalidated, 1);
@@ -756,13 +744,13 @@ mod tests {
         assert!(stats.bytes < 1200, "held {} bytes", stats.bytes);
     }
 
-    #[tokio::test]
-    async fn lowering_the_budget_evicts_down_to_it_immediately() {
+    #[test]
+    fn lowering_the_budget_evicts_down_to_it_immediately() {
         // Rather than at the next insert. An operator lowering this is usually
         // doing it because the node is using too much memory now.
         let (cache, _clock) = store(64 * 1024);
         for name in ["a", "b", "c", "d"] {
-            cache.put(key("acme", name), result(1024, 1000)).await;
+            cache.put(key("acme", name), result(1024, 1000));
         }
         assert_eq!(cache.stats().entries, 4);
 
@@ -774,12 +762,12 @@ mod tests {
         assert_eq!(cache.max_bytes(), 2400);
     }
 
-    #[tokio::test]
-    async fn a_reconfigure_that_changes_nothing_disturbs_nothing() {
+    #[test]
+    fn a_reconfigure_that_changes_nothing_disturbs_nothing() {
         // The common case: a tick a second, for weeks. If this evicted or
         // counted anything the cache would be emptied by its own config loop.
         let (cache, _clock) = store(64 * 1024);
-        cache.put(key("acme", "SELECT 1"), result(16, 1000)).await;
+        cache.put(key("acme", "SELECT 1"), result(16, 1000));
 
         for _ in 0..10 {
             cache.reconfigure(&config(64 * 1024, &["acme", "other"]));
@@ -789,16 +777,16 @@ mod tests {
         assert_eq!(stats.entries, 1);
         assert_eq!(stats.evicted, 0);
         assert_eq!(stats.invalidated, 0);
-        assert!(cache.get(&key("acme", "SELECT 1")).await.is_some());
+        assert!(cache.get(&key("acme", "SELECT 1")).is_some());
     }
 
-    #[tokio::test]
-    async fn storing_the_same_key_twice_replaces_rather_than_accumulates() {
+    #[test]
+    fn storing_the_same_key_twice_replaces_rather_than_accumulates() {
         let (cache, _clock) = store(64 * 1024);
-        cache.put(key("acme", "SELECT 1"), result(2048, 1000)).await;
+        cache.put(key("acme", "SELECT 1"), result(2048, 1000));
         let after_first = cache.stats().bytes;
 
-        cache.put(key("acme", "SELECT 1"), result(16, 1000)).await;
+        cache.put(key("acme", "SELECT 1"), result(16, 1000));
         let stats = cache.stats();
 
         assert_eq!(stats.entries, 1);
@@ -809,66 +797,61 @@ mod tests {
             stats.bytes
         );
         assert_eq!(
-            cache
-                .get(&key("acme", "SELECT 1"))
-                .await
-                .unwrap()
-                .frames
-                .len(),
+            cache.get(&key("acme", "SELECT 1")).unwrap().frames.len(),
             16
         );
     }
 
-    #[tokio::test]
-    async fn invalidating_a_tenant_leaves_every_other_tenant_alone() {
+    #[test]
+    fn invalidating_a_tenant_leaves_every_other_tenant_alone() {
         let (cache, _clock) = store(64 * 1024);
-        cache.put(key("acme", "SELECT 1"), result(16, 1000)).await;
-        cache.put(key("acme", "SELECT 2"), result(16, 1000)).await;
-        cache.put(key("other", "SELECT 1"), result(16, 1000)).await;
+        cache.put(key("acme", "SELECT 1"), result(16, 1000));
+        cache.put(key("acme", "SELECT 2"), result(16, 1000));
+        cache.put(key("other", "SELECT 1"), result(16, 1000));
 
-        cache.invalidate_tenant(&TenantId::new("acme")).await;
+        cache.invalidate_tenant(&TenantId::new("acme"));
 
-        assert!(cache.get(&key("acme", "SELECT 1")).await.is_none());
-        assert!(cache.get(&key("acme", "SELECT 2")).await.is_none());
+        assert!(cache.get(&key("acme", "SELECT 1")).is_none());
+        assert!(cache.get(&key("acme", "SELECT 2")).is_none());
         assert!(
-            cache.get(&key("other", "SELECT 1")).await.is_some(),
+            cache.get(&key("other", "SELECT 1")).is_some(),
             "invalidating one tenant dropped another's entries"
         );
         assert_eq!(cache.stats().invalidated, 2);
     }
 
-    #[tokio::test]
-    async fn invalidating_a_tenant_gives_its_bytes_back() {
+    #[test]
+    fn invalidating_a_tenant_gives_its_bytes_back() {
         let (cache, _clock) = store(64 * 1024);
-        cache.put(key("acme", "SELECT 1"), result(2048, 1000)).await;
-        cache.invalidate_tenant(&TenantId::new("acme")).await;
+        cache.put(key("acme", "SELECT 1"), result(2048, 1000));
+        cache.invalidate_tenant(&TenantId::new("acme"));
 
         let stats = cache.stats();
         assert_eq!(stats.entries, 0);
         assert_eq!(stats.bytes, 0, "invalidation leaked the byte total");
     }
 
-    #[tokio::test]
-    async fn invalidating_a_tenant_with_nothing_stored_does_nothing() {
+    #[test]
+    fn invalidating_a_tenant_with_nothing_stored_does_nothing() {
         let (cache, _clock) = store(64 * 1024);
-        cache.invalidate_tenant(&TenantId::new("nobody")).await;
+        cache.invalidate_tenant(&TenantId::new("nobody"));
         assert_eq!(cache.stats().invalidated, 0);
     }
 
-    #[tokio::test]
-    async fn two_tenants_running_the_same_sql_do_not_share_an_entry() {
+    #[test]
+    fn two_tenants_running_the_same_sql_do_not_share_an_entry() {
         // The reason the tenant is in the key. Sharing here is one tenant
         // reading another's rows, which is the worst thing this crate could do.
         let (cache, _clock) = store(64 * 1024);
-        cache.put(key("acme", "SELECT 1"), result(16, 1000)).await;
+        cache.put(key("acme", "SELECT 1"), result(16, 1000));
         assert!(
-            cache.get(&key("other", "SELECT 1")).await.is_none(),
+            cache.get(&key("other", "SELECT 1")).is_none(),
             "a tenant was served another tenant's entry"
         );
     }
 
-    #[tokio::test]
-    async fn the_same_sql_under_a_different_search_path_is_a_different_entry() {
+    #[test]
+    fn the_same_sql_under_a_different_search_path_is_a_different_entry() {
         // The same reason, one level subtler: `SELECT * FROM t` names a
         // different table under a different path, so the text alone is not the
         // question the server was asked.
@@ -876,17 +859,15 @@ mod tests {
         let mut other_path = key("acme", "SELECT * FROM t");
         other_path.search_path = Arc::from("tenant_acme");
 
-        cache
-            .put(key("acme", "SELECT * FROM t"), result(16, 1000))
-            .await;
+        cache.put(key("acme", "SELECT * FROM t"), result(16, 1000));
         assert!(
-            cache.get(&other_path).await.is_none(),
+            cache.get(&other_path).is_none(),
             "search_path was not part of the key"
         );
     }
 
-    #[tokio::test]
-    async fn the_same_sql_against_a_different_database_is_a_different_entry() {
+    #[test]
+    fn the_same_sql_against_a_different_database_is_a_different_entry() {
         // `M24.4`. A tenant is not one database. The grant resolves per startup
         // database, so one tenant reaching two of them gets two backends, and
         // `SELECT * FROM t` names a different table in each. `PoolKey` carries
@@ -895,17 +876,15 @@ mod tests {
         let mut other_database = key("acme", "SELECT * FROM t");
         other_database.database = Arc::from("acme_reporting");
 
-        cache
-            .put(key("acme", "SELECT * FROM t"), result(16, 1000))
-            .await;
+        cache.put(key("acme", "SELECT * FROM t"), result(16, 1000));
         assert!(
-            cache.get(&other_database).await.is_none(),
+            cache.get(&other_database).is_none(),
             "one tenant's two databases shared an entry"
         );
     }
 
-    #[tokio::test]
-    async fn the_same_sql_under_a_different_role_is_a_different_entry() {
+    #[test]
+    fn the_same_sql_under_a_different_role_is_a_different_entry() {
         // The worse half. Row-level security and column privileges belong to
         // the role, so the same statement under two roles is two different
         // answers, and sharing an entry publishes rows one of them cannot see.
@@ -913,27 +892,25 @@ mod tests {
         let mut other_role = key("acme", "SELECT * FROM t");
         other_role.user = Arc::from("acme_readonly");
 
-        cache
-            .put(key("acme", "SELECT * FROM t"), result(16, 1000))
-            .await;
+        cache.put(key("acme", "SELECT * FROM t"), result(16, 1000));
         assert!(
-            cache.get(&other_role).await.is_none(),
+            cache.get(&other_role).is_none(),
             "two roles of one tenant shared an entry"
         );
     }
 
-    #[tokio::test]
-    async fn different_parameters_are_different_entries() {
+    #[test]
+    fn different_parameters_are_different_entries() {
         let (cache, _clock) = store(64 * 1024);
         let mut bound = key("acme", "SELECT $1");
         bound.params = Arc::from(&b"\0\0\0\x011"[..]);
         let mut other = key("acme", "SELECT $1");
         other.params = Arc::from(&b"\0\0\0\x012"[..]);
 
-        cache.put(bound.clone(), result(16, 1000)).await;
-        assert!(cache.get(&bound).await.is_some());
+        cache.put(bound.clone(), result(16, 1000));
+        assert!(cache.get(&bound).is_some());
         assert!(
-            cache.get(&other).await.is_none(),
+            cache.get(&other).is_none(),
             "two parameter values shared an entry"
         );
     }
@@ -981,8 +958,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn an_entry_that_exactly_fills_the_budget_is_stored() {
+    #[test]
+    fn an_entry_that_exactly_fills_the_budget_is_stored() {
         // The boundary in `put`. Refusing at the budget rather than past it
         // makes the largest storable entry one byte smaller than the budget,
         // which is not what "bigger than the whole budget" means, and nothing
@@ -993,16 +970,16 @@ mod tests {
         let cache = Store::new(clock);
         cache.reconfigure(&config(weigh(&exact, &value), &["acme"]));
 
-        cache.put(exact.clone(), value).await;
+        cache.put(exact.clone(), value);
         assert!(
-            cache.get(&exact).await.is_some(),
+            cache.get(&exact).is_some(),
             "an entry the size of the budget was refused"
         );
         assert_eq!(cache.stats().rejected, 0);
     }
 
-    #[tokio::test]
-    async fn the_held_total_is_the_sum_of_what_is_held() {
+    #[test]
+    fn the_held_total_is_the_sum_of_what_is_held() {
         // `put` adds an entry's weight to the total. `M10.3` replaced that `+=`
         // with `-=` and with `*=` and both survived, because every test here
         // asserted the total was over or under something rather than what it
@@ -1012,8 +989,8 @@ mod tests {
         let second = key("acme", "select 2");
         let value = result(64, 1000);
 
-        cache.put(first.clone(), value.clone()).await;
-        cache.put(second.clone(), value.clone()).await;
+        cache.put(first.clone(), value.clone());
+        cache.put(second.clone(), value.clone());
 
         assert_eq!(
             cache.stats().bytes,
@@ -1021,8 +998,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn filling_the_budget_exactly_evicts_nothing() {
+    #[test]
+    fn filling_the_budget_exactly_evicts_nothing() {
         // The other side of the same boundary, in `evict_to_fit`: evicting while
         // the total is *at* the budget throws out an entry that fits.
         let value = result(64, 1000);
@@ -1034,15 +1011,15 @@ mod tests {
         let cache = Store::new(clock);
         cache.reconfigure(&config(budget, &["acme"]));
 
-        cache.put(first.clone(), value.clone()).await;
-        cache.put(second.clone(), value).await;
+        cache.put(first.clone(), value.clone());
+        cache.put(second.clone(), value);
 
         assert_eq!(cache.stats().entries, 2, "an entry that fitted was evicted");
         assert_eq!(cache.stats().evicted, 0);
     }
 
-    #[tokio::test]
-    async fn a_hit_makes_an_entry_the_last_one_evicted() {
+    #[test]
+    fn a_hit_makes_an_entry_the_last_one_evicted() {
         // What the recency counter is for. `M10.3` replaced `next_seq += 1` in
         // `touch` with `-=` and with `*=`, and both survived: nothing asserted
         // that a hit changes which entry eviction takes next, which is the only
@@ -1057,23 +1034,23 @@ mod tests {
         let cache = Store::new(clock);
         cache.reconfigure(&config(budget, &["acme"]));
 
-        cache.put(old.clone(), value.clone()).await;
-        cache.put(new.clone(), value.clone()).await;
+        cache.put(old.clone(), value.clone());
+        cache.put(new.clone(), value.clone());
         // A hit on the older one, which makes the newer one the oldest.
-        assert!(cache.get(&old).await.is_some());
+        assert!(cache.get(&old).is_some());
 
-        cache.put(third.clone(), value).await;
+        cache.put(third.clone(), value);
 
         assert!(
-            cache.get(&old).await.is_some(),
+            cache.get(&old).is_some(),
             "the entry that was just read is the one eviction took"
         );
-        assert!(cache.get(&new).await.is_none());
-        assert!(cache.get(&third).await.is_some());
+        assert!(cache.get(&new).is_none());
+        assert!(cache.get(&third).is_some());
     }
 
-    #[tokio::test]
-    async fn the_recency_index_holds_one_place_per_entry() {
+    #[test]
+    fn the_recency_index_holds_one_place_per_entry() {
         // The index is a `BTreeMap` keyed by a sequence number, so two entries
         // that share one lose a place between them and the byte total starts
         // drifting from the map. `M10.3` found that `next_seq *= 1` in `touch`
@@ -1082,10 +1059,10 @@ mod tests {
         // come out the same. This is the invariant that mistake breaks.
         let (cache, _clock) = store(64 * 1024);
         let first = key("acme", "select 1");
-        cache.put(first.clone(), result(16, 1000)).await;
-        cache.put(key("acme", "select 2"), result(16, 1000)).await;
-        cache.get(&first).await;
-        cache.put(key("acme", "select 3"), result(16, 1000)).await;
+        cache.put(first.clone(), result(16, 1000));
+        cache.put(key("acme", "select 2"), result(16, 1000));
+        cache.get(&first);
+        cache.put(key("acme", "select 3"), result(16, 1000));
 
         let inner = cache.lock();
         assert_eq!(
@@ -1095,8 +1072,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn the_tenant_index_holds_exactly_what_the_entry_map_holds() {
+    #[test]
+    fn the_tenant_index_holds_exactly_what_the_entry_map_holds() {
         // `M26.1` added a second index so a write stops walking every entry on
         // the node, and a second index is a second thing to drift. Every path
         // that removes an entry has to remove it from both, and the ones that
@@ -1107,18 +1084,18 @@ mod tests {
         // Put, across two tenants.
         for tenant in ["acme", "other"] {
             for sql in ["select 1", "select 2", "select 3"] {
-                cache.put(key(tenant, sql), result(16, 1000)).await;
+                cache.put(key(tenant, sql), result(16, 1000));
             }
         }
         assert_indexed(&cache, 6);
 
         // Replacing a key already held must not add a second place for it.
-        cache.put(key("acme", "select 1"), result(32, 1000)).await;
+        cache.put(key("acme", "select 1"), result(32, 1000));
         assert_indexed(&cache, 6);
 
         // Expiry, found on read.
         clock.advance(Duration::from_millis(1001));
-        assert!(cache.get(&key("acme", "select 1")).await.is_none());
+        assert!(cache.get(&key("acme", "select 1")).is_none());
         assert_indexed(&cache, 5);
 
         // Eviction, down to a budget that fits one.
@@ -1130,7 +1107,7 @@ mod tests {
         assert_indexed(&cache, usize::try_from(cache.stats().entries).unwrap());
 
         // And invalidation itself.
-        cache.invalidate_tenant(&TenantId::new("other")).await;
+        cache.invalidate_tenant(&TenantId::new("other"));
         assert_indexed(&cache, 0);
     }
 
@@ -1166,8 +1143,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn a_ttl_that_overflows_the_clock_is_refused_rather_than_stored() {
+    #[test]
+    fn a_ttl_that_overflows_the_clock_is_refused_rather_than_stored() {
         // Not reachable through a document, because `parse_duration` refuses a
         // TTL this long, and reachable through `reconfigure`, which takes a
         // config and does not get to assume where it came from. That is what the
@@ -1188,37 +1165,35 @@ mod tests {
         // that and the configured one. With both at the maximum there is no
         // instant to expire at.
         let doomed = key("acme", "select 1");
-        cache
-            .put(
-                doomed.clone(),
-                CachedResult {
-                    frames: Arc::from(vec![0_u8; 16].as_slice()),
-                    ttl: Duration::MAX,
-                },
-            )
-            .await;
+        cache.put(
+            doomed.clone(),
+            CachedResult {
+                frames: Arc::from(vec![0_u8; 16].as_slice()),
+                ttl: Duration::MAX,
+            },
+        );
 
         assert!(
-            cache.get(&doomed).await.is_none(),
+            cache.get(&doomed).is_none(),
             "an unexpirable entry was stored"
         );
         assert_eq!(cache.stats().rejected, 1);
     }
 
-    #[tokio::test]
-    async fn stats_report_what_is_held_rather_than_what_was_ever_stored() {
+    #[test]
+    fn stats_report_what_is_held_rather_than_what_was_ever_stored() {
         let (cache, _clock) = store(64 * 1024);
-        cache.put(key("acme", "a"), result(16, 1000)).await;
-        cache.put(key("acme", "b"), result(16, 1000)).await;
-        cache.invalidate_tenant(&TenantId::new("acme")).await;
+        cache.put(key("acme", "a"), result(16, 1000));
+        cache.put(key("acme", "b"), result(16, 1000));
+        cache.invalidate_tenant(&TenantId::new("acme"));
 
         let stats = cache.stats();
         assert_eq!(stats.entries, 0);
         assert_eq!(stats.invalidated, 2);
     }
 
-    #[tokio::test]
-    async fn the_budget_it_was_built_with_is_readable() {
+    #[test]
+    fn the_budget_it_was_built_with_is_readable() {
         let (cache, _clock) = store(4096);
         assert_eq!(cache.max_bytes(), 4096);
     }

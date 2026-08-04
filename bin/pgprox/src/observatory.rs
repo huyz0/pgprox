@@ -799,17 +799,14 @@ mod tests {
 
         // And the counters are the store's rather than zeroes standing in for
         // them, which is the failure that would leave every dashboard flat.
-        fixture
-            .cache
-            .get(&pgprox_core::cache::CacheKey {
-                tenant: TenantId::new("acme"),
-                database: Arc::from("tenant_db"),
-                user: Arc::from("app"),
-                normalized_sql: Arc::from("select 1"),
-                params: Arc::from(&[][..]),
-                search_path: Arc::from("public"),
-            })
-            .await;
+        fixture.cache.get(&pgprox_core::cache::CacheKey {
+            tenant: TenantId::new("acme"),
+            database: Arc::from("tenant_db"),
+            user: Arc::from("app"),
+            normalized_sql: Arc::from("select 1"),
+            params: Arc::from(&[][..]),
+            search_path: Arc::from("public"),
+        });
         assert_eq!(fixture.observatory.cache().misses, 1);
     }
 

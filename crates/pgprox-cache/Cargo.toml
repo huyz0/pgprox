@@ -10,7 +10,6 @@ publish.workspace = true
 
 [dependencies]
 pgprox-core = { path = "../pgprox-core" }
-async-trait.workspace = true
 
 [dev-dependencies]
 pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }

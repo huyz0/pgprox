@@ -7,15 +7,16 @@
 //!
 //! # What this catches, and what it does not
 //!
-//! `M26.2` took a hit from 4,101 instructions to 2,719 and this test would not
+//! `M26.2` took a hit from 4,101 instructions to 2,641 and this test would not
 //! have noticed either number: the cost was a second hash of a six-field key
 //! and six atomic increments, and neither allocates. That is the division
 //! `standards/testing.md` draws. A budget catches a new copy; the instruction
 //! count in `product/perf/baseline.json` catches work that got more expensive
 //! without allocating, and the cache needed both.
 //!
-//! What this holds is the property that made the instruction count reachable:
-//! a hit borrows and shares, and never builds anything.
+//! It also found what neither reading nor the instruction count did. A miss,
+//! which hashes a key and returns `None`, allocated twice, and neither block
+//! was the store's: see `M26.3` and the note on the trait.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -31,33 +32,10 @@ use pgprox_core::ids::TenantId;
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-/// Heap blocks one call through the trait costs before it does anything.
-///
-/// `QueryCache` is an `#[async_trait]`, which boxes the future of every
-/// method, and `pgprox-core` also implements the trait for `Arc<T>`, so a
-/// caller holding an `Arc<dyn QueryCache>` boxes once for the forwarding call
-/// and once for the real one. Neither is the store's doing and the store never
-/// awaits anything.
-const BOXES_PER_CALL: u64 = 2;
-
 fn allocations(body: impl FnOnce()) -> u64 {
     let before = dhat::HeapStats::get().total_blocks;
     body();
     dhat::HeapStats::get().total_blocks - before
-}
-
-/// Runs a future that never yields.
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    use std::task::{Context, Poll, Waker};
-    // `pin!` rather than `Box::pin`. Boxing allocates once per call, which in
-    // a budget test is the harness failing its own assertion and in a bench is
-    // a malloc inside every measurement.
-    let mut future = std::pin::pin!(future);
-    let mut cx = Context::from_waker(Waker::noop());
-    match future.as_mut().poll(&mut cx) {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("the store yielded, which it must not"),
-    }
 }
 
 fn key(sql: &str) -> CacheKey {
@@ -106,7 +84,7 @@ fn a_hit_serves_an_answer_without_building_anything() {
     // measuring the fixture.
     let keys: Vec<CacheKey> = (0..64).map(|i| key(&format!("select {i}"))).collect();
     for one in &keys {
-        block_on(store.put(
+        (store.put(
             one.clone(),
             CachedResult {
                 frames: Arc::from(vec![0_u8; 256].as_slice()),
@@ -116,68 +94,58 @@ fn a_hit_serves_an_answer_without_building_anything() {
     }
     for _ in 0..8 {
         for one in &keys {
-            std::hint::black_box(block_on(store.get(one)));
+            std::hint::black_box(store.get(one));
         }
     }
     let absent = key("select nothing at all");
 
-    // --- what a lookup actually costs in blocks ----------------------------
+    // --- a miss builds nothing ---------------------------------------------
     //
-    // Two per call, and neither is the store's doing. `QueryCache` is an
-    // `#[async_trait]`, which boxes the future of every method, and
-    // `pgprox-core` also implements the trait for `Arc<T>`, so a caller
-    // holding an `Arc<dyn QueryCache>` boxes once for the forwarding call and
-    // once for the real one. The store never awaits anything.
-    //
-    // Asserted rather than aspired to, and the numbers are what `M26.3` and
-    // `M26.4` are for. A budget that said zero would fail today and teach
-    // nobody where the blocks come from.
+    // It hashes a key, probes a map and returns `None`. There was nothing here
+    // to allocate and it allocated twice: `QueryCache` was an
+    // `#[async_trait]`, which boxes the future of every method on a store that
+    // never awaits, and `pgprox-core` also implements the trait for `Arc<T>`,
+    // so a caller holding an `Arc<dyn QueryCache>` boxed once for the
+    // forwarding call and once for the real one. `M26.3` made the trait
+    // synchronous and both went.
     let misses = allocations(|| {
         for _ in 0..64 {
-            std::hint::black_box(block_on(store.get(&absent)));
+            std::hint::black_box(store.get(&absent));
         }
     });
-    assert_eq!(
-        misses,
-        64 * BOXES_PER_CALL,
-        "a miss allocated something beyond the trait's own boxing"
-    );
+    assert_eq!(misses, 0, "a miss allocated {misses} time(s) across 64");
 
-    // One box rather than two, which is the whole of the difference: this
-    // reaches the store's own implementation instead of going through the
-    // blanket one for `Arc`. `M26.3`.
+    // Through the `Arc` and through the store itself, which used to differ by
+    // a block per call and now cannot differ at all.
     let direct = allocations(|| {
         for _ in 0..64 {
-            std::hint::black_box(block_on(<Store as QueryCache>::get(&store, &absent)));
+            std::hint::black_box(<Store as QueryCache>::get(&store, &absent));
         }
     });
-    assert_eq!(
-        direct, 64,
-        "the forwarding impl is not what the second block is"
-    );
+    assert_eq!(direct, misses, "the forwarding impl costs something again");
 
-    // --- a hit builds nothing the trait did not ----------------------------
+    // --- a hit builds only what the recency order does ----------------------
     //
     // It reads one entry, clones two `Arc`s and moves a `u64` between two
     // places in a tree. Everything it hands back is shared with what is
-    // stored, so the only blocks are the two above and the recency order's
-    // own: a `BTreeMap` that has one key removed and another inserted on every
-    // hit splits and merges nodes as it goes. That is `M26.4`.
+    // stored, so the only blocks left are the tree's own: a `BTreeMap` that
+    // has one key removed and a higher one inserted on every hit splits and
+    // merges nodes for as long as the cache is used. That is `M26.4`, and
+    // until it lands this is the one path here that allocates at all.
     let hits = allocations(|| {
         for one in &keys {
-            std::hint::black_box(block_on(store.get(one)));
+            std::hint::black_box(store.get(one));
         }
     });
-    let per_hit = 64 * BOXES_PER_CALL;
     assert!(
-        hits > per_hit,
-        "the recency order stopped churning, so this budget is now wrong \
-         in the good direction: {hits} against {per_hit}"
+        hits > 0,
+        "the recency order stopped churning, so this budget is now wrong in \
+         the good direction and M26.4 is done"
     );
     assert!(
-        hits <= 64 * 3,
-        "a hit allocated more than the trait's boxing and the recency \
-         order's churn: {hits} across {} lookups",
+        hits <= 64,
+        "a hit allocated more than the recency order's churn: {hits} across \
+         {} lookups",
         keys.len()
     );
 
@@ -185,14 +153,15 @@ fn a_hit_serves_an_answer_without_building_anything() {
     //
     // `M26.1` gave invalidation an index to walk instead of the whole node.
     // The walk it replaced cloned every key it matched, so this is the
-    // allocation half of that change and the instruction count is the rest:
-    // sixty-four entries dropped for a constant number of blocks.
+    // allocation half of that change: sixty-four entries dropped for a
+    // constant, which is the set of sequence numbers taken out of the index
+    // and iterated.
     let invalidations = allocations(|| {
-        block_on(store.invalidate_tenant(&TenantId::new("acme")));
+        store.invalidate_tenant(&TenantId::new("acme"));
     });
     assert!(
-        invalidations <= BOXES_PER_CALL + 2,
-        "invalidating 64 entries allocated {invalidations} blocks, which is \
+        invalidations <= 2,
+        "invalidating 64 entries allocated {invalidations} block(s), which is \
          per entry rather than constant"
     );
 }

@@ -40,25 +40,6 @@ const ENTRIES: usize = 4_096;
 /// How many tenants those entries are spread across.
 const TENANTS: usize = 64;
 
-/// Runs a future that never yields.
-///
-/// Every method here is async because the trait is, and none of them awaits
-/// anything. The same helper `bin/pgprox`'s tests use, and for the same reason:
-/// pulling a runtime into a bench binary would put its startup inside the
-/// measurement.
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    use std::task::{Context, Poll, Waker};
-    // `pin!` rather than `Box::pin`. Boxing allocates once per call, which in
-    // a budget test is the harness failing its own assertion and in a bench is
-    // a malloc inside every measurement.
-    let mut future = std::pin::pin!(future);
-    let mut cx = Context::from_waker(Waker::noop());
-    match future.as_mut().poll(&mut cx) {
-        Poll::Ready(value) => value,
-        Poll::Pending => unreachable!("the store yielded, which it must not"),
-    }
-}
-
 fn tenant(i: usize) -> TenantId {
     TenantId::new(format!("tenant-{i:04}"))
 }
@@ -105,7 +86,7 @@ fn populated() -> Arc<Store> {
     });
 
     for i in 0..ENTRIES {
-        block_on(store.put(key(&tenant(i % TENANTS), i), result()));
+        store.put(key(&tenant(i % TENANTS), i), result());
     }
     store
 }
@@ -116,7 +97,7 @@ fn cache_hit(iterations: u64) {
     let wanted = key(&tenant(0), 0);
 
     for _ in 0..iterations {
-        std::hint::black_box(block_on(store.get(&wanted)));
+        std::hint::black_box(store.get(&wanted));
     }
 }
 
@@ -126,7 +107,7 @@ fn cache_miss(iterations: u64) {
     let absent = key(&tenant(0), ENTRIES + 1);
 
     for _ in 0..iterations {
-        std::hint::black_box(block_on(store.get(&absent)));
+        std::hint::black_box(store.get(&absent));
     }
 }
 
@@ -138,7 +119,7 @@ fn cache_put(iterations: u64) {
     for _ in 0..iterations {
         // The key is what varies per call and the return is a unit, so the
         // barrier goes on the input rather than the output.
-        block_on(store.put(std::hint::black_box(wanted.clone()), result()));
+        store.put(std::hint::black_box(wanted.clone()), result());
     }
 }
 
@@ -167,8 +148,8 @@ fn invalidate_after_one_put(iterations: u64) {
     let only = key(&quiet, ENTRIES + 7);
 
     for _ in 0..iterations {
-        block_on(store.put(only.clone(), result()));
-        block_on(store.invalidate_tenant(std::hint::black_box(&quiet)));
+        store.put(only.clone(), result());
+        store.invalidate_tenant(std::hint::black_box(&quiet));
     }
 }
 

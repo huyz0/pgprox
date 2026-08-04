@@ -837,7 +837,7 @@ where
     // Only when there is something to store, so a node that caches nothing
     // pays one comparison here.
     if pumping.recording.is_some() {
-        store_answer(context, pumping).await;
+        store_answer(context, pumping);
     }
 
     Ok(releasable)
@@ -883,7 +883,7 @@ where
         return Ok(false);
     }
 
-    invalidate_on_write(context, message, &grant.tenant).await;
+    invalidate_on_write(context, message, &grant.tenant);
 
     let (Some(cache), Some(recording)) = (context.cache.as_ref(), pumping.recording.as_ref())
     else {
@@ -893,7 +893,7 @@ where
     // Queued and then dropped, before the flush. Held across that await the
     // result is another thirty-two bytes in every session's frame, and the
     // ceiling has none to spare.
-    let served = match cache.get(&recording.key).await {
+    let served = match cache.get(&recording.key) {
         Some(hit) => {
             // Assembled rather than replayed, and refused rather than trimmed:
             // a simple query is owed a description for the rows it is about to
@@ -1210,7 +1210,7 @@ where
     };
     let key = key_for(grant, sql, held.params().clone(), &live.session);
 
-    let Some(entry) = cache.get(&key).await else {
+    let Some(entry) = cache.get(&key) else {
         // Armed for the answer the replay is about to bring back. A `Sync` is
         // what the pump will be reading when it arrives, and this is the only
         // place that knows the key it belongs under.
@@ -1376,7 +1376,7 @@ const NO_STALENESS_BOUND_HERE: Duration = Duration::MAX;
 /// the configured one. It used to pass the grant's TTL, which is a credential's
 /// lifetime standing in for a staleness bound: two unrelated numbers that
 /// happened to both be durations.
-async fn store_answer(context: &Context, pumping: &mut Pumping) {
+fn store_answer(context: &Context, pumping: &mut Pumping) {
     // Taken whatever happens, so a statement that must not be stored cannot
     // leave bytes behind for the next one to pick up.
     let recorded = pumping.recording.take();
@@ -1388,15 +1388,13 @@ async fn store_answer(context: &Context, pumping: &mut Pumping) {
         return;
     }
 
-    cache
-        .put(
-            recording.key,
-            pgprox_core::cache::CachedResult {
-                frames: std::sync::Arc::from(recording.frames.as_slice()),
-                ttl: NO_STALENESS_BOUND_HERE,
-            },
-        )
-        .await;
+    cache.put(
+        recording.key,
+        pgprox_core::cache::CachedResult {
+            frames: std::sync::Arc::from(recording.frames.as_slice()),
+            ttl: NO_STALENESS_BOUND_HERE,
+        },
+    );
 }
 
 /// Drops a tenant's cached results when it writes.
@@ -1416,7 +1414,7 @@ async fn store_answer(context: &Context, pumping: &mut Pumping) {
 /// asymmetry is the whole argument: over-invalidating wastes a round trip the
 /// client was going to make anyway, while under-invalidating serves data the
 /// proxy knew was stale.
-async fn invalidate_on_write(
+fn invalidate_on_write(
     context: &Context,
     message: &pgprox_proto::frontend::FrontendMessage<'_>,
     tenant: &pgprox_core::ids::TenantId,
@@ -1437,7 +1435,7 @@ async fn invalidate_on_write(
     };
 
     if pgprox_route::classify(sql) != pgprox_core::route::StmtClass::ReadOnly {
-        cache.invalidate_tenant(tenant).await;
+        cache.invalidate_tenant(tenant);
     }
 }
 
@@ -3807,22 +3805,8 @@ mod tests {
             frames: Arc::from([0_u8; 4].as_slice()),
             ttl: Duration::from_secs(60),
         };
-        futures_lite_block_on(cache.put(key.clone(), value));
+        cache.put(key.clone(), value);
         key
-    }
-
-    /// Runs a future to completion on the current thread.
-    ///
-    /// The fake cache's methods are async because the trait is, and these two
-    /// helpers are called from synchronous setup. Nothing here yields.
-    fn futures_lite_block_on<F: std::future::Future>(future: F) -> F::Output {
-        use std::task::{Context as TaskContext, Poll, Waker};
-        let mut future = Box::pin(future);
-        let mut cx = TaskContext::from_waker(Waker::noop());
-        match future.as_mut().poll(&mut cx) {
-            Poll::Ready(value) => value,
-            Poll::Pending => panic!("the fake cache yielded, which it must not"),
-        }
     }
 
     /// Drives a session far enough to have authenticated, then runs `sql`.
@@ -3964,7 +3948,7 @@ mod tests {
             // this tenant shares.
             search_path: Arc::from(""),
         };
-        let stored = futures_lite_block_on(cache.get(&key)).expect("nothing was stored");
+        let stored = (cache.get(&key)).expect("nothing was stored");
 
         // What the fake answers a query with, and nothing else: the description
         // and the completion, and no `ReadyForQuery`.
@@ -4179,7 +4163,7 @@ mod tests {
         query_through_a_session(Arc::new(context), "UPDATE t SET x = 1").await;
 
         assert!(
-            futures_lite_block_on(cache.get(&key)).is_none(),
+            (cache.get(&key)).is_none(),
             "a write left the tenant's entries in place"
         );
     }
@@ -4194,10 +4178,7 @@ mod tests {
 
         query_through_a_session(Arc::new(context), "SELECT 1").await;
 
-        assert!(
-            futures_lite_block_on(cache.get(&key)).is_some(),
-            "a read invalidated the cache"
-        );
+        assert!((cache.get(&key)).is_some(), "a read invalidated the cache");
     }
 
     #[tokio::test]
@@ -4216,7 +4197,7 @@ mod tests {
         query_through_a_session(Arc::clone(&context), "BEGIN; DELETE FROM t; ROLLBACK").await;
 
         assert!(
-            futures_lite_block_on(cache.get(&key)).is_none(),
+            (cache.get(&key)).is_none(),
             "a rolled-back write left the entries in place"
         );
     }
@@ -6949,13 +6930,13 @@ mod tests {
         failed.failed = true;
         failed.frames = vec![b'D', 0, 0, 0, 4];
         pumping.recording = Some(Box::new(failed));
-        store_answer(&context, &mut pumping).await;
+        store_answer(&context, &mut pumping);
         assert_eq!(cache.len(), 0, "a failed answer reached the cache");
 
         // An answer that carries nothing is not an answer either, whatever it
         // says about failing.
         pumping.recording = Some(Box::new(recording()));
-        store_answer(&context, &mut pumping).await;
+        store_answer(&context, &mut pumping);
         assert_eq!(cache.len(), 0, "an empty answer reached the cache");
 
         // And the one that is fit to store is stored, so the two assertions
@@ -6964,7 +6945,7 @@ mod tests {
         let mut good = recording();
         good.frames = vec![b'D', 0, 0, 0, 4];
         pumping.recording = Some(Box::new(good));
-        store_answer(&context, &mut pumping).await;
+        store_answer(&context, &mut pumping);
         assert_eq!(cache.len(), 1, "a complete answer was not stored");
 
         // Taken whatever happens, so nothing is left for the next statement.
