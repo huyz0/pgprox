@@ -6867,7 +6867,7 @@ recognised so it can be refused rather than read as a version.
 
 ## M27: unsafe becomes a governed exception rather than a closed door
 
-- [ ] `M27.0` Plan M27, and give it a gate that passes from this commit.
+- [x] `M27.0` Plan M27, and give it a gate that passes from this commit.
   The workspace sets `unsafe_code = "forbid"`, which cannot be overridden by a
   local `#[allow]` at all, and two standards files give the reason. The
   reasoning is sound for the crates it was written about and it is not a reason
@@ -6905,4 +6905,4 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `scripts/check-unsafe.sh` enforces all five, is wired into the
   pre-commit hook and CI, and every one of its checks is proven able to fail
   against a planted violation, per `M12`.
-- [ ] `M27.2` Close M27, on the terms `M18.4` through `M26.5` closed on.
+- [x] `M27.2` Close M27, on the terms `M18.4` through `M26.5` closed on.

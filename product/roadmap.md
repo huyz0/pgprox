@@ -45,7 +45,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 
 M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 | M26 | What the query cache costs, measured for the first time | complete; a hit is 65% cheaper and allocates nothing, a write is 97% cheaper, and the lock the store worried about was never the problem |
-| M27 | Unsafe becomes a governed exception rather than a closed door | open |
+| M27 | Unsafe becomes a governed exception rather than a closed door | complete; five conditions, a script that enforces them, nine cases proving each can fail, and no unsafe written |
 
 ## M-1: AI development system (complete)
 
@@ -1691,7 +1691,7 @@ takes depends on a per-process random seed. It stores one entry per iteration
 now, is stable to 0.01%, and still guards what matters: against five thousand
 instructions, a reintroduced walk is two hundred thousand.
 
-## M27: unsafe becomes a governed exception rather than a closed door
+## M27: unsafe becomes a governed exception rather than a closed door (complete)
 
 ```bash
 scripts/m27-complete.sh
@@ -1717,3 +1717,48 @@ evidence of upside.
 Completion condition: `scripts/m27-complete.sh`, which runs a named test per
 finding and reads its exit status, and refuses to pass with a ticked task it
 does not name.
+
+### Where it got to
+
+`deny` at the workspace root, five conditions on the exception, and
+`scripts/check-unsafe.sh` refusing anything that does not meet them.
+
+| Condition | What it stops |
+| --- | --- |
+| five crates keep `#![forbid]` in their own `lib.rs` | an `#[allow]` reaching a decoder |
+| `// SAFETY-POLICY: <benchmark>` on the line above | an exception nobody argued for |
+| that benchmark exists in the baseline | unsafe with no evidence of upside |
+| the crate is named in the Miri job | unsafe nobody can maintain |
+| not from a test, bench or build script | unsafe none of the above governs |
+
+**No unsafe was written.** That was the point: the milestone produces the
+conditions and the script, and the first use is a later task that has to satisfy
+all five. A policy landed alongside its first exception is a policy shaped to fit
+that exception.
+
+**The standard described an arrangement that was not there.**
+`standards/rust-style.md` said unsafe was "forbidden at the crate level in every
+crate". It was forbidden once at the workspace root and one crate out of sixteen
+repeated it. That sentence had survived twenty-six milestones, which is `M13`'s
+subject arriving in the document `M13` was written into.
+
+**Writing the negative cases found a defect in the script itself.** An
+`#[allow(unsafe_code)]` on the first line of a file made it ask `sed` for line 0,
+which is an error rather than an empty answer, and under `set -e` that killed the
+run instead of failing the check. A gate written to enforce a rule about care,
+dying rather than reporting, which is exactly what `M12` exists to catch. It has
+its own case now.
+
+**One thing found and not fixed here.** `m27-complete.sh` passed against a tree
+with its own artefacts removed, because with no task ticked its only check was
+"nothing is ticked, so nothing is unchecked", which holds whatever else is true.
+`tests/gates/negative.sh` caught it. The gate now runs `check-unsafe.sh` and the
+negative case and reads both exit codes, so it fails when either is missing. The
+same shape is latent in every milestone gate on the commit that files it and
+before anything lands, and this is the first time it has been observed rather
+than reasoned about.
+
+The tolerance for what comes next is already written down: if an unsafe version
+moves its benchmark less than `scripts/bench.sh`'s threshold, it is deleted and
+the safe one kept. `M26` is the evidence that the safe route usually wins
+anyway, having taken a hit from 4,144 instructions to 1,460 without any.
