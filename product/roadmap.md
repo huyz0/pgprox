@@ -1963,7 +1963,7 @@ it is in the gated baseline.
 
 Completion condition: `scripts/m30-complete.sh`.
 
-## M31: the comments at M30's optimisation sites
+## M31: the comments at M30's optimisation sites (complete)
 
 ```bash
 scripts/m31-complete.sh
@@ -1981,5 +1981,24 @@ The last is the one worth stating on its own. A `debug_assert!` is the same
 claim written so a test can fail on it, and `M30` wrote none at any of its five
 sites. Two of them are one line each and run in every test in the workspace that
 reaches those paths.
+
+The two that had one available now carry it. Breaking the filter's finals mask
+reports `the filter rejected "SELECT", which is on the list` from the ordinary
+classification tests rather than from a test written for it, because the
+assertion sits on every call a debug build makes. Dropping the read's reserve
+reports `a held read has room for 16377 bytes, not 16384`, where the symptom was
+otherwise invisible: the frame still assembled and the buffer still stayed
+small, and only the syscall count changed.
+
+The third kind of site is worth naming because it will recur. Some claims have
+no executable form at all. `begins_read_only_transaction` stops after the first
+word because no later word can change the answer, and that is a fact about the
+grammar rather than about state the function can inspect. The comment says so,
+and names the test that stands in for it, so a reader meets an argument rather
+than a silence they have to interpret.
+
+No code changed, which the gate checks by holding three of `M30`'s figures at
+exactly what `M30` left them. A `debug_assert!` compiles out of a release build,
+and a figure that moved would mean one of these had reached one.
 
 Completion condition: `scripts/m31-complete.sh`.

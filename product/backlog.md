@@ -7103,4 +7103,4 @@ recognised so it can be refused rather than read as a version.
   justification, each states the invariant and where it was established, each
   checkable claim has a `debug_assert!` that fails when the claim is broken,
   and the benchmarks are unmoved because none of this is a code change.
-- [ ] `M31.2` Close M31.
+- [x] `M31.2` Close M31.
