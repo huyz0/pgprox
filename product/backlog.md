@@ -6677,7 +6677,7 @@ recognised so it can be refused rather than read as a version.
   path this crate's `AGENTS.md` calls a declared hot path.
   Acceptance: a test that fills the cache with entries that then expire and
   shows a new one is admitted, failing before the fix.
-- [ ] `M24.6` No upper bound on the SCRAM iteration count.
+- [x] `M24.6` No upper bound on the SCRAM iteration count.
   `ScramError::BadIterationCount` documents itself as "absent, zero, or
   absurd" and `parse_server_first` checks only for zero. The count comes from
   the peer, and `ScramKeys::derive` runs PBKDF2 for that many rounds inline on

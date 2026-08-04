@@ -31,6 +31,24 @@ pub const KEY_LEN: usize = 32;
 /// collisions matter across a fleet.
 const NONCE_BYTES: usize = 24;
 
+/// Most PBKDF2 rounds this will perform for a peer that asks.
+///
+/// The count arrives in `server-first`, from the other end, and
+/// [`ScramKeys::derive`] then runs that many rounds inline on the dial path.
+/// `BadIterationCount` has documented itself as "absent, zero, or absurd" since
+/// this module was written, and only zero was ever checked, so `i=4294967295`
+/// was a connection attempt that occupied a runtime worker for hours. `M24.6`.
+///
+/// A constant, not a setting. Non-negotiable 2: a bound anyone can raise from
+/// the environment is a bound that gets raised by whoever hits it.
+///
+/// One million, which is 244 times Postgres's own default of 4,096, so an
+/// operator who has hardened `scram_iterations` a long way is not refused. It
+/// bounds one dial at roughly half a second of CPU. That is a real cost and it
+/// is a bounded one, which is the whole difference: half a second ends, and the
+/// unbounded version does not.
+pub const MAX_ITERATIONS: u32 = 1_000_000;
+
 /// Why a SCRAM exchange failed.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -219,7 +237,10 @@ pub fn parse_server_first(message: &str, client_nonce: &str) -> Result<ServerFir
         .parse()
         .map_err(|_| ScramError::BadIterationCount { count: 0 })?;
 
-    if iterations == 0 {
+    // Zero is impossible and anything past the ceiling is a denial of service
+    // the peer chose for us. Both are the same answer, and the ceiling half was
+    // documented and unenforced until `M24.6`.
+    if iterations == 0 || iterations > MAX_ITERATIONS {
         return Err(ScramError::BadIterationCount { count: iterations });
     }
 
@@ -472,6 +493,57 @@ mod tests {
             ScramError::BadIterationCount { count: 0 }
         );
         assert!(salted_password(b"p", b"s", 0).is_err());
+    }
+
+    #[test]
+    fn an_absurd_iteration_count_is_refused_at_the_ceiling() {
+        // `M24.6`. `BadIterationCount` documented itself as "absent, zero, or
+        // absurd" and only zero was checked. The count comes from the peer and
+        // `ScramKeys::derive` then runs that many rounds inline on the dial
+        // path, so `i=4294967295` was a connection attempt that occupied a
+        // runtime worker for hours.
+        for count in [MAX_ITERATIONS + 1, 100_000_000, u32::MAX] {
+            let message = format!("r={RFC7677_SERVER_NONCE},s=c2FsdA==,i={count}");
+            assert_eq!(
+                parse_server_first(&message, RFC7677_CLIENT_NONCE).unwrap_err(),
+                ScramError::BadIterationCount { count },
+                "i={count} was accepted"
+            );
+        }
+
+        // The ceiling itself is allowed, so the bound is where it says it is
+        // rather than one below.
+        let message = format!("r={RFC7677_SERVER_NONCE},s=c2FsdA==,i={MAX_ITERATIONS}");
+        assert_eq!(
+            parse_server_first(&message, RFC7677_CLIENT_NONCE)
+                .unwrap()
+                .iterations,
+            MAX_ITERATIONS
+        );
+    }
+
+    #[test]
+    fn the_ceiling_admits_a_hardened_server() {
+        // The cost of the bound, asserted rather than assumed. Postgres
+        // defaults to 4,096 and an operator who has raised `scram_iterations`
+        // must not find the proxy refusing their database.
+        // A const block, which clippy asks for and which is better anyway: this
+        // becomes a compile error rather than a test failure.
+        const {
+            assert!(
+                MAX_ITERATIONS >= 4_096 * 100,
+                "the ceiling is close enough to Postgres's default to refuse a \
+                 hardened server"
+            );
+        }
+
+        for count in [4_096_u32, 10_000, 100_000] {
+            let message = format!("r={RFC7677_SERVER_NONCE},s=c2FsdA==,i={count}");
+            assert!(
+                parse_server_first(&message, RFC7677_CLIENT_NONCE).is_ok(),
+                "i={count} was refused"
+            );
+        }
     }
 
     #[test]

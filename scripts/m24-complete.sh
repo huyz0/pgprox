@@ -139,4 +139,17 @@ run_finding pgprox-auth \
   cache::tests::a_full_cache_does_not_sweep_on_every_miss \
   "the sweep is rate limited rather than run per connection"
 
+# --- M24.6: the SCRAM iteration count has a ceiling --------------------------
+run_finding pgprox-auth \
+  scram::tests::an_absurd_iteration_count_is_refused_at_the_ceiling \
+  "a peer cannot ask for four billion PBKDF2 rounds"
+run_finding pgprox-auth \
+  scram::tests::the_ceiling_admits_a_hardened_server \
+  "the ceiling still admits a server that raised scram_iterations"
+# The RFC vectors, because a ceiling set below a real exchange would pass both
+# of the checks above and break every SCRAM dial.
+run_finding pgprox-auth \
+  scram::tests::the_client_proof_matches_rfc_7677 \
+  "the RFC 7677 exchange at 4,096 rounds still derives"
+
 finish
