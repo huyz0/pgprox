@@ -32,8 +32,9 @@ dhat-heap.json
 /mutants.out
 /mutants.out.old
 
-# The documentation site. `docs/` holds the pages, `docsite/` holds what builds
-# them, and these are what that build downloads and produces.
-/docsite/node_modules
-/docsite/dist
-/docsite/.astro
+# The documentation site, which is built from the pages beside it in `docs/`.
+# These three are what that build downloads and produces, and they are the
+# reason the collection's glob does not recurse: see docs/src/content.config.ts.
+/docs/node_modules
+/docs/dist
+/docs/.astro

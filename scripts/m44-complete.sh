@@ -197,39 +197,64 @@ else
   fi
 fi
 
-# --- M44.1: the edit link's base ----------------------------------------------
+# --- M44.1: where an edit link actually lands ---------------------------------
 #
-# Starlight builds a page's edit URL with `new URL(path, baseUrl)`, and the
-# content collection's paths are relative to `docsite/`, so each one starts
-# `../docs/`. URL resolution applies that `../` to the base. From
-# `edit/main/` it eats `main` and every page's edit link points at a branch
-# called `docs`.
+# Starlight builds a page's edit URL with `new URL(path, baseUrl)`, against the
+# path the content collection stored. Two settings in two files, and they are
+# only wrong together: while the collection read `../docs`, every path began
+# `../`, resolution spent it on the base rather than the path, and `edit/main/`
+# became `edit/`. Fourteen pages linking to a branch called `docs`, invisible
+# outside the built output.
 #
-# So the relation this checks is between two settings that look unrelated: the
-# base needs one trailing segment per `../` the collection carries, or the
-# branch is what gets consumed. Textual, because this has to run on a machine
-# with no Node.
-CONFIG="${PGPROX_ASTRO_CONFIG:-docsite/astro.config.mjs}"
-COLLECTION="${PGPROX_ASTRO_COLLECTION:-docsite/src/content.config.ts}"
+# So this resolves one the way a browser would rather than pattern-matching
+# either setting, which is what makes it survive the collection moving again.
+# Textual, because it has to run on a machine with no Node.
+CONFIG="${PGPROX_ASTRO_CONFIG:-docs/astro.config.mjs}"
+COLLECTION="${PGPROX_ASTRO_COLLECTION:-docs/src/content.config.ts}"
+
+# `new URL`, for the part of it these two settings can reach: an absolute base
+# ending in a directory, and a relative reference with `.` and `..` in it.
+resolve_url() {
+  local base="$1" rel="$2" scheme rest host part
+  local -a segs=() parts=()
+  scheme="${base%%://*}"
+  rest="${base#*://}"
+  host="${rest%%/*}"
+
+  local IFS=/
+  read -r -a parts <<<"${rest#*/}"
+  for part in "${parts[@]}"; do
+    case "$part" in ''|.) ;; *) segs+=("$part") ;; esac
+  done
+  read -r -a parts <<<"$rel"
+  for part in "${parts[@]}"; do
+    case "$part" in
+      ''|.) ;;
+      ..) (( ${#segs[@]} )) && unset 'segs[-1]' && segs=("${segs[@]}") ;;
+      *) segs+=("$part") ;;
+    esac
+  done
+  printf '%s://%s/%s\n' "$scheme" "$host" "${segs[*]}"
+}
 
 edit_base="$(sed -n "s/^        baseUrl: '\([^']*\)',$/\1/p" "$CONFIG")"
-levels="$(grep -o '\.\./' "$COLLECTION" | wc -l)"
+collection_base="$(sed -n "s/.*base: '\([^']*\)'.*/\1/p" "$COLLECTION")"
+sample="$(basename "$(find "$DOCS" -maxdepth 1 -name '*.md' | sort | head -1)")"
 
 if [[ -z "$edit_base" ]]; then
-  ok "no edit link is configured, so nothing can resolve wrongly"
-elif (( levels == 0 )); then
-  fail "the content collection reads no parent directory, which this check assumed"
+  fail "$CONFIG configures no edit link, so every page's edit button is absent"
+elif [[ -z "$collection_base" || -z "$sample" ]]; then
+  fail "the collection's base or a page to test it with could not be read"
 else
-  # One segment removed per `../`, which is what the browser will do.
-  resolved="${edit_base%/}"
-  for (( i = 0; i < levels; i++ )); do
-    resolved="${resolved%/*}"
-  done
-  if [[ "$resolved" =~ /edit/[^/]+$ ]]; then
-    ok "an edit link resolves to $resolved/docs/<page>, with the branch intact"
+  landed="$(resolve_url "$edit_base" "$collection_base/$sample")"
+  # The branch has to survive, and the path after it has to be where the page
+  # really is. Both halves matter: a base that eats the branch fails the first,
+  # and a collection moved without the base following fails the second.
+  if [[ "$landed" =~ /edit/[^/]+/$DOCS/$sample$ ]]; then
+    ok "an edit link resolves to $landed"
   else
-    fail "the edit link base has no segment to spend on the collection's $levels level(s) of ../"
-    printf '       every page links to %s/<page>, which is a branch called docs\n' "$resolved"
+    fail "an edit link resolves to $landed, which is not $DOCS/$sample on a branch"
+    printf '       the base and the collection are each fine alone and wrong together\n'
   fi
 fi
 

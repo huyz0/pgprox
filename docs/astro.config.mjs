@@ -1,11 +1,12 @@
-// The documentation site.
+// The documentation site, and the pages it is built from.
 //
-// The Markdown is not in here. It stays in the repository's `docs/`, and
-// `src/content.config.ts` points this site's collection at it, so the same
-// files serve two audiences: this site, and anybody reading the repo on GitHub.
+// Both live in this directory. The Markdown beside this file is the product and
+// is what somebody browsing the repository reads; everything else here is how
+// that same Markdown becomes a site. One source, two audiences, and no copy
+// between them that can drift.
 //
-// Everything Node needs lives in this directory so the repository root stays a
-// Rust project. Run the site from here, not from the root.
+// Everything Node needs is under `docs/` so the repository root stays a Rust
+// project. Run the site from here, not from the root.
 //
 // `site` and `base` are what GitHub Pages needs to build correct links for a
 // project page, which is served under /<repo>/ rather than at a domain root.
@@ -52,19 +53,19 @@ export default defineConfig({
         { label: 'Performance', link: '/performance/' },
         { label: 'Optimizations', link: '/optimizations/' },
       ],
-      // The base ends in `docsite/`, which is not a typo and is not where the
-      // pages are. Starlight resolves a page's edit URL with `new URL(path,
-      // baseUrl)`, and the content collection's paths are relative to this
-      // directory, so every one of them starts `../docs/`. URL resolution then
-      // applies that `../` to the base: from `edit/main/` it eats `main` and
-      // produces `edit/docs/<page>.md`, which is a branch called `docs`.
+      // Starlight resolves a page's edit URL with `new URL(path, baseUrl)`,
+      // against the path the content collection stored. So this base has to
+      // name the directory those paths are relative to, which is this one.
       //
-      // Naming the directory the paths are relative to gives the `../`
-      // something of its own to consume. Only visible in the built output,
-      // since the link points at GitHub either way and nothing local follows
-      // it. `scripts/m44-complete.sh` holds the relation.
+      // Worth stating because it was wrong for two milestones and could not be
+      // seen from here. While the collection read `../docs`, every path began
+      // `../`, resolution spent it on the base rather than the path, and
+      // `edit/main/` became `edit/`: fourteen pages linking to a branch called
+      // `docs`. The link points at GitHub either way and nothing local follows
+      // it, so only the built output ever showed it.
+      // `scripts/m44-complete.sh` resolves one and checks where it lands.
       editLink: {
-        baseUrl: 'https://github.com/pgprox/pgprox/edit/main/docsite/',
+        baseUrl: 'https://github.com/pgprox/pgprox/edit/main/docs/',
       },
       lastUpdated: true,
     }),

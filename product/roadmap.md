@@ -2549,3 +2549,42 @@ only place anyone clicks it. Two settings in two files, correct apart and wrong
 together, which is the shape a check has to hold rather than a reading.
 
 Completion condition: `scripts/m44-complete.sh`.
+
+## M45: one directory for the pages and the thing that builds them (complete)
+
+```bash
+scripts/m41-complete.sh
+scripts/m44-complete.sh
+```
+
+`M42` moved the Node toolchain out of the repository root. It was right about
+the root and wrong about the split.
+
+Two directories a level apart, one holding the Markdown and one holding the five
+files that read it, put a `../` in every path between them. `M44.1` is what that
+cost: the content collection's `../docs` and the edit link's base were each
+correct alone and wrong together, and the only place it showed was the built
+output.
+
+So `docsite/` is gone and its five files sit beside the pages. The root is still
+a Rust project, which is what `M42` actually required, and `docs/` meets that as
+well as `docsite/` did.
+
+The cost is four entries of noise: somebody browsing `docs/` on GitHub now sees
+`package.json`, a lockfile, `astro.config.mjs` and `src/` among the pages. That
+is the trade, and it was taken rather than glossed.
+
+Two things followed the move rather than being restated.
+
+**The collection's glob stopped recursing.** `**/*.md` against a directory that
+now contains `node_modules` would walk a dependency tree. Every page is a direct
+child, which is also what `m41-complete.sh` checks for a title and a navigation
+entry, so the two agree by construction.
+
+**The edit-link check became a resolver.** `M44.1` matched the shape of the
+settings, which only worked for the arrangement it was written against. It now
+resolves a real page's URL the way a browser would and asserts where it lands,
+so this move exercised it rather than breaking it. Verified against the pair
+that was actually broken: it reports `edit/docs/admin.md` and names both halves.
+
+Completion condition: the two gates above, which now read the moved paths.

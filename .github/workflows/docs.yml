@@ -18,12 +18,10 @@ on:
     # no reason to rebuild them.
     paths:
       - 'docs/**'
-      - 'docsite/**'
       - '.github/workflows/docs.yml'
   pull_request:
     paths:
       - 'docs/**'
-      - 'docsite/**'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -44,22 +42,21 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          # The lockfile is in docsite/, not at the root, so the cache key has
-          # to be told where to look or it silently caches nothing.
-          cache-dependency-path: docsite/package-lock.json
+          # The lockfile is in docs/, not at the root, so the cache key has to
+          # be told where to look or it silently caches nothing.
+          cache-dependency-path: docs/package-lock.json
       # `npm ci` rather than `npm install`: it installs exactly the lockfile and
       # fails if the two disagree, so a site cannot be published from a
       # dependency tree nobody committed.
-      # The site's toolchain lives in docsite/ and the pages it builds live in
-      # docs/, which is why this runs from there and the artifact comes from
-      # docsite/dist.
+      # The pages and the toolchain that builds them are both in docs/, which
+      # is why this runs from there and the artifact comes from docs/dist.
       - run: npm ci
-        working-directory: docsite
+        working-directory: docs
       - run: npm run build
-        working-directory: docsite
+        working-directory: docs
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: docsite/dist
+          path: docs/dist
 
   deploy:
     name: publish

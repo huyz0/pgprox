@@ -7460,3 +7460,25 @@ recognised so it can be refused rather than read as a version.
   to, every built page's edit link carries the branch, and the check holds the
   relation between the two settings rather than the string, so a collection that
   moved another level up fails.
+
+## M45: one directory for the pages and the thing that builds them
+
+- [x] `M45.0` Plan M45, and carry it out in one commit on `M38.0`'s terms. The
+  milestone is a directory move and the paths that follow it, the same shape as
+  `M42` and partly a correction of it.
+  `M42` moved the Node toolchain out of the repository root and into `docsite/`,
+  which was right about the root and wrong about the split. Two directories a
+  level apart, one holding thirteen Markdown files and the other holding five
+  files that read them, produced a `../` in every path between them. `M44.1` is
+  what that cost: two settings each correct alone, wrong together, and only
+  visible in the built output.
+  The root stays a Rust project either way, which was `M42`'s actual
+  requirement. `docs/` satisfies it as well as `docsite/` did.
+  The cost is real and is accepted rather than hidden: browsing `docs/` on
+  GitHub now shows `package.json`, a lockfile, `astro.config.mjs` and `src/`
+  beside the pages. Four entries of noise against a `../` in every path.
+  Acceptance: `docsite/` is gone, the pages have not moved, the collection reads
+  its own directory rather than a parent, the site builds the same fifteen
+  pages, the workflow and both gates follow the move, and the edit-link check
+  resolves a URL rather than pattern-matching a setting, so it survives the
+  next move too.
