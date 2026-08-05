@@ -373,3 +373,5 @@ jobs:
         run: scripts/m32-complete.sh
       - name: M33
         run: scripts/m33-complete.sh
+      - name: M34
+        run: scripts/m34-complete.sh

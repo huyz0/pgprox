@@ -7207,3 +7207,26 @@ recognised so it can be refused rather than read as a version.
   both numbers, and the question it leaves open stated as a question rather
   than filled in with a guess.
 - [x] `M33.2` Close M33.
+
+## M34: the seventeen kilobytes that are not the buffers
+
+- [x] `M34.0` Plan M34. `M33` measured 22,835 bytes per connection, of which
+  5,048 is the session future and, by experiment, none is the read and write
+  buffers. It named glibc's per-thread allocator arenas as the cheapest
+  candidate to rule out and did not run it.
+  Two variables, and they are separable without touching the code: `tokio`
+  reads `TOKIO_WORKER_THREADS` and glibc reads `MALLOC_ARENA_MAX`. One arm of
+  each isolates the arena count from the thread count, which matters because a
+  single-threaded runtime changes both at once and would answer neither
+  question on its own.
+  Acceptance: this list, a roadmap section, and `scripts/m34-complete.sh` wired
+  into CI.
+- [x] `M34.1` Is it the allocator's memory or the connection's.
+  A per-thread arena is a fixed cost per worker and a per-connection cost is
+  linear in connections, so the two are told apart by holding one still and
+  moving the other. If capping the arenas at one moves the per-connection
+  figure, the figure was never per connection.
+  Acceptance: three arms of the same binary, differing only in environment,
+  each reporting idle and peak resident memory at the same connection count,
+  and a document saying which of the two it was or that it was neither.
+- [x] `M34.2` Close M34.

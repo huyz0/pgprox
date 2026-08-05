@@ -2128,3 +2128,46 @@ Full detail in
 [run-2026-08-05-what-the-others-do.md](../perf/run-2026-08-05-what-the-others-do.md).
 
 Completion condition: `scripts/m33-complete.sh`.
+
+## M34: the seventeen kilobytes that are not the buffers (complete)
+
+```bash
+scripts/arena.sh 200
+```
+
+`M33` accounted for 5,048 of 22,835 bytes per connection, ruled out the read and
+write buffers by experiment, and named glibc's per-thread allocator arenas as
+the cheapest remaining candidate. This runs it, in three arms, because a
+single-threaded runtime moves the thread count and the arena count at once and
+answers neither question on its own.
+
+| arm | workers | arenas | B/conn median | range |
+| --- | --- | --- | --- | --- |
+| baseline | 20 | 160 | 25,272 | 24,104-25,948 |
+| one-arena | 20 | 1 | 22,855 | 22,282-**26,972** |
+| one-thread | 1 | 160 | **17,797** | 16,179-19,886 |
+
+**The arenas are not it.** `one-arena` covers baseline's range entirely, and in
+the third run capping them at one produced a *higher* figure than leaving them
+at 160. The first run read as a clean 12% and was written up as one, which is
+`M32.8`'s lesson repeating three milestones after it was learned.
+
+**The worker count is, and not because of the arenas.** `one-thread` is 30%
+below baseline with no overlap at either end. Cutting the workers moved the
+number and cutting the arenas did not, so what the workers cost is tokio's own
+per-worker state rather than glibc's.
+
+**This corrects `M33`.** About 30% of its per-connection figure was per-worker
+cost divided by a connection count it has nothing to do with, on a twenty-core
+machine. Any per-connection memory figure from this project should state its
+worker count beside it.
+
+**And it leaves roughly 12.7 KB unexplained**, now known not to be the buffers,
+not the arenas, and not per-worker. The next thing to weigh is what
+`tokio::spawn` allocates, which is the future plus a header plus what the
+allocator rounds up to, against the 5,048 bytes `size_of_val` reports.
+
+Full detail in
+[run-2026-08-05-arenas.md](../perf/run-2026-08-05-arenas.md).
+
+Completion condition: `scripts/m34-complete.sh`.

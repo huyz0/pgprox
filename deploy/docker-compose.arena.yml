@@ -1,0 +1,26 @@
+# Worker threads and allocator arenas, for `scripts/arena.sh`. `M34.1`.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.compare.yml \
+#                  -f docker-compose.arena.yml up
+#
+# Its own file rather than two more lines in the comparison overlay, so a
+# comparison run is exactly the one `M32` measured and this cannot change it by
+# being present.
+#
+# # Both variables are always set, including in the baseline arm
+#
+# Not because that is tidy. `TOKIO_WORKER_THREADS` set to the empty string is
+# still set, and tokio parses it and panics: "must be usize, error: cannot parse
+# integer from empty string". The first run of this experiment died that way in
+# every arm, including the one meant to change nothing.
+#
+# So `scripts/arena.sh` passes an explicit number to every arm, and the baseline
+# passes what the machine would have chosen anyway. That is better science than
+# leaving one arm on a default nobody wrote down: three arms that each state
+# their thread count and arena count can be compared, and one that says "the
+# default" cannot be reproduced on another machine.
+services:
+  pgprox-1:
+    environment:
+      TOKIO_WORKER_THREADS: "${PGPROX_WORKER_THREADS:?arena.sh sets this for every arm}"
+      MALLOC_ARENA_MAX: "${PGPROX_ARENA_MAX:?arena.sh sets this for every arm}"
