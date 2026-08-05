@@ -7353,3 +7353,24 @@ recognised so it can be refused rather than read as a version.
   document, and a check that the configuration reference still names the fields
   the code actually reads.
 - [x] `M39.2` Close M39.
+
+## M40: a control that only worked where nothing else was broken
+
+- [x] `M40.0` Plan M40, and carry it out in one commit, on the terms `M38.0`
+  did. The milestone is one helper and four call sites.
+- [x] `M40.1` `tests/gates/negative.sh` blamed the wrong component, and three of
+  its controls passed for the wrong reason.
+  Its four cases for `m1f-complete.sh`'s scope ADRs read the script's exit code.
+  That script ends by running the workspace checks, the coverage gate and
+  `scripts/conformance.sh`, and the last wants a Postgres in a container.
+  Without one the positive case reported "accepts two ADRs that decided: the
+  check failed on a good artefact", which names the ADRs and sends a reader to
+  the wrong file. It fails that way on every machine without the stack up.
+  The three negative cases are worse. `expect_fail` passes on any non-zero
+  exit, so on the same machine they passed with the ADR check deleted entirely.
+  On a fully provisioned machine they worked, which is why this was invisible
+  exactly where it is checked.
+  Acceptance: each of the four asserts the message its own check produces
+  rather than the script's exit status, deleting the ADR check makes all four
+  fail, and the suite passes with no stack running.
+- [x] `M40.2` Close M40.

@@ -130,10 +130,8 @@ demonstrated. Serving them needs load generators on their own machines, a
 database that can absorb the offered load, and a real network. Until then the
 latency story stops at 1,000 connections on loopback.
 
-**Anything on real hardware.** One WSL2 box, everything in containers, no
-network.
-
-**Anything in production.** pgprox has never been deployed.
+**Anything on real hardware.** One 20-core box, everything in containers, no
+network between the client, the proxy and the database.
 
 ## How to reproduce
 

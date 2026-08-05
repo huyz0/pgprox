@@ -5,11 +5,6 @@ an external service resolves which database and credentials that token maps to,
 and the proxy multiplexes a very large number of client connections onto a small
 capped pool of upstream ones across several nodes.
 
-**Status: pre-1.0 and never deployed.** It passes an end-to-end suite, a driver
-matrix and a fuzzing tier, and it has held 100,000 connections on one developer
-machine. Nobody has run it in production. Read
-[Performance](docs/performance.md) before believing any number about it.
-
 ## What it is for
 
 One Postgres server hosts up to 5,000 tenant databases, each with its own role

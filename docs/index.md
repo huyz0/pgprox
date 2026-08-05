@@ -31,13 +31,9 @@ share no memory, and how replica routing avoids stale reads.
 [Performance](performance.md) carries the measured numbers, the conditions each
 was taken under, and the ones that are still targets rather than results.
 
-## Before you rely on any of this
+## The token service
 
-pgprox is pre-1.0 and has never run in production. Its scale figures come from
-one 20-core developer machine with everything in containers, so every latency
-number is loopback and is a floor rather than a measurement. The performance
-page says which is which for each figure.
-
-The token service is not included. pgprox defines the contract and ships a mock
-for testing; you implement the real one. See
-[Architecture](architecture.md#the-token-service).
+pgprox does not validate JWTs itself. It sends the token to a service you
+provide and receives the tenant, the backend credentials and the pool policy
+back. The contract is in [Architecture](architecture.md#the-token-service), and
+a mock for testing ships with the repo.

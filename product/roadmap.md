@@ -2359,3 +2359,33 @@ invented an argument that does not exist. It now reads the parser's own match
 arms.
 
 Completion condition: `scripts/m39-complete.sh`.
+
+## M40: a control that only worked where nothing else was broken (complete)
+
+```bash
+scripts/m40-complete.sh
+```
+
+`tests/gates/negative.sh` has four cases for `m1f-complete.sh`'s scope ADRs, and
+all four read that script's exit code. It ends by running the workspace checks,
+the coverage gate and `scripts/conformance.sh`, and the last wants a Postgres in
+a container.
+
+Without one, the positive case reported **"accepts two ADRs that decided: the
+check failed on a good artefact"**. The ADRs were fine. The message named them
+anyway and sent a reader to the wrong file.
+
+The three negative cases were worse. `expect_fail` passes on any non-zero exit,
+so on the same machine they passed with the ADR check deleted entirely. On a
+fully provisioned machine they worked, which is why this was invisible exactly
+where it is checked.
+
+All four now assert the message their own check produces. Deleting the ADR check
+makes all four fail, which is the test that says they mean something, and the
+suite passes with no containers up.
+
+`M12`'s subject was gates that pass by matching a filename. This is the same
+defect one level up: a control that passes by matching an exit code somebody
+else set.
+
+Completion condition: `scripts/m40-complete.sh`.

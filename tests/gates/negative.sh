@@ -55,6 +55,27 @@ expect_pass() {
   sed 's/^/        /' "$WORK/out"
 }
 
+# Asserts one check inside a script reports ok, whatever the rest of the script
+# does.
+#
+# `expect_pass` reads an exit code, which is right when the script is the thing
+# under test and wrong when one check inside it is. `m1f-complete.sh` ends by
+# running the workspace checks, the coverage gate and `conformance.sh`, and the
+# last of those wants a Postgres in a container. Without one the script exits
+# non-zero and `expect_pass` reported "the check failed on a good artefact"
+# against the scope ADRs, which were fine. The message named the wrong component
+# and sent a reader to the wrong file. `M40.1`.
+expect_reports() {
+  local what="$1" pattern="$2"; shift 2
+  "$@" >"$WORK/out" 2>&1 || true
+  if grep -qE "$pattern" "$WORK/out"; then
+    ok "$what"
+    return
+  fi
+  fail "$what: nothing in the output reported it"
+  sed 's/^/        /' "$WORK/out"
+}
+
 msg() { printf '%s\n' "$1" > "$WORK/msg"; printf '%s' "$WORK/msg"; }
 
 # --- check-commit-msg.sh, M12.1 ----------------------------------------------
@@ -216,25 +237,42 @@ case_m1f_adr() {
   rm -rf "$dir"; mkdir -p "$dir"
 
   # No ADR at all.
-  expect_fail "refuses a decisions directory with neither scope ADR" \
+  #
+  # These three read the message rather than the exit code, for the reason the
+  # positive case below does and for a worse one. `expect_fail` passes whenever
+  # the script exits non-zero, and this script exits non-zero on any machine
+  # without a Postgres in a container. On such a machine all three passed with
+  # the ADR check deleted entirely, which is a control that only works where
+  # nothing else is broken. On a fully provisioned machine they worked, so this
+  # was invisible exactly where it was checked. `M40.1`.
+  expect_reports "refuses a decisions directory with neither scope ADR" \
+    'FAIL.*no ADR deciding what to do about protocol 3.2' \
     env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
 
   # The regression: files with the right names and nothing in them.
   : > "$dir/0016-protocol-3-2-deferred.md"
   : > "$dir/0015-replication-is-out-of-scope.md"
-  expect_fail "refuses an empty file with the right name" \
+  expect_reports "refuses an empty file with the right name" \
+    'FAIL.*has no Status line' \
     env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
 
   # An ADR that has not decided yet. A gate that reports a recorded decision
   # here is reporting the filename.
   printf '# 0016. Protocol 3.2\n\nStatus: proposed\n' > "$dir/0016-protocol-3-2-deferred.md"
   printf '# 0015. Replication\n\nStatus: accepted\n' > "$dir/0015-replication-is-out-of-scope.md"
-  expect_fail "refuses an ADR still marked proposed" \
+  expect_reports "refuses an ADR still marked proposed" \
+    "FAIL.*is 'proposed', so" \
     env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
 
-  # And both decided, which must pass.
+  # And both decided, which the ADR check must report ok for.
+  #
+  # By its output rather than by the script's exit code. What is under test here
+  # is `adr_decided`, and the script it lives in also runs `conformance.sh`,
+  # which needs a Postgres in a container. Reading the exit code made this case
+  # fail on every machine without one, blaming the ADRs.
   printf '# 0016. Protocol 3.2\n\nStatus: accepted\n' > "$dir/0016-protocol-3-2-deferred.md"
-  expect_pass "accepts two ADRs that decided" \
+  expect_reports "accepts two ADRs that decided" \
+    'protocol 3.2 handling is a recorded decision' \
     env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
 }
 
