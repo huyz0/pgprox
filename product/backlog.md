@@ -7267,7 +7267,7 @@ recognised so it can be refused rather than read as a version.
   quoting. `product/perf/workload-idle.yaml` is the workload for it.
   Acceptance: this list, a roadmap section, and `scripts/m36-complete.sh` wired
   into CI.
-- [ ] `M36.1` The resident cost of a connection that is doing nothing.
+- [x] `M36.1` The resident cost of a connection that is doing nothing.
   Three connection counts against the idle workload, run long enough that
   transactions happen, so the figure is a line with a slope and an intercept
   rather than one point. Under this workload the buffer term is near zero by
@@ -7277,4 +7277,4 @@ recognised so it can be refused rather than read as a version.
   for each, what the slope says about a hundred thousand connections on one
   node, and whether it is linear this time rather than an assumption that it
   is.
-- [ ] `M36.2` Close M36.
+- [x] `M36.2` Close M36.

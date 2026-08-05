@@ -2217,3 +2217,49 @@ Full detail in
 [run-2026-08-05-per-connection-is-not-a-number.md](../perf/run-2026-08-05-per-connection-is-not-a-number.md).
 
 Completion condition: `scripts/m35-complete.sh`.
+
+## M36: what an open, quiet connection costs (complete)
+
+```bash
+WORKLOAD=product/perf/workload-idle.yaml COMPARE_DURATION=90 scripts/compare.sh 800
+```
+
+`M35` found per-connection memory under the reference workload to be a curve
+rather than a number, and named the one term that does not saturate as the thing
+worth measuring. This measures it. Under the idle workload the upstream
+connection count during the run was 1 to 3 against a cap of 60, so the buffer
+term is out of the picture and what is left is what a quiet connection holds.
+
+Absolute peak resident memory, serving N idle connections:
+
+| arm | 200 | 400 | 800 |
+| --- | --- | --- | --- |
+| pgprox | 11.8 MB | 17.2 MB | 20.8 MB |
+| pgbouncer | **4.2 MB** | **4.9 MB** | **4.1 MB** |
+| pgcat | 19.6 MB | 25.9 MB | 40.2 MB |
+
+**pgbouncer's idle connection costs nothing this experiment can measure.**
+Quadrupling the count moved it from 4.2 MB to 4.1, a slope of -150 bytes, which
+means zero with noise on top. **pgcat's is 36 KB and linear**, which is the two
+8 KiB buffers per client its source holds forever. **pgprox needs 20.8 MB where
+pgbouncer needs 4.1 for the same 800 idle connections**, measured rather than
+extrapolated.
+
+**This is the first thing in the comparison that speaks to the mission.**
+`scripts/scale.sh` states the target as under 500 MB at 100,000 connections. At
+pgprox's 200-to-800 slope of 15,756 bytes, 100,000 idle connections is 1.47 GB.
+
+The extrapolation carries its caveat: it is 167 times the largest count
+measured, and the slope is still moving, 28,631 bytes between 200 and 400 then
+9,318 between 400 and 800. At the lower figure it is 0.87 GB, still over.
+
+**What the session holds** is now partly accounted: 5,048 bytes of session
+future, measured and guarded by a test. Not the buffers (`M33`), not the arenas
+(`M34`), not the statement map. That leaves roughly 10 KB per idle connection
+against a 5 KB future, and the next thing to weigh is what `tokio::spawn`
+allocates, which no test in this repo has ever measured.
+
+Full detail in
+[run-2026-08-05-idle-connection-cost.md](../perf/run-2026-08-05-idle-connection-cost.md).
+
+Completion condition: `scripts/m36-complete.sh`.
