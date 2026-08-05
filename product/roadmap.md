@@ -1863,7 +1863,7 @@ benchmark in `product/perf/baseline.json` that justifies the exception, and
 there was no number to name.
 
 Full detail in
-[run-2026-08-04-unchecked-slab.md](../perf/run-2026-08-04-unchecked-slab.md),
+[run-2026-08-04-unchecked-slab.md](perf/run-2026-08-04-unchecked-slab.md),
 including what this does **not** say: four of the procedure's five patterns are
 untested here, and none of them has a candidate with a number behind it yet.
 
@@ -2055,7 +2055,7 @@ It is also a millisecond slower per transaction at the median, and the most
 consistent of the three by a wide margin.
 
 Full detail, including everything the run does not say, in
-[run-2026-08-05-pgbouncer-pgcat.md](../perf/run-2026-08-05-pgbouncer-pgcat.md).
+[run-2026-08-05-pgbouncer-pgcat.md](perf/run-2026-08-05-pgbouncer-pgcat.md).
 
 ## What the milestone cost to make honest
 
@@ -2125,7 +2125,7 @@ allocator arenas, which a one-thread runtime would separate from a real
 per-connection cost.
 
 Full detail in
-[run-2026-08-05-what-the-others-do.md](../perf/run-2026-08-05-what-the-others-do.md).
+[run-2026-08-05-what-the-others-do.md](perf/run-2026-08-05-what-the-others-do.md).
 
 Completion condition: `scripts/m33-complete.sh`.
 
@@ -2168,7 +2168,7 @@ not the arenas, and not per-worker. The next thing to weigh is what
 allocator rounds up to, against the 5,048 bytes `size_of_val` reports.
 
 Full detail in
-[run-2026-08-05-arenas.md](../perf/run-2026-08-05-arenas.md).
+[run-2026-08-05-arenas.md](perf/run-2026-08-05-arenas.md).
 
 Completion condition: `scripts/m34-complete.sh`.
 
@@ -2214,7 +2214,7 @@ thirty seconds, so no connection sent anything and the load client correctly
 called that an error rather than a result.
 
 Full detail in
-[run-2026-08-05-per-connection-is-not-a-number.md](../perf/run-2026-08-05-per-connection-is-not-a-number.md).
+[run-2026-08-05-per-connection-is-not-a-number.md](perf/run-2026-08-05-per-connection-is-not-a-number.md).
 
 Completion condition: `scripts/m35-complete.sh`.
 
@@ -2262,7 +2262,7 @@ against a 5 KB future, and the next thing to weigh is what `tokio::spawn`
 allocates, which no test in this repo has ever measured.
 
 Full detail in
-[run-2026-08-05-idle-connection-cost.md](../perf/run-2026-08-05-idle-connection-cost.md).
+[run-2026-08-05-idle-connection-cost.md](perf/run-2026-08-05-idle-connection-cost.md).
 
 Completion condition: `scripts/m36-complete.sh`.
 
@@ -2304,7 +2304,7 @@ whether the ten kilobytes is state a connection holds or memory the allocator is
 sitting on. Everything since `M34` assumed the first without checking.
 
 Full detail in
-[run-2026-08-05-spawn-cost.md](../perf/run-2026-08-05-spawn-cost.md).
+[run-2026-08-05-spawn-cost.md](perf/run-2026-08-05-spawn-cost.md).
 
 Completion condition: `scripts/m37-complete.sh`.
 
@@ -2450,7 +2450,7 @@ scripts/m43-complete.sh
 `M39` gave a reader orientation, a tutorial, a reference, an operations guide
 and two explanations, and left two questions it could not answer.
 
-**[Features and limits](../../docs/features.md)** is the first: pooling modes
+**[Features and limits](../docs/features.md)** is the first: pooling modes
 and why statement pooling is absent, the seven things that pin a session,
 replica routing with the LSN watermark rule drawn out, the query cache and the
 five reasons a statement is never cached, protocol and auth support, and an
@@ -2463,7 +2463,7 @@ replication, read-your-writes from the cache, a cache shared across nodes.
 reader deciding whether to adopt this needs to know which list a missing thing
 is on.
 
-**[Request flow](../../docs/request-flow.md)** is the second: one client frame
+**[Request flow](../docs/request-flow.md)** is the second: one client frame
 from admission to the connection going back to the pool, naming the component at
 each step. Establishing a connection, then the loop, then the three things that
 run alongside it and change what it does. It ends with a table from symptom to
@@ -2486,25 +2486,25 @@ Neither answers the questions somebody asks before they are allowed to run it.
 
 Six pages, each for a reader who arrives with a different question.
 
-**[Multitenancy](../../docs/multitenancy.md)** is the one the rest hang off.
+**[Multitenancy](../docs/multitenancy.md)** is the one the rest hang off.
 A client does not name its own tenant; the token service does. Every shared
 structure has a key, and the key is the isolation. The section that matters most
 is the last one: the boundary is the database credential, not the tenant name,
 so two tenants mapped onto one role are one security domain to Postgres and the
 proxy will not invent a boundary the credentials do not have.
 
-**[Clustering and deployment](../../docs/clustering.md)** covers the guaranteed
+**[Clustering and deployment](../docs/clustering.md)** covers the guaranteed
 share, the gossip round, leases, and why a partition under-subscribes. Then the
 StatefulSet, and why it is one: gossip addresses a peer by name and a
 Deployment's pods get a new name every restart.
 
-**[Admin and management](../../docs/admin.md)** is every `SHOW`, every endpoint,
+**[Admin and management](../docs/admin.md)** is every `SHOW`, every endpoint,
 and every operation that changes a node's state, plus the sentence the API's own
 module comment makes and no page did: the admin port has no authentication of
 its own.
 
-**[Security](../../docs/security.md)**, **[FIPS builds](../../docs/fips.md)** and
-**[Optimizations](../../docs/optimizations.md)** are the remaining three. The
+**[Security](../docs/security.md)**, **[FIPS builds](../docs/fips.md)** and
+**[Optimizations](../docs/optimizations.md)** are the remaining three. The
 last of those carries the negative results as prominently as the wins, because
 an idea that has been measured and refused is worth more written down than
 forgotten.
@@ -2619,3 +2619,33 @@ No `NOTICE` file. Apache-2.0 requires one only where the work already has one,
 and adding it later means every downstream copy carries it from then on.
 
 Completion condition: `scripts/check-drift.sh`.
+
+## M47: the links nothing was checking (complete)
+
+```bash
+scripts/check-links.sh
+```
+
+`check-drift.sh` checks the links out of `AGENTS.md`. Nothing checked the other
+hundred and forty, and fifteen of them were broken.
+
+All fifteen were in `product/roadmap.md` and all broken the same way: one `../`
+too many, as if the file sat a directory deeper than it does. Every link it
+makes to a run document, and every link it makes to a page. They accumulated
+across several milestones, three of them written this week, and each one looked
+correct in isolation.
+
+That is what makes it worth a check rather than a proofread. A typo gets
+noticed. A consistent misreading of where a file sits produces dozens of wrong
+links that all look the same, and nobody finds out until they click one.
+
+It resolves the path and not the fragment. Reproducing the site generator's
+heading slugs would be a second implementation of them, and two implementations
+of a slug is two chances to disagree. The fragment half is worth doing and is
+not done, which is written in the script rather than left to be discovered.
+
+It runs on every commit rather than only when Markdown changes, because a link
+breaks when the file it points at moves, and that commit need not touch a
+single `.md`.
+
+Completion condition: `scripts/check-links.sh`.

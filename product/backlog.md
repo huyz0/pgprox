@@ -7501,3 +7501,23 @@ recognised so it can be refused rather than read as a version.
   `docs/package.json` declares the same identifier, and `scripts/check-drift.sh`
   refuses a tree where the manifest names a licence that the file, the README or
   the package manifest does not.
+
+## M47: the links nothing was checking
+
+- [x] `M47.0` A check that every relative Markdown link resolves, and the
+  fifteen that did not.
+  `check-drift.sh` checks the links out of `AGENTS.md`, because those send a
+  reader to a standard. Nothing checked the other hundred and forty. Fifteen
+  were broken, all in `product/roadmap.md`, and all in the same way: every link
+  it makes to a run document and every link it makes to a page carried one `../`
+  too many, as if the file lived a directory deeper than it does. They
+  accumulated across several milestones, including three written this week.
+  That is the shape worth a check. Not a typo, which somebody notices, but a
+  consistent misreading of where a file sits, which produces dozens of wrong
+  links that all look right until somebody needs one.
+  It resolves the path and not the fragment, and says so: reproducing the site
+  generator's heading slugs would be a second implementation of them, and two
+  implementations of a slug is two chances to disagree.
+  Acceptance: `scripts/check-links.sh` in the pre-commit hook, in CI and in
+  `AGENTS.md`'s list; the fifteen fixed; and a file with a link to nothing
+  fails it.
