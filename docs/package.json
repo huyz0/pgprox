@@ -2,7 +2,8 @@
   "name": "pgprox-docs",
   "private": true,
   "type": "module",
-  "description": "The documentation site. Sources live in docs/, which stays readable on GitHub.",
+  "license": "Apache-2.0",
+  "description": "The documentation site. Its pages sit beside this file and stay readable on GitHub.",
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",

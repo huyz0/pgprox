@@ -7482,3 +7482,22 @@ recognised so it can be refused rather than read as a version.
   pages, the workflow and both gates follow the move, and the edit-link check
   resolves a URL rather than pattern-matching a setting, so it survives the
   next move too.
+
+## M46: the licence three files have claimed and none granted
+
+- [x] `M46.0` Plan M46, and carry it out in one commit on `M38.0`'s terms.
+  `Cargo.toml` declares `license = "Apache-2.0"` and every crate inherits it.
+  The README has a Licence section that says "Apache-2.0." and nothing else.
+  Neither is a licence. An SPDX identifier is a label, and Apache-2.0 section
+  4(a) requires that anyone the work is distributed to receives a copy of the
+  terms; there was no copy to give. GitHub's detector reads the file too, so the
+  repository rendered as unlicensed to anybody who arrived at it.
+  The text is verbatim from `/usr/share/common-licenses/Apache-2.0`, with the
+  appendix's `Copyright [yyyy] [name of copyright owner]` filled in and nothing
+  else changed, which is checkable by substituting the line back.
+  No `NOTICE` file. Apache-2.0 requires one only where the work already has one,
+  and adding it later means every downstream copy has to carry it from then on.
+  Acceptance: `LICENSE` holds the full text, the README points at it,
+  `docs/package.json` declares the same identifier, and `scripts/check-drift.sh`
+  refuses a tree where the manifest names a licence that the file, the README or
+  the package manifest does not.

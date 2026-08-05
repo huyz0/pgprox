@@ -344,4 +344,37 @@ while read -r link; do
 done < <(grep -oE '\]\((standards|product|\.agents)/[^)]*\)' AGENTS.md | sed 's/^](//; s/)$//' | sort -u)
 (( missing == 0 )) && ok "every path AGENTS.md links to exists"
 
+# --- the licence is declared in three places and granted in one ---------------
+#
+# `Cargo.toml`, `docs/package.json` and the README each name a licence. None of
+# them is one: an SPDX identifier is a label, and Apache-2.0 section 4(a)
+# requires that anyone you distribute to receives a copy of the terms. For a
+# while there were three labels and no copy, which also means GitHub renders the
+# repository as unlicensed, because its detector reads the file.
+#
+# So: one canonical answer, and everything that names a licence names that one.
+declared="$(sed -n 's/^license = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+
+if [[ -z "$declared" ]]; then
+  fail "the workspace manifest declares no license, so there is nothing to check against"
+elif [[ ! -f LICENSE ]]; then
+  fail "Cargo.toml declares $declared and there is no LICENSE file granting it"
+  printf '       every crate inherits that label and no recipient gets the terms\n'
+else
+  # The identifier is `Apache-2.0` and the text says `Apache License`, so this
+  # matches on the family rather than the string. It is looking for a licence
+  # swap that left one of the two behind, not for a typo.
+  family="${declared%%-*}"
+  wrong=""
+  grep -qi "$family" LICENSE || wrong+=" LICENSE"
+  grep -qi "$declared" README.md || wrong+=" README.md"
+  [[ -f docs/package.json ]] && { grep -q "\"license\": \"$declared\"" docs/package.json || wrong+=" docs/package.json"; }
+
+  if [[ -z "$wrong" ]]; then
+    ok "the licence is $declared everywhere that names one, and LICENSE grants it"
+  else
+    fail "Cargo.toml declares $declared and these disagree or are silent:$wrong"
+  fi
+fi
+
 finish

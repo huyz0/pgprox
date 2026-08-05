@@ -2588,3 +2588,34 @@ so this move exercised it rather than breaking it. Verified against the pair
 that was actually broken: it reports `edit/docs/admin.md` and names both halves.
 
 Completion condition: the two gates above, which now read the moved paths.
+
+## M46: the licence three files have claimed and none granted (complete)
+
+```bash
+scripts/check-drift.sh
+```
+
+Three files named a licence. None of them was one.
+
+`Cargo.toml` declares `license = "Apache-2.0"`, inherited by every crate. The
+README had a Licence section reading "Apache-2.0." and nothing else. An SPDX
+identifier is a label, and Apache-2.0 section 4(a) requires that anyone the work
+is distributed to receives a copy of the terms. There was no copy. GitHub's
+detector reads the file as well, so the repository rendered as unlicensed to
+anybody who arrived at it.
+
+`LICENSE` now holds the text verbatim, taken from the system's canonical copy
+rather than retyped, with the appendix's copyright line filled in and nothing
+else touched. That is checkable rather than asserted: substituting the line back
+produces the canonical file byte for byte.
+
+The check went into `check-drift.sh` rather than a milestone gate, because this
+is the same failure that script already exists for. One canonical answer, in the
+workspace manifest, and every other place that names a licence has to agree with
+it. A tree with no `LICENSE` fails, and so does one where the README or the
+site's package manifest drifted off it.
+
+No `NOTICE` file. Apache-2.0 requires one only where the work already has one,
+and adding it later means every downstream copy carries it from then on.
+
+Completion condition: `scripts/check-drift.sh`.

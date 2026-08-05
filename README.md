@@ -64,4 +64,5 @@ rebalance and shed all wait for a transaction boundary.
 
 ## Licence
 
-Apache-2.0.
+Apache-2.0. The terms are in [LICENSE](LICENSE), which is the copy section 4(a)
+requires you to pass on.
