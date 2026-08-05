@@ -2246,12 +2246,14 @@ pgbouncer needs 4.1 for the same 800 idle connections**, measured rather than
 extrapolated.
 
 **This is the first thing in the comparison that speaks to the mission.**
-`scripts/scale.sh` states the target as under 500 MB at 100,000 connections. At
-pgprox's 200-to-800 slope of 15,756 bytes, 100,000 idle connections is 1.47 GB.
+`scripts/scale.sh` states the target as under 500 MB at 100,000 connections.
 
-The extrapolation carries its caveat: it is 167 times the largest count
-measured, and the slope is still moving, 28,631 bytes between 200 and 400 then
-9,318 between 400 and 800. At the lower figure it is 0.87 GB, still over.
+`M38` corrects what this milestone then did with that. It extrapolated its
+200-to-800 slope to 1.47 GB at a hundred thousand, and
+`run-2026-07-28-100k-hold.md` had already measured that point: **5,726 bytes
+each and 546 MB**, nine per cent over the target rather than three times it.
+The extrapolation used a slope from where `M35` had just established the fixed
+cost still dominates, which is `M35`'s finding unapplied one milestone later.
 
 **What the session holds** is now partly accounted: 5,048 bytes of session
 future, measured and guarded by a test. Not the buffers (`M33`), not the arenas

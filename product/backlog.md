@@ -7304,3 +7304,27 @@ recognised so it can be refused rather than read as a version.
   the figure for the size the session future actually is, and a statement of
   how much of `M36`'s ten kilobytes this accounts for.
 - [x] `M37.2` Close M37.
+
+## M38: the extrapolation M36 did not need to make
+
+- [x] `M38.0` Plan M38, and carry it out in one commit. The milestone is a
+  correction of two paragraphs; splitting it into a plan, a fix and a close
+  would produce two commits with nothing in them, and the first non-negotiable
+  asks for one change that leaves the tree green rather than for ceremony. Said
+  here so the shape is a decision rather than an oversight, on the terms
+  `M32.2` carried `M32.3`.
+- [x] `M38.1` `M36` extrapolated to a number the repo had already measured.
+  It fitted a slope over 200 to 800 connections and reported 1.47 GB at a
+  hundred thousand, three times the roadmap's target, with a caveat about the
+  extrapolation being 167 times the largest count measured.
+  `run-2026-07-28-100k-hold.md` measured that point directly, at a hundred
+  thousand connections on this machine: **5,726 bytes each and 546 MB**, 9%
+  over the target rather than three times it. `M7` quotes it in the roadmap.
+  The failure is `M35`'s own lesson unapplied. `M35` established that the
+  figure is fixed cost plus a variable term, and `M36` then extrapolated using
+  a slope taken where the fixed cost still dominates and the curve is visibly
+  bending.
+  Acceptance: the run document and the roadmap say what the measured figure is,
+  say that the extrapolation is superseded rather than deleting it, and name
+  why it was wrong.
+- [x] `M38.2` Close M38.

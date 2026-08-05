@@ -55,6 +55,22 @@ around them.
 holds 20.8 MB against pgbouncer's 4.1, which is **five times**, measured rather
 than extrapolated.
 
+## Superseded: the repo had already measured this point
+
+**`M38` correction.** Everything in this section below was an extrapolation to a
+number `run-2026-07-28-100k-hold.md` had already measured directly, on this
+machine, at a hundred thousand connections: **5,726 bytes each and 546 MB**,
+nine per cent over the roadmap's target rather than three times it.
+
+The extrapolation is kept rather than deleted, because how it went wrong is
+worth more than the figure. It applied a slope taken between 200 and 800
+connections, which is exactly where `M35` had established that the fixed cost
+still dominates and the curve is still bending. `M35`'s whole finding was that
+the figure is two terms, and `M36` then extrapolated as though it were one.
+
+The measured point wins. Read the rest of this section as a worked example of
+extrapolating past the data when the data existed.
+
 ## What this says about the roadmap's target
 
 `scripts/scale.sh` states the target: under 500 MB at 100,000 connections.
@@ -98,5 +114,10 @@ Single run per point, three points, one machine. The ordering and the 800-count
 comparison are solid; the slope is not, and the extrapolation to 100k is
 arithmetic on a slope that is visibly still moving.
 
-`M16`'s 100k run remains the only thing that settles the target, and it is still
-blocked on hardware.
+`M38` corrects the last sentence this document originally carried, which said
+`M16`'s 100k run was the only thing that would settle the target and was still
+blocked. `M7` ran it on 28 July: a hundred thousand connections held on this
+machine at 546 MB. What `M16` is blocked on is a 100k run that also *serves*,
+which needs load generators on their own machines and a database that can absorb
+the offered load. Holding and serving are different questions and this document
+confused them.
