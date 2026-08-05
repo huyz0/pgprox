@@ -2422,3 +2422,21 @@ routes, escapes become GitHub URLs, and the source stays correct for the copy
 more people read first.
 
 Completion condition: `scripts/m41-complete.sh`.
+
+## M42: the site's toolchain leaves the repository root (complete)
+
+`M41` put `package.json`, a lockfile, `astro.config.mjs`, `src/` and
+`node_modules` at the root of what is otherwise a Rust workspace, where each
+read as a top-level concern of the project and none of them was.
+
+They now live in `docsite/`. The split is the useful part: **`docs/` is the
+product and `docsite/` is how it is built.** The pages stay where somebody
+browsing the repository finds them, and the site's collection points one level
+up at them, so there is still one source and no copy that can drift.
+
+The paths that had to follow: the workflow runs `npm ci` and `npm run build`
+from `docsite/`, takes its artefact from `docsite/dist`, and tells the Node
+cache where the lockfile went, which otherwise caches nothing without saying so.
+
+Completion condition: `scripts/m41-complete.sh`, which now reads the moved
+paths.

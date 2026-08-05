@@ -8,7 +8,9 @@
 #
 # # What this checks and what CI checks
 #
-# The build itself runs in `.github/workflows/docs.yml`, on a runner with Node.
+# The site's toolchain is in `docsite/` and the pages it builds are in `docs/`,
+# so the repository root stays a Rust project. The build itself runs in
+# `.github/workflows/docs.yml`, on a runner with Node.
 # This gate runs beside the Rust ones on a machine that may have neither Node
 # nor the dependency tree, so it checks the things that decide whether that
 # build produces a working site: that the pages carry what the generator needs,
@@ -24,7 +26,7 @@ echo
 BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 DOCS="${PGPROX_DOCS:-docs}"
-CONFIG="${PGPROX_ASTRO_CONFIG:-astro.config.mjs}"
+CONFIG="${PGPROX_ASTRO_CONFIG:-docsite/astro.config.mjs}"
 
 finished="$(sed -n '/^## M41:/,/^## /p' "$BACKLOG" \
   | sed -n 's/^- \[x\] `\(M41\.[0-9]*\)`.*/\1/p' \
@@ -91,7 +93,7 @@ grep -q 'site:' "$CONFIG" && grep -q 'base:' "$CONFIG" \
 # The rewriter, which is what lets one set of Markdown serve this site and
 # GitHub at once. Without it the pages' own links stay literal `.md` and every
 # one of them 404s on the site.
-if grep -q 'rehypePlugins' "$CONFIG" && [[ -f src/rewrite-links.mjs ]]; then
+if grep -q 'rehypePlugins' "$CONFIG" && [[ -f docsite/src/rewrite-links.mjs ]]; then
   ok "the link rewriter is wired in, so one source serves both readers"
 else
   fail "the link rewriter is missing, so the pages' relative .md links will 404"
@@ -99,10 +101,10 @@ fi
 
 # And the lockfile, because the workflow installs from it rather than resolving
 # afresh. Without one committed, `npm ci` fails and the site never publishes.
-if [[ -f package-lock.json ]]; then
+if [[ -f docsite/package-lock.json ]]; then
   ok "the dependency tree is locked, which is what the workflow installs from"
 else
-  fail "no package-lock.json, so the publish workflow cannot install"
+  fail "no docsite/package-lock.json, so the publish workflow cannot install"
 fi
 
 finish

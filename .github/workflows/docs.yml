@@ -18,18 +18,12 @@ on:
     # no reason to rebuild them.
     paths:
       - 'docs/**'
-      - 'src/**'
-      - 'astro.config.mjs'
-      - 'package.json'
-      - 'package-lock.json'
+      - 'docsite/**'
       - '.github/workflows/docs.yml'
   pull_request:
     paths:
       - 'docs/**'
-      - 'src/**'
-      - 'astro.config.mjs'
-      - 'package.json'
-      - 'package-lock.json'
+      - 'docsite/**'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -50,14 +44,22 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          # The lockfile is in docsite/, not at the root, so the cache key has
+          # to be told where to look or it silently caches nothing.
+          cache-dependency-path: docsite/package-lock.json
       # `npm ci` rather than `npm install`: it installs exactly the lockfile and
       # fails if the two disagree, so a site cannot be published from a
       # dependency tree nobody committed.
+      # The site's toolchain lives in docsite/ and the pages it builds live in
+      # docs/, which is why this runs from there and the artifact comes from
+      # docsite/dist.
       - run: npm ci
+        working-directory: docsite
       - run: npm run build
+        working-directory: docsite
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: docsite/dist
 
   deploy:
     name: publish

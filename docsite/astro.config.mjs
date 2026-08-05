@@ -1,8 +1,11 @@
 // The documentation site.
 //
-// The Markdown is not moved. Starlight normally wants `src/content/docs/`, and
-// `src/content.config.ts` points its collection at `docs/` instead, so the same
+// The Markdown is not in here. It stays in the repository's `docs/`, and
+// `src/content.config.ts` points this site's collection at it, so the same
 // files serve two audiences: this site, and anybody reading the repo on GitHub.
+//
+// Everything Node needs lives in this directory so the repository root stays a
+// Rust project. Run the site from here, not from the root.
 //
 // `site` and `base` are what GitHub Pages needs to build correct links for a
 // project page, which is served under /<repo>/ rather than at a domain root.
@@ -17,7 +20,7 @@ const BASE = '/pgprox';
 export default defineConfig({
   site: 'https://pgprox.github.io',
   base: BASE,
-  // The pages link the way GitHub needs. See src/rewrite-links.mjs.
+  // The pages link the way GitHub needs. See ./src/rewrite-links.mjs.
   markdown: { rehypePlugins: [rewriteLinks({ base: BASE })] },
   integrations: [
     starlight({

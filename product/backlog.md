@@ -7397,3 +7397,14 @@ recognised so it can be refused rather than read as a version.
   relative links between pages resolve in the built output as well as on
   GitHub, and a workflow publishes it.
 - [x] `M41.2` Close M41.
+
+## M42: the site's toolchain leaves the repository root
+
+- [x] `M42.0` Plan M42, and carry it out in one commit, on the terms `M38.0`
+  set. The milestone is a directory move and the paths that follow it.
+  `M41` put `package.json`, a lockfile, `astro.config.mjs`, `src/` and
+  `node_modules` at the root of what is otherwise a Rust workspace. Every one
+  of them reads as a top-level concern of the project and none of them is.
+  Acceptance: nothing Node remains at the root, the pages stay in `docs/` where
+  both readers find them, the site still builds, and the workflow and the gate
+  follow the move rather than pointing at where things used to be.

@@ -32,8 +32,8 @@ dhat-heap.json
 /mutants.out
 /mutants.out.old
 
-# The documentation site. `docs/` holds the sources; these are what building
-# them produces and what npm downloads to do it.
-/node_modules
-/dist
-/.astro
+# The documentation site. `docs/` holds the pages, `docsite/` holds what builds
+# them, and these are what that build downloads and produces.
+/docsite/node_modules
+/docsite/dist
+/docsite/.astro
