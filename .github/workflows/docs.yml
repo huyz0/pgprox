@@ -1,0 +1,77 @@
+# Builds the documentation site and publishes it to GitHub Pages.
+#
+# Separate from ci.yml because it has a different toolchain and a different
+# failure meaning: a broken doc build should not read as a broken proxy, and a
+# red proxy build should not stop a typo fix reaching the site.
+#
+# Pages needs to be enabled once, in Settings > Pages, with Source set to
+# GitHub Actions. Until that is done this workflow builds and the deploy step
+# fails, which is the honest failure: the site is not published and the log
+# says why.
+name: docs
+
+on:
+  push:
+    branches: [main]
+    # Only when something the site is built from moves. The proxy's own source
+    # does not appear here, and a Rust change that does not touch the docs has
+    # no reason to rebuild them.
+    paths:
+      - 'docs/**'
+      - 'src/**'
+      - 'astro.config.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'src/**'
+      - 'astro.config.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+# One deployment at a time, and a queued one is not worth running once a newer
+# commit has landed. `cancel-in-progress` is false so a deploy already writing
+# to Pages is allowed to finish rather than leaving it half written.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build the site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      # `npm ci` rather than `npm install`: it installs exactly the lockfile and
+      # fails if the two disagree, so a site cannot be published from a
+      # dependency tree nobody committed.
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: publish
+    # Pull requests build and do not publish. A fork opening one must not be
+    # able to write to the site.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

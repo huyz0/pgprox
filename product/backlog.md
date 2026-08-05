@@ -7374,3 +7374,26 @@ recognised so it can be refused rather than read as a version.
   rather than the script's exit status, deleting the ADR check makes all four
   fail, and the suite passes with no stack running.
 - [x] `M40.2` Close M40.
+
+## M41: the docs become a site
+
+- [x] `M41.0` Plan M41. `M39` wrote six pages that render when somebody browses
+  the repo and are not a site: no generator, no navigation, no search, nothing
+  that deploys. The operator and the agent this project's admin surface was
+  designed for both arrive through a browser.
+  Astro Starlight, chosen by the person who owns the repo over `mdBook` and
+  Jekyll, and the trade is written down rather than glossed: it brings a Node
+  toolchain and a lockfile into a repo that had neither, and `cargo-deny` does
+  not see any of it. That is a real widening of the supply chain and it was
+  accepted deliberately.
+  Acceptance: this list, a roadmap section, and `scripts/m41-complete.sh` wired
+  into CI.
+- [x] `M41.1` A site built from `docs/`, deployed to Pages.
+  The Markdown stays where it is. Starlight normally wants
+  `src/content/docs/`, and Astro's content layer can point a collection at
+  `docs/` instead, which keeps the files readable on GitHub for anyone who
+  arrives that way. Two audiences, one source.
+  Acceptance: the site builds, every page appears in the navigation, the
+  relative links between pages resolve in the built output as well as on
+  GitHub, and a workflow publishes it.
+- [x] `M41.2` Close M41.

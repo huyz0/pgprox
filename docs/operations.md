@@ -1,4 +1,7 @@
-# Operations
+---
+title: Operations
+description: "Deploy a fleet, drain a node for upgrade, alert on the right metrics, and diagnose what a node is doing."
+---
 
 How to deploy a fleet, take a node out for an upgrade, and find out what one is
 doing when something looks wrong.

@@ -2389,3 +2389,36 @@ defect one level up: a control that passes by matching an exit code somebody
 else set.
 
 Completion condition: `scripts/m40-complete.sh`.
+
+## M41: the docs become a site (complete)
+
+```bash
+npm ci && npm run build      # published by .github/workflows/docs.yml
+```
+
+`M39` wrote six pages that render when somebody browses the repository and are
+not a site: no generator, no navigation, no search, nothing that deploys.
+
+Astro Starlight, chosen over `mdBook` and Jekyll by the person who owns the
+repo. The trade is written down rather than glossed: it brings a Node toolchain
+and 313 packages into a repo that had neither, and `cargo-deny` sees none of
+them. The first install arrived with two high-severity advisories, in `astro`
+and in `sharp`; the site now runs on the patched versions and without `sharp`
+at all, which a docs site with no images does not need. `npm audit` reports
+none.
+
+**The Markdown did not move.** Starlight normally reads `src/content/docs/`,
+and `src/content.config.ts` points its collection at `docs/` instead, so the
+same files serve this site and anybody arriving through GitHub. Two audiences,
+one source, no copy that can drift.
+
+That only works because of `src/rewrite-links.mjs`. The pages link the way
+GitHub needs, `configuration.md` for a sibling and `../product/perf/x.md` for a
+file outside the docs, and neither resolves once the pages are routes. The
+first build produced `href="getting-started.md"` in the body of a page whose
+sidebar link was correct, which is the shape of bug that looks fine until
+somebody clicks. A rehype plugin rewrites both at build time: siblings become
+routes, escapes become GitHub URLs, and the source stays correct for the copy
+more people read first.
+
+Completion condition: `scripts/m41-complete.sh`.

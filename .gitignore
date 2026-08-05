@@ -31,3 +31,9 @@ dhat-heap.json
 # scripts/mutants.sh, which redirects it under target/. M14.1a.
 /mutants.out
 /mutants.out.old
+
+# The documentation site. `docs/` holds the sources; these are what building
+# them produces and what npm downloads to do it.
+/node_modules
+/dist
+/.astro

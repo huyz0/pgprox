@@ -1,4 +1,7 @@
-# Performance
+---
+title: Performance
+description: "What has been measured, on what hardware, and what the numbers do not say."
+---
 
 Every figure here comes from a run document in
 [`product/perf/`](../product/perf/), taken on one 20-core developer machine with

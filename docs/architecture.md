@@ -1,4 +1,7 @@
-# Architecture
+---
+title: Architecture
+description: "How transaction pooling works here, why sessions pin, and how the upstream cap holds across nodes that share no memory."
+---
 
 Why pgprox is built the way it is, and what each design choice costs.
 

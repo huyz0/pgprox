@@ -1,4 +1,7 @@
-# Configuration
+---
+title: Configuration
+description: "Every setting a node reads: the YAML document, the command-line arguments, and what each defaults to."
+---
 
 A node reads two things: command-line arguments that say where it is and what
 it listens on, and a YAML document that says what the fleet is allowed to do.

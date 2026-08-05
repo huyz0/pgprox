@@ -1,4 +1,7 @@
-# pgprox documentation
+---
+title: pgprox
+description: "A multitenant connection pooler for Postgres, and where to start reading about it."
+---
 
 pgprox pools Postgres connections for a fleet of tenants whose credentials
 differ, arrive as a JWT, and are resolved at connect time by a service you

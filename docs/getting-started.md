@@ -1,4 +1,7 @@
-# Getting started
+---
+title: Getting started
+description: "Bring the stack up on your machine, send a query through the proxy, and watch it pool."
+---
 
 By the end of this you will have three pgprox nodes, a Postgres primary, two
 replicas and a mock token service running locally, and you will have sent a
