@@ -7253,3 +7253,28 @@ recognised so it can be refused rather than read as a version.
   it forces on `M33` and `M34` stated as corrections rather than as new
   findings.
 - [x] `M35.2` Close M35.
+
+## M36: what an open, quiet connection costs
+
+- [x] `M36.0` Plan M36. `M35` established that per-connection memory under the
+  reference workload is a curve rather than a number, because the buffer term
+  tracks concurrency and concurrency saturates. It named the one term that does
+  not saturate as the thing worth measuring and failed to measure it, by giving
+  a twenty-five second window to a workload whose think time starts at thirty
+  seconds.
+  That term is what decides whether a hundred thousand connections fit on a
+  node, and it is the only per-connection figure this project should be
+  quoting. `product/perf/workload-idle.yaml` is the workload for it.
+  Acceptance: this list, a roadmap section, and `scripts/m36-complete.sh` wired
+  into CI.
+- [ ] `M36.1` The resident cost of a connection that is doing nothing.
+  Three connection counts against the idle workload, run long enough that
+  transactions happen, so the figure is a line with a slope and an intercept
+  rather than one point. Under this workload the buffer term is near zero by
+  construction, so what the slope measures is the state a connection holds when
+  it is quiet.
+  Acceptance: a document with the three points per arm, the slope and intercept
+  for each, what the slope says about a hundred thousand connections on one
+  node, and whether it is linear this time rather than an assumption that it
+  is.
+- [ ] `M36.2` Close M36.
