@@ -2533,4 +2533,19 @@ every crate carrying the attribute. `pgprox-cache` forbids unsafe too and is
 deliberately not on the list, having been the one candidate the policy was asked
 about and refused in `M29`.
 
+### The link nobody could see was broken
+
+`M44.1`: every page's edit link pointed at a branch called `docs`.
+
+`M41` put the collection's source in `docs/`, `M42` moved the toolchain into
+`docsite/`, and neither noticed that the paths joining them now begin `../`.
+Starlight resolves an edit URL with `new URL(path, baseUrl)`, and that `../`
+gets spent on the base rather than on the path, so `edit/main/` became `edit/`
+and the branch was gone.
+
+It renders correctly in every dev server, the link points at GitHub either way,
+and nothing local follows it. It is wrong only in the built output, which is the
+only place anyone clicks it. Two settings in two files, correct apart and wrong
+together, which is the shape a check has to hold rather than a reading.
+
 Completion condition: `scripts/m44-complete.sh`.

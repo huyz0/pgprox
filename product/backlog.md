@@ -7446,3 +7446,17 @@ recognised so it can be refused rather than read as a version.
   the closed unsafe list, the cache key's component count, the quoted benchmark
   figures against the committed baseline, the cluster defaults, and the two
   things a reader will type or look for on the FIPS path.
+- [x] `M44.1` The edit link on every page pointed at a branch called `docs`.
+  Starlight builds a page's edit URL with `new URL(path, baseUrl)`. `M41` put
+  the collection's source in `docs/` and `M42` moved the toolchain into
+  `docsite/`, so every path the collection carries begins `../docs/`, and URL
+  resolution spends that `../` on the base rather than on the path. From
+  `edit/main/` it consumed `main`, and all fourteen pages linked to
+  `edit/docs/<page>.md`.
+  Invisible from here: the link points at GitHub either way, nothing local
+  follows it, and it renders correctly in every dev server. It is only wrong in
+  the built output, which is the only place it is ever clicked.
+  Acceptance: the base names the directory the collection's paths are relative
+  to, every built page's edit link carries the branch, and the check holds the
+  relation between the two settings rather than the string, so a collection that
+  moved another level up fails.

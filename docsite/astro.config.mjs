@@ -52,8 +52,19 @@ export default defineConfig({
         { label: 'Performance', link: '/performance/' },
         { label: 'Optimizations', link: '/optimizations/' },
       ],
+      // The base ends in `docsite/`, which is not a typo and is not where the
+      // pages are. Starlight resolves a page's edit URL with `new URL(path,
+      // baseUrl)`, and the content collection's paths are relative to this
+      // directory, so every one of them starts `../docs/`. URL resolution then
+      // applies that `../` to the base: from `edit/main/` it eats `main` and
+      // produces `edit/docs/<page>.md`, which is a branch called `docs`.
+      //
+      // Naming the directory the paths are relative to gives the `../`
+      // something of its own to consume. Only visible in the built output,
+      // since the link points at GitHub either way and nothing local follows
+      // it. `scripts/m44-complete.sh` holds the relation.
       editLink: {
-        baseUrl: 'https://github.com/pgprox/pgprox/edit/main/',
+        baseUrl: 'https://github.com/pgprox/pgprox/edit/main/docsite/',
       },
       lastUpdated: true,
     }),

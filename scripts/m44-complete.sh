@@ -197,6 +197,42 @@ else
   fi
 fi
 
+# --- M44.1: the edit link's base ----------------------------------------------
+#
+# Starlight builds a page's edit URL with `new URL(path, baseUrl)`, and the
+# content collection's paths are relative to `docsite/`, so each one starts
+# `../docs/`. URL resolution applies that `../` to the base. From
+# `edit/main/` it eats `main` and every page's edit link points at a branch
+# called `docs`.
+#
+# So the relation this checks is between two settings that look unrelated: the
+# base needs one trailing segment per `../` the collection carries, or the
+# branch is what gets consumed. Textual, because this has to run on a machine
+# with no Node.
+CONFIG="${PGPROX_ASTRO_CONFIG:-docsite/astro.config.mjs}"
+COLLECTION="${PGPROX_ASTRO_COLLECTION:-docsite/src/content.config.ts}"
+
+edit_base="$(sed -n "s/^        baseUrl: '\([^']*\)',$/\1/p" "$CONFIG")"
+levels="$(grep -o '\.\./' "$COLLECTION" | wc -l)"
+
+if [[ -z "$edit_base" ]]; then
+  ok "no edit link is configured, so nothing can resolve wrongly"
+elif (( levels == 0 )); then
+  fail "the content collection reads no parent directory, which this check assumed"
+else
+  # One segment removed per `../`, which is what the browser will do.
+  resolved="${edit_base%/}"
+  for (( i = 0; i < levels; i++ )); do
+    resolved="${resolved%/*}"
+  done
+  if [[ "$resolved" =~ /edit/[^/]+$ ]]; then
+    ok "an edit link resolves to $resolved/docs/<page>, with the branch intact"
+  else
+    fail "the edit link base has no segment to spend on the collection's $levels level(s) of ../"
+    printf '       every page links to %s/<page>, which is a branch called docs\n' "$resolved"
+  fi
+fi
+
 # --- the cluster timings ------------------------------------------------------
 #
 # The clustering page publishes the numbers an operator sizes a deployment
