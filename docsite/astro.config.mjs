@@ -35,15 +35,22 @@ export default defineConfig({
         },
       ],
       // Ordered by what a reader wants first rather than alphabetically:
-      // run it, configure it, operate it, then understand it.
+      // run it, know what it does, configure it, operate it, satisfy whoever
+      // has to sign off on it, then understand how it works.
       sidebar: [
         { label: 'Getting started', link: '/getting-started/' },
         { label: 'Features and limits', link: '/features/' },
+        { label: 'Multitenancy', link: '/multitenancy/' },
         { label: 'Configuration', link: '/configuration/' },
         { label: 'Operations', link: '/operations/' },
+        { label: 'Clustering and deployment', link: '/clustering/' },
+        { label: 'Admin and management', link: '/admin/' },
+        { label: 'Security', link: '/security/' },
+        { label: 'FIPS builds', link: '/fips/' },
         { label: 'Architecture', link: '/architecture/' },
         { label: 'Request flow', link: '/request-flow/' },
         { label: 'Performance', link: '/performance/' },
+        { label: 'Optimizations', link: '/optimizations/' },
       ],
       editLink: {
         baseUrl: 'https://github.com/pgprox/pgprox/edit/main/',

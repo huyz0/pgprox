@@ -196,6 +196,11 @@ and monitoring that cannot carry a token.
 proxy's own TLS session rather than the database's, which states a guarantee
 that is not being made.
 
+[Security](security.md) has the rest: what a grant authorizes, how credentials
+are kept out of logs, and what happens to bytes a client chose.
+[Multitenancy](multitenancy.md) covers what keeps one tenant's data and capacity
+away from another's.
+
 ## Clustering
 
 Several nodes hold one upstream cap between them without sharing memory. A

@@ -20,6 +20,10 @@ sends a query through it. Fifteen minutes, needs Docker and Rust.
 replica routing and LSN watermarks, the query cache, and the things pgprox
 deliberately does not do.
 
+[Multitenancy](multitenancy.md) covers what keeps one tenant's data, credentials
+and capacity away from another's, and where the isolation boundary actually
+sits.
+
 ## Configure it
 
 [Configuration](configuration.md) is the reference: the YAML document a node
@@ -30,6 +34,21 @@ reads, the command-line arguments it takes, and what each one defaults to.
 [Operations](operations.md) covers deploying a fleet, draining a node for
 upgrade, the metrics worth alerting on, and the `SHOW` commands for finding out
 what a node is doing right now.
+
+[Clustering and deployment](clustering.md) covers how several nodes hold one
+upstream cap between them, how they find each other, and what the Kubernetes
+deployment looks like.
+
+[Admin and management](admin.md) is the surface itself: every `SHOW` command,
+every API endpoint, and the operations that change a node's state.
+
+## Satisfy a review
+
+[Security](security.md) covers the threat model, how clients and operators
+authenticate, what a grant authorizes, and how credentials are kept out of logs.
+
+[FIPS builds](fips.md) covers building against a validated crypto module, what
+it costs in cipher suites, and how to verify the binary you got.
 
 ## Understand it
 
@@ -43,6 +62,9 @@ back to the pool.
 
 [Performance](performance.md) carries the measured numbers, the conditions each
 was taken under, and the ones that are still targets rather than results.
+
+[Optimizations](optimizations.md) is the work behind those numbers, including
+the candidates that were measured and refused.
 
 ## The token service
 

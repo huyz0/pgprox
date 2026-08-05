@@ -126,6 +126,9 @@ The declared hot paths also carry allocation budgets, most of them zero: the
 steady-state relay loop, frame scanning, the pool release decision, warm-pool
 acquire and the route decision all allocate nothing per operation.
 
+[Optimizations](optimizations.md) is what produced those figures, and what was
+measured and refused along the way.
+
 ## What has not been measured
 
 **A 100,000-connection run that also serves.** Holding that many has been

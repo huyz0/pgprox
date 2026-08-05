@@ -7422,3 +7422,27 @@ recognised so it can be refused rather than read as a version.
   LSN watermarks, the query cache and an explicit unsupported list; a request
   flow page naming the component at each step; both in the navigation; and a
   check that the pin reasons the features page lists are the ones the code has.
+
+## M44: the pages a review asks for
+
+- [x] `M44.0` Plan M44, and carry it out in one commit on `M38.0`'s terms. The
+  milestone is six pages, the navigation that reaches them, and a gate that
+  reads each list from the code rather than from the page.
+  `M39` and `M43` between them cover what the proxy does and what one request
+  touches. What no page covers is everything a reader asks before they are
+  allowed to run it: what keeps one tenant's data away from another's, what
+  several nodes do together and how they are deployed, what the admin surface
+  actually offers, how authentication and credential handling work, how to
+  build the FIPS variant, and what the performance numbers cost to get.
+  The gate is the point as much as the pages are. `M39` documented `SHOW MEM`,
+  which the parser has a test rejecting by name, and four milestones of
+  documentation work went past it because nothing compared the page against the
+  enum. Six lists here have a source of truth in the code and each is read from
+  there.
+  Acceptance: pages for multitenancy, clustering and deployment, admin and
+  management, security, FIPS and optimizations; each in the navigation; and
+  `scripts/m44-complete.sh` wired into CI, checking the `SHOW` commands in both
+  directions, the admin API paths, the JWT algorithm allowlist, the crates on
+  the closed unsafe list, the cache key's component count, the quoted benchmark
+  figures against the committed baseline, the cluster defaults, and the two
+  things a reader will type or look for on the FIPS path.

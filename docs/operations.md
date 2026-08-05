@@ -95,7 +95,6 @@ order where the command exists there:
 | `SHOW SERVERS` | Every upstream connection. |
 | `SHOW STATS` | Traffic and timing counters. |
 | `SHOW CONFIG` | Effective configuration, with which fields are reloadable. |
-| `SHOW MEM` | Buffer slab occupancy. |
 | `SHOW QUOTA` | pgprox only. How the cap is divided across the fleet. |
 | `SHOW PEERS` | pgprox only. Fleet membership as this node sees it. |
 | `SHOW TENANTS` | pgprox only. Per-tenant connection counts and home node. |
@@ -104,9 +103,14 @@ order where the command exists there:
 `SHOW LOCAL POOLS` and `SHOW LOCAL CACHE` narrow a read to the node that
 answered, rather than the fleet-wide view the plain form gives.
 
+Buffer slab occupancy is a metric rather than a `SHOW` command:
+`pgprox_buffer_slab`.
+
 The same data is available as JSON on the admin port, which is what the API is
 for: an operator reads `SHOW`, a script or an agent reads the API, and neither
-has to scrape the other's format.
+has to scrape the other's format. [Admin and management](admin.md) covers both
+surfaces, the operations that change a node's state, and what the admin port
+does not do for you.
 
 ## Diagnosing
 

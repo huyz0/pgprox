@@ -2474,3 +2474,63 @@ variant added later with no row leaves a reader told a session pins for fewer
 reasons than it does, which is `M13`'s subject in a page rather than a standard.
 
 Completion condition: `scripts/m43-complete.sh`.
+
+## M44: the pages a review asks for (complete)
+
+```bash
+scripts/m44-complete.sh
+```
+
+`M39` and `M43` documented what the proxy does and what one request touches.
+Neither answers the questions somebody asks before they are allowed to run it.
+
+Six pages, each for a reader who arrives with a different question.
+
+**[Multitenancy](../../docs/multitenancy.md)** is the one the rest hang off.
+A client does not name its own tenant; the token service does. Every shared
+structure has a key, and the key is the isolation. The section that matters most
+is the last one: the boundary is the database credential, not the tenant name,
+so two tenants mapped onto one role are one security domain to Postgres and the
+proxy will not invent a boundary the credentials do not have.
+
+**[Clustering and deployment](../../docs/clustering.md)** covers the guaranteed
+share, the gossip round, leases, and why a partition under-subscribes. Then the
+StatefulSet, and why it is one: gossip addresses a peer by name and a
+Deployment's pods get a new name every restart.
+
+**[Admin and management](../../docs/admin.md)** is every `SHOW`, every endpoint,
+and every operation that changes a node's state, plus the sentence the API's own
+module comment makes and no page did: the admin port has no authentication of
+its own.
+
+**[Security](../../docs/security.md)**, **[FIPS builds](../../docs/fips.md)** and
+**[Optimizations](../../docs/optimizations.md)** are the remaining three. The
+last of those carries the negative results as prominently as the wins, because
+an idea that has been measured and refused is worth more written down than
+forgotten.
+
+### What the gate found
+
+`M39` documented `SHOW MEM`. The parser has a test rejecting it by name, and it
+is the failure that wastes the most time: an operator types it during an
+incident and gets an error. Four milestones of documentation work went past it
+because nothing compared the page against the enum.
+
+So the gate reads eight lists from the code. `SHOW` in both directions, the
+admin API paths from the router declaration, the JWT algorithm allowlist, the
+crates on the closed unsafe list, the cache key's component count, the quoted
+benchmark figures against `product/perf/baseline.json`, the cluster defaults,
+and the FIPS image stage and provider string.
+
+Two of those are worth naming. The optimization figures are checked against the
+committed baseline, so rebaselining a hot path makes updating the page part of
+the act rather than something to notice later. And the takeover wait is derived
+in the check the same way `effective_lease` derives it, so moving the doubt
+window fails two rows rather than one.
+
+The closed unsafe list is read from `scripts/check-unsafe.sh` rather than from
+every crate carrying the attribute. `pgprox-cache` forbids unsafe too and is
+deliberately not on the list, having been the one candidate the policy was asked
+about and refused in `M29`.
+
+Completion condition: `scripts/m44-complete.sh`.
