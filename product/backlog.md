@@ -7230,3 +7230,26 @@ recognised so it can be refused rather than read as a version.
   each reporting idle and peak resident memory at the same connection count,
   and a document saying which of the two it was or that it was neither.
 - [x] `M34.2` Close M34.
+
+## M35: every per-connection memory figure so far was two numbers added together
+
+- [x] `M35.0` Plan M35. `M34` closed saying roughly 12.7 KB per connection was
+  unexplained and named the spawned task as the next thing to weigh. Weighing
+  it is the wrong next step, because the figure it would be weighed against is
+  not a per-connection figure.
+  A cost per connection and a fixed cost look identical at one connection
+  count. They separate at two. `M32`, `M33` and `M34` each measured at 200 and
+  divided by 200, so each reported a slope plus an intercept and called the sum
+  a per-connection cost.
+  Acceptance: this list, a roadmap section, and `scripts/m35-complete.sh` wired
+  into CI.
+- [x] `M35.1` The slope, and what it does to every figure this project has
+  published about per-connection memory.
+  Measured at 100, 200 and 400 connections, the same load and the same stack.
+  If the reported figure falls as connections rise, the part that falls was
+  never per connection.
+  Acceptance: a document with the three points per arm, a slope and an
+  intercept for each, what that does to `M32`'s comparison, and the corrections
+  it forces on `M33` and `M34` stated as corrections rather than as new
+  findings.
+- [x] `M35.2` Close M35.

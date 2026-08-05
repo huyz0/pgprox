@@ -2171,3 +2171,49 @@ Full detail in
 [run-2026-08-05-arenas.md](../perf/run-2026-08-05-arenas.md).
 
 Completion condition: `scripts/m34-complete.sh`.
+
+## M35: per-connection memory is a curve, not a number (complete)
+
+`M34` closed naming the spawned task as the next thing to weigh. Weighing it
+would have been wrong, because the figure it would be weighed against is not a
+per-connection figure.
+
+A cost per connection and a fixed cost look identical at one connection count.
+`M32`, `M33` and `M34` each measured at 200 and divided by 200, so each reported
+a slope plus an intercept and called the sum a per-connection cost. Measured at
+100, 200 and 400, **the reported figure falls as connections rise in every arm**,
+which a real per-connection cost cannot do.
+
+Fitting two terms does not rescue it. The same fit against two datasets gives
+pgprox 13,253 and 28,259 bytes per connection, from one machine on one day,
+because the curve is not a line: pgbouncer's slope between 200 and 400 is a
+twentieth of its slope between 100 and 200. Memory in a pooler that pools
+buffers is fixed, plus per-connection resident state, plus concurrently-active
+times buffer size, and the third term saturates. That is `M33`'s buffer result
+seen from the other side.
+
+**Withdrawn:** `M33`'s 22,835 bytes per connection, `M34`'s 17,797, `M34`'s
+"12.7 KB unexplained", and a 5.9x slope ratio computed here before the
+non-linearity was noticed.
+
+**Standing:** `M32`'s ordering at every count. `M32`'s ratio at its own
+operating point, now stated as a point rather than a property. `M33`'s buffer
+result and `M34`'s arena result, both of which compared two arms at one
+connection count, which is the comparison that stays sound.
+
+**The rule that falls out:** a per-connection memory figure must state the
+connection count it was taken at. Comparing arms at one count is sound;
+dividing by the count and calling the result bytes per connection flatters
+whichever arm has the smaller fixed cost.
+
+The measurement that would answer the original question is the one term that
+does not saturate: what an open, quiet connection holds.
+`product/perf/workload-idle.yaml` exists for it, and this run failed to get it
+by giving a twenty-five second window to a workload whose think time starts at
+thirty seconds, so no connection sent anything and the load client correctly
+called that an error rather than a result.
+
+Full detail in
+[run-2026-08-05-per-connection-is-not-a-number.md](../perf/run-2026-08-05-per-connection-is-not-a-number.md).
+
+Completion condition: `scripts/m35-complete.sh`.
