@@ -2440,3 +2440,37 @@ cache where the lockfile went, which otherwise caches nothing without saying so.
 
 Completion condition: `scripts/m41-complete.sh`, which now reads the moved
 paths.
+
+## M43: what it does, and what one request touches (complete)
+
+```bash
+scripts/m43-complete.sh
+```
+
+`M39` gave a reader orientation, a tutorial, a reference, an operations guide
+and two explanations, and left two questions it could not answer.
+
+**[Features and limits](../../docs/features.md)** is the first: pooling modes
+and why statement pooling is absent, the seven things that pin a session,
+replica routing with the LSN watermark rule drawn out, the query cache and the
+five reasons a statement is never cached, protocol and auth support, and an
+explicit list of what is not supported.
+
+That page keeps two lists apart on purpose. **Not supported** is decided
+against: sharding, statement pooling, md5, `SCRAM-SHA-256-PLUS`, decoding
+replication, read-your-writes from the cache, a cache shared across nodes.
+**Not built yet** has no decision against it and simply has not been done. A
+reader deciding whether to adopt this needs to know which list a missing thing
+is on.
+
+**[Request flow](../../docs/request-flow.md)** is the second: one client frame
+from admission to the connection going back to the pool, naming the component at
+each step. Establishing a connection, then the loop, then the three things that
+run alongside it and change what it does. It ends with a table from symptom to
+the step that produces it.
+
+The gate reads the pin reasons out of the enum rather than trusting the page. A
+variant added later with no row leaves a reader told a session pins for fewer
+reasons than it does, which is `M13`'s subject in a page rather than a standard.
+
+Completion condition: `scripts/m43-complete.sh`.

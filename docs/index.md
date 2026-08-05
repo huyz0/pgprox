@@ -14,6 +14,12 @@ Start where your question is.
 [Getting started](getting-started.md) brings the stack up on your machine and
 sends a query through it. Fifteen minutes, needs Docker and Rust.
 
+## Know what it does
+
+[Features and limits](features.md) covers pooling modes, when a session pins,
+replica routing and LSN watermarks, the query cache, and the things pgprox
+deliberately does not do.
+
 ## Configure it
 
 [Configuration](configuration.md) is the reference: the YAML document a node
@@ -30,6 +36,10 @@ what a node is doing right now.
 [Architecture](architecture.md) explains transaction pooling, why a session
 sometimes gets pinned to one connection, how the cap holds across nodes that
 share no memory, and how replica routing avoids stale reads.
+
+[Request flow](request-flow.md) walks one client frame through the proxy and
+names the component doing each step, from admission to the connection going
+back to the pool.
 
 [Performance](performance.md) carries the measured numbers, the conditions each
 was taken under, and the ones that are still targets rather than results.

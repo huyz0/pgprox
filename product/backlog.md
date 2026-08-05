@@ -7408,3 +7408,17 @@ recognised so it can be refused rather than read as a version.
   Acceptance: nothing Node remains at the root, the pages stay in `docs/` where
   both readers find them, the site still builds, and the workflow and the gate
   follow the move rather than pointing at where things used to be.
+
+## M43: what it does, and what one request touches
+
+- [x] `M43.0` Plan M43, and carry it out in one commit on `M38.0`'s terms. The
+  milestone is two pages and the navigation that reaches them.
+  `M39` gave a reader orientation, a tutorial, a reference, an operations guide
+  and two explanations, and left two questions it could not answer. What does
+  this actually do about caching, replicas and consistency, and what does it
+  refuse to do. And what happens inside when a request arrives, which is the
+  question anybody about to change the code asks first.
+  Acceptance: a features page covering pooling, pinning, replica routing and
+  LSN watermarks, the query cache and an explicit unsupported list; a request
+  flow page naming the component at each step; both in the navigation; and a
+  check that the pin reasons the features page lists are the ones the code has.

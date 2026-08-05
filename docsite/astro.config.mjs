@@ -38,9 +38,11 @@ export default defineConfig({
       // run it, configure it, operate it, then understand it.
       sidebar: [
         { label: 'Getting started', link: '/getting-started/' },
+        { label: 'Features and limits', link: '/features/' },
         { label: 'Configuration', link: '/configuration/' },
         { label: 'Operations', link: '/operations/' },
         { label: 'Architecture', link: '/architecture/' },
+        { label: 'Request flow', link: '/request-flow/' },
         { label: 'Performance', link: '/performance/' },
       ],
       editLink: {

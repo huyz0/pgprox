@@ -389,3 +389,5 @@ jobs:
         run: scripts/m40-complete.sh
       - name: M41
         run: scripts/m41-complete.sh
+      - name: M43
+        run: scripts/m43-complete.sh

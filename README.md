@@ -37,9 +37,11 @@ then asserts the properties the stack is meant to have. Full walkthrough in
 | | |
 | --- | --- |
 | [Getting started](docs/getting-started.md) | Run the stack and send it a query |
+| [Features and limits](docs/features.md) | Pooling, pinning, replicas, caching, and what is not supported |
 | [Configuration](docs/configuration.md) | Every setting, what it does, what it defaults to |
 | [Operations](docs/operations.md) | Deploy, drain, observe, diagnose |
 | [Architecture](docs/architecture.md) | How it works and why it is built this way |
+| [Request flow](docs/request-flow.md) | One frame through the proxy, and what touches it |
 | [Performance](docs/performance.md) | What has been measured, on what, and what has not |
 
 ## What it will not do
