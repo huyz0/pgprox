@@ -7328,3 +7328,28 @@ recognised so it can be refused rather than read as a version.
   say that the extrapolation is superseded rather than deleting it, and name
   why it was wrong.
 - [x] `M38.2` Close M38.
+
+## M39: documentation for people who are not this repo
+
+- [x] `M39.0` Plan M39. Every document in this repo is written for whoever is
+  building it: `product/` holds a mission, a roadmap and a backlog, `standards/`
+  holds rules for contributors, and `AGENTS.md` is an index for agents. There is
+  no README and no `docs/`.
+  A person who finds this on GitHub cannot learn what it is, run it, configure
+  it, or read what it has been measured at, without reading a roadmap written
+  for somebody else. That is a gap in the product rather than in the process.
+  Acceptance: this list, a roadmap section, and `scripts/m39-complete.sh` wired
+  into CI.
+- [x] `M39.1` A documentation site, and a README that routes to it.
+  Diátaxis, one quadrant per page, shallow navigation. A tutorial that gets the
+  stack running, a configuration reference, an operations guide, an
+  architecture explanation and a performance page carrying the numbers this
+  project has actually measured rather than the ones it targets.
+  The honesty is a requirement rather than a tone. This has never been
+  deployed, its 100k figure is one machine, and every latency number is
+  loopback. A doc site that reads like a shipped product would be the same
+  defect `M13` found in the standards, on the outside of the repo.
+  Acceptance: pages under `docs/`, a README, every number traceable to a run
+  document, and a check that the configuration reference still names the fields
+  the code actually reads.
+- [x] `M39.2` Close M39.

@@ -2307,3 +2307,55 @@ Full detail in
 [run-2026-08-05-spawn-cost.md](../perf/run-2026-08-05-spawn-cost.md).
 
 Completion condition: `scripts/m37-complete.sh`.
+
+## M38: the extrapolation M36 did not need to make (complete)
+
+```bash
+scripts/m38-complete.sh
+```
+
+`M36` fitted a slope over 200 to 800 connections and reported 1.47 GB at a
+hundred thousand. `run-2026-07-28-100k-hold.md` had measured that point
+directly: **5,726 bytes each and 546 MB**, nine per cent over the target rather
+than three times it.
+
+The way it went wrong is `M35`'s own lesson unapplied one milestone later.
+`M35` established that the figure is a fixed cost plus a variable term and that
+the curve bends; `M36` then took a slope from where the fixed cost still
+dominates and extended it by a factor of 167.
+
+The extrapolation is marked superseded rather than deleted, because how it went
+wrong is worth more than the figure, and the gate checks both the measured
+number and that the wrong one is still visible beside it.
+
+## M39: documentation for people who are not this repo (complete)
+
+```bash
+scripts/m39-complete.sh
+```
+
+Every document here was written for whoever is building it. There was no README
+and no `docs/`, so a person arriving from GitHub could not learn what pgprox is,
+run it, configure it, or read what it has been measured at without reading a
+roadmap written for somebody else.
+
+Six pages under `docs/`, one Diátaxis quadrant each, plus a README that routes
+to them: a tutorial that brings the stack up, a configuration reference, an
+operations guide, an architecture explanation and a performance page carrying
+only figures traceable to a run document.
+
+The honesty is the requirement rather than the tone. The pages say pgprox has
+never been deployed, that the 100k figure is one machine, that every latency
+number is loopback and therefore a floor, and that pgbouncer uses a third of its
+memory. A doc site reading like a shipped product would be `M13`'s defect on the
+outside of the repo.
+
+Three things a gate can check about prose, and it checks them: every relative
+link resolves, the configuration reference names every field the document
+schema has, and it names every argument the parser accepts. The last one failed
+on its first run and the check was wrong rather than the document: `--peer` is
+repeatable, so its field is `peers` and deriving the flag from the field name
+invented an argument that does not exist. It now reads the parser's own match
+arms.
+
+Completion condition: `scripts/m39-complete.sh`.
