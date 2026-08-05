@@ -2263,3 +2263,45 @@ Full detail in
 [run-2026-08-05-idle-connection-cost.md](../perf/run-2026-08-05-idle-connection-cost.md).
 
 Completion condition: `scripts/m36-complete.sh`.
+
+## M37: what a spawned task costs beyond its future (complete)
+
+```bash
+cargo test -p pgprox --test spawn -- --nocapture
+```
+
+`M36` accounted for 5,048 bytes of an idle connection's roughly 15 KB and left
+one candidate unweighed: the difference between a future and a task.
+`tokio::spawn` heap-allocates the future alongside a header holding the waker,
+the state, the join handle's channel and the scheduler's links.
+
+| future bytes | held per task | overhead |
+| --- | --- | --- |
+| 88 | 256 | 168 |
+| 1,048 | 1,152 | 104 |
+| 4,120 | 4,248 | **128** |
+| 16,408 | 16,536 | **128** |
+
+**The overhead is a constant 128 bytes**, flat across a future that grows
+sixteenfold. A session task therefore requests about 5,176 bytes, and that
+accounts for 128 of `M36`'s ten kilobytes.
+
+**Every candidate any milestone has named is now eliminated.** The buffers
+(`M33`, 205 bytes), the allocator's arenas (`M34`, nothing measurable),
+per-worker state (`M35`, it is fixed cost rather than per connection), the
+prepared statement map (`M36`, under 1 KB), and now the spawn header. Roughly
+10 KB per idle connection has no named suspect left.
+
+**The obvious one has never been considered.** `dhat` measures bytes requested;
+`M36` measured resident memory, which is a high-water mark. Those differ by
+everything the allocator was asked for, freed, and did not return, and glibc
+returns very little. A connection's setup resolves a grant, parses a JWT, runs
+SCRAM, reads server parameters and takes a pool connection, and all of it
+allocates and frees. `malloc_trim(0)` after a ramp is one call and would say
+whether the ten kilobytes is state a connection holds or memory the allocator is
+sitting on. Everything since `M34` assumed the first without checking.
+
+Full detail in
+[run-2026-08-05-spawn-cost.md](../perf/run-2026-08-05-spawn-cost.md).
+
+Completion condition: `scripts/m37-complete.sh`.

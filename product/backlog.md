@@ -7278,3 +7278,29 @@ recognised so it can be refused rather than read as a version.
   node, and whether it is linear this time rather than an assumption that it
   is.
 - [x] `M36.2` Close M36.
+
+## M37: what a spawned task costs beyond the future it holds
+
+- [x] `M37.0` Plan M37. `M36` measured an idle connection at roughly 15 KB and
+  accounted for 5,048 of it as the session future, leaving about 10 KB that
+  three milestones have now failed to name. Every candidate but one is ruled
+  out: not the read and write buffers, not the allocator arenas, not the
+  prepared statement map.
+  The one left is what `tokio::spawn` allocates. `size_of_val` on a future is
+  the future, and a spawned task is the future plus a header plus whatever the
+  allocator rounds the pair up to. No test in this repo has ever weighed the
+  difference, and the test that guards the future's size measures exactly the
+  part that is already accounted for.
+  Acceptance: this list, a roadmap section, and `scripts/m37-complete.sh` wired
+  into CI.
+- [x] `M37.1` The cost of a spawned task, against the size of the future in it.
+  Measured with `dhat`, which the allocation budgets already use, so the figure
+  is bytes requested from the allocator rather than resident memory: it will
+  not include what the allocator rounds up beyond what it reports, and the
+  document has to say so.
+  Several future sizes rather than one, because the answer is a relationship
+  and a single point cannot tell a constant header from a proportional one.
+  Acceptance: a test that reports what a spawn costs at several future sizes,
+  the figure for the size the session future actually is, and a statement of
+  how much of `M36`'s ten kilobytes this accounts for.
+- [x] `M37.2` Close M37.
