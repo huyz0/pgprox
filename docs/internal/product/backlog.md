@@ -7900,3 +7900,16 @@ recognised so it can be refused rather than read as a version.
   reply ends the connection and nothing else; and the diagnosis is proven both
   ways, with the old order failing at 30.039s under a forced broken pipe and
   the new order passing in 0.038s under the same.
+
+## M58: the milestone job kept finding tools it did not have
+
+- [x] `M58.0` cargo-mutants, the second tool the milestone job never installed.
+  `m14-complete.sh` runs a real mutation pass over `pgprox-testkit`. The job
+  installs cargo-llvm-cov, nextest, protoc and, since `M56.1`, cargo-deny. It
+  did not install cargo-mutants, so the gate failed on the tool being absent.
+  `mutants.sh` reported it correctly, by name, which is the difference between
+  this and `M56.1`: there the gate had reimplemented the check and lost the
+  tool test along the way. Here the message was right and nothing had installed
+  what it named.
+  Acceptance: the milestone job installs cargo-mutants, and every tool any gate
+  in that job shells out to is installed by it.

@@ -326,6 +326,11 @@ jobs:
       # this job never installed it. The gate reported a failure that was the
       # tool being absent. M56.1.
       - uses: taiki-e/install-action@cargo-deny
+      # cargo-mutants, because m14-complete.sh runs a real mutation pass over
+      # pgprox-testkit and this job never installed it. Same shape as
+      # cargo-deny in M56.1: a gate reporting a failure that was the tool
+      # being absent. M58.0.
+      - uses: taiki-e/install-action@cargo-mutants
       - uses: Swatinem/rust-cache@v2
       # Every gate for every milestone that has closed, in order. Each passed on
       # the commit that closed it, so a failure here is a regression rather than
