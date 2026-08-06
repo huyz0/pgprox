@@ -7789,3 +7789,23 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the site builds with blob links, edit links, canonical URLs and
   sitemap entries all naming the real repository, and the only remaining
   matches are the config path.
+
+## M55: the first push found a dependency CI never installed
+
+- [x] `M55.0` `protoc`, which every developer machine had and no runner did.
+  `pgprox-auth`'s build script compiles the sidecar `.proto` and prost-build
+  shells out to `protoc`. `deploy/Dockerfile` has installed
+  `protobuf-compiler` since the image existed. `ci.yml` never did.
+  Nothing caught it because nothing could: the workflow had never run anywhere
+  but a machine that already had the tool. The first push to a fresh runner
+  failed three jobs at once, and the message is a build-script error four lines
+  into cargo's output under a heading that says clippy failed.
+  Fixed twice over, because the install is the fix and the message is the
+  finding. Every job that compiles the workspace now installs it, and
+  `check-crate.sh` and `check-coverage.sh` require it by name, so a machine
+  without it is told which tool is missing and how to get it rather than being
+  handed a compiler error about a crate it did not ask about.
+  `supply-chain` and `secrets` are deliberately left without it: `cargo deny`
+  and `gitleaks` compile nothing.
+  Acceptance: every compiling job installs protoc, a run with protoc off the
+  PATH names it in one line, and CI is green on a fresh runner.

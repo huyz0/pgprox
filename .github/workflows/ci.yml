@@ -37,9 +37,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # protoc, because pgprox-auth's build script compiles the sidecar
+      # `.proto` and prost-build shells out to it. deploy/Dockerfile has
+      # installed protobuf-compiler since M2 and this workflow never did: every
+      # developer machine had it, so the gap was invisible until the first push
+      # to a fresh runner, where three jobs failed with a build-script error
+      # that names protoc four lines into cargo's output. M55.0.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-llvm-cov,cargo-nextest,cargo-deny
+          tool: cargo-llvm-cov,cargo-nextest,cargo-deny,protoc
 
       # `check-fmt.sh` is not here, and that is deliberate. `check-crate.sh`
       # below runs the identical `cargo fmt --all --check` as its first step,
@@ -92,7 +98,7 @@ jobs:
       # relocatable tables once optimisation is on, and the delocate step
       # refuses any .data section in the module. See scripts/fips-check.sh.
       - name: Install the FIPS toolchain
-        run: sudo apt-get update && sudo apt-get install -y cmake clang golang make
+        run: sudo apt-get update && sudo apt-get install -y cmake clang golang make protobuf-compiler
       - run: scripts/fips-check.sh
 
   mutants-diff:
@@ -117,7 +123,7 @@ jobs:
         run: rustup show
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-mutants,cargo-nextest
+          tool: cargo-mutants,cargo-nextest,protoc
       - uses: Swatinem/rust-cache@v2
       - name: The diff this branch adds
         run: |
@@ -143,6 +149,9 @@ jobs:
       # The version comes from Cargo.toml through scripts/msrv.sh rather than
       # being written here. A pin recorded in two places drifts, and the copy
       # that drifts is the one nobody runs.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: protoc
       - name: Install the pinned toolchain
         run: |
           msrv="$(scripts/msrv.sh)"
@@ -189,7 +198,7 @@ jobs:
       # Callgrind is the whole measurement: without it this job would report
       # nothing and pass, which is worse than not running.
       - name: Install valgrind
-        run: sudo apt-get update && sudo apt-get install -y valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind protobuf-compiler
       # The allocation budgets are ordinary tests and already run in tier 1.
       # This is the other half of the hot-path discipline: work that got more
       # expensive without allocating.
@@ -213,7 +222,7 @@ jobs:
         run: rustup toolchain install nightly --profile minimal
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-fuzz
+          tool: cargo-fuzz,protoc
       - uses: Swatinem/rust-cache@v2
       - run: scripts/fuzz.sh 300
       # The input that crashed it, kept. Without this a find is a red run and a
@@ -252,6 +261,9 @@ jobs:
           rustup toolchain install nightly --profile minimal --component miri
           rustup +nightly component add miri
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: protoc
       - run: scripts/miri.sh
 
   mutants:
@@ -284,7 +296,7 @@ jobs:
         run: rustup show
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-mutants,cargo-nextest
+          tool: cargo-mutants,cargo-nextest,protoc
       - uses: Swatinem/rust-cache@v2
       - run: scripts/mutants.sh
         env:
@@ -309,6 +321,7 @@ jobs:
         run: rustup show && rustup component add llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@protoc
       - uses: Swatinem/rust-cache@v2
       # Every gate for every milestone that has closed, in order. Each passed on
       # the commit that closed it, so a failure here is a regression rather than

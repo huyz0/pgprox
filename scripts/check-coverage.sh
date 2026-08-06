@@ -29,6 +29,11 @@ if ! has_rust; then
 fi
 
 require_tool cargo || finish
+# protoc, because `pgprox-auth`'s build script compiles the sidecar `.proto`
+# and prost-build shells out to it. Without this the failure is a build-script
+# error four lines into cargo's output, under a heading that says clippy failed.
+# `M55.0` is that failure, on the first push to a fresh runner.
+require_tool protoc "apt-get install protobuf-compiler" || finish
 if ! cargo llvm-cov --version >/dev/null 2>&1; then
   fail "missing cargo-llvm-cov  (install: cargo install cargo-llvm-cov)"
   finish
