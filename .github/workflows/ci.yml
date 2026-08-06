@@ -317,6 +317,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The whole history, because three gates read it. `m21-complete.sh`
+          # checks that the driver matrix names a commit this repository has,
+          # and `m12` and `m22` compare against earlier ones. The default
+          # shallow clone is one commit, so on a runner every ancestor is
+          # missing and the matrix looks like it names a commit that does not
+          # exist. It did exist, and does locally, which is why this only
+          # appeared on the first push. M60.0.
+          fetch-depth: 0
       - name: Install Rust
         run: rustup show && rustup component add llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov

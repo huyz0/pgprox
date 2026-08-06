@@ -7947,3 +7947,22 @@ recognised so it can be refused rather than read as a version.
   `docs/optimizations.md` and `docs/performance.md` quote these figures and
   `m44-complete.sh` enforces that the first agrees with `baseline.json`, so all
   three move together.
+
+## M60: three gates read history and the runner had one commit
+
+- [x] `M60.0` `actions/checkout` clones shallow, and nothing said so.
+  The milestone job failed with "driver-matrix.md names a commit this
+  repository does not have". The commit exists, is an ancestor of `main`, and
+  resolves locally. What the runner did not have was any history:
+  `actions/checkout` defaults to `fetch-depth: 1`, so a gate that asks about
+  any commit but the tip is asking about a repository the job does not have.
+  Three gates read history. `m21-complete.sh` checks the driver matrix names a
+  commit that exists and reports how far behind the proxy it is; `m12` and
+  `m22` compare against earlier commits. All three were reading a
+  single-commit clone.
+  The `secrets` job already sets `fetch-depth: 0` for gitleaks and
+  `mutants-diff` sets it for the merge-base diff, so the setting was known and
+  the milestone job simply never needed it until the repository had a remote to
+  be cloned from.
+  Acceptance: the milestone job checks out the full history, and the reason is
+  beside the setting rather than only here.
