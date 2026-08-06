@@ -90,14 +90,36 @@ run_gate() {
         --ignore-filename-regex "$IGNORE_RE" \
         --summary-only --json 2>"$errs")"; then
     fail "coverage ($crate): test run failed"
+
     # The failing tests, named, so a rerun is not the only way to learn
     # anything. nextest prints them to stderr as it goes.
     # `sort -u` because nextest names a failure twice, once as it happens and
     # once in the summary, and a gate that prints the same line twice reads
     # like two failures.
-    grep -E '^\s+(FAIL|SIGABRT|SIGSEGV|TRY [0-9])' "$errs" | sort -u | head -5 \
-      | sed 's/^/       /' || true
-    printf '       full output: %s\n' "$errs"
+    # `|| true` because `set -e` is on and grep returns 1 when it matches
+    # nothing, which is exactly the case this branch exists to handle. Without
+    # it the script exited here, having printed the FAIL line and none of the
+    # evidence below it. That is the second time this trap has been hit in this
+    # repository; the first was an `&&` list in `scripts/mutants.sh`.
+    local named
+    named="$(grep -E '^\s+(FAIL|SIGABRT|SIGSEGV|TRY [0-9])' "$errs" | sort -u | head -5 || true)"
+
+    if [[ -n "$named" ]]; then
+      sed 's/^/       /' <<<"$named"
+      printf '       full output: %s\n' "$errs"
+      return
+    fi
+
+    # Nothing that looks like a failing test, so the run died some other way: a
+    # build error, a signal, an out-of-memory. Print the tail inline.
+    #
+    # Inline rather than a path, and this is the correction to `M52.0`. That
+    # change kept the evidence in a file and printed where it was, which works
+    # on a developer machine and is worthless on CI, where the runner and every
+    # file on it are destroyed when the job ends. The first CI failure after it
+    # landed printed a path to a file nobody could ever open. `M55.2`.
+    printf '       no failing test named, so the run died another way:\n'
+    tail -20 "$errs" | sed 's/^/       | /'
     return
   fi
   rm -f "$errs"

@@ -7809,3 +7809,32 @@ recognised so it can be refused rather than read as a version.
   and `gitleaks` compile nothing.
   Acceptance: every compiling job installs protoc, a run with protoc off the
   PATH names it in one line, and CI is green on a fresh runner.
+
+- [x] `M55.1` A gate that failed on a runner for being a runner.
+  `m-1-complete.sh` asserts the three pre-commit hooks are installed. A fresh
+  clone has none, and cannot meaningfully be given them: nothing on CI commits,
+  so a hook installed there would never fire. The milestone job failed three
+  times over on the truth.
+  Skipped under `CI` rather than dropped, because the guarantee still has to
+  hold somewhere. On a developer machine it is the three hooks. On CI it is
+  `ci.yml` calling the same scripts, which `check-drift.sh` already enforces by
+  failing when a check exists that the workflow does not run.
+  Acceptance: the milestone job passes on a runner, and the check still fails
+  on a developer machine with the hooks uninstalled.
+
+- [x] `M55.2` `M52.0` kept the evidence in a file CI destroys.
+  The instrumentation added three commits ago wrote the failing test output to
+  a temp file and printed its path. That works on a developer machine. On CI
+  the runner and every file on it are deleted when the job ends, so the first
+  real failure after it landed printed a path nobody could ever open, and the
+  evidence was gone for the second time.
+  Worse, the branch that was supposed to print the tail never ran. `named="$(grep
+  ...)"` returns 1 when it matches nothing, `set -e` is on, and the script
+  exited having printed the FAIL line and none of the evidence under it. That
+  is the second `set -e` trap of this shape in this repository; the first was
+  an `&&` list in `scripts/mutants.sh`.
+  So the output goes inline: named tests where nextest named some, and the last
+  twenty lines of stderr where it did not, which is the case that actually
+  happened.
+  Acceptance: a planted failing test is named, a planted compile error prints
+  the compiler's own message, and neither needs a file that outlives the job.

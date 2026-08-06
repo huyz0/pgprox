@@ -56,15 +56,29 @@ done
 [[ -f .pre-commit-config.yaml ]] && ok ".pre-commit-config.yaml" \
   || fail ".pre-commit-config.yaml missing"
 
-installed=0
-for h in pre-commit commit-msg pre-push; do
-  if [[ -f ".git/hooks/$h" ]] && grep -qs pre-commit ".git/hooks/$h"; then
-    installed=$((installed + 1))
-  else
-    fail "git hook not installed: $h  (run: pre-commit install)"
-  fi
-done
-(( installed == 3 )) && ok "pre-commit hooks installed (pre-commit, commit-msg, pre-push)"
+# Hooks are a developer machine's property, and this check knows the difference.
+#
+# A runner clones without them and cannot be given them meaningfully: nothing
+# on CI commits, so a hook installed there would never fire. Asserting it there
+# was a gate failing on the truth. `M55.1`, on the first push.
+#
+# Skipped rather than dropped, because the guarantee it stands for still has to
+# hold somewhere. On a developer machine it is these three hooks. On CI it is
+# `ci.yml` calling the same scripts, and `check-drift.sh` already fails if a
+# check exists that the workflow does not run.
+if [[ -n "${CI:-}" ]]; then
+  skip "pre-commit hooks (a runner has none, and nothing on it commits)"
+else
+  installed=0
+  for h in pre-commit commit-msg pre-push; do
+    if [[ -f ".git/hooks/$h" ]] && grep -qs pre-commit ".git/hooks/$h"; then
+      installed=$((installed + 1))
+    else
+      fail "git hook not installed: $h  (run: pre-commit install)"
+    fi
+  done
+  (( installed == 3 )) && ok "pre-commit hooks installed (pre-commit, commit-msg, pre-push)"
+fi
 
 if compgen -G ".github/workflows/*.yml" >/dev/null; then
   # CI must call the scripts, not reimplement the checks, or the two drift.
