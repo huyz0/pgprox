@@ -7913,3 +7913,37 @@ recognised so it can be refused rather than read as a version.
   what it named.
   Acceptance: the milestone job installs cargo-mutants, and every tool any gate
   in that job shells out to is installed by it.
+
+## M59: a benchmark that broke CI on a commit that did not touch it
+
+- [x] `M59.0` `cache_put` put every iteration into one hash bucket.
+  It read 3,668, 3,672 and 3,838 across three runs on the same runner: a 4.6%
+  spread against a 5% gate, which failed a build on a commit that changed
+  nothing in `pgprox-cache`.
+  The cause is written in this file already, four constants above the
+  benchmark. `HELD` is sixteen rather than one because
+  `invalidate_a_tenants_entries` moved 6% between runs of the same code, since
+  a `HashMap`'s probe count depends on a per-process random seed and at one
+  entry it was a measurable share of the work. `cache_put` was the one
+  benchmark still putting a single key.
+  The fix cycles `HELD` keys, one put per iteration. The unit does not change,
+  so the before-and-after in `docs/optimizations.md` stays a comparison; what
+  changes is that a run averages sixteen probe-length draws rather than taking
+  one.
+  Nine of the sixteen benchmarks are bit-identical across three CI runs and
+  match the developer baseline exactly, so the method is sound and this was one
+  benchmark rather than the apparatus.
+  Acceptance: the spread across CI runs falls below the tolerance it is gated
+  against, measured rather than assumed, which needs CI runs of the changed
+  benchmark and is why the rebaseline is a separate task.
+
+- [ ] `M59.1` Rebaseline on CI.
+  The baseline was measured on a twenty-core developer machine. Nine
+  benchmarks are identical everywhere; the cache family reads about 4% higher
+  on a GitHub runner, which eats most of a 5% budget before any noise.
+  Blocked on `M59.0`: rebaselining to numbers measured under the noisy scheme
+  would bake in a value that was never stable. Needs two or three CI runs of
+  the changed benchmark first.
+  `docs/optimizations.md` and `docs/performance.md` quote these figures and
+  `m44-complete.sh` enforces that the first agrees with `baseline.json`, so all
+  three move together.

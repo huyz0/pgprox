@@ -139,11 +139,25 @@ fn cache_miss(iterations: u64) {
 /// Storing an answer over one already held.
 fn cache_put(iterations: u64) {
     let store = populated();
-    let wanted = key(&tenant(0), 0);
+    // `HELD` keys, cycled, rather than one key repeated.
+    //
+    // Still one put per iteration, so the number means what it has always
+    // meant and the before-and-after in `docs/optimizations.md` stays a
+    // comparison. What changes is which bucket each put lands in.
+    //
+    // A single key puts every iteration into one bucket, whose probe length is
+    // a lottery on the per-process hash seed: the same code read 3,668 and
+    // 3,838 on the same runner, a 4.6% spread against a 5% gate, and it broke
+    // CI on a commit that did not touch this crate. Cycling spreads the puts
+    // over `HELD` buckets so the run averages `HELD` draws instead of taking
+    // one, which is the fix `M28.2` applied to `invalidate_a_tenants_entries`
+    // for the same reason and the reason `HELD` exists at all. `M59.0`.
+    let keys: Vec<CacheKey> = (0..HELD).map(|i| key(&tenant(0), i)).collect();
 
-    for _ in 0..iterations {
+    for i in 0..iterations {
         // The key is what varies per call and the return is a unit, so the
         // barrier goes on the input rather than the output.
+        let wanted = &keys[usize::try_from(i).unwrap_or(0) % HELD];
         store.put(std::hint::black_box(wanted.clone()), result());
     }
 }
