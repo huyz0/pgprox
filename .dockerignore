@@ -3,7 +3,7 @@
 # costs more than the compile it would save: the build has its own cache mount.
 target/
 target-coverage/
-reference/
+.tmp/
 .git/
 # The documentation site's dependency tree and its output, 240 MB of it. These
 # arrived under `docs/` when `M45` moved the toolchain beside the pages, and the

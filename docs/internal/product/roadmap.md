@@ -2702,3 +2702,40 @@ against. The first was caught by `check-wired.sh` failing loudly; the second by
 the compiler. Neither was caught by reading the diff.
 
 Completion condition: the two checks above, plus every milestone gate.
+
+## M49: one place for what a run leaves behind (complete)
+
+```bash
+scripts/check-links.sh
+```
+
+`reference/` held 30 MB of upstream proxies cloned for protocol comparison,
+gitignored and untracked, sitting at the root beside the code. It is now
+`.tmp/reference/`, and `/.tmp` is the one entry covering anything somebody
+needs to put somewhere and nobody needs to keep.
+
+### The part that could not be done, and why
+
+The intent was to fold eight `.gitignore` patterns into that one entry. It
+cannot be done, and finding that out was most of the milestone.
+
+Every one of the eight guards a tool that writes to the working directory and
+gives this repository no say in it. `perf record`, `cargo flamegraph`,
+`cargo mutants`, `cargo llvm-cov` and a dhat binary all default to CWD. A
+redirect exists for each, and it would have to be typed by the person running
+the command, which is the one place it will be forgotten. The pattern is
+cheaper than the discipline.
+
+That was checked rather than assumed, because a *script* can be told where to
+write and would then need no pattern at all. None of the eight comes from one:
+`scripts/bench.sh` writes callgrind output to a mktemp directory,
+`scripts/mutants.sh` writes under `target/`, `scripts/profile.sh` writes to
+`target/profile`, and the dhat budgets build their profiler with `.testing()`,
+which writes no file. Every line is a guard against a hand-run.
+
+So the eight stay, grouped under one comment that says what they are for. The
+root is one entry shorter rather than eight, and the reason the other seven did
+not move is in the file where somebody will read it before trying again.
+
+Completion condition: `scripts/check-links.sh`, plus the checks that were
+already there.

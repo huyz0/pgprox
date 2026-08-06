@@ -27,7 +27,7 @@ composition root implements by fanning in. See ADR
   complete is how an operator concludes a tenant has no clients.
 - The `SHOW` subset that PgBouncer also has stays compatible with it, so existing
   dashboards and runbooks keep working. Columns come from
-  `reference/pgbouncer/src/admin.c`, names and order both, because most
+  `.tmp/reference/pgbouncer/src/admin.c`, names and order both, because most
   dashboards read by position.
 - **`SHOW SERVERS` is not `GET /v1/servers`.** The first is PgBouncer's
   per-connection socket view and cannot change; the second is the capacity

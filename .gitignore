@@ -13,6 +13,29 @@
 # the committed part; what a run discovers from it is not.
 /fuzz/corpus
 **/*.rs.bk
+.env
+*.pem
+*.key
+
+# Scratch. Anything somebody needs to put somewhere and nobody needs to keep:
+# the upstream proxies cloned for protocol reference, a profile, a working copy.
+# One entry rather than one per artefact, and the place to put the next one.
+/.tmp
+
+# The rest of the scratch, which cannot go in there.
+#
+# Each of these is a tool that writes to the working directory and gives the
+# repository no say in it. `perf record`, `cargo flamegraph`, `cargo mutants`,
+# `cargo llvm-cov` and a dhat binary all default to CWD, so a hand-run from the
+# repository root lands here whatever `/.tmp` says. Folding them in would mean
+# the redirect had to be typed by the person running the command, which is the
+# one place it will be forgotten.
+#
+# `M49` checked whether any of these is produced by a script in this repository,
+# because a script can be told where to write. None is: `scripts/bench.sh` puts
+# callgrind output in a mktemp directory, `scripts/mutants.sh` writes under
+# `target/`, and `scripts/profile.sh` writes to `target/profile`. Every line
+# below guards a manual run and nothing else.
 *.profraw
 *.profdata
 /coverage
@@ -20,15 +43,6 @@ perf.data*
 flamegraph.svg
 callgrind.out.*
 dhat-heap.json
-.env
-*.pem
-*.key
-
-# Upstream proxies cloned for protocol reference. Read-only, never vendored.
-/reference
-
-# cargo-mutants writes here when run directly rather than through
-# scripts/mutants.sh, which redirects it under target/. M14.1a.
 /mutants.out
 /mutants.out.old
 

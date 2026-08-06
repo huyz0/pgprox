@@ -7568,3 +7568,28 @@ recognised so it can be refused rather than read as a version.
   workload file from `docs/internal/product/perf/` at compile time.
   Acceptance: the three generated directories under `docs/` are excluded and
   the pages are not.
+
+## M49: one place for what a run leaves behind
+
+- [x] `M49.0` A scratch directory, and the honest half of what was asked for.
+  `reference/` held 30 MB of upstream proxies cloned for protocol comparison,
+  gitignored and untracked, sitting at the repository root beside the code. It
+  moves to `.tmp/reference/`, and `/.tmp` becomes the one entry that covers
+  anything somebody needs to put somewhere and nobody needs to keep.
+  **The rest of the scratch cannot follow it, and this is the finding.** The
+  intent was to fold eight `.gitignore` patterns into one. Every one of them
+  guards a tool that writes to the working directory and gives this repository
+  no say in it: `perf record`, `cargo flamegraph`, `cargo mutants`,
+  `cargo llvm-cov` and a dhat binary all default to CWD. Folding them in would
+  mean the redirect had to be typed by the person running the command, which is
+  the one place it will be forgotten.
+  Checked rather than assumed, because a script can be told where to write:
+  `scripts/bench.sh` puts callgrind output in a mktemp directory,
+  `scripts/mutants.sh` writes under `target/`, `scripts/profile.sh` writes to
+  `target/profile`, and the dhat budgets build their profiler with `.testing()`,
+  which writes no file at all. Not one of the eight is produced by anything in
+  this repository. They are all guards against a hand-run, and they stay, with
+  the reasoning in the file rather than in this entry alone.
+  Acceptance: `reference/` is gone from the root, `.dockerignore` follows it,
+  the one document that cites a path inside it still cites a real one, and the
+  patterns that stayed say why in `.gitignore`.
