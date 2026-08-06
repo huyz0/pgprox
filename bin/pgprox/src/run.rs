@@ -2069,19 +2069,38 @@ mod tests {
                     let (read, mut write) = tokio::io::split(socket);
                     let mut lines = BufReader::new(read).lines();
                     while let Ok(Some(line)) = lines.next_line().await {
+                        // Recorded before answering, and the order is the whole
+                        // point. `gossip::forward` connects, writes the cancel,
+                        // flushes and drops the stream, so by the time this
+                        // replies the far end is often already gone and the
+                        // write fails with a broken pipe. Answering first meant
+                        // returning on that failure and discarding the line
+                        // just read, which is the one the test is waiting for.
+                        //
+                        // It passed locally because a write to a socket the
+                        // peer has closed succeeds until the RST lands, and it
+                        // failed every time on a GitHub runner, where it does
+                        // not. `M56.0` raised the timeout from five seconds to
+                        // thirty on the theory that the runner was slow; the
+                        // test then failed at exactly thirty, which is what
+                        // ruled slowness out and pointed here. `M57.0`.
+                        if caught.send(line).is_err() {
+                            return;
+                        }
                         // Answered like a peer, not just recorded. A listener
                         // that accepts and says nothing makes every gossip
                         // round wait out `PEER_TIMEOUT`, and the node is inside
                         // one when the shutdown lands: that alone was two to
                         // five seconds of this test, which is `M17.7`'s whole
                         // subject.
+                        //
+                        // A failed reply ends this connection and nothing else.
+                        // The cancel path never reads one, and a digest round
+                        // whose peer has hung up has no answer to wait for.
                         let digest = br#"{"kind":"digest","node":2,"mode":"active","version":1,"client_conns":0,"upstream_conns":[],"tenant_usage":[]}"#;
                         if write.write_all(digest).await.is_err()
                             || write.write_all(b"\n").await.is_err()
                         {
-                            return;
-                        }
-                        if caught.send(line).is_err() {
                             return;
                         }
                     }

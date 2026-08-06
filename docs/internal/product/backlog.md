@@ -7874,3 +7874,29 @@ recognised so it can be refused rather than read as a version.
   reimplementing them, and a gate is not exempt.
   Acceptance: `m0` delegates to `check-deps.sh`, the milestone job installs
   cargo-deny, and a machine without it is told which tool is missing.
+
+## M57: the cancel test discarded the line it was waiting for
+
+- [x] `M57.0` A test that answered before it recorded.
+  `a_cancel_for_a_peers_connection_is_forwarded_from_a_running_node` failed on
+  every CI run and passed on every local one, including under llvm-cov, on two
+  pinned cores, and with the whole crate running.
+  The peer listener read a line, replied with a digest, and only then recorded
+  the line. `gossip::forward` connects, writes the cancel, flushes and drops the
+  stream, so by the time the listener replies the far end is frequently already
+  gone: the write fails with a broken pipe, the listener returns, and the line
+  it had just read, the one the test is waiting for, is discarded.
+  It passed locally because a write to a socket the peer has closed succeeds
+  until the RST lands. It failed every time on a GitHub runner, where it does
+  not.
+  `M56.0` is the wrong turn worth recording. It read the 5.085s failure as a
+  five second timeout on a slow machine and raised the wait to thirty. The next
+  run failed at 30.078s, and a failure that scales exactly with the timeout is
+  not a slow machine, it is something that never happens. That is what ruled
+  slowness out and pointed here. The larger constant stays: it is right for
+  real-I/O tests on a two-core runner regardless, and it is what made the
+  second measurement legible.
+  Acceptance: the line is recorded before the reply is attempted; a failed
+  reply ends the connection and nothing else; and the diagnosis is proven both
+  ways, with the old order failing at 30.039s under a forced broken pipe and
+  the new order passing in 0.038s under the same.
