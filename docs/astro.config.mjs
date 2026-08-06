@@ -19,7 +19,7 @@ import { rewriteLinks } from './src/rewrite-links.mjs';
 const BASE = '/pgprox';
 
 export default defineConfig({
-  site: 'https://pgprox.github.io',
+  site: 'https://huyz0.github.io',
   base: BASE,
   // The pages link the way GitHub needs. See ./src/rewrite-links.mjs.
   markdown: { rehypePlugins: [rewriteLinks({ base: BASE })] },
@@ -32,7 +32,7 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/pgprox/pgprox',
+          href: 'https://github.com/huyz0/pgprox',
         },
       ],
       // Ordered by what a reader wants first rather than alphabetically:
@@ -65,7 +65,7 @@ export default defineConfig({
       // it, so only the built output ever showed it.
       // `scripts/gates/m44-complete.sh` resolves one and checks where it lands.
       editLink: {
-        baseUrl: 'https://github.com/pgprox/pgprox/edit/main/docs/',
+        baseUrl: 'https://github.com/huyz0/pgprox/edit/main/docs/',
       },
       lastUpdated: true,
     }),

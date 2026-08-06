@@ -24,7 +24,7 @@
 // Anything already absolute, already a route, or an anchor is left alone.
 import { visit } from 'unist-util-visit';
 
-const REPO = 'https://github.com/pgprox/pgprox/blob/main';
+const REPO = 'https://github.com/huyz0/pgprox/blob/main';
 
 export function rewriteLinks({ base = '' } = {}) {
   const prefix = base.endsWith('/') ? base.slice(0, -1) : base;

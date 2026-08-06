@@ -13,9 +13,9 @@ kubeVersion: ">=1.29.0-0"
 version: 0.1.0
 appVersion: "0.1.0"
 
-home: https://github.com/pgprox/pgprox
+home: https://github.com/huyz0/pgprox
 sources:
-  - https://github.com/pgprox/pgprox
+  - https://github.com/huyz0/pgprox
 
 keywords:
   - postgres

@@ -12,7 +12,7 @@ You need Docker with Compose, and Rust 1.94 or later.
 ## Bring the stack up
 
 ```bash
-git clone https://github.com/pgprox/pgprox.git
+git clone https://github.com/huyz0/pgprox.git
 cd pgprox
 scripts/e2e.sh up
 ```

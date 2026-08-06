@@ -7773,3 +7773,19 @@ recognised so it can be refused rather than read as a version.
   before writing one.
   Acceptance: the header, the run banner and the script index all say what it
   does.
+
+## M54: the repository URL was aspirational
+
+- [x] `M54.0` Point every published URL at the repository that exists.
+  `Cargo.toml` claimed `https://github.com/pgprox/pgprox`, the Helm chart named
+  it as its home, and the site was built for `https://pgprox.github.io` with a
+  `/pgprox` base. No such organisation existed and no such repository existed.
+  Nothing failed, because nothing had ever been pushed. The moment it was, four
+  kinds of link would have pointed at a 404: every GitHub blob link the site
+  generates for a run document or an ADR, every page's edit link, the canonical
+  URL on every page, and every entry in the sitemap.
+  The `/etc/pgprox/pgprox.yaml` occurrences in `pgprox-config` are a filesystem
+  path that happens to match the pattern and are deliberately untouched.
+  Acceptance: the site builds with blob links, edit links, canonical URLs and
+  sitemap entries all naming the real repository, and the only remaining
+  matches are the config path.
