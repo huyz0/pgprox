@@ -113,7 +113,18 @@ else
     # "behind M20.4 and M20.6" is what tells someone whether it matters, and
     # both of those changed what goes on the wire.
     warn "the matrix results are $behind commit(s) behind the proxy"
-    git log --format='       %s' "$describes..HEAD" -- "${PROXY_PATHS[@]}" | head -8
+    # `-n 8` rather than `| head -8`.
+    #
+    # `set -o pipefail` is on, and when `head` has taken its eight lines it
+    # closes the pipe: git's next write gets EPIPE and the pipeline reports
+    # 141, which `set -e` turns into the gate exiting mid-run. Whether that
+    # happens is a race between git finishing its writes and head exiting, so
+    # it passed here and failed on CI, and only after `M60.0` gave the runner
+    # full history for git to have more than eight commits to print.
+    #
+    # Letting git do the limiting removes the pipe and the race with it.
+    # `M63.0`.
+    git log -n 8 --format='       %s' "$describes..HEAD" -- "${PROXY_PATHS[@]}"
     printf '       re-run scripts/driver-matrix.sh to say whether they still hold\n'
   fi
 fi

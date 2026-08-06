@@ -8008,3 +8008,25 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a planted failing test is named with its assertion, with colour
   forced and with colour absent, and the underlying budget failure is legible
   on the next run.
+
+## M63: a warning that killed the gate printing it
+
+- [x] `M63.0` `git log | head -8` under `pipefail`.
+  `m21-complete.sh` reached its last check, warned that the driver matrix is
+  seventeen commits behind, printed eight of them, and exited 141. That is
+  SIGPIPE: `head` takes its eight lines and closes the pipe, git's next write
+  gets EPIPE, `set -o pipefail` reports 141 and `set -e` ends the gate
+  mid-run. The gate was killed by its own warning.
+  Whether it happens is a race between git finishing its writes and `head`
+  exiting, which is why it passed here and failed there. It only became
+  reachable at all after `M60.0` gave the runner full history, so there were
+  more than eight commits for git to print: the fix for one CI-only failure
+  created the conditions for the next.
+  `git log -n 8` removes the pipe and the race with it. Reproduced both ways
+  before and after: the old form dies before its own trailing `echo`, the new
+  form exits 0.
+  The other pipelines into `head` in `scripts/` read a line or two from `sed`
+  or `docker port` and are left alone; this was the one used as a statement,
+  where the status reaches `set -e` directly.
+  Acceptance: the gate completes and reports, and the pipeline that killed it
+  is gone rather than silenced with `|| true`.
