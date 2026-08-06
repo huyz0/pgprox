@@ -27,6 +27,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocation-counter"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "beb9e990c0a33699f1984d85a6abead615ccc72dd8130bf3e15dcabe2ca149c9"
+
+[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1003,6 +1009,7 @@ dependencies = [
 name = "pgprox"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "async-trait",
  "aws-lc-rs",
  "axum",
@@ -1052,10 +1059,10 @@ dependencies = [
 name = "pgprox-auth"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "async-trait",
  "aws-lc-rs",
  "base64",
- "dhat",
  "hyper-util",
  "pgprox-core",
  "pgprox-testkit",
@@ -1077,7 +1084,7 @@ dependencies = [
 name = "pgprox-cache"
 version = "0.1.0"
 dependencies = [
- "dhat",
+ "allocation-counter",
  "pgprox-core",
  "tokio",
 ]
@@ -1138,8 +1145,8 @@ dependencies = [
 name = "pgprox-pool"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "async-trait",
- "dhat",
  "pgprox-core",
  "proptest",
  "tokio",
@@ -1149,7 +1156,7 @@ dependencies = [
 name = "pgprox-proto"
 version = "0.1.0"
 dependencies = [
- "dhat",
+ "allocation-counter",
  "memchr",
  "pgprox-core",
  "pgprox-testkit",
@@ -1162,8 +1169,8 @@ dependencies = [
 name = "pgprox-route"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "async-trait",
- "dhat",
  "pgprox-core",
  "proptest",
  "tokio",

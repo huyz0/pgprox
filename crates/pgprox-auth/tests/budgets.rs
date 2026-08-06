@@ -29,9 +29,6 @@ use pgprox_core::clock::FakeClock;
 use pgprox_core::ids::{ServerId, TenantId};
 use pgprox_core::secret::SecretString;
 
-#[global_allocator]
-static ALLOC: dhat::Alloc = dhat::Alloc;
-
 /// What one connection's grant lookup is allowed to cost on a hit.
 ///
 /// Measured at 15 and set two above it, so ordinary noise does not fail the
@@ -48,9 +45,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 const HIT_BUDGET: u64 = 17;
 
 fn allocations(body: impl FnOnce()) -> u64 {
-    let before = dhat::HeapStats::get().total_blocks;
-    body();
-    dhat::HeapStats::get().total_blocks - before
+    allocation_counter::measure(body).count_total
 }
 
 /// A token whose header names an approved algorithm, since the resolver checks
@@ -97,8 +92,6 @@ fn grant() -> Grant {
 
 #[test]
 fn a_grant_cache_hit_stays_inside_its_budget() {
-    let _profiler = dhat::Profiler::builder().testing().build();
-
     // --- the counter counts ------------------------------------------------
     let sanity = allocations(|| {
         std::hint::black_box(vec![0_u8; 64]);

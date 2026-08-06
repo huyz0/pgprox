@@ -160,10 +160,23 @@ memory. When a benchmark's dominant term is a copy or a fill, state the wall
 clock beside the count, and say which one the claim rests on.
 
 **Gate on allocation counts and instruction counts, never wall clock.**
-`dhat-rs` asserting "relaying a 1 KiB DataRow allocates zero times" and
-`iai-callgrind` instruction counts are deterministic, so a 3% regression is
-visible on noisy shared runners where `criterion` reports noise. Keep
-`criterion` for numbers that inform rather than gate.
+"Relaying a 1 KiB DataRow allocates zero times" and `iai-callgrind` instruction
+counts are deterministic, so a 3% regression is visible on noisy shared runners
+where `criterion` reports noise. Keep `criterion` for numbers that inform rather
+than gate.
+
+**Count the thread that allocates, not the process.** The budgets use
+`allocation-counter`, whose counter is thread-local. A process-wide counter also
+counts whatever else the process is doing, and on a budget of zero that is the
+difference between a measurement and a coin flip: the test harness allocates on
+its own thread just after spawning the one the test runs on, and a budget that
+opens its window quickly enough sometimes catches it. That is `M64.0`, found
+after the route budget failed three times on CI and passed 825 times here.
+
+The exception is `bin/pgprox/tests/spawn.rs`, which keeps `dhat` and means to be
+process-wide: it asks what a multi-threaded runtime holds for a spawned task,
+and those allocations happen on worker threads. When a measurement is about
+another thread's memory, say so where the profiler is chosen.
 
 The declared hot paths, with budgets, are:
 

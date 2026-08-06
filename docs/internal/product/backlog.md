@@ -8030,3 +8030,44 @@ recognised so it can be refused rather than read as a version.
   where the status reaches `set -e` directly.
   Acceptance: the gate completes and reports, and the pipeline that killed it
   is gone rather than silenced with `|| true`.
+
+## M64: the allocation budgets counted the whole process
+
+- [x] `M64.0` A budget of zero, measured with a counter that counts other
+  threads.
+  `the_route_decision_stays_inside_its_budget` failed on CI runs 8 and 10,
+  passed run 9, and passed 825 consecutive runs here. Run 10 finally carried
+  the number: four allocations across 250,000 routings. Four is not
+  per-statement allocation, which would be hundreds of thousands, so the
+  question was whether the route decision grows something once that the warm-up
+  misses, or whether the measurement was attributing somebody else's
+  allocations to it. A count cannot answer that, so the answer needed an
+  instrument that names the caller.
+  A scratch allocator that captured a backtrace inside the measured window,
+  under forty concurrent copies on a twenty-core machine, reproduced it twice in
+  1,200 runs and named it every time: `test::run_tests` on the *main* thread,
+  inserting the just-spawned test into libtest's `running_tests` map and
+  allocating its table. `dhat::HeapStats::total_blocks` is process-wide, so the
+  harness's own bookkeeping landed inside a window budgeted at zero. libtest
+  spawns the test thread and *then* records it, so whether the two overlap is a
+  scheduling race, which is why a loaded runner loses it and an idle machine
+  does not.
+  `pgprox-route` is the one that failed because its warm-up is four routings,
+  so its window opens sooner after the spawn than any other budget's. The other
+  five had the same defect and had not yet been unlucky.
+  The fix is the instrument, not the budget: `allocation-counter` counts on the
+  thread that allocates. Proved rather than assumed, since a fix for a 2-in-1200
+  failure cannot be confirmed by not failing. A probe with a thread deliberately
+  allocating throughout the window fails 20 out of 20 under the process-wide
+  counter, counting 203 allocations it did not make, and 0 out of 20 under the
+  thread-local one, with the route body still reading zero.
+  No budget moved. The two that assert a number rather than zero read exactly
+  what their comments recorded when they were set: the grant-cache hit at 15
+  against a budget of 17, gossip encode and decode at 10 and 26.
+  `bin/pgprox/tests/spawn.rs` keeps `dhat` and is the exception that makes the
+  rule legible: it asks what a multi-threaded runtime holds for a spawned task,
+  and those allocations are on worker threads, so process-wide is what it wants.
+  Acceptance: the six budget files count per thread; a background thread
+  allocating during a measured window does not change any budget; the two
+  non-zero budgets read their recorded figures; and `m7-complete.sh` looks for
+  the counter that is now used.

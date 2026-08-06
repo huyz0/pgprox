@@ -20,9 +20,6 @@ use pgprox_cluster::digest::VersionedDigest;
 use pgprox_core::cluster::{ClusterDigest, NodeMode};
 use pgprox_core::ids::{NodeId, ServerId, TenantId};
 
-#[global_allocator]
-static ALLOC: dhat::Alloc = dhat::Alloc;
-
 /// The cluster size the reference workload declares.
 ///
 /// Read from the document rather than repeated here. A budget measured at a
@@ -51,9 +48,7 @@ const ENCODE_BUDGET: u64 = 14;
 const DECODE_BUDGET: u64 = 32;
 
 fn allocations(body: impl FnOnce()) -> u64 {
-    let before = dhat::HeapStats::get().total_blocks;
-    body();
-    dhat::HeapStats::get().total_blocks - before
+    allocation_counter::measure(body).count_total
 }
 
 /// A digest the size the reference workload implies: one upstream server, and
@@ -75,8 +70,6 @@ fn digest() -> VersionedDigest {
 
 #[test]
 fn gossip_encode_and_decode_stay_inside_their_budgets() {
-    let _profiler = dhat::Profiler::builder().testing().build();
-
     // --- the counter counts ------------------------------------------------
     let sanity = allocations(|| {
         std::hint::black_box(vec![0_u8; 64]);

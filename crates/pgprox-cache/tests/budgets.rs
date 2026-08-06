@@ -1,9 +1,8 @@
 //! Allocation budgets for the paths a statement takes through the cache.
 //!
-//! Same shape as `pgprox-proto`'s and `pgprox-pool`'s: one test function
-//! because `dhat` allows one profiler per process, the harness checked before
-//! any budget is, and every path warmed first because the budget is about the
-//! steady state.
+//! Same shape as `pgprox-proto`'s and `pgprox-pool`'s: one test function, the
+//! harness checked before any budget is, and every path warmed first because
+//! the budget is about the steady state.
 //!
 //! # What this catches, and what it does not
 //!
@@ -29,13 +28,8 @@ use pgprox_core::clock::FakeClock;
 use pgprox_core::config::{QueryCacheConfig, TenantCache};
 use pgprox_core::ids::TenantId;
 
-#[global_allocator]
-static ALLOC: dhat::Alloc = dhat::Alloc;
-
 fn allocations(body: impl FnOnce()) -> u64 {
-    let before = dhat::HeapStats::get().total_blocks;
-    body();
-    dhat::HeapStats::get().total_blocks - before
+    allocation_counter::measure(body).count_total
 }
 
 fn key(sql: &str) -> CacheKey {
@@ -67,8 +61,6 @@ fn served() -> QueryCacheConfig {
 
 #[test]
 fn a_hit_serves_an_answer_without_building_anything() {
-    let _profiler = dhat::Profiler::builder().testing().build();
-
     // --- the counter counts ------------------------------------------------
     let sanity = allocations(|| {
         std::hint::black_box(vec![0_u8; 64]);

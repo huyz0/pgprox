@@ -14,8 +14,8 @@ async-trait.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
-# Allocation budgets. See docs/internal/standards/testing.md.
-dhat = "0.3"
+# Allocation budgets, counted per thread. See docs/internal/standards/testing.md.
+allocation-counter = "0.8"
 pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
 proptest.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }

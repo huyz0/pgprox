@@ -58,7 +58,12 @@ tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time"
 # membership the workload declares. Test-only: the proxy has no business
 # knowing about a load generator.
 pgprox-load = { path = "../../crates/pgprox-load" }
-# Allocation budgets. See docs/internal/standards/testing.md.
+# Allocation budgets, counted per thread. See docs/internal/standards/testing.md.
+allocation-counter = "0.8"
+# Kept alongside it for `tests/spawn.rs` alone, which is the one measurement
+# here that is deliberately process-wide: it asks what a multi-threaded runtime
+# holds for a spawned task, and the allocations it is about happen on worker
+# threads rather than on the thread doing the measuring.
 dhat = "0.3"
 pgprox-core = { path = "../../crates/pgprox-core", features = ["test-fakes"] }
 rcgen = "0.14"

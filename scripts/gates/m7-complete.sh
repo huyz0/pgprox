@@ -104,10 +104,11 @@ declare -A BUDGETS=(
 # the cluster layer owns the digest as a value, this owns how it travels.
 BUDGETS[pgprox]="gossip digest encode and decode"
 for crate in "${!BUDGETS[@]}"; do
-  # `dhat::Profiler` rather than the word `dhat`: a comment mentioning the
+  # `allocation_counter::measure` rather than a word: a comment mentioning the
   # crate would otherwise satisfy this, which is the shape of check that
-  # passes for years while the thing it names does not exist.
-  if grep -rqs --include='*.rs' 'dhat::Profiler' \
+  # passes for years while the thing it names does not exist. It read
+  # `dhat::Profiler` until `M64.0` changed which counter the budgets use.
+  if grep -rqs --include='*.rs' 'allocation_counter::measure' \
        "crates/$crate/src" "crates/$crate/tests" \
        "bin/$crate/src" "bin/$crate/tests" 2>/dev/null; then
     ok "allocation budget: $crate (${BUDGETS[$crate]})"

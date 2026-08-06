@@ -24,8 +24,10 @@ the commit message.
 **Allocation budgets.** Several hot paths assert an exact allocation count, most
 of them zero: frame scanning, backend message decoding, the relay step, the
 route decision, the pool release decision, a warm acquire, and a cache hit. The
-tests measure with `dhat` and run a positive control first, so a counter that
-stopped counting fails the harness before it fails a budget.
+count is per thread rather than per process, so the test harness's own
+bookkeeping cannot land inside a window budgeted at zero, and each test runs a
+positive control first, so a counter that stopped counting fails the harness
+before it fails a budget.
 
 **Callgrind per function, not per binary.** Each benchmark runs at N iterations
 and at 2N and reports the difference, so fixture construction cancels. Without

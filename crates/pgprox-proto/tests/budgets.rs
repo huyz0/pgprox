@@ -8,10 +8,11 @@
 //!
 //! # Why one test function
 //!
-//! `dhat` installs a global allocator and allows one profiler per process.
-//! Separate `#[test]` functions run on separate threads in the same process,
-//! so they would fight over it. One function, several sections, each asserting
-//! its own delta.
+//! One function, several sections, each asserting its own delta. It was once
+//! required, when the counter was process-wide and separate `#[test]`
+//! functions on separate threads would have measured each other; `M64.0` made
+//! the counter thread-local and left the shape, because the sections share the
+//! fixtures above and reading them in order is how the budgets are understood.
 //!
 //! # Why the paths are warmed first
 //!
@@ -24,9 +25,6 @@
 use pgprox_proto::backend;
 use pgprox_proto::frame::{DEFAULT_MAX_FRAME, Decoded, Direction, Frame, Tag, decode};
 use pgprox_proto::relay::FrameRelay;
-
-#[global_allocator]
-static ALLOC: dhat::Alloc = dhat::Alloc;
 
 /// One `DataRow` carrying a single text column, which is what a point select
 /// returns and therefore the most common frame on the wire.
@@ -51,15 +49,11 @@ fn ready_for_query() -> Vec<u8> {
 
 /// How many allocations `body` performs.
 fn allocations(body: impl FnOnce()) -> u64 {
-    let before = dhat::HeapStats::get().total_blocks;
-    body();
-    dhat::HeapStats::get().total_blocks - before
+    allocation_counter::measure(body).count_total
 }
 
 #[test]
 fn the_hot_paths_this_crate_owns_stay_inside_their_budgets() {
-    let _profiler = dhat::Profiler::builder().testing().build();
-
     let row = data_row();
     let ready = ready_for_query();
 

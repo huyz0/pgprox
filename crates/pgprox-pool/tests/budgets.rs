@@ -4,9 +4,9 @@
 //! declared hot paths, and said both were written to be allocation-free and
 //! never measured. This file is the measurement.
 //!
-//! Same shape as `pgprox-proto`'s: one test function because `dhat` allows one
-//! profiler per process, the harness checked before any budget is, and every
-//! path warmed first because the budget is about the steady state.
+//! Same shape as `pgprox-proto`'s: one test function, the harness checked
+//! before any budget is, and every path warmed first because the budget is
+//! about the steady state.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -16,13 +16,8 @@ use pgprox_core::ids::{PoolKey, ServerId};
 use pgprox_core::pool::ReleaseOutcome;
 use pgprox_pool::pool::{Acquired, Pool, PoolConfig};
 
-#[global_allocator]
-static ALLOC: dhat::Alloc = dhat::Alloc;
-
 fn allocations(body: impl FnOnce()) -> u64 {
-    let before = dhat::HeapStats::get().total_blocks;
-    body();
-    dhat::HeapStats::get().total_blocks - before
+    allocation_counter::measure(body).count_total
 }
 
 fn pool() -> Pool {
@@ -38,8 +33,6 @@ fn pool() -> Pool {
 
 #[test]
 fn the_hot_paths_this_crate_owns_stay_inside_their_budgets() {
-    let _profiler = dhat::Profiler::builder().testing().build();
-
     // --- the counter counts ------------------------------------------------
     let sanity = allocations(|| {
         std::hint::black_box(vec![0_u8; 64]);

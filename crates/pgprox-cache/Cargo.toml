@@ -14,7 +14,8 @@ pgprox-core = { path = "../pgprox-core" }
 [dev-dependencies]
 pgprox-core = { path = "../pgprox-core", features = ["test-fakes"] }
 tokio = { workspace = true, features = ["rt", "macros"] }
-dhat = "0.3"
+# Allocation budgets, counted per thread. See docs/internal/standards/testing.md.
+allocation-counter = "0.8"
 
 [[bench]]
 name = "hot_paths"

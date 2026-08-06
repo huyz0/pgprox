@@ -5,9 +5,8 @@
 //! for the life of the session rather than building one per statement. That is
 //! the claim this file turns into an assertion.
 //!
-//! Same shape as the other budget files: one test function because `dhat`
-//! allows one profiler per process, the harness checked first, and the path
-//! warmed before it is measured.
+//! Same shape as the other budget files: one test function, the harness
+//! checked first, and the path warmed before it is measured.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -17,13 +16,12 @@ use pgprox_core::ids::Lsn;
 use pgprox_route::replica::{ReplicaConfig, Replicas};
 use pgprox_route::router::SessionRouter;
 
-#[global_allocator]
-static ALLOC: dhat::Alloc = dhat::Alloc;
-
+/// Allocations made by this thread while `body` runs.
+///
+/// By this thread, which is the whole point and is what `M64.0` is about. See
+/// `docs/internal/standards/testing.md`.
 fn allocations(body: impl FnOnce()) -> u64 {
-    let before = dhat::HeapStats::get().total_blocks;
-    body();
-    dhat::HeapStats::get().total_blocks - before
+    allocation_counter::measure(body).count_total
 }
 
 /// The four shapes the reference workload sends, in the proportions it sends
@@ -38,8 +36,6 @@ const WORKLOAD: [&str; 4] = [
 
 #[test]
 fn the_route_decision_stays_inside_its_budget() {
-    let _profiler = dhat::Profiler::builder().testing().build();
-
     // --- the counter counts ------------------------------------------------
     let sanity = allocations(|| {
         std::hint::black_box(vec![0_u8; 64]);
