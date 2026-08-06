@@ -7758,3 +7758,18 @@ recognised so it can be refused rather than read as a version.
   same push.
   Acceptance: one fmt run per push, and the reasoning in the workflow rather
   than only here.
+- [x] `M53.2` A check whose one-line summary claimed the workspace.
+  `check-wired.sh` announced "everything written to be used is used". It reads
+  a watchlist of eight symbols and checks those. It cannot find the next
+  unwired symbol on its own.
+  The script's own body was already honest about this and argues the case
+  against a general scanner: nearly every `pub` item in a library legitimately
+  has no in-tree caller, so a scan would be mostly false positives, and the
+  list is short precisely because every entry is there from a real defect. Only
+  the summary oversold it, which is the same shape as the `SHOW MEM` row and
+  the regex that matched one link in eighteen.
+  So the summary is corrected rather than the check replaced, and the reason a
+  scanner would be worse is now in the header where somebody would go looking
+  before writing one.
+  Acceptance: the header, the run banner and the script index all say what it
+  does.

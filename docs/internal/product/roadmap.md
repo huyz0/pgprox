@@ -2985,4 +2985,12 @@ The script stays, because it is the pre-commit hook's fmt entry and
 `m0-complete.sh` calls it; that second caller is also why dropping the CI line
 loses no coverage if fmt ever leaves `check-crate.sh`.
 
-Completion condition: `scripts/check-drift.sh`, which holds the gates index.
+**`check-wired.sh` announced "everything written to be used is used"** and reads
+a watchlist of eight symbols. Its own body was already honest and argues against
+a general scanner: nearly every `pub` item in a library legitimately has no
+in-tree caller, so a scan would be mostly false positives. Only the summary
+oversold it, which is the same shape as the `SHOW MEM` row and the regex that
+matched one link in eighteen. The summary is corrected and the argument against
+a scanner now sits in the header, where somebody would look before writing one.
+
+Completion condition: `scripts/check-drift.sh`, which holds both indexes.

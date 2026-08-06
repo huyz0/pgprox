@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Everything written to be used is used.
+# Every symbol on the wiring list is still reached.
+#
+# The list, not the workspace. This is a watchlist of things that were once
+# written and not called, and it checks those. It cannot find the next one on
+# its own, and the rationale below says why a script that tried would be worse:
+# nearly every `pub` item in a library legitimately has no in-tree caller.
 #
 #   scripts/check-wired.sh
 #
@@ -52,7 +57,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 cd "$REPO_ROOT"
 
-echo "wiring: everything written to be used is used"
+echo "wiring: every symbol on the list is still reached"
 echo
 
 # symbol <TAB> the file that defines it <TAB> what it is for

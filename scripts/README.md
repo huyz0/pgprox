@@ -23,7 +23,7 @@ Seconds each. These are the pre-commit hook, and CI runs the same files.
 | `check-sans-io.sh` | A library crate naming a socket type or reading the real clock |
 | `check-secrets.sh` | An exposed credential reaching a formatting macro |
 | `check-unsafe.sh` | An `unsafe` block that does not meet the five conditions |
-| `check-wired.sh` | Something written to be used that nothing uses |
+| `check-wired.sh` | A symbol on the wiring watchlist that nothing reaches any more |
 | `check-core-contract.sh` | A `pgprox-core` trait change arriving without its implementors or its ADR |
 | `check-tests-kept.sh` | A test that disappeared without being declared |
 | `check-commit-msg.sh` | A commit subject naming no backlog task |
