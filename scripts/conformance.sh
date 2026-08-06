@@ -76,12 +76,42 @@ start_postgres() {
   local major="$1"
   PG_CONTAINER="pgprox-conformance-$major-$$"
   docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+  # The host port is chosen here rather than by `-P`.
+  #
+  # `-P` asks the daemon to pick, and a daemon that cannot pick says so by
+  # publishing nothing: the container comes up healthy, `PublishAllPorts` is
+  # true, and `NetworkSettings.Ports` is `{"5432/tcp":[]}`. `docker port` then
+  # prints "no public port '5432/tcp' published", which reads like the
+  # container failed to start and is not that at all.
+  #
+  # Observed on Docker Desktop 29.6.2 under WSL2, where every dynamic publish
+  # allocates nothing and every fixed publish works, on any image and any port.
+  # Asking for a specific port is the difference between a suite that runs
+  # there and one that does not, and it costs a free-port probe.
+  local port
+  port="$(python3 -c "
+import socket
+s = socket.socket()
+s.bind(('127.0.0.1', 0))
+print(s.getsockname()[1])
+s.close()
+")" || return 1
+
   docker run -d --rm --name "$PG_CONTAINER" \
     -e POSTGRES_HOST_AUTH_METHOD=trust \
     -e POSTGRES_DB=conformance \
-    -P "postgres:$major-alpine" >/dev/null || return 1
+    -p "$port:5432" "postgres:$major-alpine" >/dev/null || return 1
   PG_PORT="$(docker port "$PG_CONTAINER" 5432/tcp | head -1 | sed 's/.*://')"
-  [[ -n "$PG_PORT" ]]
+
+  # The bind can still lose a race against anything else that took the port in
+  # the gap, and it can still publish nothing on a daemon that refuses. Both
+  # end here, and saying which is the point: without this the caller reports
+  # "could not start Postgres" for a container that is running fine.
+  if [[ -z "$PG_PORT" ]]; then
+    printf '       container %s is up but published no host port for %s\n' \
+      "$PG_CONTAINER" "$port" >&2
+    return 1
+  fi
 }
 
 # Removes every container this run started, not the last one named.

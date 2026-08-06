@@ -2916,4 +2916,22 @@ failing test and reading it back rather than by waiting for the flake.
 occurrence diagnosable, which is all that can honestly be claimed about
 something nobody has seen twice.
 
-Completion condition: `scripts/check-coverage.sh`.
+### The one that had a definite cause
+
+`conformance.sh` started Postgres with `-P`. On Docker Desktop 29.6.2 under
+WSL2 the daemon accepts that and allocates nothing: the container is `Up`,
+`PublishAllPorts` is true, and `NetworkSettings.Ports` is `{"5432/tcp":[]}`.
+`docker port` then prints "no public port '5432/tcp' published", which reads
+like the container failed to start and is the opposite of what happened.
+
+Characterised rather than assumed. Every dynamic publish allocates nothing and
+every fixed publish works, on any image and any port, with 53 host ports held
+and no exhaustion anywhere. Dynamic allocation specifically.
+
+The suite now probes for a free port and asks for it by number. One socket
+bind, and it works on both kinds of daemon. `M1F`'s two Postgres versions had
+never actually run on this machine, and the gate had been reported as "needs
+Docker" for as long as anybody had looked at it, which was wrong: Docker was
+there and working.
+
+Completion condition: the two commands above.

@@ -7709,3 +7709,18 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a failing test is named in the gate's output and the full log
   path is printed; a passing run leaves no temp file behind; verified by
   planting a failing test and reading it back.
+- [x] `M52.1` A suite that could not run where the daemon will not pick a port.
+  `conformance.sh` started Postgres with `-P`. On Docker Desktop 29.6.2 under
+  WSL2 the daemon accepts that and allocates nothing: the container is `Up`,
+  `PublishAllPorts` is true, and `NetworkSettings.Ports` is `{"5432/tcp":[]}`.
+  `docker port` then prints "no public port '5432/tcp' published", which reads
+  like the container failed to start and is not that at all.
+  Characterised rather than assumed: every dynamic publish allocates nothing
+  and every fixed publish works, on any image and any port, with 53 host ports
+  already held and no exhaustion. So it is dynamic allocation specifically.
+  The suite now probes for a free port and asks for it by number, which costs
+  one socket bind and works on both kinds of daemon. `M1F` never ran its two
+  Postgres versions on this machine before this.
+  Acceptance: `conformance.sh 17 18` passes including both client-side checks,
+  `m1f-complete.sh` passes, no container outlives the run, and a publish that
+  still yields nothing says the container is up rather than that it failed.
