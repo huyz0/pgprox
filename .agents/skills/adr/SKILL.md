@@ -38,7 +38,7 @@ Status: accepted | superseded by [NNNN](...) | proposed
 ## Alternatives rejected
 ```
 
-`## Consequences` is checked by `scripts/m-1-complete.sh`. A record without it
+`## Consequences` is checked by `scripts/gates/m-1-complete.sh`. A record without it
 is incomplete by definition.
 
 ## Writing each section

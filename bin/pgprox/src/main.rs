@@ -2,7 +2,7 @@
 //!
 //! Deliberately almost empty. This file is the only one excluded from
 //! coverage, so anything it holds is untested by construction, and
-//! `scripts/m6-complete.sh` fails if it grows past a handful of lines.
+//! `scripts/gates/m6-complete.sh` fails if it grows past a handful of lines.
 //!
 //! Returning the error rather than printing it is what keeps the exclusion
 //! honest: the formatting is `StartupError`'s, and that is tested.

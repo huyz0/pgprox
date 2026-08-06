@@ -86,7 +86,7 @@ fi
 # at planted files instead of writing them into `scripts/`. A test that plants a
 # deliberately broken script in the tree it is testing leaves it there when it
 # is interrupted, and this runs in pre-commit.
-SHELL_ROOTS="${PGPROX_SHELL_ROOTS:-scripts/*.sh tests/gates/*.sh}"
+SHELL_ROOTS="${PGPROX_SHELL_ROOTS:-scripts/*.sh scripts/gates/*.sh tests/gates/*.sh}"
 
 # --- a gate that cannot fail --------------------------------------------------
 #
@@ -191,7 +191,7 @@ done
 
 # --- a milestone in the status table can be checked ---------------------------
 #
-# `M18.3`. The rule below this one walks `scripts/m*-complete.sh` and requires
+# `M18.3`. The rule below this one walks `scripts/gates/*.sh` and requires
 # each to be named in CI. That is the wrong direction and it is why `M16` and
 # `M17` both closed with nothing to run: it checks that the gates that exist are
 # wired, never that a milestone has one. `M10.17` established that a milestone
@@ -202,7 +202,7 @@ done
 # section, and that every `scripts/...` path inside it exists. Not an
 # `mNN-complete.sh`: three milestones legitimately point elsewhere. `M1`'s gate
 # is `scripts/conformance.sh 17 18`, `M2`'s is a `cargo nextest` invocation and
-# `M8`'s is four scripts led by `scripts/release-check.sh`. A rule demanding the
+# `M8`'s is four scripts led by `scripts/gates/release-check.sh`. A rule demanding the
 # naming convention would have failed all three and been turned off, which is
 # the failure mode `M12.8` names: a check people route around is worse than no
 # check.
@@ -304,7 +304,7 @@ if [[ -f "$CI_WORKFLOW" ]]; then
   # same reason: it is the only thing that checks the gates can fail at all, so
   # a tree where it is not run is a tree where every other name in this list is
   # a claim. `M12.1`.
-  for gate in scripts/m*-complete.sh scripts/release-check.sh scripts/fuzz.sh \
+  for gate in scripts/gates/*.sh scripts/fuzz.sh \
               scripts/mutants.sh tests/gates/negative.sh; do
     [[ -f "$gate" ]] || continue
     if ! grep -qF "$gate" "$CI_WORKFLOW"; then
@@ -336,6 +336,42 @@ while read -r script; do
   fi
 done < <(grep -oE 'scripts/[a-z0-9-]+\.sh' AGENTS.md | sort -u)
 (( missing_script == 0 )) && ok "every script AGENTS.md names exists and runs"
+
+# --- scripts/README.md indexes every script -----------------------------------
+#
+# There are eighty-odd scripts here and forty-five of them are milestone gates,
+# which is the shape that makes a directory unreadable: more than half the files
+# are things nobody needs to read, and nothing says which half.
+#
+# The index is what fixes that, and an index is worth exactly its completeness.
+# The gates are exempt as a group rather than listed, because listing
+# forty-five frozen files is the problem restated.
+INDEX="${PGPROX_SCRIPT_INDEX:-scripts/README.md}"
+
+if [[ ! -f "$INDEX" ]]; then
+  fail "$INDEX is missing, and eighty scripts with no index is where this started"
+else
+  unindexed=""
+  indexed=0
+  for script in scripts/*.sh scripts/*.py; do
+    [[ -f "$script" ]] || continue
+    name="$(basename "$script")"
+    # `lib.sh` is the helper every other script sources rather than something
+    # anybody runs, and it has its own section.
+    [[ "$name" == "lib.sh" ]] && continue
+    indexed=$((indexed + 1))
+    grep -qF "\`$name\`" "$INDEX" || unindexed+=" $name"
+  done
+
+  if (( indexed == 0 )); then
+    fail "no scripts found to index, so this check just passed on nothing"
+  elif [[ -z "$unindexed" ]]; then
+    ok "every script is in the index ($indexed)"
+  else
+    fail "these scripts exist and $INDEX does not name them:$unindexed"
+    printf '       a script nobody can find is a script nobody runs\n'
+  fi
+fi
 
 # --- AGENTS.md indexes every standard -----------------------------------------
 #

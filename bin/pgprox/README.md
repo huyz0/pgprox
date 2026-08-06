@@ -13,8 +13,8 @@ untested by construction.
 
 Keeping it to argument parsing and one call means the exclusion buys nothing.
 The wiring in `lib.rs` and below is called by tests with fakes in place of
-sockets, and `scripts/m6-complete.sh` fails if `main.rs` grows past a handful
-of lines.
+sockets, and `scripts/gates/m6-complete.sh` fails if `main.rs` grows past a
+handful of lines.
 
 ## What only exists here
 

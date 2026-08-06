@@ -133,7 +133,7 @@ case_m7_scale() {
   # Nothing recorded at all.
   rm -rf "$dir"; mkdir -p "$dir"
   expect_fail "refuses an empty perf directory" \
-    env PGPROX_PERF_DIR="$dir" scripts/m7-complete.sh
+    env PGPROX_PERF_DIR="$dir" scripts/gates/m7-complete.sh
 
   # The regression. Documents that match `run-*.md` and are not scale runs, which
   # is what eleven of the sixteen in `docs/internal/product/perf` are. The old check reported
@@ -142,20 +142,20 @@ case_m7_scale() {
   scale_doc "$dir" run-2026-01-01-cache.md "The cache helps by about seven percent" ""
   scale_doc "$dir" run-2026-01-02-pinning.md "What pinning costs multiplexing" ""
   expect_fail "refuses run documents that are not scale runs" \
-    env PGPROX_PERF_DIR="$dir" scripts/m7-complete.sh
+    env PGPROX_PERF_DIR="$dir" scripts/gates/m7-complete.sh
 
   # A scale run, but at a connection count that proves nothing. The old check
   # could not see the number at all.
   rm -rf "$dir"; mkdir -p "$dir"
   scale_doc "$dir" run-2026-01-03-tiny.md "Scale run: 8 connections" 8
   expect_fail "refuses a scale run below the connection count M7 asks for" \
-    env PGPROX_PERF_DIR="$dir" scripts/m7-complete.sh
+    env PGPROX_PERF_DIR="$dir" scripts/gates/m7-complete.sh
 
   # And the shape that must pass, so the check is not merely strict.
   rm -rf "$dir"; mkdir -p "$dir"
   scale_doc "$dir" run-2026-01-04-1000.md "Scale run: 1000 connections, compose stack" 1000
   expect_pass "accepts a scale run at the stated connection count" \
-    env PGPROX_PERF_DIR="$dir" scripts/m7-complete.sh
+    env PGPROX_PERF_DIR="$dir" scripts/gates/m7-complete.sh
 }
 
 # --- m9-complete.sh, the cache figure, M12.3 ---------------------------------
@@ -174,24 +174,24 @@ case_m9_cache() {
   # the roadmap claims. This is the regression: the old check counted the file.
   printf '# The cache run\n\nIt was faster, roughly.\n' > "$dir/run-2026-01-01-cache.md"
   expect_fail "refuses a cache run that does not record the claimed figure" \
-    env PGPROX_PERF_DIR="$dir" PGPROX_ROADMAP="$road" scripts/m9-complete.sh
+    env PGPROX_PERF_DIR="$dir" PGPROX_ROADMAP="$road" scripts/gates/m9-complete.sh
 
   # The other direction: the run says 9.9%, the roadmap says 7.8%. A number
   # that drifted from its evidence.
   printf '# The cache run\n\nThe cache costs 9.9%% of the median.\n' > "$dir/run-2026-01-01-cache.md"
   expect_fail "refuses a roadmap figure its runs no longer support" \
-    env PGPROX_PERF_DIR="$dir" PGPROX_ROADMAP="$road" scripts/m9-complete.sh
+    env PGPROX_PERF_DIR="$dir" PGPROX_ROADMAP="$road" scripts/gates/m9-complete.sh
 
   # A roadmap row with no figure at all: nothing to hold the milestone to.
   printf '| M9 | Query cache | complete; the cache is good |\n' > "$road"
   expect_fail "refuses a roadmap row that states no figure" \
-    env PGPROX_PERF_DIR="$dir" PGPROX_ROADMAP="$road" scripts/m9-complete.sh
+    env PGPROX_PERF_DIR="$dir" PGPROX_ROADMAP="$road" scripts/gates/m9-complete.sh
 
   # And the tie intact.
   printf '| M9 | Query cache | complete; it costs 7.8%% of the median |\n' > "$road"
   printf '# The cache run\n\nThe cache costs 7.8%% of the median.\n' > "$dir/run-2026-01-01-cache.md"
   expect_pass "accepts a figure a run records" \
-    env PGPROX_PERF_DIR="$dir" PGPROX_ROADMAP="$road" scripts/m9-complete.sh
+    env PGPROX_PERF_DIR="$dir" PGPROX_ROADMAP="$road" scripts/gates/m9-complete.sh
 }
 
 # --- m11-complete.sh, the admission run, M12.4 -------------------------------
@@ -210,19 +210,19 @@ case_m11_admission() {
 
   # No admission run at all.
   expect_fail "refuses a perf directory with no admission run" \
-    env PGPROX_PERF_DIR="$dir" scripts/m11-complete.sh
+    env PGPROX_PERF_DIR="$dir" scripts/gates/m11-complete.sh
 
   # The regression: a file whose name matches and whose content does not
   # address the question. The old check reported the claim from the filename.
   printf '# Admission\n\nThe fleet was fine.\n' > "$dir/run-2026-01-01-admission.md"
   expect_fail "refuses an admission run that names no SQLSTATE" \
-    env PGPROX_PERF_DIR="$dir" scripts/m11-complete.sh
+    env PGPROX_PERF_DIR="$dir" scripts/gates/m11-complete.sh
 
   # Half the question. 53300 without 57014 does not distinguish the two
   # refusals the pool is careful to keep apart.
   printf '# Admission\n\nNo client saw 53300.\n' > "$dir/run-2026-01-01-admission.md"
   expect_fail "refuses an admission run that names only one of the two codes" \
-    env PGPROX_PERF_DIR="$dir" scripts/m11-complete.sh
+    env PGPROX_PERF_DIR="$dir" scripts/gates/m11-complete.sh
 }
 
 # --- m1f-complete.sh, the scope ADRs, M12.5 ----------------------------------
@@ -247,14 +247,14 @@ case_m1f_adr() {
   # was invisible exactly where it was checked. `M40.1`.
   expect_reports "refuses a decisions directory with neither scope ADR" \
     'FAIL.*no ADR deciding what to do about protocol 3.2' \
-    env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
+    env PGPROX_DECISIONS="$dir" scripts/gates/m1f-complete.sh
 
   # The regression: files with the right names and nothing in them.
   : > "$dir/0016-protocol-3-2-deferred.md"
   : > "$dir/0015-replication-is-out-of-scope.md"
   expect_reports "refuses an empty file with the right name" \
     'FAIL.*has no Status line' \
-    env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
+    env PGPROX_DECISIONS="$dir" scripts/gates/m1f-complete.sh
 
   # An ADR that has not decided yet. A gate that reports a recorded decision
   # here is reporting the filename.
@@ -262,7 +262,7 @@ case_m1f_adr() {
   printf '# 0015. Replication\n\nStatus: accepted\n' > "$dir/0015-replication-is-out-of-scope.md"
   expect_reports "refuses an ADR still marked proposed" \
     "FAIL.*is 'proposed', so" \
-    env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
+    env PGPROX_DECISIONS="$dir" scripts/gates/m1f-complete.sh
 
   # And both decided, which the ADR check must report ok for.
   #
@@ -273,7 +273,7 @@ case_m1f_adr() {
   printf '# 0016. Protocol 3.2\n\nStatus: accepted\n' > "$dir/0016-protocol-3-2-deferred.md"
   expect_reports "accepts two ADRs that decided" \
     'protocol 3.2 handling is a recorded decision' \
-    env PGPROX_DECISIONS="$dir" scripts/m1f-complete.sh
+    env PGPROX_DECISIONS="$dir" scripts/gates/m1f-complete.sh
 }
 
 # --- check-drift.sh, a milestone with no way to check it, M18.3 ---------------
@@ -320,7 +320,7 @@ PLANT
 ## M99: a milestone naming a gate that is gone (complete)
 
 ```bash
-scripts/m99-complete.sh
+scripts/gates/m99-complete.sh
 ```
 PLANT
   expect_fail "flags a milestone naming a script that does not exist" \
@@ -479,9 +479,10 @@ case_every_gate() {
   local root="$WORK/bare"
   rm -rf "$root"; mkdir -p "$root/scripts"
   cp scripts/*.sh "$root/scripts/"
+  mkdir -p "$root/scripts/gates" && cp scripts/gates/*.sh "$root/scripts/gates/"
 
   local g
-  for g in "$root"/scripts/m*-complete.sh "$root"/scripts/release-check.sh; do
+  for g in "$root"/scripts/gates/*.sh; do
     [[ -f "$g" ]] || continue
     expect_fail "$(basename "$g") fails when its artefacts are absent" bash "$g"
   done
@@ -505,7 +506,7 @@ case_m15_missing_test() {
 
   local root="$WORK/m15"
   rm -rf "$root"; mkdir -p "$root"
-  cp scripts/m15-complete.sh "$root/gate.sh"
+  cp scripts/gates/m15-complete.sh "$root/gate.sh"
 
   # One name mangled, everything else left alone, so a failure here is about
   # that name rather than about the tree.
@@ -606,6 +607,7 @@ tests_kept_repo() {
   local repo="$WORK/kept"
   rm -rf "$repo"; mkdir -p "$repo/scripts" "$repo/s"
   cp scripts/*.sh "$repo/scripts/"
+  mkdir -p "$repo/scripts/gates" && cp scripts/gates/*.sh "$repo/scripts/gates/"
   git -C "$repo" init -q .
   git -C "$repo" config user.email t@example.com
   git -C "$repo" config user.name t
@@ -826,6 +828,7 @@ core_contract_repo() {
   rm -rf "$repo"; mkdir -p "$repo/scripts" "$repo/crates/pgprox-core/src" \
                            "$repo/crates/other/src" "$repo/docs/internal/product/decisions"
   cp scripts/*.sh "$repo/scripts/"
+  mkdir -p "$repo/scripts/gates" && cp scripts/gates/*.sh "$repo/scripts/gates/"
   git -C "$repo" init -q .
   git -C "$repo" config user.email t@example.com
   git -C "$repo" config user.name t
@@ -893,6 +896,7 @@ case_named_scripts() {
   local root="$WORK/agentsroot"
   rm -rf "$root"; mkdir -p "$root/scripts" "$root/.agents/skills"
   cp scripts/*.sh "$root/scripts/"
+  mkdir -p "$root/scripts/gates" && cp scripts/gates/*.sh "$root/scripts/gates/"
   printf 'Named: `scripts/does-not-exist.sh`\n' > "$root/AGENTS.md"
   expect_fail "refuses a script AGENTS.md names and does not have" \
     bash "$root/scripts/check-drift.sh"

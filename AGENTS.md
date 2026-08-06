@@ -84,26 +84,29 @@ no script or with the wrong one credited.
 
 ## Checks
 
+[scripts/README.md](scripts/README.md) is the index: what every script is for,
+which run on every commit, and which want Docker and an hour. It is checked for
+completeness, so a script added and left out of it fails the pre-commit hook.
+
+The ones you will run most:
+
 ```bash
-scripts/check-fmt.sh              # workspace formatting
 scripts/check-crate.sh <crate>    # fmt and clippy for one crate
 scripts/check-coverage.sh <crate> # the 95% gate
 scripts/check-drift.sh            # derived files still match canonical source
-scripts/check-links.sh            # every relative Markdown link resolves
-scripts/check-readmes.sh          # every crate says what it is and what it uses
-scripts/check-sans-io.sh          # business logic touches no socket and no clock
-scripts/check-secrets.sh          # no exposed credential reaches a formatter
-scripts/check-wired.sh            # everything written to be used is used
 ```
 
-Measurement, which is slower and runs when asked rather than per commit:
+Measurement is slower and runs when asked rather than per commit:
 
 ```bash
 scripts/bench.sh                  # instruction counts against the baseline
-scripts/profile.sh                # replay the workload, semantic coverage
 scripts/scale.sh <connections>    # RSS, added latency, upstream connections
 scripts/e2e.sh                    # the compose stack and M6's three properties
 ```
+
+The forty-five milestone gates are in `scripts/gates/`, one per milestone, all
+run by CI. They are satisfied rather than maintained, and the roadmap section
+for a milestone says in prose what its gate checks.
 
 These same scripts run from git hooks, from CI, and from agent hooks. If you
 add a check, add it to a script so all three pick it up.

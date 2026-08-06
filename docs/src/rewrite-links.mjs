@@ -16,7 +16,7 @@
 //
 // The second rule is not a list of directories, and that is deliberate. Every
 // page is a direct child of `docs/`, which the collection's glob and
-// `scripts/m41-complete.sh` both depend on, so a Markdown link containing a
+// `scripts/gates/m41-complete.sh` both depend on, so a Markdown link containing a
 // slash cannot be a page on this site whatever it names. That was `../` when
 // the design record lived at the repository root and is `internal/` now, and
 // this did not have to change for the move.

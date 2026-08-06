@@ -63,7 +63,7 @@ export default defineConfig({
       // `edit/main/` became `edit/`: fourteen pages linking to a branch called
       // `docs`. The link points at GitHub either way and nothing local follows
       // it, so only the built output ever showed it.
-      // `scripts/m44-complete.sh` resolves one and checks where it lands.
+      // `scripts/gates/m44-complete.sh` resolves one and checks where it lands.
       editLink: {
         baseUrl: 'https://github.com/pgprox/pgprox/edit/main/docs/',
       },

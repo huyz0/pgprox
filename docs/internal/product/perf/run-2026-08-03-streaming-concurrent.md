@@ -20,7 +20,7 @@ WORKLOAD=product/perf/workload-large.yaml scripts/scale.sh 200 --local
 ## The number
 
 Two connection counts, same tenants, same transaction shapes, same think time,
-same churn. `scripts/m23-complete.sh` checks that the two documents differ in
+same churn. `scripts/gates/m23-complete.sh` checks that the two documents differ in
 their statements and nowhere else, so a difference between the runs has one
 cause.
 

@@ -96,7 +96,7 @@ done
 (( no_script_ref == 0 )) && ok "skills with commands call scripts/"
 
 # --- the scripts themselves depend on nothing exotic -------------------------
-for f in scripts/*.sh; do
+for f in scripts/*.sh scripts/gates/*.sh; do
   [[ -f "$f" ]] || continue
   head -1 "$f" | grep -q '^#!/usr/bin/env bash' \
     || fail "$(basename "$f"): needs '#!/usr/bin/env bash' to be portable across machines"
@@ -113,7 +113,7 @@ ok "scripts are portable bash and executable"
 # A line naming two or more vendors is an accept-any-adapter list, which is the
 # correct pattern. A line naming exactly one is a hard dependency on that tool.
 leaks=0
-for f in scripts/*.sh .pre-commit-config.yaml .github/workflows/*.yml; do
+for f in scripts/*.sh scripts/gates/*.sh .pre-commit-config.yaml .github/workflows/*.yml; do
   [[ -f "$f" ]] || continue
   # These two legitimately inspect vendor paths; that is their job.
   case "$f" in *check-portability.sh|*check-drift.sh) continue;; esac

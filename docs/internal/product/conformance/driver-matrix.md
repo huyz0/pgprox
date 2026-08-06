@@ -6,7 +6,7 @@ Describes: be1a850d28959e39af8f856e5f389ac79ac1e1a8
 
 That is the newest commit touching `bin/pgprox`,
 `crates/pgprox-session` or `crates/pgprox-proto` when this ran.
-`scripts/m21-complete.sh` compares it against the tree to say how far
+`scripts/gates/m21-complete.sh` compares it against the tree to say how far
 behind these results are, because a date cannot be compared to code.
 
 Five drivers against `bin/pgprox` over TLS, with a real Postgres

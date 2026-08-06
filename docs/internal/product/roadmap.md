@@ -55,7 +55,7 @@ No Rust. Standards, product docs, ADRs, portable skills, and the enforcement
 layer, all validated before any code depends on them.
 
 ```bash
-scripts/m-1-complete.sh
+scripts/gates/m-1-complete.sh
 ```
 
 Checks: every standards file present and non-empty, `AGENTS.md` and its
@@ -70,7 +70,7 @@ in `product/decisions/`.
 quality apparatus enforcing on a nearly empty codebase.
 
 ```bash
-scripts/m0-complete.sh
+scripts/gates/m0-complete.sh
 ```
 
 Checks: workspace builds, `cargo fmt --all --check` clean, `cargo clippy
@@ -100,7 +100,7 @@ legitimate large results, and the conformance suite is narrow. See
 [backlog.md](backlog.md) for the findings in full.
 
 ```bash
-scripts/m1r-complete.sh
+scripts/gates/m1r-complete.sh
 ```
 
 Checks: a header-only decode and a relay state machine exist, the inspect cap is
@@ -112,7 +112,7 @@ review named by name rather than by count.
 Measured against pgdog, pgbouncer and odyssey rather than guessed at.
 
 ```bash
-scripts/m1f-complete.sh
+scripts/gates/m1f-complete.sh
 ```
 
 Checks: the message surface, SCRAM against published vectors, the frozen sidecar
@@ -171,7 +171,7 @@ DML-bearing statement is classified read-only.
 `pgprox-session` and `bin/pgprox` composing the real implementations.
 
 ```bash
-scripts/m6-complete.sh && scripts/e2e.sh
+scripts/gates/m6-complete.sh && scripts/e2e.sh
 ```
 
 The first is the part that runs without Docker: the two seams left open on
@@ -188,7 +188,7 @@ Reference workload, semantic coverage report, allocation budgets,
 instruction-count benchmarks, buffer reclaim, the connection harness.
 
 ```bash
-scripts/m7-complete.sh        # the apparatus, without Docker
+scripts/gates/m7-complete.sh        # the apparatus, without Docker
 scripts/scale.sh 1000         # a run, against the compose stack
 scripts/scale.sh 1000 --local # a run, against one node on this machine
 ```
@@ -267,7 +267,7 @@ FIPS build stage, driver cipher-suite matrix, Helm chart, probe and preStop
 wiring, rolling upgrade rehearsal.
 
 ```bash
-scripts/release-check.sh      # the gate, seconds, no Docker
+scripts/gates/release-check.sh      # the gate, seconds, no Docker
 scripts/fips-check.sh         # the FIPS variant, built and run
 scripts/cipher-matrix.sh      # five drivers against both builds
 scripts/rolling-upgrade.sh    # the rehearsal, in a kind cluster
@@ -311,7 +311,7 @@ failed to start.
 `pgprox-cache` behind the trait `pgprox-core` has carried since M0.
 
 ```bash
-scripts/m9-complete.sh
+scripts/gates/m9-complete.sh
 ```
 
 That replaces `cargo nextest run -p pgprox-cache`, which says the crate's own
@@ -396,7 +396,7 @@ would move the query off the database and leave every bit of the pool work
 function of the SQL and the parameters: whether a `RowDescription` belongs in it
 depends on the client's framing, so one driver's recorded bytes desynchronise
 another driver. ADR 0022 is the decision, `M9.18` through `M9.27` are the work,
-and `scripts/m9-complete.sh` passes either way because none of this changes what
+and `scripts/gates/m9-complete.sh` passes either way because none of this changes what
 the cache promises.
 
 **What building that found, all of it in the fakes.** Three defects, and each was
@@ -433,7 +433,7 @@ a claim a reader would take at face value, with nothing that fails when it stops
 holding.
 
 ```bash
-scripts/m10-complete.sh
+scripts/gates/m10-complete.sh
 ```
 
 Checks: every milestone gate that does not need Docker runs in CI, the fuzz
@@ -510,7 +510,7 @@ This one works that list. Nothing in it is a feature: every task is a claim some
 milestone made and then qualified in its own words.
 
 ```bash
-scripts/m11-complete.sh
+scripts/gates/m11-complete.sh
 ```
 
 Four are measurable here: the throughput question `M10.9` declined to claim, the
@@ -565,7 +565,7 @@ claims do not always say what the milestone thinks they say. This one turns the
 same question on the gates themselves.
 
 ```bash
-scripts/m12-complete.sh
+scripts/gates/m12-complete.sh
 ```
 
 The defect has one shape. A check asks whether a file exists whose name matches
@@ -637,7 +637,7 @@ report conclusions nothing checks. This asks the same question of the sentence
 that introduces the rules those gates exist to serve.
 
 ```bash
-scripts/m13-complete.sh
+scripts/gates/m13-complete.sh
 ```
 
 Audited before the milestone was written, one rule at a time. Three hold. Four
@@ -704,7 +704,7 @@ a positive control for the same reason.
 ## M14: the crates mutation testing never reached (complete)
 
 ```bash
-scripts/m14-complete.sh
+scripts/gates/m14-complete.sh
 ```
 
 `scripts/mutants.sh` says in its own header that it runs "against the crates
@@ -776,7 +776,7 @@ against itself, and a harness can report success for a run that tested nothing.
 ## M15: the protocol crate under a second reading
 
 ```bash
-scripts/m15-complete.sh
+scripts/gates/m15-complete.sh
 ```
 
 `pgprox-proto` is the only crate in the workspace that parses bytes chosen by
@@ -853,7 +853,7 @@ running the check rather than for knowing the rule.
 ## M16: the streaming relay nothing streams through
 
 ```bash
-scripts/m16-complete.sh
+scripts/gates/m16-complete.sh
 ```
 
 `M15` read `pgprox-proto` three times and did not ask the one question that
@@ -934,7 +934,7 @@ condition and needs the three machines `M7`'s full run needed.
 ## M17: the binaries mutation testing never reached (complete)
 
 ```bash
-scripts/m17-complete.sh
+scripts/gates/m17-complete.sh
 ```
 
 `M14` put every crate under `crates/` into the mutation sweep and `M14.4` wrote
@@ -978,7 +978,7 @@ measurement in the file that sets them.
 ## M18: what the deployment story assumes
 
 ```bash
-scripts/m18-complete.sh
+scripts/gates/m18-complete.sh
 ```
 
 `M17` closed the last mutation survivor and the backlog went dry, which is when
@@ -1015,7 +1015,7 @@ neither, and it closed anyway. `M10.17` established that a milestone whose
 completion condition does not exist cannot be closed, and this is that rule with
 nothing enforcing it.
 
-Completion condition: `scripts/m18-complete.sh`, which is itself part of the
+Completion condition: `scripts/gates/m18-complete.sh`, which is itself part of the
 milestone rather than an afterthought, for the reason above.
 
 **Where it got to.** Three findings, and none of them was code.
@@ -1056,7 +1056,7 @@ choice. That is a separate spec and a larger one.
 ## M19: a seam for peer discovery (complete)
 
 ```bash
-scripts/m19-complete.sh
+scripts/gates/m19-complete.sh
 ```
 
 `M18.2` specified this and deliberately did not file its tasks, because filing
@@ -1078,7 +1078,7 @@ counts a peer alive from digests that *arrived*, which is what makes a one-way
 network failure safe. A third party telling a partitioned node the fleet is
 healthy is the two-leaders case ADR 0004's majority rule exists to prevent.
 
-Completion condition: `scripts/m19-complete.sh`, which exists from this
+Completion condition: `scripts/gates/m19-complete.sh`, which exists from this
 milestone's first commit and gains a check as each task lands. `M18.3` made a
 milestone with nothing to run a failure, and a gate that waited until the end
 would be the same defect wearing a schedule.
@@ -1117,7 +1117,7 @@ collision between two of them, and this project's gate does exactly that.
 ## M20: the protocol layer against pgbouncer, pgcat and odyssey (complete)
 
 ```bash
-scripts/m20-complete.sh
+scripts/gates/m20-complete.sh
 ```
 
 `M15` read `pgprox-proto` against its own header and against `pgbouncer`, and
@@ -1140,7 +1140,7 @@ it added for `Parse`, that "the proxy's record of what a connection holds is
 only correct if something notices when it is not". Nothing noticed for the
 other two halves.
 
-Completion condition: `scripts/m20-complete.sh`, which exists from this
+Completion condition: `scripts/gates/m20-complete.sh`, which exists from this
 milestone's first commit and gains a check as each task lands.
 
 ### Where it got to
@@ -1200,7 +1200,7 @@ and the relay loop is nothing else.
 ## M21: the driver matrix does not cover what M20 changed (complete)
 
 ```bash
-scripts/m21-complete.sh
+scripts/gates/m21-complete.sh
 ```
 
 `scripts/driver-matrix.sh` has run all five drivers against `bin/pgprox`, over
@@ -1229,7 +1229,7 @@ predates everything it is evidence about, which is `M18.1`'s finding in a new
 place: evidence describing a tree that no longer exists is worse than none,
 because it gets quoted.
 
-Completion condition: `scripts/m21-complete.sh`, which exists from this
+Completion condition: `scripts/gates/m21-complete.sh`, which exists from this
 milestone's first commit and gains a check as each task lands.
 
 ### Where it got to
@@ -1272,7 +1272,7 @@ out. A green probe says nothing until it has been seen to go red.
 ## M22: the mutants nobody has swept since M17 (complete)
 
 ```bash
-scripts/m22-complete.sh
+scripts/gates/m22-complete.sh
 ```
 
 `product/mutants-baseline.txt` was last written by `M17.4` on 2026-08-01, and
@@ -1293,7 +1293,7 @@ the crates it covers, and the gate says how far behind it is.
 One crate per commit. A sweep that finds a missing test produces a commit with a
 test in it, and those must not be bundled with a re-baseline.
 
-Completion condition: `scripts/m22-complete.sh`, which exists from this
+Completion condition: `scripts/gates/m22-complete.sh`, which exists from this
 milestone's first commit and gains a check as each crate is swept.
 
 ### Where it got to
@@ -1338,7 +1338,7 @@ M-1 and nothing ran it until `M10.3`.
 ## M23: the streaming question M16 left open, at the scale one machine has (complete)
 
 ```bash
-scripts/m23-complete.sh
+scripts/gates/m23-complete.sh
 ```
 
 `M16.1` measured one 16 MiB `DataRow` on one connection: 16,777,216 bytes held
@@ -1363,7 +1363,7 @@ The 100k half stays blocked, and this narrows what is unknown rather than
 closing it. What remains unmeasured is whether the same holds at a hundred
 thousand connections on real network hardware.
 
-Completion condition: `scripts/m23-complete.sh`, which checks the two workloads
+Completion condition: `scripts/gates/m23-complete.sh`, which checks the two workloads
 differ where they claim to and nowhere else, because that is what makes the
 pair a comparison rather than two numbers.
 
@@ -1418,7 +1418,7 @@ one of them.
 ## M24: a reading of every crate, and the nine things it found (complete)
 
 ```bash
-scripts/m24-complete.sh
+scripts/gates/m24-complete.sh
 ```
 
 Sixteen crates read against correctness, completeness, design, performance and
@@ -1439,7 +1439,7 @@ two answer differently about the same text.
 The rule was right and it was applied to the two places that had already been
 caught. Nothing looked for a third.
 
-Completion condition: `scripts/m24-complete.sh`, which runs a named test for
+Completion condition: `scripts/gates/m24-complete.sh`, which runs a named test for
 each finding and reads its exit status, per `M12.8`.
 
 ### Where it got to
@@ -1511,7 +1511,7 @@ without them until the control said otherwise.
 ## M25: the query cache against pgpool-II (complete)
 
 ```bash
-scripts/m25-complete.sh
+scripts/gates/m25-complete.sh
 ```
 
 `pgprox-cache` read against pgpool-II's `memqcache`, which is the closest thing
@@ -1538,7 +1538,7 @@ findings, and this milestone does not pretend otherwise.
 is invisible when it fires, it cannot be set, and nothing relates it to the
 budget it interacts with.
 
-Completion condition: `scripts/m25-complete.sh`, which runs a named test per
+Completion condition: `scripts/gates/m25-complete.sh`, which runs a named test per
 finding and reads its exit status, per `M12.8`, and refuses to pass with a
 ticked task it does not name, per `M24.0`.
 
@@ -1599,7 +1599,7 @@ well as its own.
 ## M26: what the query cache costs, measured for the first time (complete)
 
 ```bash
-scripts/m26-complete.sh
+scripts/gates/m26-complete.sh
 ```
 
 `run-2026-07-29-cache.md` measured what the cache is **worth** end to end: 7% of
@@ -1633,7 +1633,7 @@ The second number is smaller and points the same way: a hit costs two and a half
 times a miss, which is the wrong way round for a structure whose whole argument
 is that a hit is the cheap path.
 
-Completion condition: `scripts/m26-complete.sh`, which runs a named test per
+Completion condition: `scripts/gates/m26-complete.sh`, which runs a named test per
 finding and reads its exit status, and refuses to pass with a ticked task it
 does not name.
 
@@ -1700,7 +1700,7 @@ instructions, a reintroduced walk is two hundred thousand.
 ## M27: unsafe becomes a governed exception rather than a closed door (complete)
 
 ```bash
-scripts/m27-complete.sh
+scripts/gates/m27-complete.sh
 ```
 
 The workspace has set `unsafe_code = "forbid"` since M0. `forbid` is not `deny`:
@@ -1720,7 +1720,7 @@ actual use is a later task with a measurement attached, because a rule with no
 script is a rule nobody keeps and unsafe with no number is a liability with no
 evidence of upside.
 
-Completion condition: `scripts/m27-complete.sh`, which runs a named test per
+Completion condition: `scripts/gates/m27-complete.sh`, which runs a named test per
 finding and reads its exit status, and refuses to pass with a ticked task it
 does not name.
 
@@ -1772,7 +1772,7 @@ anyway, having taken a hit from 4,144 instructions to 1,460 without any.
 ## M28: the build configuration nobody had measured (complete)
 
 ```bash
-scripts/m28-complete.sh
+scripts/gates/m28-complete.sh
 ```
 
 `M27` closed on the observation that the hot-path procedure puts build
@@ -1786,7 +1786,7 @@ available are not: `panic = "abort"` is already taken, and
 `-C target-cpu=native` is wrong for a binary shipped as a container image that
 runs on hardware the build machine has never seen.
 
-Completion condition: `scripts/m28-complete.sh`.
+Completion condition: `scripts/gates/m28-complete.sh`.
 
 ### Where it got to
 
@@ -1834,7 +1834,7 @@ it is measuring the code.
 ## M29: the first exception the unsafe policy was asked for (complete)
 
 ```bash
-scripts/m29-complete.sh
+scripts/gates/m29-complete.sh
 ```
 
 `M27` produced a policy that lets unsafe in on evidence and deliberately shipped
@@ -1867,12 +1867,12 @@ Full detail in
 including what this does **not** say: four of the procedure's five patterns are
 untested here, and none of them has a candidate with a number behind it yet.
 
-Completion condition: `scripts/m29-complete.sh`.
+Completion condition: `scripts/gates/m29-complete.sh`.
 
 ## M30: the same procedure, applied to every crate (complete)
 
 ```bash
-scripts/m30-complete.sh
+scripts/gates/m30-complete.sh
 ```
 
 `M29` ran the unsafe procedure on one candidate in one crate, found nothing, and
@@ -1961,12 +1961,12 @@ unseen for twenty-nine milestones: the crates with benchmarks were the sans-I/O
 ones, and this one reads a socket. It has one now, over `tokio::io::duplex`, and
 it is in the gated baseline.
 
-Completion condition: `scripts/m30-complete.sh`.
+Completion condition: `scripts/gates/m30-complete.sh`.
 
 ## M31: the comments at M30's optimisation sites (complete)
 
 ```bash
-scripts/m31-complete.sh
+scripts/gates/m31-complete.sh
 ```
 
 The procedure `M30` followed sets a bar for the comment at an optimisation site,
@@ -2001,7 +2001,7 @@ No code changed, which the gate checks by holding three of `M30`'s figures at
 exactly what `M30` left them. A `debug_assert!` compiles out of a release build,
 and a figure that moved would mean one of these had reached one.
 
-Completion condition: `scripts/m31-complete.sh`.
+Completion condition: `scripts/gates/m31-complete.sh`.
 
 ## M32: the comparison against pgbouncer and pgcat (complete)
 
@@ -2081,12 +2081,12 @@ round one's peak.
 The pattern is worth keeping: every one was caught by a number being too good or
 too bad to believe, and none by a test.
 
-Completion condition: `scripts/m32-complete.sh`.
+Completion condition: `scripts/gates/m32-complete.sh`.
 
 ## M33: what pgbouncer and pgcat do differently (complete)
 
 ```bash
-scripts/m33-complete.sh
+scripts/gates/m33-complete.sh
 ```
 
 `M32` found pgbouncer serving 200 connections in 4.5 MB where pgprox needed 13.9
@@ -2127,7 +2127,7 @@ per-connection cost.
 Full detail in
 [run-2026-08-05-what-the-others-do.md](perf/run-2026-08-05-what-the-others-do.md).
 
-Completion condition: `scripts/m33-complete.sh`.
+Completion condition: `scripts/gates/m33-complete.sh`.
 
 ## M34: the seventeen kilobytes that are not the buffers (complete)
 
@@ -2170,7 +2170,7 @@ allocator rounds up to, against the 5,048 bytes `size_of_val` reports.
 Full detail in
 [run-2026-08-05-arenas.md](perf/run-2026-08-05-arenas.md).
 
-Completion condition: `scripts/m34-complete.sh`.
+Completion condition: `scripts/gates/m34-complete.sh`.
 
 ## M35: per-connection memory is a curve, not a number (complete)
 
@@ -2216,7 +2216,7 @@ called that an error rather than a result.
 Full detail in
 [run-2026-08-05-per-connection-is-not-a-number.md](perf/run-2026-08-05-per-connection-is-not-a-number.md).
 
-Completion condition: `scripts/m35-complete.sh`.
+Completion condition: `scripts/gates/m35-complete.sh`.
 
 ## M36: what an open, quiet connection costs (complete)
 
@@ -2264,7 +2264,7 @@ allocates, which no test in this repo has ever measured.
 Full detail in
 [run-2026-08-05-idle-connection-cost.md](perf/run-2026-08-05-idle-connection-cost.md).
 
-Completion condition: `scripts/m36-complete.sh`.
+Completion condition: `scripts/gates/m36-complete.sh`.
 
 ## M37: what a spawned task costs beyond its future (complete)
 
@@ -2306,12 +2306,12 @@ sitting on. Everything since `M34` assumed the first without checking.
 Full detail in
 [run-2026-08-05-spawn-cost.md](perf/run-2026-08-05-spawn-cost.md).
 
-Completion condition: `scripts/m37-complete.sh`.
+Completion condition: `scripts/gates/m37-complete.sh`.
 
 ## M38: the extrapolation M36 did not need to make (complete)
 
 ```bash
-scripts/m38-complete.sh
+scripts/gates/m38-complete.sh
 ```
 
 `M36` fitted a slope over 200 to 800 connections and reported 1.47 GB at a
@@ -2331,7 +2331,7 @@ number and that the wrong one is still visible beside it.
 ## M39: documentation for people who are not this repo (complete)
 
 ```bash
-scripts/m39-complete.sh
+scripts/gates/m39-complete.sh
 ```
 
 Every document here was written for whoever is building it. There was no README
@@ -2358,12 +2358,12 @@ repeatable, so its field is `peers` and deriving the flag from the field name
 invented an argument that does not exist. It now reads the parser's own match
 arms.
 
-Completion condition: `scripts/m39-complete.sh`.
+Completion condition: `scripts/gates/m39-complete.sh`.
 
 ## M40: a control that only worked where nothing else was broken (complete)
 
 ```bash
-scripts/m40-complete.sh
+scripts/gates/m40-complete.sh
 ```
 
 `tests/gates/negative.sh` has four cases for `m1f-complete.sh`'s scope ADRs, and
@@ -2388,7 +2388,7 @@ suite passes with no containers up.
 defect one level up: a control that passes by matching an exit code somebody
 else set.
 
-Completion condition: `scripts/m40-complete.sh`.
+Completion condition: `scripts/gates/m40-complete.sh`.
 
 ## M41: the docs become a site (complete)
 
@@ -2421,7 +2421,7 @@ somebody clicks. A rehype plugin rewrites both at build time: siblings become
 routes, escapes become GitHub URLs, and the source stays correct for the copy
 more people read first.
 
-Completion condition: `scripts/m41-complete.sh`.
+Completion condition: `scripts/gates/m41-complete.sh`.
 
 ## M42: the site's toolchain leaves the repository root (complete)
 
@@ -2438,13 +2438,13 @@ The paths that had to follow: the workflow runs `npm ci` and `npm run build`
 from `docsite/`, takes its artefact from `docsite/dist`, and tells the Node
 cache where the lockfile went, which otherwise caches nothing without saying so.
 
-Completion condition: `scripts/m41-complete.sh`, which now reads the moved
+Completion condition: `scripts/gates/m41-complete.sh`, which now reads the moved
 paths.
 
 ## M43: what it does, and what one request touches (complete)
 
 ```bash
-scripts/m43-complete.sh
+scripts/gates/m43-complete.sh
 ```
 
 `M39` gave a reader orientation, a tutorial, a reference, an operations guide
@@ -2473,12 +2473,12 @@ The gate reads the pin reasons out of the enum rather than trusting the page. A
 variant added later with no row leaves a reader told a session pins for fewer
 reasons than it does, which is `M13`'s subject in a page rather than a standard.
 
-Completion condition: `scripts/m43-complete.sh`.
+Completion condition: `scripts/gates/m43-complete.sh`.
 
 ## M44: the pages a review asks for (complete)
 
 ```bash
-scripts/m44-complete.sh
+scripts/gates/m44-complete.sh
 ```
 
 `M39` and `M43` documented what the proxy does and what one request touches.
@@ -2548,13 +2548,13 @@ and nothing local follows it. It is wrong only in the built output, which is the
 only place anyone clicks it. Two settings in two files, correct apart and wrong
 together, which is the shape a check has to hold rather than a reading.
 
-Completion condition: `scripts/m44-complete.sh`.
+Completion condition: `scripts/gates/m44-complete.sh`.
 
 ## M45: one directory for the pages and the thing that builds them (complete)
 
 ```bash
-scripts/m41-complete.sh
-scripts/m44-complete.sh
+scripts/gates/m41-complete.sh
+scripts/gates/m44-complete.sh
 ```
 
 `M42` moved the Node toolchain out of the repository root. It was right about
@@ -2797,3 +2797,47 @@ as everything else this week: a document that was right when written, describing
 a thing that moved, with nothing comparing the two.
 
 Completion condition: `scripts/check-readmes.sh`.
+
+## M51: eighty scripts and no index (complete)
+
+```bash
+scripts/check-drift.sh
+```
+
+`scripts/` held eighty-two files. Twelve were named anywhere.
+
+Forty-five of them are milestone gates, which is the shape that makes a
+directory unreadable: more than half the files are things nobody needs to read,
+and nothing says which half. `ls scripts/` sorted `m1f` between `m19` and
+`m20`.
+
+The gates now live in `scripts/gates/`, so the listing is thirty-seven entries
+of things somebody might actually run, and
+[`scripts/README.md`](../../../scripts/README.md) groups those thirty-seven by
+what they are for and what they need. Checks are seconds and run on every
+commit; measurement is minutes to hours and mostly wants Docker.
+
+`release-check.sh` moved with them. It is `M8`'s completion condition and the
+only gate not following the naming convention, so leaving it behind would have
+made `scripts/gates/*.sh` mean "most of the gates", which is the kind of nearly
+true rule that costs somebody an afternoon later.
+
+### The index is checked
+
+An index is worth exactly its completeness, and this one would rot the first
+time somebody added a script in a hurry. `check-drift.sh` now fails on a script
+the README does not name, with the gates exempt as a group rather than listed,
+because listing forty-five frozen files is the original problem restated.
+
+`AGENTS.md` stopped carrying its own list of eight. Two lists of the same thing
+is one list that drifts, and the shorter one was already missing half the
+checks.
+
+### What did not need doing
+
+Nothing was deleted. Every script in the directory is referenced by something,
+which was worth checking before proposing a cleanup that removed files: the
+instinct with eighty-two scripts is that some must be dead, and none was.
+
+Completion condition: `scripts/check-drift.sh`, which holds both the index and
+the rule that every gate is wired into CI.

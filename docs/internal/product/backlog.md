@@ -51,7 +51,7 @@ early produces tasks that are wrong by the time they are reached.
 - [x] `M-1.14` Skills, part three: `hot-path`, `wire-debug`, `skill-forge`.
 - [x] `M-1.15` Skill discovery symlink and per-crate `AGENTS.md` stubs for the
   twelve planned crates.
-- [x] `M-1.16` `scripts/m-1-complete.sh`, the milestone completion condition.
+- [x] `M-1.16` `scripts/gates/m-1-complete.sh`, the milestone completion condition.
   Acceptance: exits zero on a complete M-1 and non-zero with a useful message on
   each individual failure.
 - [~] `M-1.17` Portability check on a second tool. Run a small throwaway task
@@ -61,7 +61,7 @@ early produces tasks that are wrong by the time they are reached.
 - [x] `M-1.18` Close M-1 and unblock M0.
   Filed by `M12.10`, long after the commit that did it, for the same reason as
   `M1F.0`: the hook checked that the ID was well formed and not that it referred
-  to anything. `scripts/m-1-complete.sh` exits zero and M0 was cleared to start.
+  to anything. `scripts/gates/m-1-complete.sh` exits zero and M0 was cleared to start.
   The caveat it carried forward is still the right one and is still open:
   `M-1.17` is structurally complete and interactively outstanding, which ADR
   0012 records. A milestone closed with a known outstanding item is closed
@@ -76,7 +76,7 @@ Sizing note: the coverage gate is 95% per crate, so a task that adds a trait
 without its fake and tests leaves the tree red and is half a task. Every entry
 below is types plus tests plus fake where one applies.
 
-- [x] `M0.1` Define M0: this decomposition, and `scripts/m0-complete.sh`.
+- [x] `M0.1` Define M0: this decomposition, and `scripts/gates/m0-complete.sh`.
   Acceptance: the script exits non-zero now, naming each thing that is missing.
 - [x] `M0.2` Workspace skeleton. Root `Cargo.toml` with `[workspace.lints]`,
   `rustfmt.toml`, `deny.toml`, `.cargo/config.toml`.
@@ -128,7 +128,7 @@ below is types plus tests plus fake where one applies.
   since this is M9 work.
 - [x] `M0.15` Public surface. `lib.rs` re-exports only, `#![warn(missing_docs)]`
   satisfied, crate-level docs.
-  Acceptance: `scripts/m0-complete.sh` exits zero.
+  Acceptance: `scripts/gates/m0-complete.sh` exits zero.
 
 ## M1: protocol and TLS (track A)
 
@@ -228,7 +228,7 @@ including server `DataRow`s. Postgres field values reach 1 GB, so a legitimate
 small rows. Nothing larger than ~100 bytes, no NULLs, no COPY IN, no
 pipelining, no multi-statement query, no error mid-stream.
 
-- [x] `M1R.1` Define M1R: this decomposition and `scripts/m1r-complete.sh`.
+- [x] `M1R.1` Define M1R: this decomposition and `scripts/gates/m1r-complete.sh`.
 - [x] `M1R.2` `decode_header` and the per-direction inspect policy. Acceptance:
   a header decodes from exactly five bytes; every tag has a stated policy; the
   policy for `DataRow` and `CopyData` is forward-without-inspection.
@@ -490,7 +490,7 @@ rather than remembered.
 
 ### Group G: close
 
-- [x] `M1F.26` Close M1F. Acceptance: `scripts/m1f-complete.sh` exits zero.
+- [x] `M1F.26` Close M1F. Acceptance: `scripts/gates/m1f-complete.sh` exits zero.
 
 Remaining after five review rounds, all planned work rather than discovered
 defects: M1F.15 and M1F.16 are protocol 3.2, gated on the M1F.30 spec's open
@@ -519,7 +519,7 @@ for every tenant on that host. It is the one property with no graceful
 degradation, so it is proven by property test over a simulation rather than
 found in staging.
 
-- [x] `M3.1` Define M3: this decomposition and `scripts/m3-complete.sh`.
+- [x] `M3.1` Define M3: this decomposition and `scripts/gates/m3-complete.sh`.
 - [x] `M3.2` `pgprox-cluster` crate and the deterministic simulation: virtual
   clock, an injectable network that can delay, drop, reorder and partition, and
   seeded scheduling. Acceptance: the same seed produces the same run twice.
@@ -660,7 +660,7 @@ structure over strings and hashes and needs no protocol knowledge at all.
 with their statement names. `pgprox-session` joins them at M6, which is exactly
 what a composer is for. ADR 0011 is amended in `M5.1` to say so.
 
-- [x] `M5.1` Define M5: this decomposition, `scripts/m5-complete.sh`, and the
+- [x] `M5.1` Define M5: this decomposition, `scripts/gates/m5-complete.sh`, and the
   ADR 0011 amendment above. Acceptance: the gate script runs and reports what
   is missing rather than passing vacuously.
 - [x] `M5.2` `pgprox-route` and the statement classifier: a token-prefix scan
@@ -782,7 +782,7 @@ also needs no new dependency, and kubelet propagates a ConfigMap change on the
 order of a minute, so an event watcher would be reacting instantly to something
 that already took sixty seconds to arrive.
 
-- [x] `M4.1` Define M4: this decomposition, `scripts/m4-complete.sh`, and the
+- [x] `M4.1` Define M4: this decomposition, `scripts/gates/m4-complete.sh`, and the
   `pgprox_core::admin` contract with its fake. Acceptance: the gate script runs
   and reports what is missing rather than passing vacuously, and the fake
   serves a snapshot without any other crate existing.
@@ -873,7 +873,7 @@ because implementing either needs a socket and the crates that own them are
 sans-I/O. Both land here, in `pgprox-session`, which is where the dependency
 rule already allows `pgprox-proto`.
 
-- [x] `M6.1` Define M6: this decomposition and `scripts/m6-complete.sh`.
+- [x] `M6.1` Define M6: this decomposition and `scripts/gates/m6-complete.sh`.
   Acceptance: the gate script runs against the current tree and reports what is
   missing, rather than passing vacuously.
 - [x] `M6.2` `pgprox-session` and the client state machine: startup through
@@ -1289,7 +1289,7 @@ as an argument for exactly that reason, and every run is recorded so the slope
 is comparable. Extrapolating a number is not the same as meeting it, and the
 recorded runs say which they are.
 
-- [x] `M7.1` Define M7: this decomposition and `scripts/m7-complete.sh`.
+- [x] `M7.1` Define M7: this decomposition and `scripts/gates/m7-complete.sh`.
   Acceptance: the gate runs against the current tree and reports what is
   missing rather than passing vacuously.
 - [x] `M7.2` The reference workload document and its parser, in a new
@@ -1706,7 +1706,7 @@ measurement found three things.
   leaves it within one, which for a fleet where a few tenants are hot is most
   of the win for none of the risk. A lock-free or per-worker free list removes
   it altogether and is a rewrite of the code the quota invariant depends on,
-  which `scripts/m3-complete.sh` exists to protect. And at 500 connections
+  which `scripts/gates/m3-complete.sh` exists to protect. And at 500 connections
   against 60 upstreams the queue is the design working as intended, so the
   contention may simply be what saturation looks like.
   Acceptance: the third is eliminated first, with a run against a database that
@@ -1752,7 +1752,7 @@ The same applies to deployment. The drain sequence in `plan.md` names a
 `POST /v1/drain`, and there is no manifest anywhere that wires the three
 together. The rehearsal is what proves the wiring, so it comes last.
 
-- [x] `M8.1` Define M8: this decomposition and `scripts/release-check.sh`.
+- [x] `M8.1` Define M8: this decomposition and `scripts/gates/release-check.sh`.
   The gate reports seven failures against the tree it was written on, one per
   task below it. Its first draft passed a check it should not have: looking for
   `feature = "fips"` anywhere in `pgprox-tls` matched the `cfg!` that defines
@@ -1923,7 +1923,7 @@ together. The rehearsal is what proves the wiring, so it comes last.
   toolchains, and a nightly job that flakes on a `dotnet restore` teaches
   people to ignore the nightly. It stays a pre-release step that a human runs,
   which is what `plan.md` calls it.
-- [x] `M8.10` Close M8. `scripts/release-check.sh` exits zero, and so do the
+- [x] `M8.10` Close M8. `scripts/gates/release-check.sh` exits zero, and so do the
   three runs behind it: `fips-check.sh`, `cipher-matrix.sh` and
   `rolling-upgrade.sh`. The roadmap says what each showed and what it did not.
   One process slip worth recording: `M8.9`'s workflow changes were swept into
@@ -2015,7 +2015,7 @@ cached before the thing that serves it. A cache that is fast and occasionally
 wrong is worse than no cache, and the way this goes wrong is that the hook into
 the relay lands before the cacheability rule is finished.
 
-- [x] `M9.1` Define M9: this decomposition and `scripts/m9-complete.sh`. The
+- [x] `M9.1` Define M9: this decomposition and `scripts/gates/m9-complete.sh`. The
   roadmap's condition is `cargo nextest run -p pgprox-cache`, which only says
   the crate's own tests pass. Acceptance: the gate runs against the current
   tree and names what is missing rather than passing vacuously, and the roadmap
@@ -2274,7 +2274,7 @@ the relay lands before the cacheability rule is finished.
   for a config document that has to name one, and the first cache-on run
   measured nothing for exactly that reason.
 - [x] `M9.11` Close M9, which needs `M9.13` as well as everything before it.
-  Acceptance: `scripts/m9-complete.sh` exits zero.
+  Acceptance: `scripts/gates/m9-complete.sh` exits zero.
 - [x] `M7.58` One connection freed wakes every waiter. `LivePool::release`
   calls `Notify::notify_waiters`, which wakes *all* of them; at five hundred
   clients against sixty upstream connections that is roughly four hundred and
@@ -2612,7 +2612,7 @@ the relay lands before the cacheability rule is finished.
   M-1, M6 and M7. The other eight passed on the commit that closed their
   milestone and nothing has checked them since, which makes them a record of what
   was once true rather than a gate. All eight are Docker-free and run in seconds,
-  and `scripts/release-check.sh` is the same story for M8.
+  and `scripts/gates/release-check.sh` is the same story for M8.
   The wiring is the easy half. The half that matters is that adding an
   `m11-complete.sh` and forgetting to wire it must fail something, so
   `scripts/check-drift.sh` grows the assertion: every milestone gate in
@@ -3056,7 +3056,7 @@ the relay lands before the cacheability rule is finished.
   and 17.5% worse at two thousand. ADR 0021 says opt-in per tenant; this says an
   operator also has to know where their fleet sits against its database.
   Recorded in `product/perf/run-2026-07-31-saturation.md`.
-- [x] `M10.17` Write `scripts/m10-complete.sh`, which the roadmap has named as
+- [x] `M10.17` Write `scripts/gates/m10-complete.sh`, which the roadmap has named as
   this milestone's completion condition since the milestone was filed and which
   does not exist. Every other task in M10 is done and the milestone cannot be
   called complete, which is precisely the failure mode M10 is about: a claim
@@ -3116,7 +3116,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   human, and file the first as tasks and the second as blocked.
   Four filed, three blocked, and a fifth filed for the gate: `M10.17` found that
   a milestone whose completion condition does not exist cannot be closed, so
-  `M11.5` writes `scripts/m11-complete.sh` rather than leaving it to be
+  `M11.5` writes `scripts/gates/m11-complete.sh` rather than leaving it to be
   discovered at the end.
   The blocked three are worth naming rather than dropping. Each is a real gap
   and none of them is work: they need three machines, a second agent tool, or an
@@ -3268,7 +3268,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   `M11.7` has what it needs.
   This task keeps the knob. `M11.7` takes the curve, and cannot start until this
   one lands.
-- [x] `M11.5` Write `scripts/m11-complete.sh` before the milestone needs
+- [x] `M11.5` Write `scripts/gates/m11-complete.sh` before the milestone needs
   closing rather than after. `M10.17` is the argument: M10's gate was named in
   the roadmap from the day the milestone was filed and did not exist, and
   nothing noticed until every task was done and the milestone could not be
@@ -3473,7 +3473,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   connection columns are the measurement.
   Two guards came out of it, both for failures the first run walked past. The
   script now fails a control arm that peaks at the cap, since from there no arm
-  can rise and the curve is flat by construction. And `scripts/m11-complete.sh`
+  can rise and the curve is flat by construction. And `scripts/gates/m11-complete.sh`
   no longer globs for `product/perf/*pinning*.md`, which passed on a document
   whose own title says it is not the curve; it reads the recorded counts and
   requires three arms, a control below the cap, a control that pinned nothing,
@@ -3621,7 +3621,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   a reap that dropped a live node's digest is caught too, which is the same
   defect pointing the other way and worse: it reports headroom that is not
   there.
-  `scripts/m3-complete.sh` still passes, which is the check that matters most
+  `scripts/gates/m3-complete.sh` still passes, which is the check that matters most
   here: the quota invariant is proven over randomized schedules with partitions
   and leader loss, and this changes what those schedules do to the store.
   One refinement the first version needed, and `bin/pgprox`'s own suite is what
@@ -3862,7 +3862,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   A harness reporting success for a failure it had measured correctly is
   `M11.7`'s bug wearing different clothes. The comment in the file says so, so
   the loop does not get rewritten that way.
-- [x] `M12.8` Write `scripts/m12-complete.sh` before the milestone needs
+- [x] `M12.8` Write `scripts/gates/m12-complete.sh` before the milestone needs
   closing, which `M10.17` and `M11.5` both establish as the order. It has to
   avoid being an instance of its own subject: no check in it may glob for a
   filename and report a conclusion.
@@ -4168,7 +4168,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   must exist and be executable. Thirteen named today. It cannot tell whether a
   script checks the right thing, which is what went wrong with rule 5, but a
   named script that is not there is the same failure with less ambiguity.
-- [x] `M13.7` Write `scripts/m13-complete.sh`, before the milestone needs
+- [x] `M13.7` Write `scripts/gates/m13-complete.sh`, before the milestone needs
   closing, as `M10.17`, `M11.5` and `M12.8` all establish.
   Under `M12.8`'s constraint as well: no check may match a filename or a word
   where it can run something and read an exit code.
@@ -4698,7 +4698,7 @@ as blocked rather than filed, because a task nobody can start is not a plan:
   real tenants and stays open inside the item rather than as a separate entry.
   Taken out of backlog order, ahead of `M14.1` to `M14.4`, because those are
   mutation runs that own the machine for a long stretch and this needed none.
-- [x] `M14.6` Write `scripts/m14-complete.sh`, before the milestone needs
+- [x] `M14.6` Write `scripts/gates/m14-complete.sh`, before the milestone needs
   closing. Under `M12.8`'s constraint: run things, do not match filenames.
   Five checks.
   The list is compared against the crates that exist rather than against its own
@@ -5732,7 +5732,7 @@ Streaming removes both.
   completion condition and it is not called that. `M1`'s is
   `scripts/conformance.sh 17 18`, `M2`'s is a `cargo nextest` invocation
   against `pgprox-auth`, and `M8`'s is four scripts led by
-  `scripts/release-check.sh`. A rule demanding the naming convention would have
+  `scripts/gates/release-check.sh`. A rule demanding the naming convention would have
   failed all three, and `M12.8` says what happens next: a check people route
   around is worse than no check.
   So the rule is the one that is actually true. Every milestone in the status
@@ -5763,7 +5763,7 @@ Streaming removes both.
   claim about the whole of it, and bundling that claim into the last piece of
   work makes it look like a side effect of that piece rather than a judgement
   about all of them.
-  Acceptance: `scripts/m18-complete.sh` passes, the status row says complete,
+  Acceptance: `scripts/gates/m18-complete.sh` passes, the status row says complete,
   and the section records what the milestone found rather than what it planned.
 
 ## M19: a seam for peer discovery
@@ -5953,7 +5953,7 @@ Streaming removes both.
   `M17.4`'s mutant was checked rather than assumed: `init` made to return a
   constant `false` fails this test three runs out of three, deterministically
   now instead of whenever the ordering allowed it.
-  The gate is `scripts/m19-complete.sh`, and it is the untargeted command on
+  The gate is `scripts/gates/m19-complete.sh`, and it is the untargeted command on
   purpose. Every other run of these tests hides this: nextest gives each test
   its own process, and the gate's own `run_test` uses `--exact`, so both are
   blind to a second caller by construction. What the gate runs is
@@ -5970,7 +5970,7 @@ Streaming removes both.
   milestone is a claim about the whole of it, and bundling that claim into the
   last piece of work makes it look like a side effect of that piece rather than
   a judgement about all of them.
-  Acceptance: `scripts/m19-complete.sh` passes, the status row says complete,
+  Acceptance: `scripts/gates/m19-complete.sh` passes, the status row says complete,
   and the section records what the milestone found rather than what it planned.
   In particular it records that two of the eight tasks were corrections of
   claims this milestone itself made, because a section that reads as seven clean
@@ -6283,7 +6283,7 @@ recognised so it can be refused rather than read as a version.
   closing a milestone is a claim about the whole of it, and bundling that claim
   into the last piece of work makes it look like a side effect of that piece
   rather than a judgement about all of them.
-  Acceptance: `scripts/m20-complete.sh` passes, the status row says complete,
+  Acceptance: `scripts/gates/m20-complete.sh` passes, the status row says complete,
   and the section records what the reading found rather than what it planned.
   In particular it records which of the findings came from reading a second and
   third implementation and which came from the hunt for the first one, because
@@ -6621,7 +6621,7 @@ recognised so it can be refused rather than read as a version.
   written rule against exactly that, and `pgprox-pool/src/params.rs` has its
   own scanner anyway.
   Acceptance: the roadmap has an M24 section and a status row, this list is
-  written, and `scripts/m24-complete.sh` exists, is named in CI, and passes on
+  written, and `scripts/gates/m24-complete.sh` exists, is named in CI, and passes on
   this commit by checking what has landed rather than what is planned.
 - [x] `M24.1` A `SET` after a semicolon is neither replayed nor pinned.
   `SessionParams::observe_statement` calls `ParsedSet::parse`, which reads the
@@ -6753,7 +6753,7 @@ recognised so it can be refused rather than read as a version.
   in the query cache: it is invisible, unsettable, and unrelated to the budget
   it interacts with.
   Acceptance: the roadmap has an M25 section and a status row, this list is
-  written, and `scripts/m25-complete.sh` exists, is named in CI, and passes on
+  written, and `scripts/gates/m25-complete.sh` exists, is named in CI, and passes on
   this commit under `M24.0`'s rule: every task the backlog ticks must be named
   in it.
 - [x] `M25.1` An answer abandoned for being too big is counted nowhere.
@@ -6879,7 +6879,7 @@ recognised so it can be refused rather than read as a version.
   that refuses it when they are not met. Any actual use is a later task with a
   number attached.
   Acceptance: the roadmap has an M27 section and a status row, this list is
-  written, and `scripts/m27-complete.sh` exists, is named in CI, and passes on
+  written, and `scripts/gates/m27-complete.sh` exists, is named in CI, and passes on
   this commit under `M24.0`'s rule.
 - [x] `M27.1` The policy, and the script that enforces it.
   Five conditions, because a rule with no script is a rule nobody keeps, which
@@ -6918,7 +6918,7 @@ recognised so it can be refused rather than read as a version.
   `panic = "abort"` is already taken, and `-C target-cpu=native` is wrong for a
   binary shipped as a container image.
   Acceptance: the roadmap has an M28 section and a status row, this list is
-  written, and `scripts/m28-complete.sh` exists, is named in CI, and passes on
+  written, and `scripts/gates/m28-complete.sh` exists, is named in CI, and passes on
   this commit under `M24.0`'s rule.
 - [x] `M28.1` `lto = "thin"` costs the route decision seven to fifteen percent.
   Measured, thin against fat, on the committed baseline:
@@ -6959,7 +6959,7 @@ recognised so it can be refused rather than read as a version.
   shipped no exception. `M28` did the safe half of the same procedure and found
   7 to 15% in one line of `Cargo.toml`. What was left untested is whether the
   unsafe half buys anything here.
-  Acceptance: this list, a roadmap section, and `scripts/m29-complete.sh`
+  Acceptance: this list, a roadmap section, and `scripts/gates/m29-complete.sh`
   wired into CI.
 - [x] `M29.1` Measure `get_unchecked` on the query cache's recency slab.
   The best candidate in the workspace: `Slot` is a private newtype with no
@@ -6993,7 +6993,7 @@ recognised so it can be refused rather than read as a version.
   Three of the four costs are work that does not need doing, and none of the
   four is a bounds check. The fourth is the one place unsafe would pay, and it
   is inside the closed list on purpose.
-  Acceptance: this list, a roadmap section, and `scripts/m30-complete.sh` wired
+  Acceptance: this list, a roadmap section, and `scripts/gates/m30-complete.sh` wired
   into CI.
 - [x] `M30.1` `begins_read_only_transaction` lexes a whole statement to learn
   its first word. It runs on the route decision's hot path for every statement
@@ -7079,7 +7079,7 @@ recognised so it can be refused rather than read as a version.
   It also says the `debug_assert!` beside the comment is the executable form of
   the same claim, and to write both. `M30` wrote no `debug_assert!` at any of
   the five sites.
-  Acceptance: this list, a roadmap section, and `scripts/m31-complete.sh` wired
+  Acceptance: this list, a roadmap section, and `scripts/gates/m31-complete.sh` wired
   into CI.
 - [x] `M31.1` Three comments refer the reader elsewhere, two describe the
   operation instead of justifying it, and none has an executable form.
@@ -7117,7 +7117,7 @@ recognised so it can be refused rather than read as a version.
   per-connection memory beat a C pooler that has been tuned for it since 2007,
   and what does holding a fleet-wide cap cost in acquire latency next to a
   pooler that does not coordinate at all.
-  Acceptance: this list, a roadmap section, and `scripts/m32-complete.sh` wired
+  Acceptance: this list, a roadmap section, and `scripts/gates/m32-complete.sh` wired
   into CI.
 - [x] `M32.1` `bin/pgload` cannot authenticate to either of the other two. It
   speaks trust and cleartext only, and says so in a comment that calls MD5 and
@@ -7196,7 +7196,7 @@ recognised so it can be refused rather than read as a version.
   found pgbouncer using a third of pgprox's memory. A number is not a reason,
   and the reason is in their source rather than in a table. Both are open, so
   reading them is cheaper than guessing.
-  Acceptance: this list, a roadmap section, and `scripts/m33-complete.sh` wired
+  Acceptance: this list, a roadmap section, and `scripts/gates/m33-complete.sh` wired
   into CI.
 - [x] `M33.1` The study, and the experiment that refuted its own obvious answer.
   The hypothesis worth testing first is the cheap one: pgbouncer's read buffer
@@ -7219,7 +7219,7 @@ recognised so it can be refused rather than read as a version.
   each isolates the arena count from the thread count, which matters because a
   single-threaded runtime changes both at once and would answer neither
   question on its own.
-  Acceptance: this list, a roadmap section, and `scripts/m34-complete.sh` wired
+  Acceptance: this list, a roadmap section, and `scripts/gates/m34-complete.sh` wired
   into CI.
 - [x] `M34.1` Is it the allocator's memory or the connection's.
   A per-thread arena is a fixed cost per worker and a per-connection cost is
@@ -7241,7 +7241,7 @@ recognised so it can be refused rather than read as a version.
   count. They separate at two. `M32`, `M33` and `M34` each measured at 200 and
   divided by 200, so each reported a slope plus an intercept and called the sum
   a per-connection cost.
-  Acceptance: this list, a roadmap section, and `scripts/m35-complete.sh` wired
+  Acceptance: this list, a roadmap section, and `scripts/gates/m35-complete.sh` wired
   into CI.
 - [x] `M35.1` The slope, and what it does to every figure this project has
   published about per-connection memory.
@@ -7265,7 +7265,7 @@ recognised so it can be refused rather than read as a version.
   That term is what decides whether a hundred thousand connections fit on a
   node, and it is the only per-connection figure this project should be
   quoting. `product/perf/workload-idle.yaml` is the workload for it.
-  Acceptance: this list, a roadmap section, and `scripts/m36-complete.sh` wired
+  Acceptance: this list, a roadmap section, and `scripts/gates/m36-complete.sh` wired
   into CI.
 - [x] `M36.1` The resident cost of a connection that is doing nothing.
   Three connection counts against the idle workload, run long enough that
@@ -7291,7 +7291,7 @@ recognised so it can be refused rather than read as a version.
   allocator rounds the pair up to. No test in this repo has ever weighed the
   difference, and the test that guards the future's size measures exactly the
   part that is already accounted for.
-  Acceptance: this list, a roadmap section, and `scripts/m37-complete.sh` wired
+  Acceptance: this list, a roadmap section, and `scripts/gates/m37-complete.sh` wired
   into CI.
 - [x] `M37.1` The cost of a spawned task, against the size of the future in it.
   Measured with `dhat`, which the allocation budgets already use, so the figure
@@ -7338,7 +7338,7 @@ recognised so it can be refused rather than read as a version.
   A person who finds this on GitHub cannot learn what it is, run it, configure
   it, or read what it has been measured at, without reading a roadmap written
   for somebody else. That is a gap in the product rather than in the process.
-  Acceptance: this list, a roadmap section, and `scripts/m39-complete.sh` wired
+  Acceptance: this list, a roadmap section, and `scripts/gates/m39-complete.sh` wired
   into CI.
 - [x] `M39.1` A documentation site, and a README that routes to it.
   Diátaxis, one quadrant per page, shallow navigation. A tutorial that gets the
@@ -7386,7 +7386,7 @@ recognised so it can be refused rather than read as a version.
   toolchain and a lockfile into a repo that had neither, and `cargo-deny` does
   not see any of it. That is a real widening of the supply chain and it was
   accepted deliberately.
-  Acceptance: this list, a roadmap section, and `scripts/m41-complete.sh` wired
+  Acceptance: this list, a roadmap section, and `scripts/gates/m41-complete.sh` wired
   into CI.
 - [x] `M41.1` A site built from `docs/`, deployed to Pages.
   The Markdown stays where it is. Starlight normally wants
@@ -7441,7 +7441,7 @@ recognised so it can be refused rather than read as a version.
   there.
   Acceptance: pages for multitenancy, clustering and deployment, admin and
   management, security, FIPS and optimizations; each in the navigation; and
-  `scripts/m44-complete.sh` wired into CI, checking the `SHOW` commands in both
+  `scripts/gates/m44-complete.sh` wired into CI, checking the `SHOW` commands in both
   directions, the admin API paths, the JWT algorithm allowlist, the crates on
   the closed unsafe list, the cache key's component count, the quoted benchmark
   figures against the committed baseline, the cluster defaults, and the two
@@ -7626,3 +7626,26 @@ recognised so it can be refused rather than read as a version.
   client configuration.
   Acceptance: the three corrections, and the map points at the per-crate
   READMEs as the version to read from inside a directory.
+
+## M51: eighty scripts and no index
+
+- [x] `M51.0` An index, and the forty-five files that were burying it.
+  `scripts/` held eighty-two files and twelve of them were named anywhere.
+  Forty-five are milestone gates, which is more than half the directory and
+  none of what a newcomer needs: a gate is one milestone's completion
+  condition, satisfied rather than maintained. `ls scripts/` sorted `m1f`
+  between `m19` and `m20` and said nothing about which half to read.
+  The gates move to `scripts/gates/`, so the directory listing is thirty-seven
+  entries of things somebody might run. `lib.sh` stays where it is, so
+  `REPO_ROOT` still resolves, and every gate's `source` line grows a `../`.
+  `release-check.sh` moves with them: it is `M8`'s completion condition and the
+  only gate not following the naming convention, so leaving it out would make
+  `scripts/gates/*.sh` mean "most of the gates".
+  Nothing was deleted. Every script in the directory is referenced by
+  something, which was checked before proposing a cleanup that removed files.
+  Acceptance: `scripts/README.md` grouping all thirty-six runnable scripts by
+  what they are for and what they need; `check-drift.sh` failing on a script
+  the index does not name; `AGENTS.md` pointing at the index rather than
+  carrying a second list of eight; every glob over the gates following the
+  move; and all forty-five gates plus the negative suite passing from the new
+  path.

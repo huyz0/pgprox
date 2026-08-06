@@ -140,7 +140,7 @@ mkdir -p "$(dirname "$OUT")"
   echo
   echo "That is the newest commit touching \`bin/pgprox\`,"
   echo "\`crates/pgprox-session\` or \`crates/pgprox-proto\` when this ran."
-  echo "\`scripts/m21-complete.sh\` compares it against the tree to say how far"
+  echo "\`scripts/gates/m21-complete.sh\` compares it against the tree to say how far"
   echo "behind these results are, because a date cannot be compared to code."
   echo
   echo "Five drivers against \`bin/pgprox\` over TLS, with a real Postgres"

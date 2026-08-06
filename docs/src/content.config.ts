@@ -9,7 +9,7 @@
 // `dist` live in here, and a recursive glob would walk both: a build that reads
 // every Markdown file in a dependency tree is slow at best and picks up
 // somebody's README at worst. Every page is a direct child of this directory,
-// which is also what `scripts/m41-complete.sh` looks at when it checks for a
+// which is also what `scripts/gates/m41-complete.sh` looks at when it checks for a
 // title and a navigation entry, so the two agree by construction. A page in a
 // subdirectory would need both to change.
 import { defineCollection } from 'astro:content';

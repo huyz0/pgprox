@@ -38,7 +38,7 @@ Portability is a continuously checked property, not a one-time claim.
 
 - The claim is enforced rather than asserted, and it degrades visibly instead of
   silently.
-- Writing this audit immediately found a real defect. `scripts/m-1-complete.sh`
+- Writing this audit immediately found a real defect. `scripts/gates/m-1-complete.sh`
   hard-required `.claude/settings.json`, which meant **M-1 could never pass for
   a developer working only in Cursor or Codex**. The milestone gate itself was
   the least portable thing in the repository. It now accepts any known adapter.

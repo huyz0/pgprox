@@ -268,133 +268,133 @@ jobs:
       - name: the gates can fail
         run: tests/gates/negative.sh
       - name: M-1
-        run: scripts/m-1-complete.sh
+        run: scripts/gates/m-1-complete.sh
       - name: M0
-        run: scripts/m0-complete.sh
+        run: scripts/gates/m0-complete.sh
       - name: M1R
-        run: scripts/m1r-complete.sh
+        run: scripts/gates/m1r-complete.sh
       - name: M1F
-        run: scripts/m1f-complete.sh
+        run: scripts/gates/m1f-complete.sh
       - name: M3
-        run: scripts/m3-complete.sh
+        run: scripts/gates/m3-complete.sh
       - name: M4
-        run: scripts/m4-complete.sh
+        run: scripts/gates/m4-complete.sh
       - name: M5
-        run: scripts/m5-complete.sh
+        run: scripts/gates/m5-complete.sh
       - name: M6
-        run: scripts/m6-complete.sh
+        run: scripts/gates/m6-complete.sh
       - name: M7
-        run: scripts/m7-complete.sh
+        run: scripts/gates/m7-complete.sh
       - name: M8
-        run: scripts/release-check.sh
+        run: scripts/gates/release-check.sh
       - name: M9
-        run: scripts/m9-complete.sh
+        run: scripts/gates/m9-complete.sh
       # The gate for the milestone that exists because gates were not running.
       # It checks that the other twelve are named here, so this line is the one
       # that keeps the check from being able to pass by describing nothing.
       - name: M10
-        run: scripts/m10-complete.sh
+        run: scripts/gates/m10-complete.sh
       # This ran with `continue-on-error` while M11 was open, so that writing
       # the gate early meant watching it go green a check at a time. M11 closed
       # in M11.11 and the flag outlived its reason, which made it an instance of
       # M12's own subject: a gate that runs and cannot fail. It enforces now.
       - name: M11
-        run: scripts/m11-complete.sh
+        run: scripts/gates/m11-complete.sh
       # M12's gate runs tests/gates/negative.sh itself, so the step above it and
       # this one overlap on purpose: the suite is the milestone's deliverable and
       # a gate that only described it would be the defect M12 exists to remove.
       - name: M12
-        run: scripts/m12-complete.sh
+        run: scripts/gates/m12-complete.sh
       - name: M13
-        run: scripts/m13-complete.sh
+        run: scripts/gates/m13-complete.sh
       - name: M14
-        run: scripts/m14-complete.sh
+        run: scripts/gates/m14-complete.sh
       # Every check in this one runs a named test and reads its exit status,
       # which is `M12.8`'s rule taken literally: a finding is fixed when a test
       # would fail if it came back, so the gate runs the test rather than
       # looking for the file it lives in.
       - name: M15
-        run: scripts/m15-complete.sh
+        run: scripts/gates/m15-complete.sh
       # M16 reports its blocked half rather than asserting it. The 100k run
       # with a large result set needs three machines, so a gate that dropped it
       # would turn a milestone that is two thirds done into one reporting green.
       - name: M16
-        run: scripts/m16-complete.sh
+        run: scripts/gates/m16-complete.sh
       - name: M17
-        run: scripts/m17-complete.sh
+        run: scripts/gates/m17-complete.sh
       # M18's own gate, and it is part of the milestone rather than an
       # afterthought for the reason M18.3 is about: until it existed, a
       # milestone could close with nothing to run and nothing objected.
       - name: M18
-        run: scripts/m18-complete.sh
+        run: scripts/gates/m18-complete.sh
       # M19 is open, and its gate runs anyway. It checks what has landed rather
       # than what is planned, so it passes at every point; a gate that waited
       # for the milestone to close would be the defect M18.3 fixed, on a
       # schedule.
       - name: M19
-        run: scripts/m19-complete.sh
+        run: scripts/gates/m19-complete.sh
       - name: M20
-        run: scripts/m20-complete.sh
+        run: scripts/gates/m20-complete.sh
       # M21 is open, and its gate runs anyway, on the same terms M19 and M20
       # were: it checks what has landed rather than what is planned.
       - name: M21
-        run: scripts/m21-complete.sh
+        run: scripts/gates/m21-complete.sh
       # M22 is open, and its gate runs anyway, on the same terms M19, M20 and
       # M21 were: it checks what has landed rather than what is planned.
       - name: M22
-        run: scripts/m22-complete.sh
+        run: scripts/gates/m22-complete.sh
       # M23 is open, and its gate runs anyway, on the same terms M19 through
       # M22 were: it checks what has landed rather than what is planned.
       - name: M23
-        run: scripts/m23-complete.sh
+        run: scripts/gates/m23-complete.sh
       # M24 is open, and its gate runs anyway, on the same terms M19 through
       # M23 were: it checks what has landed rather than what is planned. Its
       # first check is that nothing ticked in the backlog is missing from it,
       # which is what stops "what has landed" from meaning "whatever is easy".
       - name: M24
-        run: scripts/m24-complete.sh
+        run: scripts/gates/m24-complete.sh
       # M25 is open, and its gate runs anyway, on M24's terms: it checks what
       # has landed, and refuses to pass with a ticked task it does not name.
       - name: M25
-        run: scripts/m25-complete.sh
+        run: scripts/gates/m25-complete.sh
       # M26 is open, and its gate runs anyway, on M24's terms. Its own numbers
       # live in docs/internal/product/perf/baseline.json and are checked by scripts/bench.sh,
       # which is a separate CI job because it needs valgrind.
       - name: M26
-        run: scripts/m26-complete.sh
+        run: scripts/gates/m26-complete.sh
       # M27 is open, and its gate runs anyway, on M24's terms.
       - name: M27
-        run: scripts/m27-complete.sh
+        run: scripts/gates/m27-complete.sh
       # M28 is open, and its gate runs anyway, on M24's terms.
       - name: M28
-        run: scripts/m28-complete.sh
+        run: scripts/gates/m28-complete.sh
       - name: M29
-        run: scripts/m29-complete.sh
+        run: scripts/gates/m29-complete.sh
       - name: M30
-        run: scripts/m30-complete.sh
+        run: scripts/gates/m30-complete.sh
       - name: M31
-        run: scripts/m31-complete.sh
+        run: scripts/gates/m31-complete.sh
       - name: M32
-        run: scripts/m32-complete.sh
+        run: scripts/gates/m32-complete.sh
       - name: M33
-        run: scripts/m33-complete.sh
+        run: scripts/gates/m33-complete.sh
       - name: M34
-        run: scripts/m34-complete.sh
+        run: scripts/gates/m34-complete.sh
       - name: M35
-        run: scripts/m35-complete.sh
+        run: scripts/gates/m35-complete.sh
       - name: M36
-        run: scripts/m36-complete.sh
+        run: scripts/gates/m36-complete.sh
       - name: M37
-        run: scripts/m37-complete.sh
+        run: scripts/gates/m37-complete.sh
       - name: M38
-        run: scripts/m38-complete.sh
+        run: scripts/gates/m38-complete.sh
       - name: M39
-        run: scripts/m39-complete.sh
+        run: scripts/gates/m39-complete.sh
       - name: M40
-        run: scripts/m40-complete.sh
+        run: scripts/gates/m40-complete.sh
       - name: M41
-        run: scripts/m41-complete.sh
+        run: scripts/gates/m41-complete.sh
       - name: M43
-        run: scripts/m43-complete.sh
+        run: scripts/gates/m43-complete.sh
       - name: M44
-        run: scripts/m44-complete.sh
+        run: scripts/gates/m44-complete.sh
