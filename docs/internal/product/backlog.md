@@ -7649,3 +7649,24 @@ recognised so it can be refused rather than read as a version.
   carrying a second list of eight; every glob over the gates following the
   move; and all forty-five gates plus the negative suite passing from the new
   path.
+
+- [x] `M51.1` The singleflight had a window, and the flake was telling us.
+  `concurrent_lookups_of_a_cold_key_make_one_call` failed once in a full-suite
+  run, then passed twenty isolated runs and three more full ones. A one-in-a-few
+  flake is the shape that gets rerun rather than read.
+  It was right. `resolve` reads the cache and then claims the key under two
+  separate locks, so a caller descheduled between them finds that the previous
+  leader stored and released in the gap, and becomes a second leader for a key
+  already cached. The comment above the claim said "two callers cannot both
+  decide they are first", which is what the code did not do. This crate's own
+  `AGENTS.md` says a reconnect storm must produce one RPC, and
+  `docs/request-flow.md` says concurrent resolves become one call.
+  The fix is a second look after taking the claim, which costs nothing on the
+  hot path: a cache hit returns before the claim lock is ever touched, and the
+  extra read lands only where a network call was about to happen anyway.
+  Extracted so it can be tested rather than raced: the guard is only reachable
+  through the window, so it is a method with two direct tests rather than a
+  branch waiting on a coincidence.
+  Acceptance: the guard serves the entry, releases the claim and wakes
+  subscribers; the cold case keeps the claim; the crate holds its 95%; and
+  three full-suite runs are clean.

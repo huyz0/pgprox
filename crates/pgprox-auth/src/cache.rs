@@ -80,6 +80,20 @@ enum Outcome {
     Refused(AuthRejection),
 }
 
+impl Outcome {
+    /// What a cached decision means to the caller.
+    ///
+    /// A method rather than the match written out at each site, because
+    /// `resolve` reads the cache twice and the two reads have to agree about
+    /// what a refusal is.
+    fn into_result(self) -> Result<Grant, AuthError> {
+        match self {
+            Self::Resolved(grant) => Ok(*grant),
+            Self::Refused(reason) => Err(AuthError::Refused(reason)),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Entry {
     outcome: Outcome,
@@ -217,6 +231,33 @@ impl<R: CredentialResolver> CachingResolver<R> {
         }
     }
 
+    /// One more look, for a caller that has just taken the claim.
+    ///
+    /// Holding the claim is not the same as having been first. The lookup and
+    /// the claim are two separate locks, so a caller descheduled between them
+    /// can find that the previous leader finished, stored, and released the
+    /// claim in the gap, and then become a second leader for a key that is
+    /// already cached. Two callers deciding they are first in sequence is the
+    /// storm the claim exists to collapse.
+    ///
+    /// Returns the entry if there is now one, having released the claim and
+    /// woken anyone who subscribed to it in the meantime.
+    ///
+    /// The cost lands only where a call was about to be made anyway: a cache
+    /// hit returns before the claim is ever taken.
+    ///
+    /// This is not theoretical. Without it,
+    /// `concurrent_lookups_of_a_cold_key_make_one_call` failed about once in
+    /// every few full-suite runs on a loaded machine, and the comment above
+    /// the claim asserted a property this code did not have.
+    fn recheck_before_calling(&self, key: &CacheKey) -> Option<Outcome> {
+        let outcome = self.lookup(key)?;
+        if let Some(tx) = self.lock_inflight().remove(key) {
+            let _ = tx.send(());
+        }
+        Some(outcome)
+    }
+
     fn store(&self, key: CacheKey, outcome: Outcome, ttl: Duration) {
         // A zero TTL means "do not cache", which is what an already-expired
         // token produces. Storing it would be harmless but pointless, and it
@@ -292,14 +333,11 @@ impl<R: CredentialResolver> CredentialResolver for CachingResolver<R> {
 
         loop {
             if let Some(outcome) = self.lookup(&key) {
-                return match outcome {
-                    Outcome::Resolved(grant) => Ok(*grant),
-                    Outcome::Refused(reason) => Err(AuthError::Refused(reason)),
-                };
+                return outcome.into_result();
             }
 
-            // Claim the key, or find someone already holding it. Both happen
-            // under one lock so two callers cannot both decide they are first.
+            // Claim the key, or find someone already holding it, under one
+            // lock so two callers cannot both hold the claim at once.
             let waiter = {
                 let mut inflight = self.lock_inflight();
                 if let Some(tx) = inflight.get(&key) {
@@ -317,6 +355,10 @@ impl<R: CredentialResolver> CredentialResolver for CachingResolver<R> {
                 // is not cached, and this caller must then try as leader itself.
                 let _ = rx.recv().await;
                 continue;
+            }
+
+            if let Some(outcome) = self.recheck_before_calling(&key) {
+                return outcome.into_result();
             }
 
             let result = self.resolve_and_store(key.clone(), request).await;
@@ -577,6 +619,54 @@ mod tests {
         assert!(
             f.cache.resolve(request(&tok, "db")).await.is_ok(),
             "recovery was blocked by a cached failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_leader_for_an_already_cached_key_spends_no_call() {
+        // The race the claim alone does not close, made deterministic.
+        //
+        // A caller whose lookup missed, and which then took the claim after
+        // the previous leader had already stored and released, is holding a
+        // claim on a key that is in the cache. It must serve the entry rather
+        // than call out, and it must release the claim it holds.
+        let f = fixture(CacheConfig::default());
+        let tok = token("a");
+        let key = CacheKey::new(&tok, "db");
+
+        f.inner.insert(&tok, grant(Duration::from_secs(60), None));
+        f.cache.resolve(request(&tok, "db")).await.unwrap();
+        assert_eq!(f.inner.call_count(), 1);
+
+        let (tx, mut rx) = broadcast::channel(1);
+        f.cache.lock_inflight().insert(key.clone(), tx);
+
+        let served = f.cache.recheck_before_calling(&key);
+
+        assert!(served.is_some(), "the cached entry was not served");
+        assert!(
+            !f.cache.lock_inflight().contains_key(&key),
+            "the claim was left held, so every later caller waits on nobody"
+        );
+        assert!(rx.try_recv().is_ok(), "subscribers were not woken");
+        assert_eq!(f.inner.call_count(), 1, "a second call was spent");
+    }
+
+    #[tokio::test]
+    async fn a_claim_on_a_key_that_is_still_cold_stays_with_its_leader() {
+        // The other half, and the one that runs on every miss: nothing in the
+        // cache means the caller keeps the claim and goes on to make the call.
+        let f = fixture(CacheConfig::default());
+        let tok = token("a");
+        let key = CacheKey::new(&tok, "db");
+
+        let (tx, _rx) = broadcast::channel(1);
+        f.cache.lock_inflight().insert(key.clone(), tx);
+
+        assert!(f.cache.recheck_before_calling(&key).is_none());
+        assert!(
+            f.cache.lock_inflight().contains_key(&key),
+            "the claim was released while its holder was still going to call"
         );
     }
 

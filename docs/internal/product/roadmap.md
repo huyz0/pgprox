@@ -2839,5 +2839,26 @@ Nothing was deleted. Every script in the directory is referenced by something,
 which was worth checking before proposing a cleanup that removed files: the
 instinct with eighty-two scripts is that some must be dead, and none was.
 
+### The flake was a bug report
+
+`concurrent_lookups_of_a_cold_key_make_one_call` failed once in a full-suite
+run, then passed twenty isolated runs and three more full ones. A one-in-a-few
+flake is the shape that gets rerun rather than read.
+
+It was right. `resolve` reads the cache and then claims the key under two
+separate locks, so a caller descheduled between them finds that the previous
+leader stored and released in the gap, and becomes a second leader for a key
+that is already cached. The comment above the claim said "two callers cannot
+both decide they are first". That is what the code did not do, and three
+separate documents sold the property: the crate's `AGENTS.md`, ADR `0003`'s
+consequences, and the request-flow page.
+
+The fix is one more look after taking the claim. It costs nothing on the hot
+path, because a cache hit returns before the claim lock is ever touched, and the
+extra read lands only where a network call was about to be made anyway. It is
+extracted into its own method rather than left inline, because the branch is
+only reachable through the race: as a method it has two direct tests, and as a
+branch it would have had a coincidence.
+
 Completion condition: `scripts/check-drift.sh`, which holds both the index and
 the rule that every gate is wired into CI.
