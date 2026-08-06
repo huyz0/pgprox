@@ -2977,4 +2977,12 @@ backlog. That buys a readable `ls` for a directory whose own README now says
 nobody should be reading it, and whose prose lives in the roadmap. The index
 answers the question people actually have, so the index is what was written.
 
+### The two that were stale
+
+**`cargo fmt` ran twice on every push.** Tier 1 listed `check-fmt.sh` and
+`check-crate.sh`, and the second runs the identical check as its first step.
+The script stays, because it is the pre-commit hook's fmt entry and
+`m0-complete.sh` calls it; that second caller is also why dropping the CI line
+loses no coverage if fmt ever leaves `check-crate.sh`.
+
 Completion condition: `scripts/check-drift.sh`, which holds the gates index.

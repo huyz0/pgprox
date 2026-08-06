@@ -7746,3 +7746,15 @@ recognised so it can be refused rather than read as a version.
   with the roadmap's own title, and every milestone that deliberately has no
   gate with what holds it instead; `check-drift.sh` failing on a gate the index
   does not name and on a missing index; both verified against a break.
+- [x] `M53.1` `cargo fmt` ran twice on every push.
+  CI's tier 1 listed `check-fmt.sh` and `check-crate.sh`, and the second runs
+  the identical `cargo fmt --all --check` as its first step. Two runs of the
+  workspace formatter for one opinion.
+  `check-fmt.sh` is not deleted and does not move: it is the pre-commit hook's
+  fmt entry, where a separately named hook is what tells a developer which
+  check failed, and `m0-complete.sh` calls it directly. That second caller is
+  also why removing the CI line costs no coverage even if somebody later takes
+  fmt out of `check-crate.sh`, because `m0` runs in the milestone job on the
+  same push.
+  Acceptance: one fmt run per push, and the reasoning in the workflow rather
+  than only here.

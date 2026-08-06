@@ -41,7 +41,16 @@ jobs:
         with:
           tool: cargo-llvm-cov,cargo-nextest,cargo-deny
 
-      - run: scripts/check-fmt.sh
+      # `check-fmt.sh` is not here, and that is deliberate. `check-crate.sh`
+      # below runs the identical `cargo fmt --all --check` as its first step,
+      # so listing both ran the workspace formatter twice per push for no
+      # second opinion. M53.1.
+      #
+      # Removing it costs no coverage even if somebody later takes fmt out of
+      # `check-crate.sh`: `m0-complete.sh` calls `check-fmt.sh` directly and
+      # runs in the milestone job on the same push. It also stays as the
+      # pre-commit hook's fmt entry, where a separately named hook is what
+      # tells a developer which check failed.
       - run: scripts/check-drift.sh
       # Fifteen links in one file were wrong for several milestones, all of them
       # one `../` too deep, and nothing looked. M47.0.
