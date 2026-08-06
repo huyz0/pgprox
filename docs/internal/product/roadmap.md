@@ -2935,3 +2935,46 @@ Docker" for as long as anybody had looked at it, which was wrong: Docker was
 there and working.
 
 Completion condition: the two commands above.
+
+## M53: the scripts read as stale, and two of them were (complete)
+
+```bash
+scripts/check-drift.sh
+```
+
+A survey of all eighty-two scripts for staleness, and the naming that made the
+gates directory hard to read.
+
+### What was not stale
+
+Most of it, and that is worth recording because the instinct with forty-four
+near-identical filenames is that some must have rotted.
+
+No check names a path that has gone. No gate is vacuous: every one asserts
+something, none skips, and the small gaps between `ok` calls in source and `ok`
+lines printed are if/else branches where only one side fires. No gate holds a
+claim a later milestone corrected, which was checked specifically against `M36`
+and `M38`, where `M38` corrected `M36`'s extrapolation and its gate requires the
+superseded figure to be *marked* rather than deleted.
+
+`check-unsafe.sh` reads vacuous, reporting "no crate holds unsafe, so none needs
+Miri yet". That is correct rather than stale: it is a guard that arms the moment
+somebody writes unsafe, and its messages say which case they are in.
+
+### The naming, and why it was not fixed by renaming
+
+Forty-four gates for fifty-six milestones, and nothing said why. There is no
+`m1-complete.sh` because `M1` is held by `conformance.sh`, no `m2` because
+`M2`'s condition is a `cargo nextest` invocation, no `m8` because it is
+`release-check.sh`, and none for `M46` through `M52` because their conditions
+are ordinary checks. A missing filename looked like a missing gate.
+
+`ls` compounds it: `m1f` sorts between `m19` and `m20`, `m3` after `m29`.
+
+Zero-padding to `m00`, `m01f`, `m44` would sort correctly and cost about two
+hundred and fifty reference updates across CI, globs, the roadmap and the
+backlog. That buys a readable `ls` for a directory whose own README now says
+nobody should be reading it, and whose prose lives in the roadmap. The index
+answers the question people actually have, so the index is what was written.
+
+Completion condition: `scripts/check-drift.sh`, which holds the gates index.

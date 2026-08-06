@@ -7724,3 +7724,25 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `conformance.sh 17 18` passes including both client-side checks,
   `m1f-complete.sh` passes, no container outlives the run, and a publish that
   still yields nothing says the container is up rather than that it failed.
+
+## M53: the scripts read as stale, and two of them were
+
+- [x] `M53.0` An index for the gates, and the twelve milestones that have none.
+  `scripts/gates/` holds forty-four gates for fifty-six milestones. The gap is
+  deliberate and nothing said so, which makes a missing filename look like a
+  missing gate: there is no `m1-complete.sh` because `M1` is held by
+  `conformance.sh`, no `m2` because `M2` is a `cargo nextest` invocation, no
+  `m8` because it is `release-check.sh`, and none for `M46` through `M52`
+  because their conditions are ordinary `check-*.sh` scripts.
+  The listing is also unreadable in a second way: `ls` puts `m1f` between `m19`
+  and `m20` and `m3` after `m29`, so nothing about the order says which
+  milestone came first.
+  Renaming was considered and rejected. Zero-padding to `m00`, `m01f`, `m44`
+  would sort correctly and cost roughly two hundred and fifty reference updates
+  across CI, globs, the roadmap and the backlog, to fix a listing nobody reads
+  in preference to the roadmap. The index answers the actual question, which is
+  "which milestone is this and is one missing".
+  Acceptance: `scripts/gates/README.md` listing every gate in milestone order
+  with the roadmap's own title, and every milestone that deliberately has no
+  gate with what holds it instead; `check-drift.sh` failing on a gate the index
+  does not name and on a missing index; both verified against a break.

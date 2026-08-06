@@ -373,6 +373,37 @@ else
   fi
 fi
 
+# --- and every gate is in the gates index -------------------------------------
+#
+# The same rule one directory down, and it earns its own check because the
+# confusion there is different. `scripts/` was unreadable because nothing said
+# which files mattered; `scripts/gates/` is confusing because forty-four gates
+# cover fifty-six milestones and a missing filename looks like a missing gate.
+#
+# So the index names every gate and every milestone that deliberately has none.
+# A gate added without a row leaves the next reader counting again.
+GATE_INDEX="${PGPROX_GATE_INDEX:-scripts/gates/README.md}"
+
+if [[ ! -f "$GATE_INDEX" ]]; then
+  fail "$GATE_INDEX is missing, and a directory of forty-odd gates needs one"
+else
+  ungated=""
+  gates=0
+  for gate in scripts/gates/*.sh; do
+    [[ -f "$gate" ]] || continue
+    gates=$((gates + 1))
+    grep -qF "\`$(basename "$gate")\`" "$GATE_INDEX" || ungated+=" $(basename "$gate")"
+  done
+
+  if (( gates == 0 )); then
+    fail "no gates found, so this check just passed on nothing"
+  elif [[ -z "$ungated" ]]; then
+    ok "every gate is in the gates index ($gates)"
+  else
+    fail "these gates exist and $GATE_INDEX does not name them:$ungated"
+  fi
+fi
+
 # --- AGENTS.md indexes every standard -----------------------------------------
 #
 # This used to check that the paths AGENTS.md links to exist. `check-links.sh`
