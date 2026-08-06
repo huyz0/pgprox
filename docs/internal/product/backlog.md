@@ -7838,3 +7838,39 @@ recognised so it can be refused rather than read as a version.
   happened.
   Acceptance: a planted failing test is named, a planted compile error prints
   the compiler's own message, and neither needs a file that outlives the job.
+
+## M56: what the instrumentation finally showed
+
+- [x] `M56.0` The coverage flake was a five second timeout on a two core runner.
+  `M52.0` instrumented the coverage gate and `M55.2` made that instrumentation
+  survive CI. The next run named it:
+  `run::tests::a_cancel_for_a_peers_connection_is_forwarded_from_a_running_node`,
+  failing at 5.085s against a `tokio::time::timeout(Duration::from_secs(5))`.
+  It asserted nothing wrong. It ran out of patience.
+  Five seconds was chosen on a twenty-core developer machine. A two-core GitHub
+  runner under llvm-cov instrumentation is a different machine, and three tests
+  in the same file had already been raised to ten seconds one at a time, which
+  is the shape of a number nobody owns.
+  Fifteen sites across two files now share a named `PATIENCE` constant at
+  thirty seconds. This is not a threshold being lowered: the tests assert
+  exactly what they did, including the exact forwarded payload, and the only
+  thing that changed is how long they wait before calling a hang a hang.
+  Virtual time was considered and does not apply. Every one of these drives
+  real I/O between spawned nodes, and tokio only auto-advances a paused clock
+  when every task is idle.
+  Acceptance: one named constant per file with the reasoning and the CI
+  evidence beside it, no bare `from_secs(5)` or `from_secs(10)` timeout left in
+  either test module, and the crate green.
+
+- [x] `M56.1` `m0` reimplemented a check instead of calling it.
+  The milestone job also failed on `cargo deny`, and the reason was that the
+  job never installed cargo-deny. The message was "cargo deny (run: cargo deny
+  check)", which sends a reader to run a command that is not there without
+  saying it is not there.
+  `check-deps.sh` already does this check and already reports a missing tool by
+  name. `m0-complete.sh` ran `cargo deny check` itself, which is the same check
+  written twice, and the copy in the gate was the one without the tool check.
+  This repository's own rule is that CI calls the scripts rather than
+  reimplementing them, and a gate is not exempt.
+  Acceptance: `m0` delegates to `check-deps.sh`, the milestone job installs
+  cargo-deny, and a machine without it is told which tool is missing.

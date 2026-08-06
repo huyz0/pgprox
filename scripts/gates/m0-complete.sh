@@ -39,10 +39,15 @@ fi
 ./scripts/check-coverage.sh >/dev/null 2>&1 && ok "coverage >= ${COVERAGE_MIN}% per crate" \
   || fail "coverage (run: scripts/check-coverage.sh)"
 
-if cargo deny check >/dev/null 2>&1; then
+# Delegated rather than repeated. This ran `cargo deny check` itself until
+# `M56.1`, which is the same check written twice, and the copy here was the one
+# without the tool check: on a runner with no cargo-deny it reported "cargo deny
+# (run: cargo deny check)", sending a reader to run a command that was not
+# installed without saying so. `check-deps.sh` says which tool is missing.
+if ./scripts/check-deps.sh >/dev/null 2>&1; then
   ok "cargo deny"
 else
-  fail "cargo deny (run: cargo deny check)"
+  fail "cargo deny (run: scripts/check-deps.sh)"
 fi
 
 # --- contracts ---------------------------------------------------------------

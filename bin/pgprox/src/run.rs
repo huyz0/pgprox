@@ -958,6 +958,25 @@ async fn ticker(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    /// How long a test waits for something real to happen across a socket.
+    ///
+    /// Not a threshold and not a measurement. It is how long a test is willing
+    /// to wait before calling a hang a hang, and every use of it drives real
+    /// I/O between spawned nodes, so `start_paused` cannot help: tokio only
+    /// auto-advances virtual time when every task is idle, and a socket keeps
+    /// them awake.
+    ///
+    /// Five seconds was chosen on a twenty-core developer machine. On a
+    /// two-core runner under llvm-cov instrumentation it is not enough:
+    /// `a_cancel_for_a_peers_connection_is_forwarded_from_a_running_node`
+    /// failed at 5.085s in CI having asserted nothing wrong, and three tests
+    /// in this file had already been raised to ten seconds one at a time,
+    /// which is the shape of a number nobody owns.
+    ///
+    /// Thirty is generous on purpose. Being generous costs one genuinely hung
+    /// test thirty seconds instead of five, once. Being tight costs a red
+    /// build on work that was correct, which is the expensive kind of wrong.
+    const PATIENCE: Duration = Duration::from_secs(30);
 
     #[test]
     fn a_ceiling_above_the_descriptor_limit_is_reported_with_what_it_needs() {
@@ -1287,7 +1306,7 @@ mod tests {
         tokio::net::TcpStream::connect(addrs.client).await.unwrap();
 
         shutdown.fire();
-        tokio::time::timeout(Duration::from_secs(5), running)
+        tokio::time::timeout(PATIENCE, running)
             .await
             .expect("the run loop did not return when signalled")
             .unwrap()
@@ -1304,7 +1323,7 @@ mod tests {
         shutdown.fire();
         assert!(shutdown.fired());
 
-        tokio::time::timeout(Duration::from_secs(5), shutdown.waited())
+        tokio::time::timeout(PATIENCE, shutdown.waited())
             .await
             .expect("a signal that had already fired was waited on forever");
     }
@@ -1348,7 +1367,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1200)).await;
         shutdown.fire();
 
-        let ran = tokio::time::timeout(Duration::from_secs(5), ticked)
+        let ran = tokio::time::timeout(PATIENCE, ticked)
             .await
             .expect("the ticker did not stop when signalled")
             .unwrap();
@@ -1406,8 +1425,8 @@ mod tests {
             .any(|digest| digest.node == NodeId::new(2));
 
         shutdown.fire();
-        let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
-        let _ = tokio::time::timeout(Duration::from_secs(5), peer).await;
+        let _ = tokio::time::timeout(PATIENCE, running).await;
+        let _ = tokio::time::timeout(PATIENCE, peer).await;
 
         assert!(learned, "a running node never heard from its peer");
     }
@@ -1464,7 +1483,7 @@ mod tests {
         assert!(rendered.contains("57P01"), "{rendered}");
 
         shutdown.fire();
-        let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
+        let _ = tokio::time::timeout(PATIENCE, running).await;
     }
 
     /// One HTTP request against the admin port.
@@ -1599,7 +1618,7 @@ mod tests {
         )
         .unwrap();
 
-        let turned_on = tokio::time::timeout(Duration::from_secs(10), async {
+        let turned_on = tokio::time::timeout(PATIENCE, async {
             tokio::select! {
                 () = async {
                     loop {
@@ -1673,7 +1692,7 @@ mod tests {
         )
         .unwrap();
 
-        let raised = tokio::time::timeout(Duration::from_secs(10), async {
+        let raised = tokio::time::timeout(PATIENCE, async {
             tokio::select! {
                 () = async {
                     loop {
@@ -1720,7 +1739,7 @@ mod tests {
 
         std::fs::write(&path, "max_client_conns: 250\n").unwrap();
 
-        let reloaded = tokio::time::timeout(Duration::from_secs(10), async {
+        let reloaded = tokio::time::timeout(PATIENCE, async {
             let mut watching = watching;
             loop {
                 if watching.borrow_and_update().max_client_conns == 250 {
@@ -1732,7 +1751,7 @@ mod tests {
         .await;
 
         shutdown.fire();
-        let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
+        let _ = tokio::time::timeout(PATIENCE, running).await;
         reloaded.expect("a rewritten document never reached the running node");
     }
 
@@ -1771,7 +1790,7 @@ mod tests {
         assert!(!source.is_healthy(), "the failure was not reported");
 
         shutdown.fire();
-        let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
+        let _ = tokio::time::timeout(PATIENCE, running).await;
     }
 
     #[tokio::test]
@@ -2095,7 +2114,7 @@ mod tests {
         client.write_all(&packet).await.unwrap();
 
         let mut catch = catch;
-        let forwarded = tokio::time::timeout(Duration::from_secs(5), async {
+        let forwarded = tokio::time::timeout(PATIENCE, async {
             while let Some(line) = catch.recv().await {
                 if line.contains(r#""kind":"cancel""#) {
                     return line;
@@ -2113,7 +2132,7 @@ mod tests {
 
         drop(client);
         shutdown.fire();
-        let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
+        let _ = tokio::time::timeout(PATIENCE, running).await;
     }
     #[test]
     fn the_certificate_is_re_read_on_a_minute_rather_than_a_tick() {

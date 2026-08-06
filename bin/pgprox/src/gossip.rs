@@ -671,6 +671,26 @@ impl pgprox_cluster::service::QuotaTransport for GossipTransport {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    /// How long a test waits for something real to happen across a socket.
+    ///
+    /// Not a threshold and not a measurement. It is how long a test is willing
+    /// to wait before calling a hang a hang, and every use of it drives real
+    /// I/O between spawned nodes, so `start_paused` cannot help: tokio only
+    /// auto-advances virtual time when every task is idle, and a socket keeps
+    /// them awake.
+    ///
+    /// Five seconds was chosen on a twenty-core developer machine. On a
+    /// two-core runner under llvm-cov instrumentation it is not enough:
+    /// `a_cancel_for_a_peers_connection_is_forwarded_from_a_running_node`
+    /// failed at 5.085s in CI having asserted nothing wrong, and three tests
+    /// in this file had already been raised to ten seconds one at a time,
+    /// which is the shape of a number nobody owns.
+    ///
+    /// Thirty is generous on purpose. Being generous costs one genuinely hung
+    /// test thirty seconds instead of five, once. Being tight costs a red
+    /// build on work that was correct, which is the expensive kind of wrong.
+    const PATIENCE: Duration = Duration::from_secs(30);
+
     use super::*;
     use pgprox_cluster::coordinator::CoordinatorConfig;
     use pgprox_core::clock::FakeClock;
@@ -836,7 +856,7 @@ mod tests {
         }
         drop(ours);
 
-        let outcome = tokio::time::timeout(Duration::from_secs(5), serving)
+        let outcome = tokio::time::timeout(PATIENCE, serving)
             .await
             .expect("the reader never stopped");
         assert!(
@@ -1151,7 +1171,7 @@ mod tests {
         write.flush().await.unwrap();
 
         let mut lines = BufReader::new(read).lines();
-        let answered = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+        let answered = tokio::time::timeout(PATIENCE, lines.next_line())
             .await
             .expect("nothing came back")
             .unwrap();
