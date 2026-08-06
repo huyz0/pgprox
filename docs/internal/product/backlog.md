@@ -8153,3 +8153,32 @@ recognised so it can be refused rather than read as a version.
   chose.
   Acceptance: the timeout is a number somebody picked with the measurement
   beside it, and the site serves the commit at the head of `main`.
+
+- [x] `M66.1` The timeout `M66.0` raised has a ceiling, and the ceiling was
+  already in the log.
+  `M66.0` set `actions/deploy-pages` to thirty minutes. The next run timed out
+  between 13:07:53 and 13:17:55, ten minutes to the second, because ten minutes
+  is not the action's default but its maximum:
+  `this.timeout = Math.min(timeoutInput, MAX_TIMEOUT)` against a hard-coded
+  `MAX_TIMEOUT = 600000`. The action says so when it clamps, and
+  `##[warning]Warning: timeout value is greater than the allowed maximum` was in
+  the log of the run that proved it. `M66.0` asserted a remedy without checking
+  the knob existed, which is the failure mode this repository's third
+  non-negotiable is about, one step removed: not claiming a test passed, but
+  claiming a fix worked.
+  The measurement `M66.0` made still holds and is the part worth keeping: this
+  repository's Pages deploys drifted from 3m12s to over ten minutes across
+  pushes whose content barely moved, and the artifact is 59 files and 2.4 MB
+  with a count that did not change when it broke. What changes is the
+  conclusion. A backend slower than ten minutes cannot be waited out from here
+  at all, so the setting comes out rather than staying to describe a fix it does
+  not deliver.
+  Also learned, from a dispatch that failed in nine seconds rather than ten
+  minutes: Pages keys a deployment by `pages_build_version`, which is the commit
+  SHA. Re-running a publish for a SHA whose deployment was already cancelled
+  returns "Deployment cancelled." immediately. Recovery is a new commit, and a
+  re-run is not one.
+  Acceptance: no setting in the workflow claims to do something the action
+  clamps away, the ceiling and its source are written where the next person
+  would set it, and the fact that a re-run cannot recover a cancelled SHA is
+  recorded beside them.

@@ -72,23 +72,27 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
+      # No `timeout:` here, and that is a finding rather than an omission.
+      #
+      # The action creates a Pages deployment and polls until Pages reports it
+      # finished. Ten minutes is not its default, it is its ceiling:
+      #
+      #   const MAX_TIMEOUT = 600000
+      #   this.timeout = Math.min(timeoutInput, MAX_TIMEOUT)
+      #
+      # `M66.0` set it to thirty minutes and the next run timed out at 13:07:53
+      # and 13:17:55, ten minutes to the second. The action prints
+      # "timeout value is greater than the allowed maximum" when it clamps, and
+      # that warning was in the log the whole time.
+      #
+      # So a Pages backend slower than ten minutes cannot be absorbed here. The
+      # deploy time for this repository drifted from 3m12s to over ten minutes
+      # across pushes whose content barely moved: the artifact is 59 files and
+      # 2.4 MB and the count did not change when it broke.
+      #
+      # Recovery is a new commit, not a re-run. Pages keys the deployment by
+      # `pages_build_version`, which is the commit SHA, so a re-run for a SHA
+      # whose deployment was already cancelled fails in nine seconds with
+      # "Deployment cancelled." `M66.1`.
       - id: deploy
         uses: actions/deploy-pages@v4
-        with:
-          # Thirty minutes, against a default of ten.
-          #
-          # The action creates the deployment and then polls Pages until it
-          # reports success. That wait is not ours: the artifact is 500 KB of
-          # static HTML and the build that produced it takes sixteen seconds.
-          #
-          # The default was always marginal here and nothing said so. The one
-          # deployment that succeeded took 6m39s of it, and the three after that
-          # sat in `in_progress` past ten minutes and were aborted by the
-          # action's own clock, so the site kept serving a commit four behind
-          # while every job that mattered was green.
-          #
-          # Raising it does not paper over a stuck deployment. A deployment that
-          # is never going to finish still fails, just later and with the same
-          # message; what this stops is a deployment that would have finished
-          # being killed for being slower than a timeout nobody chose. `M66.0`.
-          timeout: 1800000
