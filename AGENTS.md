@@ -11,25 +11,25 @@ crate you are working in adds context specific to that crate.
 
 ## Start here
 
-- [product/mission.md](product/mission.md) what this is and what it must never do
-- [product/architecture.md](product/architecture.md) crate map and dependency rules
-- [product/roadmap.md](product/roadmap.md) milestones and their completion conditions
-- [product/backlog.md](product/backlog.md) the current task list
-- [product/plan.md](product/plan.md) the full design, the reference for anything not covered elsewhere
-- [product/decisions/](product/decisions/) architecture decision records
+- [docs/internal/product/mission.md](docs/internal/product/mission.md) what this is and what it must never do
+- [docs/internal/product/architecture.md](docs/internal/product/architecture.md) crate map and dependency rules
+- [docs/internal/product/roadmap.md](docs/internal/product/roadmap.md) milestones and their completion conditions
+- [docs/internal/product/backlog.md](docs/internal/product/backlog.md) the current task list
+- [docs/internal/product/plan.md](docs/internal/product/plan.md) the full design, the reference for anything not covered elsewhere
+- [docs/internal/product/decisions/](docs/internal/product/decisions/) architecture decision records
 
 ## Standards
 
 Rules that are always true. Read the one that covers what you are touching.
 
-- [standards/behavior.md](standards/behavior.md) how to work in this repo, read this first
-- [standards/rust-style.md](standards/rust-style.md)
-- [standards/error-handling.md](standards/error-handling.md)
-- [standards/async-concurrency.md](standards/async-concurrency.md)
-- [standards/testing.md](standards/testing.md)
-- [standards/observability.md](standards/observability.md)
-- [standards/security.md](standards/security.md)
-- [standards/contracts.md](standards/contracts.md)
+- [docs/internal/standards/behavior.md](docs/internal/standards/behavior.md) how to work in this repo, read this first
+- [docs/internal/standards/rust-style.md](docs/internal/standards/rust-style.md)
+- [docs/internal/standards/error-handling.md](docs/internal/standards/error-handling.md)
+- [docs/internal/standards/async-concurrency.md](docs/internal/standards/async-concurrency.md)
+- [docs/internal/standards/testing.md](docs/internal/standards/testing.md)
+- [docs/internal/standards/observability.md](docs/internal/standards/observability.md)
+- [docs/internal/standards/security.md](docs/internal/standards/security.md)
+- [docs/internal/standards/contracts.md](docs/internal/standards/contracts.md)
 
 ## Skills
 
@@ -68,19 +68,19 @@ no script or with the wrong one credited.
    layer. Enforced by `scripts/check-sans-io.sh`: no library crate names a
    concrete socket type or reads the real clock outside the two places that
    exist to hold them. See
-   [standards/async-concurrency.md](standards/async-concurrency.md).
+   [docs/internal/standards/async-concurrency.md](docs/internal/standards/async-concurrency.md).
 6. Changing a `pgprox-core` trait means updating the trait, every fake, every
    implementation, and the ADR in one commit. `scripts/check-core-contract.sh`
    holds the two mechanical halves: every implementor is in the commit, and so
    is an ADR. Call sites and dependent specs stay with the skill and review. See
-   [standards/contracts.md](standards/contracts.md).
+   [docs/internal/standards/contracts.md](docs/internal/standards/contracts.md).
 7. Credentials never reach a log. `scripts/check-secrets.sh` holds the static
    half: `SecretString` cannot be printed, so the one route to a real value is
    `expose()`, and no result of it may reach a formatting macro.
    `scripts/e2e.sh` holds the claim itself, searching every node's log for the
    token it authenticated with and the backend password the sidecar returned,
    with a positive control so a clean result means something. See
-   [standards/security.md](standards/security.md).
+   [docs/internal/standards/security.md](docs/internal/standards/security.md).
 
 ## Checks
 

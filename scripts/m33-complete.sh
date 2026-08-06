@@ -23,7 +23,7 @@ cd "$REPO_ROOT"
 echo "M33: what pgbouncer and pgcat do differently"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 
 finished="$(sed -n '/^## M33:/,/^## /p' "$BACKLOG" \
@@ -49,7 +49,7 @@ fi
 # --- the findings that have landed -------------------------------------------
 
 # --- M33.1: the study, and the experiment that refuted it ---------------------
-RUN="${PGPROX_RUN_DOC:-product/perf/run-2026-08-05-what-the-others-do.md}"
+RUN="${PGPROX_RUN_DOC:-docs/internal/product/perf/run-2026-08-05-what-the-others-do.md}"
 if [[ -f "$RUN" ]]; then
   ok "$RUN records what each of the three does with memory"
 else

@@ -470,7 +470,10 @@ mod tests {
     }
 
     fn workload() -> Workload {
-        Workload::parse(include_str!("../../../product/perf/workload.yaml")).unwrap()
+        Workload::parse(include_str!(
+            "../../../docs/internal/product/perf/workload.yaml"
+        ))
+        .unwrap()
     }
 
     fn draw(seed: u64, count: usize) -> Vec<Transaction> {
@@ -526,17 +529,17 @@ mod tests {
         for (name, yaml, expected) in [
             (
                 "low",
-                include_str!("../../../product/perf/workload-pin-low.yaml"),
+                include_str!("../../../docs/internal/product/perf/workload-pin-low.yaml"),
                 1.0 / 1001.0,
             ),
             (
                 "mid",
-                include_str!("../../../product/perf/workload-pin-mid.yaml"),
+                include_str!("../../../docs/internal/product/perf/workload-pin-mid.yaml"),
                 2.0 / 1002.0,
             ),
             (
                 "high",
-                include_str!("../../../product/perf/workload-pin-high.yaml"),
+                include_str!("../../../docs/internal/product/perf/workload-pin-high.yaml"),
                 20.0 / 1020.0,
             ),
         ] {
@@ -567,8 +570,10 @@ mod tests {
         // The invariant that made `M11.4` file `Kind::Listen` as a variant
         // rather than reuse `Read`. It was vacuous there, because no committed
         // document held a `LISTEN` statement to check it against. These do.
-        let workload =
-            Workload::parse(include_str!("../../../product/perf/workload-pin-high.yaml")).unwrap();
+        let workload = Workload::parse(include_str!(
+            "../../../docs/internal/product/perf/workload-pin-high.yaml"
+        ))
+        .unwrap();
         let mut sampler = Sampler::new(&workload, 17);
         let statements: Vec<Planned> = (0..20_000)
             .flat_map(|_| sampler.next_transaction().statements)

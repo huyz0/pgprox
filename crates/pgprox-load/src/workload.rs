@@ -462,7 +462,7 @@ mod tests {
         // The one that everything in M7 measures against. If it stops parsing,
         // every recorded run loses its meaning, so this is the test that
         // matters most in the file.
-        let yaml = include_str!("../../../product/perf/workload.yaml");
+        let yaml = include_str!("../../../docs/internal/product/perf/workload.yaml");
         let workload = Workload::parse(yaml).unwrap();
 
         assert_eq!(workload.version, SUPPORTED_VERSION);
@@ -480,17 +480,17 @@ mod tests {
         let documents = [
             (
                 "low",
-                include_str!("../../../product/perf/workload-pin-low.yaml"),
+                include_str!("../../../docs/internal/product/perf/workload-pin-low.yaml"),
                 1,
             ),
             (
                 "mid",
-                include_str!("../../../product/perf/workload-pin-mid.yaml"),
+                include_str!("../../../docs/internal/product/perf/workload-pin-mid.yaml"),
                 2,
             ),
             (
                 "high",
-                include_str!("../../../product/perf/workload-pin-high.yaml"),
+                include_str!("../../../docs/internal/product/perf/workload-pin-high.yaml"),
                 20,
             ),
         ];
@@ -540,9 +540,9 @@ mod tests {
         // documents that happened to carry the same weight would produce two
         // identical rows and a curve nobody could read as a curve.
         let weights: Vec<u32> = [
-            include_str!("../../../product/perf/workload-pin-low.yaml"),
-            include_str!("../../../product/perf/workload-pin-mid.yaml"),
-            include_str!("../../../product/perf/workload-pin-high.yaml"),
+            include_str!("../../../docs/internal/product/perf/workload-pin-low.yaml"),
+            include_str!("../../../docs/internal/product/perf/workload-pin-mid.yaml"),
+            include_str!("../../../docs/internal/product/perf/workload-pin-high.yaml"),
         ]
         .iter()
         .map(|yaml| {

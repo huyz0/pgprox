@@ -27,7 +27,7 @@ echo
 # Overridable so the checks can be run against a planted baseline, which is how
 # `m18-complete.sh` proves its own rules fire. A check that has only ever been
 # seen to pass is a check nobody knows the failure mode of.
-BASELINE="${PGPROX_MUTANTS_BASELINE:-product/mutants-baseline.txt}"
+BASELINE="${PGPROX_MUTANTS_BASELINE:-docs/internal/product/mutants-baseline.txt}"
 SWEEP="${PGPROX_MUTANTS_SCRIPT:-scripts/mutants.sh}"
 
 if [[ ! -f "$BASELINE" ]]; then
@@ -89,7 +89,7 @@ while read -r crate; do
   while read -r since; do
     [[ -n "$since" ]] || continue
     if ! git diff-tree --no-commit-id --name-only -r "$since" \
-        | grep -qx "product/mutants-baseline.txt"; then
+        | grep -qx "docs/internal/product/mutants-baseline.txt"; then
       behind=$((behind + 1))
     fi
   done <<<"$(git rev-list "$commit..HEAD" -- "$(crate_path "$crate")" 2>/dev/null || true)"

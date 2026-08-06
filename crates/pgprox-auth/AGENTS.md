@@ -22,4 +22,4 @@ JWT extraction, sidecar gRPC client over a Unix socket, grant cache.
 
 Grant cache lookup is a declared hot path.
 
-See ADR [0003](../../product/decisions/0003-sidecar-grpc-over-uds.md).
+See ADR [0003](../../docs/internal/product/decisions/0003-sidecar-grpc-over-uds.md).

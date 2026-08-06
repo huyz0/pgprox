@@ -6,7 +6,7 @@ session or pool layers.
 
 It is worth about 7% of median latency and of CPU per statement on the
 reference workload, and it does not move the pool lock that `M7.56` found half
-this proxy's CPU in. See `product/perf/run-2026-07-29-cache.md` before assuming
+this proxy's CPU in. See `docs/internal/product/perf/run-2026-07-29-cache.md` before assuming
 a change here is worth making: the ceiling on this workload is the extended
 protocol, which is all miss until `M9.12`, and the write rate, which empties a
 tenant's entries roughly every other lookup.
@@ -14,7 +14,7 @@ tenant's entries roughly every other lookup.
 ## Rules specific to this crate
 
 - **It promises bounded staleness and nothing stronger.** ADR
-  [0021](../../product/decisions/0021-the-query-cache-promises-bounded-staleness.md)
+  [0021](../../docs/internal/product/decisions/0021-the-query-cache-promises-bounded-staleness.md)
   is the whole contract and this crate does not get to widen it. Off by
   default, opt-in per tenant, one node rather than the fleet, and the TTL is
   the guarantee. Invalidation on write is an improvement on that bound; nothing
@@ -24,7 +24,7 @@ tenant's entries roughly every other lookup.
   correctness bug rather than a missed optimisation: the same SQL resolves to
   different tables under different paths and in different databases, and to
   different rows under different roles. The last two were absent until `M24.4`,
-  which is ADR [0024](../../product/decisions/0024-a-cache-key-names-the-connection-that-would-have-answered.md).
+  which is ADR [0024](../../docs/internal/product/decisions/0024-a-cache-key-names-the-connection-that-would-have-answered.md).
 - **Bounded by bytes, not by entries.** A cache holding ten thousand entries
   holds an unbounded amount of memory, and this runs on a node whose whole
   design is about what a connection costs.

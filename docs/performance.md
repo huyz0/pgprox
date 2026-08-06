@@ -4,7 +4,7 @@ description: "What has been measured, on what hardware, and what the numbers do 
 ---
 
 Every figure here comes from a run document in
-[`product/perf/`](../product/perf/), taken on one 20-core developer machine with
+[`docs/internal/product/perf/`](internal/product/perf/), taken on one 20-core developer machine with
 everything in containers. That machine is the largest caveat on this page and it
 applies to all of it.
 
@@ -49,7 +49,7 @@ that are mostly busy.
 
 Three poolers, one machine, one workload, 200 connections against a
 60-connection cap, three rounds. Full method and caveats in
-[`run-2026-08-05-pgbouncer-pgcat.md`](../product/perf/run-2026-08-05-pgbouncer-pgcat.md).
+[`run-2026-08-05-pgbouncer-pgcat.md`](internal/product/perf/run-2026-08-05-pgbouncer-pgcat.md).
 
 | | transactions | p50 | upstream held | peak RSS |
 | --- | --- | --- | --- | --- |
@@ -103,7 +103,7 @@ and 4% more transactions at saturation. It does not move the p99, because the
 tail is the pool lock rather than the database.
 
 It is off by default and off per tenant unless that tenant opts in. See
-[`run-2026-07-29-cache.md`](../product/perf/run-2026-07-29-cache.md).
+[`run-2026-07-29-cache.md`](internal/product/perf/run-2026-07-29-cache.md).
 
 ## Hot paths
 

@@ -25,7 +25,7 @@ cd "$REPO_ROOT"
 echo "M24: a reading of every crate, and the nine things it found"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 
 WORK="$(mktemp -d)"

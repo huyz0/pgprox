@@ -206,7 +206,7 @@ done
 # naming convention would have failed all three and been turned off, which is
 # the failure mode `M12.8` names: a check people route around is worse than no
 # check.
-ROADMAP="${PGPROX_ROADMAP:-product/roadmap.md}"
+ROADMAP="${PGPROX_ROADMAP:-docs/internal/product/roadmap.md}"
 
 if [[ -f "$ROADMAP" ]]; then
   ungated=0
@@ -269,8 +269,8 @@ fi
 # was said", which is exactly the thing this rule must not read as a decision.
 # The scan root is a variable for the reason `SHELL_ROOTS` above is one: so a
 # planted case in `tests/gates/negative.sh` never has to write a broken ADR into
-# `product/decisions/` and hope it is cleaned up.
-ADR_ROOTS="${PGPROX_ADR_ROOTS:-product/decisions/*.md}"
+# `docs/internal/product/decisions/` and hope it is cleaned up.
+ADR_ROOTS="${PGPROX_ADR_ROOTS:-docs/internal/product/decisions/*.md}"
 
 adr_named=0
 # shellcheck disable=SC2086
@@ -337,12 +337,44 @@ while read -r script; do
 done < <(grep -oE 'scripts/[a-z0-9-]+\.sh' AGENTS.md | sort -u)
 (( missing_script == 0 )) && ok "every script AGENTS.md names exists and runs"
 
-# --- standards referenced by AGENTS.md actually exist ------------------------
-missing=0
-while read -r link; do
-  [[ -f "$link" || -d "$link" ]] || { fail "AGENTS.md links to missing path: $link"; missing=1; }
-done < <(grep -oE '\]\((standards|product|\.agents)/[^)]*\)' AGENTS.md | sed 's/^](//; s/)$//' | sort -u)
-(( missing == 0 )) && ok "every path AGENTS.md links to exists"
+# --- AGENTS.md indexes every standard -----------------------------------------
+#
+# This used to check that the paths AGENTS.md links to exist. `check-links.sh`
+# now does that for every Markdown file in the repository, and a second
+# implementation of "does this link resolve" is the two-validators mistake this
+# repo argues against everywhere else.
+#
+# What it checks instead is the thing that check cannot see. AGENTS.md says of
+# itself that it is deliberately an index, and an index is worth exactly its
+# completeness: a standard that exists and is named nowhere is a rule every
+# session is expected to follow and no session is told about.
+#
+# `M48` is why this is a different check rather than an edited one. The old
+# pattern was `\]\((standards|product|\.agents)/`, and moving those directories
+# left it matching one link out of eighteen. It did not fail. It reported that
+# every path AGENTS.md links to exists, having looked at one of them.
+STANDARDS_DIR="${PGPROX_STANDARDS_DIR:-docs/internal/standards}"
+
+if [[ ! -d "$STANDARDS_DIR" ]]; then
+  fail "$STANDARDS_DIR is not there, and AGENTS.md sends every session to it"
+else
+  unindexed=""
+  count=0
+  for standard in "$STANDARDS_DIR"/*.md; do
+    [[ -f "$standard" ]] || continue
+    count=$((count + 1))
+    grep -qF "($standard)" AGENTS.md || unindexed+=" $(basename "$standard")"
+  done
+
+  if (( count == 0 )); then
+    fail "$STANDARDS_DIR holds no standards, so this check just passed on nothing"
+  elif [[ -z "$unindexed" ]]; then
+    ok "AGENTS.md indexes every standard ($count)"
+  else
+    fail "these standards exist and AGENTS.md names none of them:$unindexed"
+    printf '       a rule every session must follow and no session is pointed at\n'
+  fi
+fi
 
 # --- the licence is declared in three places and granted in one ---------------
 #

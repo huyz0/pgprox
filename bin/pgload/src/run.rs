@@ -521,8 +521,9 @@ mod tests {
         // The shipped document rather than a hand-rolled one, which is what
         // `pgprox_load::sampler`'s own tests do. A fixture invented here would
         // drift from the schema and prove only that the invention parses.
-        let Ok(workload) = Workload::parse(include_str!("../../../product/perf/workload.yaml"))
-        else {
+        let Ok(workload) = Workload::parse(include_str!(
+            "../../../docs/internal/product/perf/workload.yaml"
+        )) else {
             unreachable!("the shipped workload parses")
         };
 
@@ -834,7 +835,7 @@ mod tests {
             target: target.to_string(),
             workload: std::path::PathBuf::from(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../../product/perf/workload.yaml"
+                "/../../docs/internal/product/perf/workload.yaml"
             )),
             connections: 4,
             duration_secs: 1,
@@ -1088,7 +1089,7 @@ mod tests {
         // validation rather than a missing key.
         let good = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../product/perf/workload.yaml"
+            "/../../docs/internal/product/perf/workload.yaml"
         ))
         .unwrap();
         std::fs::write(

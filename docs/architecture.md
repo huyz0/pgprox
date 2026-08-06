@@ -192,5 +192,5 @@ tested without a socket. Two crates compose the rest.
 | `pgprox-session` | The per-client state machine and the relay loop |
 | `bin/pgprox` | The composition root |
 
-Rules that hold across all of them are in `standards/`, and the decisions with
-their reasoning are in [`product/decisions/`](../product/decisions/).
+Rules that hold across all of them are in `docs/internal/standards/`, and the decisions with
+their reasoning are in [`docs/internal/product/decisions/`](internal/product/decisions/).

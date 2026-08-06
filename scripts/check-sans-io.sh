@@ -5,7 +5,7 @@
 #   PGPROX_SANS_IO_ROOTS='a/*.rs' ...       a set of files, for the negative suite
 #
 # `AGENTS.md` non-negotiable 5 says business logic is sans-I/O and points at
-# `standards/async-concurrency.md`, which says it "does not touch a socket, a
+# `docs/internal/standards/async-concurrency.md`, which says it "does not touch a socket, a
 # clock, or a syscall". The script `AGENTS.md` credits with enforcing it,
 # `check-layering.sh`, enforces the crate dependency rule. That is a real rule
 # and it is a different one: a crate can depend on nothing but `pgprox-core` and
@@ -13,7 +13,7 @@
 #
 # ## What the rule turns into, mechanically
 #
-# `product/architecture.md` gives the shape: "The I/O shell that wraps it is
+# `docs/internal/product/architecture.md` gives the shape: "The I/O shell that wraps it is
 # generic over `AsyncRead + AsyncWrite + Unpin`." So a concrete socket type
 # named inside a library crate is the violation, and the generic bound is not.
 # That is checkable, and the tree already satisfies it: `pgprox-session` holds
@@ -118,7 +118,7 @@ done
 if (( violations == 0 )); then
   ok "business logic is sans-I/O ($scanned file(s), no socket and no clock)"
 else
-  printf '\n       standards/async-concurrency.md: business logic is a pure function\n'
+  printf '\n       docs/internal/standards/async-concurrency.md: business logic is a pure function\n'
   printf '       of state and input events. Move the socket to the I/O shell,\n'
   printf '       which is generic over AsyncRead + AsyncWrite + Unpin, and take\n'
   printf '       the time as an input instead of reading it.\n'

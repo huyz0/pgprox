@@ -30,4 +30,4 @@ classified read-only. This crate parses untrusted SQL, so it is fuzzed.
 
 The route decision is a declared hot path.
 
-See ADR [0009](../../product/decisions/0009-replica-routing-with-lsn-watermarks.md).
+See ADR [0009](../../docs/internal/product/decisions/0009-replica-routing-with-lsn-watermarks.md).

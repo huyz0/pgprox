@@ -2,7 +2,7 @@
 //!
 //! # Why this is a module rather than three lines in main
 //!
-//! Two of the rules in `standards/observability.md` are enforceable only where
+//! Two of the rules in `docs/internal/standards/observability.md` are enforceable only where
 //! the subscriber is built: what the default filter is, and that a credential
 //! cannot reach a line. A subscriber configured inline in `main.rs` would put
 //! both in the one file no test can call.

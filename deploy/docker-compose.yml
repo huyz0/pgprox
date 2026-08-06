@@ -34,7 +34,7 @@ x-proxy: &proxy
   #
   # 65536 is right for the e2e stack and for a scale run at a few thousand. A
   # node aiming at the roadmap's 100k needs 262144, which is what
-  # `product/plan.md` says and what a Kubernetes deployment sets in its pod
+  # `docs/internal/product/plan.md` says and what a Kubernetes deployment sets in its pod
   # spec; setting it that high here would only hide the fact that the number
   # has to be chosen per deployment.
   ulimits:

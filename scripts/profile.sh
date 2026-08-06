@@ -7,7 +7,7 @@
 # line runs a billion times a day or twice a year, and a proxy lives on the
 # difference. This replays the reference workload against an instrumented
 # binary, keeps LLVM's execution *counts* rather than its hit/miss booleans,
-# and sorts the result into the three lists `standards/testing.md` describes:
+# and sorts the result into the three lists `docs/internal/standards/testing.md` describes:
 #
 #   * hot and under-tested   high count, low coverage. Write tests here first.
 #   * hot and expensive      the optimization queue, ordered by contribution.
@@ -23,7 +23,7 @@ cd "$REPO_ROOT"
 
 SECONDS_TO_RUN="${1:-30}"
 CONNECTIONS="${PROFILE_CONNECTIONS:-200}"
-REPORT="product/perf/semantic-coverage.md"
+REPORT="docs/internal/product/perf/semantic-coverage.md"
 WORK="$REPO_ROOT/target/profile"
 
 # Its own directory, because an instrumented build invalidates the ordinary
@@ -83,7 +83,7 @@ fi
 echo "  replaying the workload: $CONNECTIONS connections for ${SECONDS_TO_RUN}s"
 "$REPO_ROOT/target/release/pgload" \
   --target "$LOCAL_PROXY" \
-  --workload product/perf/workload.yaml \
+  --workload docs/internal/product/perf/workload.yaml \
   --connections "$CONNECTIONS" \
   --duration "$SECONDS_TO_RUN" \
   --user acme_app --database tenant_acme \

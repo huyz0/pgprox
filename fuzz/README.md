@@ -24,7 +24,7 @@ cargo +nightly fuzz run classify fuzz/artifacts/classify/crash-<hash>
 ```
 
 Short runs gate pull requests; long runs happen nightly. See
-`standards/testing.md`.
+`docs/internal/standards/testing.md`.
 
 ## Status
 

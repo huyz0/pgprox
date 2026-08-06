@@ -40,7 +40,7 @@
 //!
 //! `#![forbid]` rather than the workspace's `deny`, so no `#[allow]` anywhere
 //! in this crate can reach it. This crate reads bytes sent by anyone who can reach the listener, and
-//! `standards/security.md` is about this crate when it says the failure mode of
+//! `docs/internal/standards/security.md` is about this crate when it says the failure mode of
 //! a decoder bug must be a wrong answer and never memory corruption.
 //!
 //! `M27.1` opened the door elsewhere and left it shut here on purpose. See ADR

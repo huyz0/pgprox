@@ -20,7 +20,7 @@ cd "$REPO_ROOT"
 echo "M36: what an open, quiet connection costs"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 
 finished="$(sed -n '/^## M36:/,/^## /p' "$BACKLOG" \
@@ -46,7 +46,7 @@ fi
 # --- the findings that have landed -------------------------------------------
 
 # --- M36.1: what an open, quiet connection costs ------------------------------
-RUN="${PGPROX_RUN_DOC:-product/perf/run-2026-08-05-idle-connection-cost.md}"
+RUN="${PGPROX_RUN_DOC:-docs/internal/product/perf/run-2026-08-05-idle-connection-cost.md}"
 if [[ -f "$RUN" ]]; then
   ok "$RUN records the three counts and what they say about the target"
 else
@@ -57,7 +57,7 @@ fi
 # A run against it has to outlast its think time, and the think time is in the
 # workload rather than in the script, so a change there silently changes what a
 # valid run is.
-IDLE="${PGPROX_IDLE_WORKLOAD:-product/perf/workload-idle.yaml}"
+IDLE="${PGPROX_IDLE_WORKLOAD:-docs/internal/product/perf/workload-idle.yaml}"
 if [[ -f "$IDLE" ]]; then
   ok "the idle workload the measurement needs is still there"
 else

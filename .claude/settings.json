@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if echo \"$CLAUDE_TOOL_INPUT_FILE_PATH\" | grep -qE '(/OUT_DIR/|\\.pb\\.rs$|_generated\\.rs$)'; then echo 'Blocked: generated code. Change the generator or the .proto instead. See standards/behavior.md' >&2; exit 2; fi"
+            "command": "if echo \"$CLAUDE_TOOL_INPUT_FILE_PATH\" | grep -qE '(/OUT_DIR/|\\.pb\\.rs$|_generated\\.rs$)'; then echo 'Blocked: generated code. Change the generator or the .proto instead. See docs/internal/standards/behavior.md' >&2; exit 2; fi"
           }
         ]
       }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The crate dependency rule, enforced rather than trusted.
 #
-# standards/contracts.md calls this the thing that lets tracks run in parallel:
+# docs/internal/standards/contracts.md calls this the thing that lets tracks run in parallel:
 # every crate depends on pgprox-core and on nothing else in the workspace, with
 # pgprox-session and bin/pgprox as the two stated exceptions.
 #
@@ -16,7 +16,7 @@ if ! has_rust; then
   finish
 fi
 
-# Crates permitted to compose others, from product/architecture.md.
+# Crates permitted to compose others, from docs/internal/product/architecture.md.
 COMPOSERS=("pgprox-session" "pgprox" "pgload")
 
 # Test-only scaffolding. Shipping this in a product binary would put test

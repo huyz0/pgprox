@@ -81,7 +81,7 @@ fi
 # The baseline file's own rule: the list may not grow without somebody writing
 # down why. A key with an empty reason is a survivor accepted silently, which is
 # the same thing as no baseline at all.
-BASELINE_FILE="${PGPROX_MUTANTS_BASELINE:-product/mutants-baseline.txt}"
+BASELINE_FILE="${PGPROX_MUTANTS_BASELINE:-docs/internal/product/mutants-baseline.txt}"
 if [[ ! -f "$BASELINE_FILE" ]]; then
   fail "$BASELINE_FILE is missing, so no survivor has a recorded reason"
 else

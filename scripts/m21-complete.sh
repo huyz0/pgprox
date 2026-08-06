@@ -30,7 +30,7 @@ MATRIX=scripts/driver-matrix.sh
 # than only against the real one, which is how `m18-complete.sh` proves its own
 # rules fire. A check that has only ever been seen to pass is a check nobody
 # knows the failure mode of.
-REPORT="${PGPROX_MATRIX_REPORT:-product/conformance/driver-matrix.md}"
+REPORT="${PGPROX_MATRIX_REPORT:-docs/internal/product/conformance/driver-matrix.md}"
 PROBES=tests/proxy-drivers
 
 # --- the suite the milestone is about still exists ---------------------------

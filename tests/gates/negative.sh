@@ -136,7 +136,7 @@ case_m7_scale() {
     env PGPROX_PERF_DIR="$dir" scripts/m7-complete.sh
 
   # The regression. Documents that match `run-*.md` and are not scale runs, which
-  # is what eleven of the sixteen in `product/perf` are. The old check reported
+  # is what eleven of the sixteen in `docs/internal/product/perf` are. The old check reported
   # them as scale runs and counted them.
   rm -rf "$dir"; mkdir -p "$dir"
   scale_doc "$dir" run-2026-01-01-cache.md "The cache helps by about seven percent" ""
@@ -460,7 +460,7 @@ PLANT
 #
 # The method is to copy `scripts/` into an empty directory. `lib.sh` derives
 # `REPO_ROOT` from its own location, so the copy looks out at a tree with no
-# crates, no product/, no deploy/, and every check has something to object to.
+# crates, no docs/internal/product/, no deploy/, and every check has something to object to.
 # Nothing in the real tree is touched.
 #
 # A warning about writing this loop, because the first version of it reported
@@ -514,7 +514,7 @@ case_m15_missing_test() {
   # Run from the real repo so every other check still has its artefacts: the
   # gate must fail on the one missing test, not on the absence of a workspace.
   expect_fail "objects to a test it names that does not exist" \
-    env PGPROX_MUTANTS_BASELINE=product/mutants-baseline.txt bash "$root/gate.sh"
+    env PGPROX_MUTANTS_BASELINE=docs/internal/product/mutants-baseline.txt bash "$root/gate.sh"
 }
 
 # --- check-wired.sh, M16.9 ---------------------------------------------------
@@ -824,7 +824,7 @@ case_sans_io() {
 core_contract_repo() {
   local repo="$WORK/contract"
   rm -rf "$repo"; mkdir -p "$repo/scripts" "$repo/crates/pgprox-core/src" \
-                           "$repo/crates/other/src" "$repo/product/decisions"
+                           "$repo/crates/other/src" "$repo/docs/internal/product/decisions"
   cp scripts/*.sh "$repo/scripts/"
   git -C "$repo" init -q .
   git -C "$repo" config user.email t@example.com
@@ -833,7 +833,7 @@ core_contract_repo() {
     > "$repo/crates/pgprox-core/src/cache.rs"
   printf 'impl QueryCache for Store {\n    async fn get(&self, k: &K) -> Option<V> { None }\n}\n' \
     > "$repo/crates/other/src/store.rs"
-  printf '# 0001. A decision\n\nStatus: accepted\n' > "$repo/product/decisions/0001-a.md"
+  printf '# 0001. A decision\n\nStatus: accepted\n' > "$repo/docs/internal/product/decisions/0001-a.md"
   git -C "$repo" add -A
   git -C "$repo" commit -qm "M0.1: seed"
   printf '%s' "$repo"
@@ -860,8 +860,8 @@ case_core_contract() {
     bash "$repo/scripts/check-core-contract.sh"
 
   # Whole.
-  printf '# 0002. Why peek\n\nStatus: accepted\n' > "$repo/product/decisions/0002-peek.md"
-  git -C "$repo" add product/decisions/0002-peek.md
+  printf '# 0002. Why peek\n\nStatus: accepted\n' > "$repo/docs/internal/product/decisions/0002-peek.md"
+  git -C "$repo" add docs/internal/product/decisions/0002-peek.md
   expect_pass "accepts a trait change that arrives whole" \
     bash "$repo/scripts/check-core-contract.sh"
 

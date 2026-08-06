@@ -12,7 +12,7 @@ cd "$REPO_ROOT"
 echo "M37: what a spawned task costs beyond its future"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 
 WORK="$(mktemp -d)"
@@ -61,7 +61,7 @@ fi
 run_finding pgprox a_spawned_task_costs_its_future_plus_a_header \
   "a spawned task costs its future plus a fixed header"
 
-RUN="${PGPROX_RUN_DOC:-product/perf/run-2026-08-05-spawn-cost.md}"
+RUN="${PGPROX_RUN_DOC:-docs/internal/product/perf/run-2026-08-05-spawn-cost.md}"
 if [[ -f "$RUN" ]]; then
   ok "$RUN records the four sizes and what they eliminate"
 else

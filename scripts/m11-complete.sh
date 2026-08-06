@@ -24,7 +24,7 @@ echo
 # `M9.24` said throughput is pinned by the database, so the cache can only
 # change who waits. Eight matched pairs say otherwise. The check is that the
 # verdict is recorded and that it is a verdict rather than a shrug.
-doc="product/perf/run-2026-07-31-throughput.md"
+doc="docs/internal/product/perf/run-2026-07-31-throughput.md"
 if [[ -f $doc ]]; then
   ok "the throughput question has a recorded run"
 else
@@ -43,7 +43,7 @@ fi
 #
 # `M8`'s matrix was all TLS 1.3, whose suites are all FIPS-approved, so the
 # restriction FIPS actually imposes was never reached.
-matrix="product/release/cipher-matrix.md"
+matrix="docs/internal/product/release/cipher-matrix.md"
 if [[ -f $matrix ]] && grep -qs 'TLSv1_2' "$matrix"; then
   ok "the cipher matrix has TLS 1.2 rows"
 else
@@ -81,7 +81,7 @@ fi
 
 # The roadmap sentence that was wrong. A gate cannot check prose, but it can
 # check that the specific wrong clause has not come back.
-if grep -qs 'which is where shedding has to work' product/roadmap.md; then
+if grep -qs 'which is where shedding has to work' docs/internal/product/roadmap.md; then
   fail "the roadmap says the cap is where shedding has to work; M11.3 showed it is where shedding is designed not to"
 else
   ok "the roadmap no longer claims the cap is where shedding works"
@@ -93,7 +93,7 @@ fi
 # can be answered here is the curve: how the upstream connection count moves as
 # the share of pinned sessions rises.
 #
-# This used to glob for `product/perf/*pinning*.md` and pass. It passed on
+# This used to glob for `docs/internal/product/perf/*pinning*.md` and pass. It passed on
 # `run-2026-07-31-pinning.md`, a document whose own title says it is not the
 # curve, which is the exact failure this repo keeps rediscovering: a check that
 # tests whether somebody wrote a file, not whether the file answers anything.
@@ -101,7 +101,7 @@ fi
 # So it checks the recorded counts instead. A curve needs a y-axis that moved,
 # and it needs to have moved for the right reason, which means the control arm
 # has to have been below the cap where it had somewhere to move from.
-CURVE=product/perf/curve-*-pinning.tsv
+CURVE=docs/internal/product/perf/curve-*-pinning.tsv
 if ! compgen -G "$CURVE" >/dev/null; then
   fail "no pinning curve: ADR 0001's open question has no measured half yet (M11.4 then M11.7)"
 else
@@ -134,14 +134,14 @@ fi
 
 # --- M11.6: admission when every survivor is full -----------------------------
 #
-# This globbed `product/perf/*admission*.md` and reported what a full fleet
+# This globbed `docs/internal/product/perf/*admission*.md` and reported what a full fleet
 # tells displaced clients, which a filename cannot say. `M12.4`.
 #
 # The claim is about two specific SQLSTATEs. The pool distinguishes `53300`,
 # no connection available, from `57014`, the wait cancelled, and M11.6's whole
 # result is which of them a displaced client sees: neither. A run that does not
 # name both has not addressed the question, whatever its filename says.
-ADMISSION_DIR="${PGPROX_PERF_DIR:-product/perf}"
+ADMISSION_DIR="${PGPROX_PERF_DIR:-docs/internal/product/perf}"
 admission=""
 for run in "$ADMISSION_DIR"/*admission*.md; do
   [[ -f "$run" ]] || continue

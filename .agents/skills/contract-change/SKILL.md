@@ -68,7 +68,7 @@ Then:
 - [ ] Every call site updated
 - [ ] `cargo check --workspace` clean
 - [ ] `scripts/check-coverage.sh` clean for every affected crate
-- [ ] ADR written in `product/decisions/`
+- [ ] ADR written in `docs/internal/product/decisions/`
 - [ ] Dependent specs updated
 
 ## The fake is not optional

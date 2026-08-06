@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One task, one commit. The subject references the backlog task so history
-# stays traceable to the plan. See standards/behavior.md.
+# stays traceable to the plan. See docs/internal/standards/behavior.md.
 #
 # Usage: check-commit-msg.sh <path-to-commit-msg-file>
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -25,7 +25,7 @@ fi
 if [[ ! "$subject" =~ ^M-?[0-9]+[A-Z]*\.[0-9]+: ]]; then
   fail "commit subject must start with a backlog task ID, e.g. 'M-1.7: add ADRs'"
   printf '       got: %s\n' "$subject"
-  printf '       see: standards/behavior.md\n'
+  printf '       see: docs/internal/standards/behavior.md\n'
   finish
 fi
 
@@ -45,20 +45,20 @@ task="${subject%%:*}"
 # thing this milestone is about.
 backlog=""
 source_desc="the index"
-if ! backlog="$(git -C "$REPO_ROOT" show :product/backlog.md 2>/dev/null)" || [[ -z "$backlog" ]]; then
+if ! backlog="$(git -C "$REPO_ROOT" show :docs/internal/product/backlog.md 2>/dev/null)" || [[ -z "$backlog" ]]; then
   source_desc="the working tree"
-  backlog="$(cat "$REPO_ROOT/product/backlog.md" 2>/dev/null || true)"
+  backlog="$(cat "$REPO_ROOT/docs/internal/product/backlog.md" 2>/dev/null || true)"
 fi
 
 if [[ -z "$backlog" ]]; then
-  fail "cannot read product/backlog.md, so '$task' cannot be resolved to a task"
+  fail "cannot read docs/internal/product/backlog.md, so '$task' cannot be resolved to a task"
 elif grep -qF -- "$(printf '`%s`' "$task")" <<<"$backlog"; then
   ok "commit subject references $task"
 else
-  fail "commit subject references $task, which is not a task in product/backlog.md"
+  fail "commit subject references $task, which is not a task in docs/internal/product/backlog.md"
   printf '       file the task before the commit that does it, not after\n'
   printf '       read from: %s\n' "$source_desc"
-  printf '       see: standards/behavior.md\n'
+  printf '       see: docs/internal/standards/behavior.md\n'
 fi
 
 finish

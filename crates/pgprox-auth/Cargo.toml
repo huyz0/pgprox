@@ -49,7 +49,7 @@ tracing = "0.1"
 tonic-prost-build = "0.14"
 
 [dev-dependencies]
-# Allocation budgets. See standards/testing.md.
+# Allocation budgets. See docs/internal/standards/testing.md.
 dhat = "0.3"
 base64 = "0.22"
 # Shared probe classification, so the 57P03 bug lives in one place.

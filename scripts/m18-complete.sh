@@ -73,7 +73,7 @@ fi
 # runs of whitespace squeezed. The rule is a sentence and sentences get
 # rewrapped; a check that broke every time somebody reflowed a paragraph would
 # be edited out within a week.
-SPEC="specs/2026-08-02-peer-discovery-seam/spec.md"
+SPEC="docs/internal/specs/2026-08-02-peer-discovery-seam/spec.md"
 flat() { sed 's/^[[:space:]]*>[[:space:]]*/ /' "$1" | tr '\n' ' ' | tr -s ' '; }
 if [[ -f "$SPEC" ]] && flat "$SPEC" | grep -q "never cause a node to be counted alive that gossip has not heard from"; then
   ok "the peer discovery spec states the rule that keeps the seam safe"
@@ -82,10 +82,10 @@ else
 fi
 
 for part in contracts.md tests.md tasks.md; do
-  if [[ -s "specs/2026-08-02-peer-discovery-seam/$part" ]]; then
+  if [[ -s "docs/internal/specs/2026-08-02-peer-discovery-seam/$part" ]]; then
     ok "the spec has its $part"
   else
-    fail "specs/2026-08-02-peer-discovery-seam/$part is missing or empty"
+    fail "docs/internal/specs/2026-08-02-peer-discovery-seam/$part is missing or empty"
   fi
 done
 

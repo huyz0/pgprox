@@ -993,7 +993,7 @@ mod tests {
     /// `M17.4`. Every branch in this crate whose only effect is a log line was
     /// untestable, so each one's mutants survived and the argument for
     /// accepting them would have been "it only logs" — which
-    /// `standards/observability.md` does not allow, because the line is the
+    /// `docs/internal/standards/observability.md` does not allow, because the line is the
     /// contract. A scoped subscriber is thread-local, so it captures the
     /// calling thread's events and leaves the process-wide one alone.
     fn logged(f: impl FnOnce()) -> String {

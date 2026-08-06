@@ -11,7 +11,7 @@
 # It does not run a mutation sweep. `pgprox` alone is 571 mutants and eighty
 # minutes, and this gate sits beside fifteen others. `M14`'s and `M15`'s gates
 # made the same trade and said so; the sweep is the nightly `mutants` job in CI,
-# against `product/mutants-baseline.txt`.
+# against `docs/internal/product/mutants-baseline.txt`.
 #
 # What it can check is the thing that made the sweep miss the binaries for
 # three milestones: they were not in the list. `scripts/mutants.sh` decides what
@@ -88,8 +88,8 @@ fi
 # `untriaged` is not a reason. `M10.3` used it for the first sweep and said so,
 # and `M10.4` through `M10.8` are the tasks that removed it. It may not come
 # back: an entry with no argument is a survivor nobody read.
-if grep -qE $'\tuntriaged' product/mutants-baseline.txt; then
-  fail "product/mutants-baseline.txt has an untriaged entry: that is not a reason"
+if grep -qE $'\tuntriaged' docs/internal/product/mutants-baseline.txt; then
+  fail "docs/internal/product/mutants-baseline.txt has an untriaged entry: that is not a reason"
 else
   ok "every accepted survivor carries an argument rather than 'untriaged'"
 fi

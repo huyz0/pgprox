@@ -113,7 +113,7 @@ repos:
         files: '\.rs$'
         # Tier 1 alone carries the 95% number, so coverage never waits on
         # Docker. Budget for the whole pre-commit run is 2 minutes; see
-        # standards/testing.md for what keeps it there.
+        # docs/internal/standards/testing.md for what keeps it there.
 
       - id: task-id
         name: commit subject references a backlog task

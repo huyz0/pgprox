@@ -21,7 +21,7 @@ covers.
 
 ## Location and numbering
 
-`product/decisions/NNNN-kebab-case-title.md`, numbers never reused. A superseded
+`docs/internal/product/decisions/NNNN-kebab-case-title.md`, numbers never reused. A superseded
 record stays and gets `Status: superseded by [NNNN](...)`. Deleting it destroys
 the reasoning.
 

@@ -1,4 +1,4 @@
-# Supply chain policy. Runs in CI; see standards/security.md.
+# Supply chain policy. Runs in CI; see docs/internal/standards/security.md.
 
 [advisories]
 version = 2

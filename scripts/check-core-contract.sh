@@ -3,7 +3,7 @@
 #
 #   scripts/check-core-contract.sh          the staged change
 #
-# `AGENTS.md` non-negotiable 6 and `standards/contracts.md` say a contract
+# `AGENTS.md` non-negotiable 6 and `docs/internal/standards/contracts.md` say a contract
 # change is "one atomic commit containing" six things: the trait change, every
 # fake, every implementation, every call site, the ADR recording why, and any
 # dependent track's spec.
@@ -19,7 +19,7 @@
 #
 #   3. every implementation   the implementors are greppable, and a trait method
 #                             added without them is a build break for someone else
-#   5. the ADR                a file under product/decisions/ in the same commit
+#   5. the ADR                a file under docs/internal/product/decisions/ in the same commit
 #
 # The fakes live in the same file as their trait here, so "the fake was updated"
 # is already implied by the trait file being staged and is not worth a check of
@@ -118,7 +118,7 @@ for t in $changed_traits; do
              | grep -v "^${CORE_DIR}/" || true)
 done
 
-if grep -qE '^product/decisions/.*\.md$' <<< "$staged"; then
+if grep -qE '^docs/internal/product/decisions/.*\.md$' <<< "$staged"; then
   ok "an ADR is in this commit"
 else
   fail "a core trait changed (${changed_traits// /, }) and no ADR is in this commit"
@@ -126,7 +126,7 @@ else
 fi
 
 if (( problems > 0 )); then
-  printf '\n       standards/contracts.md: a contract change is one atomic commit\n'
+  printf '\n       docs/internal/standards/contracts.md: a contract change is one atomic commit\n'
   printf '       with the trait, every fake, every implementation, every call\n'
   printf '       site, the ADR recording why including what was rejected, and\n'
   printf '       any dependent spec. The contract-change skill walks this.\n'

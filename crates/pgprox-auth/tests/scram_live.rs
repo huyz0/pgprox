@@ -7,7 +7,7 @@
 //!
 //! The wire framing is written out inline rather than pulled from
 //! `pgprox-proto`. Depending on it would be a sideways crate dependency, which
-//! `standards/contracts.md` forbids, and length-prefixed messages are twenty
+//! `docs/internal/standards/contracts.md` forbids, and length-prefixed messages are twenty
 //! lines.
 
 #![cfg(feature = "integration")]

@@ -13,6 +13,6 @@ samples, and writes a JSON report `scripts/scale.sh` reads.
 - The report goes to a file and the logs go to stderr. A report sharing a
   stream with log lines is a report a script has to filter.
 - This is a measurement tool, so it composes `pgprox-proto` and is listed as a
-  composer in `product/architecture.md`. It is never a dependency of the proxy.
+  composer in `docs/internal/product/architecture.md`. It is never a dependency of the proxy.
 
 See [pgprox-load](../../crates/pgprox-load/AGENTS.md) for the workload itself.

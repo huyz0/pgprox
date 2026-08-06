@@ -10,8 +10,8 @@
 //! `M26.2` took a hit from 4,101 instructions to 2,641 and this test would not
 //! have noticed either number: the cost was a second hash of a six-field key
 //! and six atomic increments, and neither allocates. That is the division
-//! `standards/testing.md` draws. A budget catches a new copy; the instruction
-//! count in `product/perf/baseline.json` catches work that got more expensive
+//! `docs/internal/standards/testing.md` draws. A budget catches a new copy; the instruction
+//! count in `docs/internal/product/perf/baseline.json` catches work that got more expensive
 //! without allocating, and the cache needed both.
 //!
 //! It also found what neither reading nor the instruction count did. A miss,

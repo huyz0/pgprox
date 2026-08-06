@@ -22,7 +22,7 @@ cd "$REPO_ROOT"
 echo "M31: the comments at M30's optimisation sites"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 
 WORK="$(mktemp -d)"
@@ -68,7 +68,7 @@ fi
 unmoved() {
   local key="$1" expected="$2"
   local measured
-  measured="$(python3 -c "import json; print(json.load(open('product/perf/baseline.json')).get('$key', -1))")"
+  measured="$(python3 -c "import json; print(json.load(open('docs/internal/product/perf/baseline.json')).get('$key', -1))")"
   if [[ "$measured" == "$expected" ]]; then
     ok "$key is still $expected, so nothing here reached a release build"
   else

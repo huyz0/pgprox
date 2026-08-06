@@ -20,7 +20,7 @@ cd "$REPO_ROOT"
 echo "M34: the seventeen kilobytes that are not the buffers"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 
 finished="$(sed -n '/^## M34:/,/^## /p' "$BACKLOG" \
@@ -46,7 +46,7 @@ fi
 # --- the findings that have landed -------------------------------------------
 
 # --- M34.1: is it the allocator's memory or the connection's ------------------
-RUN="${PGPROX_RUN_DOC:-product/perf/run-2026-08-05-arenas.md}"
+RUN="${PGPROX_RUN_DOC:-docs/internal/product/perf/run-2026-08-05-arenas.md}"
 if [[ -f "$RUN" ]]; then
   ok "$RUN records all three arms"
 else

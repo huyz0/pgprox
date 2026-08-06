@@ -25,7 +25,7 @@ cd "$REPO_ROOT"
 echo "M27: unsafe becomes a governed exception rather than a closed door"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 
 WORK="$(mktemp -d)"

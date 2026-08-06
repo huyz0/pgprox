@@ -143,7 +143,7 @@ mod tests {
         let workload = dir.path().join("workload.yaml");
         let mut file = std::fs::File::create(&workload).unwrap();
         file.write_all(
-            include_str!("../../../product/perf/workload.yaml")
+            include_str!("../../../docs/internal/product/perf/workload.yaml")
                 .replace("min_ms: 50", "min_ms: 1")
                 .replace("max_ms: 500", "max_ms: 5")
                 .as_bytes(),

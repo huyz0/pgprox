@@ -27,4 +27,4 @@
   from `Config` rather than `Deserialize` on it. A field can be renamed in
   `pgprox-core` without every deployment's ConfigMap becoming invalid.
 
-See ADR [0006](../../product/decisions/0006-pluggable-config-declarative-drain.md).
+See ADR [0006](../../docs/internal/product/decisions/0006-pluggable-config-declarative-drain.md).

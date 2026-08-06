@@ -29,5 +29,5 @@ frontend listener and upstream connections.
   master secret. Driver compatibility against that suite list is an M8
   deliverable.
 
-See ADR [0010](../../product/decisions/0010-fips-build-variant.md) and
-[0002](../../product/decisions/0002-jwt-in-password-field.md).
+See ADR [0010](../../docs/internal/product/decisions/0010-fips-build-variant.md) and
+[0002](../../docs/internal/product/decisions/0002-jwt-in-password-field.md).

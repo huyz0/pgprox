@@ -5,7 +5,7 @@ HTTP/JSON admin API and the `SHOW` pseudo-database.
 This crate depends only on `pgprox-core`, like every other. The data it reports
 lives in three other crates, so it reads through `pgprox_core::admin`, which the
 composition root implements by fanning in. See ADR
-[0018](../../product/decisions/0018-admin-reads-through-a-core-contract.md).
+[0018](../../docs/internal/product/decisions/0018-admin-reads-through-a-core-contract.md).
 
 ## Rules specific to this crate
 
@@ -37,4 +37,4 @@ composition root implements by fanning in. See ADR
   `tests/surfaces_agree.rs` is what makes it true rather than hoped for. Add a
   case there when adding a question either surface can answer.
 
-See ADR [0007](../../product/decisions/0007-cluster-scoped-observability.md).
+See ADR [0007](../../docs/internal/product/decisions/0007-cluster-scoped-observability.md).

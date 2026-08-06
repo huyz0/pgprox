@@ -29,4 +29,4 @@ Metrics, tracing, log initialization, health endpoints.
   data in literals.
 - Span names are stable and low cardinality. The tenant goes in an attribute.
 
-See ADR [0007](../../product/decisions/0007-cluster-scoped-observability.md).
+See ADR [0007](../../docs/internal/product/decisions/0007-cluster-scoped-observability.md).

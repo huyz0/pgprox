@@ -29,9 +29,10 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 /// membership the workload does not describe is a budget about nothing, and
 /// the field would otherwise be one nothing reads.
 fn cluster_size() -> usize {
-    let workload =
-        pgprox_load::Workload::parse(include_str!("../../../product/perf/workload.yaml"))
-            .expect("the committed workload does not parse");
+    let workload = pgprox_load::Workload::parse(include_str!(
+        "../../../docs/internal/product/perf/workload.yaml"
+    ))
+    .expect("the committed workload does not parse");
     workload.cluster_size as usize
 }
 

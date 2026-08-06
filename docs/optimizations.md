@@ -16,7 +16,7 @@ times.
 Optimization work that nothing measures decays back. Three mechanisms keep these
 results from drifting.
 
-**A committed baseline.** `product/perf/baseline.json` holds instruction counts
+**A committed baseline.** `docs/internal/product/perf/baseline.json` holds instruction counts
 for sixteen declared hot paths, and `scripts/bench.sh` fails CI on a 5% drift in
 either direction. Rewriting the baseline is a deliberate act with a reason in
 the commit message.

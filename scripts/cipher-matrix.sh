@@ -17,7 +17,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$REPO_ROOT"
 
 COMPOSE=(docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.fips.yml)
-OUT="${OUT:-product/release/cipher-matrix.md}"
+OUT="${OUT:-docs/internal/product/release/cipher-matrix.md}"
 DRIVERS=(psql pgx asyncpg jdbc npgsql psql-tls12-aes psql-tls12-chacha)
 
 # Named targets: a published port on the host, and the compose service whose

@@ -1,6 +1,6 @@
 //! Allocation budgets for the two hot paths this crate owns.
 //!
-//! `standards/testing.md` names warm-pool acquire and the release decision as
+//! `docs/internal/standards/testing.md` names warm-pool acquire and the release decision as
 //! declared hot paths, and said both were written to be allocation-free and
 //! never measured. This file is the measurement.
 //!

@@ -1770,7 +1770,7 @@ fn ready_statement(
 /// `holds_unnamed` replaced by `true` survived, and that mutant is a session
 /// that moved connections binding against whatever the previous borrower left
 /// unnamed: not an error, the wrong query's rows. Split out so the decision can
-/// be tested without a socket, which is what `standards/testing.md` now says to
+/// be tested without a socket, which is what `docs/internal/standards/testing.md` now says to
 /// do and what `M22.7` wrote down.
 fn prepare_unnamed(
     message: &pgprox_proto::frontend::FrontendMessage<'_>,

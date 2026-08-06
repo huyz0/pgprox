@@ -5,7 +5,7 @@ run produces. No I/O: `bin/pgload` is the part that owns sockets.
 
 ## Rules specific to this crate
 
-- The workload document in `product/perf/workload.yaml` is a measurement
+- The workload document in `docs/internal/product/perf/workload.yaml` is a measurement
   baseline. Changing it invalidates every recorded run, so it changes in its
   own commit, with the reasoning, and the recorded runs are re-taken. Never
   change it to make a number look better.
@@ -14,7 +14,7 @@ run produces. No I/O: `bin/pgload` is the part that owns sockets.
   comparable.
 - The crate parses the committed workload in its own test suite. That test is
   the one that matters most here: if the file stops parsing, every number in
-  `product/perf/` quietly loses its meaning.
+  `docs/internal/product/perf/` quietly loses its meaning.
 
-See [standards/testing.md](../../standards/testing.md) for the hot-path
+See [docs/internal/standards/testing.md](../../docs/internal/standards/testing.md) for the hot-path
 discipline this crate exists to serve.

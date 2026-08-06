@@ -32,7 +32,7 @@ described an arrangement that was not there: it was forbidden once in
 `forbid` cannot be overridden by a local `#[allow]` at all, which made it the
 one threshold in this repo that no measurement could reopen. It is now `deny`,
 and an exception has to get past five conditions that
-[`scripts/check-unsafe.sh`](../scripts/check-unsafe.sh) enforces:
+[`scripts/check-unsafe.sh`](../../../scripts/check-unsafe.sh) enforces:
 
 1. **Five crates stay shut**, with `#![forbid(unsafe_code)]` in their own
    `lib.rs` where no `#[allow]` reaches them: `pgprox-proto`, `pgprox-core`,

@@ -10,7 +10,7 @@ runs a billion times a day, and a proxy lives on that distinction.
 
 ## The declared hot paths
 
-From `standards/testing.md`. If the change touches one of these, this procedure
+From `docs/internal/standards/testing.md`. If the change touches one of these, this procedure
 applies:
 
 1. The steady-state relay loop, both directions
@@ -61,7 +61,7 @@ is a real change here where a timing would report it as noise. Not
 `iai-callgrind`: it pulls two crates under unmaintained advisories and
 `cargo deny` fails the workspace on them.
 
-The baseline is `product/perf/baseline.json`. Rewriting it is a deliberate act
+The baseline is `docs/internal/product/perf/baseline.json`. Rewriting it is a deliberate act
 with a reason in the commit message, which is why the script only does it when
 asked.
 
@@ -83,7 +83,7 @@ it into three lists, each implying a different action:
 
 ## The reference workload
 
-`product/perf/workload.yaml`. Everything measures against it: tenant mix (a
+`docs/internal/product/perf/workload.yaml`. Everything measures against it: tenant mix (a
 few hot, a long tail idle), query shape distribution, connection churn rate,
 transaction size distribution, replica read fraction.
 

@@ -5,3 +5,11 @@ target/
 target-coverage/
 reference/
 .git/
+# The documentation site's dependency tree and its output, 240 MB of it. These
+# arrived under `docs/` when `M45` moved the toolchain beside the pages, and the
+# context carried them silently: nothing in the build fails, it is just slower
+# for every image anybody builds. The pages themselves stay, because the load
+# generator embeds a workload file from `docs/internal/product/perf/`.
+docs/node_modules/
+docs/dist/
+docs/.astro/

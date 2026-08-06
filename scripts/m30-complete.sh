@@ -21,7 +21,7 @@ cd "$REPO_ROOT"
 echo "M30: the same procedure, applied to every crate"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 
 WORK="$(mktemp -d)"
@@ -52,7 +52,7 @@ run_finding() {
 under() {
   local key="$1" ceiling="$2"
   local measured
-  measured="$(python3 -c "import json; print(json.load(open('product/perf/baseline.json')).get('$key', 999999))")"
+  measured="$(python3 -c "import json; print(json.load(open('docs/internal/product/perf/baseline.json')).get('$key', 999999))")"
   if (( measured < ceiling )); then
     ok "$key is $measured, under the $ceiling it was before"
   else
@@ -177,7 +177,7 @@ if [[ -z "$stray" ]]; then
   ok "the unseeded hasher appears only where a key this process issues is"
 else
   fail "these files reach for the unseeded hasher and nothing decided about their keys:$stray"
-  printf '       who chooses the key decides the hasher, see standards/security.md\n'
+  printf '       who chooses the key decides the hasher, see docs/internal/standards/security.md\n'
 fi
 
 # --- M30.4: a 16 KiB memset before every read ---------------------------------
@@ -209,7 +209,7 @@ fi
 # The milestone's one negative result, so the check is the negative: the
 # document exists, the crate it is about is still shut, and the two figures it
 # compares against have not moved underneath it.
-RUN="${PGPROX_RUN_DOC:-product/perf/run-2026-08-05-utf8-validation.md}"
+RUN="${PGPROX_RUN_DOC:-docs/internal/product/perf/run-2026-08-05-utf8-validation.md}"
 if [[ -f "$RUN" ]]; then
   ok "$RUN records what the closed list costs"
 else
@@ -234,10 +234,10 @@ under pgprox-proto::decode_error_response 2000
 #
 # Not `run_finding`: what landed is the shape of a measurement, and the place
 # that is visible is the baseline. The check is `M28.2`'s, against the rule
-# `standards/testing.md` now states: a gated benchmark measures at least a
+# `docs/internal/standards/testing.md` now states: a gated benchmark measures at least a
 # thousand instructions, because below that a `HashMap` probe count decides
 # whether it passes.
-served="$(python3 -c "import json; print(json.load(open('product/perf/baseline.json')).get('pgprox-cache::serves_a_mix_of_tenants', 0))")"
+served="$(python3 -c "import json; print(json.load(open('docs/internal/product/perf/baseline.json')).get('pgprox-cache::serves_a_mix_of_tenants', 0))")"
 if (( served > 10000 )); then
   ok "the serves benchmark measures $served instructions, well past seed noise"
 else
@@ -247,7 +247,7 @@ fi
 
 # And the unstable one is gone rather than carried beside its replacement, which
 # would leave it still gating CI.
-if grep -q '"pgprox-cache::serves"' product/perf/baseline.json; then
+if grep -q '"pgprox-cache::serves"' docs/internal/product/perf/baseline.json; then
   fail "the baseline still carries pgprox-cache::serves, which is the unstable one"
 else
   ok "the unstable benchmark is gone rather than kept beside its replacement"

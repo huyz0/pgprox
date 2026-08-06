@@ -22,10 +22,10 @@ cd "$REPO_ROOT"
 echo "M23: streaming under concurrency, at the scale one machine has"
 echo
 
-REFERENCE="${PGPROX_WORKLOAD_REF:-product/perf/workload.yaml}"
-LARGE="${PGPROX_WORKLOAD_LARGE:-product/perf/workload-large.yaml}"
+REFERENCE="${PGPROX_WORKLOAD_REF:-docs/internal/product/perf/workload.yaml}"
+LARGE="${PGPROX_WORKLOAD_LARGE:-docs/internal/product/perf/workload-large.yaml}"
 
-for path in "$REFERENCE" "$LARGE" product/perf/run-2026-08-03-streaming-concurrent.md; do
+for path in "$REFERENCE" "$LARGE" docs/internal/product/perf/run-2026-08-03-streaming-concurrent.md; do
   if [[ -f "$path" ]]; then
     ok "$path exists"
   else

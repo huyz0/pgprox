@@ -4,7 +4,7 @@
 #   scripts/mutants.sh                  # every crate in the list below
 #   scripts/mutants.sh pgprox-route     # one of them
 #
-# Coverage says a line ran. This says the line mattered. `standards/testing.md`
+# Coverage says a line ran. This says the line mattered. `docs/internal/standards/testing.md`
 # has claimed since M-1 that this runs nightly and that surviving mutants are
 # treated as missing tests, and until `M10.3` nothing ran it.
 #
@@ -16,7 +16,7 @@
 #
 # # The baseline
 #
-# A survivor that is accepted lives in `product/mutants-baseline.txt` with a
+# A survivor that is accepted lives in `docs/internal/product/mutants-baseline.txt` with a
 # reason. A survivor that is not there fails this script. The file is a list
 # nobody may grow without writing down why, which is the same discipline as the
 # coverage gate: the number does not move quietly.
@@ -54,7 +54,7 @@ if (( $# > 0 )); then
   CRATES=("$@")
 fi
 
-BASELINE="product/mutants-baseline.txt"
+BASELINE="docs/internal/product/mutants-baseline.txt"
 # Parallelism and a per-mutant ceiling. Without the ceiling one mutated loop
 # that no longer terminates stops the whole run rather than being reported.
 # cargo-mutants copies the whole build tree once per worker. On this machine

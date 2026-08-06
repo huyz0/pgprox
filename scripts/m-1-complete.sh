@@ -17,22 +17,22 @@ echo
 # --- standards ---------------------------------------------------------------
 for f in rust-style error-handling async-concurrency testing observability \
          security contracts behavior; do
-  [[ -s "standards/$f.md" ]] && ok "standards/$f.md" || fail "standards/$f.md missing or empty"
+  [[ -s "docs/internal/standards/$f.md" ]] && ok "docs/internal/standards/$f.md" || fail "docs/internal/standards/$f.md missing or empty"
 done
 
 # --- product docs ------------------------------------------------------------
 for f in mission architecture roadmap backlog plan; do
-  [[ -s "product/$f.md" ]] && ok "product/$f.md" || fail "product/$f.md missing or empty"
+  [[ -s "docs/internal/product/$f.md" ]] && ok "docs/internal/product/$f.md" || fail "docs/internal/product/$f.md missing or empty"
 done
 
 # --- ADRs: one per row of the decisions table in the plan --------------------
-adr_count="$(find product/decisions -name '[0-9]*.md' 2>/dev/null | wc -l)"
+adr_count="$(find docs/internal/product/decisions -name '[0-9]*.md' 2>/dev/null | wc -l)"
 if (( adr_count >= 10 )); then
   ok "ADRs: $adr_count records"
 else
   fail "ADRs: found $adr_count, expected at least 10 (one per decision-table row)"
 fi
-for adr in product/decisions/[0-9]*.md; do
+for adr in docs/internal/product/decisions/[0-9]*.md; do
   [[ -f "$adr" ]] || continue
   grep -qi '^## *consequences' "$adr" \
     || fail "$(basename "$adr"): no Consequences section"
@@ -96,7 +96,7 @@ else
 fi
 
 # --- portability -------------------------------------------------------------
-if grep -rqsil 'portability' product/decisions/ 2>/dev/null; then
+if grep -rqsil 'portability' docs/internal/product/decisions/ 2>/dev/null; then
   ok "second-tool portability check recorded"
 else
   fail "no ADR recording the second-tool portability check (M-1.17)"

@@ -17,10 +17,10 @@ echo
 #
 # Everything else measures against this one file. Without it, two profiles a
 # week apart are anecdotes rather than a comparison.
-if [[ -f product/perf/workload.yaml ]]; then
+if [[ -f docs/internal/product/perf/workload.yaml ]]; then
   ok "the reference workload is committed"
 else
-  fail "product/perf/workload.yaml missing: nothing to measure against"
+  fail "docs/internal/product/perf/workload.yaml missing: nothing to measure against"
 fi
 
 [[ -f crates/pgprox-load/Cargo.toml ]] \
@@ -49,7 +49,7 @@ fi
 # this check: a recorded 1000-connection run is what M7 asks for, and the file
 # is what makes the next count comparable to it.
 #
-# This used to glob `product/perf/run-*.md` and report the match count. On this
+# This used to glob `docs/internal/product/perf/run-*.md` and report the match count. On this
 # tree it said "a scale run is recorded (16 file(s))", of which five were scale
 # runs and eleven were cache, admission, throughput, saturation and pinning
 # documents that the pattern cannot tell apart. It would have passed with none
@@ -59,7 +59,7 @@ fi
 # So read the documents. A scale run says so in its title and records the
 # connection count it ran at, which is also the number the comment above has
 # always named as the requirement.
-PERF_DIR="${PGPROX_PERF_DIR:-product/perf}"
+PERF_DIR="${PGPROX_PERF_DIR:-docs/internal/product/perf}"
 # A constant, and it was not one when M12.2 wrote it. That task added a
 # settable pass/fail threshold during a milestone about checks that do not
 # check, which is the finding M13.0 kept rather than tidying away. `M13.1`.
@@ -121,7 +121,7 @@ if [[ -f scripts/bench.sh ]]; then
   ok "scripts/bench.sh exists"
   compgen -G 'crates/*/benches/*.rs' >/dev/null \
     && ok "benchmarks exist" || fail "scripts/bench.sh has nothing to run"
-  [[ -f product/perf/baseline.json ]] \
+  [[ -f docs/internal/product/perf/baseline.json ]] \
     && ok "an instruction-count baseline is committed" \
     || fail "no baseline: a regression has nothing to be a regression against"
 else
@@ -131,7 +131,7 @@ fi
 # --- the semantic coverage report ---------------------------------------------
 [[ -f scripts/profile.sh ]] \
   && ok "scripts/profile.sh exists" || fail "scripts/profile.sh missing"
-if [[ -f product/perf/semantic-coverage.md ]]; then
+if [[ -f docs/internal/product/perf/semantic-coverage.md ]]; then
   ok "the semantic coverage report is committed"
 else
   fail "no semantic coverage report: hot and under-tested is still an opinion"

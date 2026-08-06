@@ -17,7 +17,7 @@ cd "$REPO_ROOT"
 echo "M29: the first exception the unsafe policy was asked for"
 echo
 
-RUN="${PGPROX_RUN_DOC:-product/perf/run-2026-08-04-unchecked-slab.md}"
+RUN="${PGPROX_RUN_DOC:-docs/internal/product/perf/run-2026-08-04-unchecked-slab.md}"
 
 if [[ -f "$RUN" ]]; then
   ok "$RUN records both arms"
@@ -39,7 +39,7 @@ fi
 # confusion. Read from the baseline rather than restated.
 for pair in "pgprox-cache::cache_hit 1600" "pgprox-cache::cache_hit_rotating 1950"; do
   set -- $pair
-  measured="$(python3 -c "import json; print(json.load(open('product/perf/baseline.json')).get('$1', 999999))")"
+  measured="$(python3 -c "import json; print(json.load(open('docs/internal/product/perf/baseline.json')).get('$1', 999999))")"
   if (( measured < $2 )); then
     ok "$1 is $measured, still the figure the run compares against"
   else

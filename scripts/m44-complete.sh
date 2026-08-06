@@ -181,7 +181,7 @@ else
   while IFS= read -r row; do
     bench="$(awk -F'|' '{print $2}' <<<"$row" | tr -d ' `')"
     claimed="$(awk -F'|' '{print $4}' <<<"$row" | tr -d ' ,')"
-    actual="$(sed -n "s/.*::${bench}\": \([0-9]*\).*/\1/p" product/perf/baseline.json)"
+    actual="$(sed -n "s/.*::${bench}\": \([0-9]*\).*/\1/p" docs/internal/product/perf/baseline.json)"
     if [[ -z "$actual" ]]; then
       unknown+=" $bench"
     elif [[ "$claimed" != "$actual" ]]; then

@@ -19,7 +19,7 @@ cd "$REPO_ROOT"
 echo "M39: documentation for people who are not this repo"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 DOCS="${PGPROX_DOCS:-docs}"
 

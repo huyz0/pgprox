@@ -60,8 +60,8 @@ fi
 unresolved=0
 while read -r id; do
   [[ -n "$id" ]] || continue
-  grep -qF -- "$(printf '`%s`' "$id")" product/backlog.md || {
-    fail "history references $id, which is not a task in product/backlog.md"
+  grep -qF -- "$(printf '`%s`' "$id")" docs/internal/product/backlog.md || {
+    fail "history references $id, which is not a task in docs/internal/product/backlog.md"
     unresolved=$(( unresolved + 1 ))
   }
 done < <(git log --format='%s' | grep -oE '^M-?[0-9]+[A-Z]*\.[0-9]+' | sort -u)
@@ -117,13 +117,13 @@ check_removed() {
     regrown=1
   fi
 }
-check_removed scripts/m7-complete.sh  "compgen -G 'product/perf/run-*.md'" \
+check_removed scripts/m7-complete.sh  "compgen -G 'docs/internal/product/perf/run-*.md'" \
   "a scale run" "M12.2"
-check_removed scripts/m9-complete.sh  "compgen -G 'product/perf/run-*cache*.md'" \
+check_removed scripts/m9-complete.sh  "compgen -G 'docs/internal/product/perf/run-*cache*.md'" \
   "a cache run" "M12.3"
-check_removed scripts/m11-complete.sh "compgen -G 'product/perf/*admission*.md'" \
+check_removed scripts/m11-complete.sh "compgen -G 'docs/internal/product/perf/*admission*.md'" \
   "an admission run" "M12.4"
-check_removed scripts/m1f-complete.sh "compgen -G 'product/decisions/*protocol-3-2*'" \
+check_removed scripts/m1f-complete.sh "compgen -G 'docs/internal/product/decisions/*protocol-3-2*'" \
   "a recorded decision" "M12.5"
 (( regrown == 0 )) && ok "no rewritten check has gone back to globbing for a filename"
 

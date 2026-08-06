@@ -13,7 +13,7 @@
 # It does not run a mutation sweep. `M15.12` exists because a mutation run found
 # a survivor in code this milestone wrote, so the honest thing is to say where
 # that check lives: the nightly `mutants` job in CI, against
-# `product/mutants-baseline.txt`. A targeted run over `pgprox-proto` is twelve
+# `docs/internal/product/mutants-baseline.txt`. A targeted run over `pgprox-proto` is twelve
 # minutes, and this gate sits beside fourteen others. `M14`'s gate made the same
 # trade and said so.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -119,7 +119,7 @@ run_finding pgprox-session \
 # `M15.12` removed two entries whose functions had been rewritten. The rule that
 # makes the file worth having is the one `M14` set: an entry is an argument, and
 # an entry with no argument is a survivor accepted silently.
-BASELINE_FILE="${PGPROX_MUTANTS_BASELINE:-product/mutants-baseline.txt}"
+BASELINE_FILE="${PGPROX_MUTANTS_BASELINE:-docs/internal/product/mutants-baseline.txt}"
 unreasoned=0
 entries=0
 while IFS= read -r line; do

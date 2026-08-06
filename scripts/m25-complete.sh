@@ -25,7 +25,7 @@ cd "$REPO_ROOT"
 echo "M25: the query cache against pgpool-II, and the three things it has that we do not"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 
 WORK="$(mktemp -d)"

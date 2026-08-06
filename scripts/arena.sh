@@ -31,7 +31,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 cd "$REPO_ROOT"
 
-WORKLOAD="${WORKLOAD:-product/perf/workload.yaml}"
+WORKLOAD="${WORKLOAD:-docs/internal/product/perf/workload.yaml}"
 CONNECTIONS="${1:-200}"
 DURATION="${ARENA_DURATION:-30}"
 SETTLE="${ARENA_SETTLE:-8}"

@@ -60,7 +60,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 # The crates whose argument is about untrusted bytes keep `#![forbid]` in their
 # own `lib.rs`, where no `#[allow]` can reach them. `scripts/check-unsafe.sh`
 # holds the rest of the conditions and the list of which crates those are.
-# See standards/rust-style.md and ADR 0026.
+# See docs/internal/standards/rust-style.md and ADR 0026.
 unsafe_code = "deny"
 # The hygiene an exception has to be written with. Each of these turns a
 # reviewer's job into the compiler's.
@@ -111,7 +111,7 @@ must_use_candidate = "allow"
 
 [profile.test]
 # The simulation and property tests are compute-bound. Unoptimized builds cost
-# more in run time than they save in compile time. See standards/testing.md.
+# more in run time than they save in compile time. See docs/internal/standards/testing.md.
 opt-level = 1
 
 [profile.dev]
@@ -141,7 +141,7 @@ codegen-units = 1
 # A panic aborts rather than unwinding one task. That is the right direction
 # for a process whose rule is that it does not panic: `unwrap_used` and
 # `expect_used` are denied outside tests, the decoder is fuzzed, and
-# `standards/security.md` says no panic is reachable from client bytes. A node
+# `docs/internal/standards/security.md` says no panic is reachable from client bytes. A node
 # that panicked and kept running would be one serving from state nobody
 # reasoned about.
 panic = "abort"

@@ -21,7 +21,7 @@ cd "$REPO_ROOT"
 echo "M32: the comparison against pgbouncer and pgcat"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 
 WORK="$(mktemp -d)"
@@ -197,7 +197,7 @@ fi
 # The run needs four containers. What a per-commit gate reads is the document,
 # and the two things in it that a later change could quietly make false: the cap
 # every arm was held to, and the versions the other two arms were.
-RUN="${PGPROX_RUN_DOC:-product/perf/run-2026-08-05-pgbouncer-pgcat.md}"
+RUN="${PGPROX_RUN_DOC:-docs/internal/product/perf/run-2026-08-05-pgbouncer-pgcat.md}"
 if [[ -f "$RUN" ]]; then
   ok "$RUN records every arm's figures"
 else

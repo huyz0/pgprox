@@ -32,7 +32,7 @@ pgprox-core = { path = "../../crates/pgprox-core" }
 # correctness risk that has to be got exactly right, and this repo's third
 # non-negotiable is about not claiming things work.
 #
-# It reaches nothing but this binary. `product/architecture.md` already says
+# It reaches nothing but this binary. `docs/internal/product/architecture.md` already says
 # `bin/pgload` is never a dependency of the proxy, and the proxy still refuses
 # MD5 for the reason in its dial path.
 md-5 = "0.10"

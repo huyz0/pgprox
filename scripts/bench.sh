@@ -25,7 +25,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 cd "$REPO_ROOT"
 
-BASELINE="product/perf/baseline.json"
+BASELINE="docs/internal/product/perf/baseline.json"
 CRATES=(pgprox-proto pgprox-route pgprox-pool pgprox-cache pgprox-session)
 
 # Enough iterations that the per-iteration number is stable to the unit, few

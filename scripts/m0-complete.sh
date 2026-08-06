@@ -53,7 +53,7 @@ for m in ids secret error clock buf auth pool cluster config route cache; do
 done
 
 # Every public trait needs a fake. A trait without one is not done, because the
-# tracks that depend on it cannot test against it. See standards/contracts.md.
+# tracks that depend on it cannot test against it. See docs/internal/standards/contracts.md.
 if [[ -d "$CORE" ]]; then
   missing_fakes=0
   while read -r trait_name; do

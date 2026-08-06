@@ -15,7 +15,7 @@
 #      can reach them.
 #   2. Every `#[allow(unsafe_code)]` carries a `SAFETY-POLICY:` line naming the
 #      benchmark that justifies it.
-#   3. That benchmark exists in `product/perf/baseline.json`. Unsafe with no
+#   3. That benchmark exists in `docs/internal/product/perf/baseline.json`. Unsafe with no
 #      number is a liability with no evidence of upside.
 #   4. A crate holding `unsafe` is named in the Miri job, and the job exists.
 #   5. Nothing outside a crate's own source takes the exception: not a test,
@@ -39,14 +39,14 @@ echo
 # fail is a check nobody knows the failure mode of.
 CRATES_DIR="${PGPROX_CRATES_DIR:-crates}"
 BINS_DIR="${PGPROX_BINS_DIR:-bin}"
-BASELINE="${PGPROX_BASELINE:-product/perf/baseline.json}"
+BASELINE="${PGPROX_BASELINE:-docs/internal/product/perf/baseline.json}"
 WORKFLOW="${PGPROX_WORKFLOW:-.github/workflows/ci.yml}"
 
 # --- 1. the crates that stay shut --------------------------------------------
 #
 # Named here rather than derived, because the list is a judgement about which
 # code an unauthenticated peer's bytes reach and no rule can infer it. Each is
-# a crate `standards/security.md` is about when it says the failure mode of a
+# a crate `docs/internal/standards/security.md` is about when it says the failure mode of a
 # decoder bug must be a wrong answer and never memory corruption.
 CLOSED=(
   pgprox-proto  # the wire codec: the primary attack surface in the process

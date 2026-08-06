@@ -9,7 +9,7 @@
 # `check-drift.sh` already checks the links out of `AGENTS.md`, because those
 # are the ones that send a reader to a standard. Nothing checked the other
 # hundred and forty. When this was written fifteen were broken, all in
-# `product/roadmap.md`, and they had been broken across several milestones:
+# `docs/internal/product/roadmap.md`, and they had been broken across several milestones:
 # every link it makes to a run document and every link it makes to a page uses
 # one `../` too many, as if the file lived a directory deeper than it does.
 #

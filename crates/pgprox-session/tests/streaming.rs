@@ -20,7 +20,7 @@
 
 // A measurement, so it prints the numbers it took as well as asserting them:
 // the verdict says the difference is there and the numbers say how big, and
-// `product/perf/` quotes them. The bench binary carries the same allow for the
+// `docs/internal/product/perf/` quotes them. The bench binary carries the same allow for the
 // same reason. `expect` rather than `?` because a failure here is a broken
 // fixture, and the message names which part.
 #![allow(clippy::print_stdout, clippy::expect_used)]
@@ -117,7 +117,7 @@ async fn one_large_row_through_the_buffering_path_and_the_streaming_one() {
     );
 
     // Printed so a run records the numbers rather than only the verdict. The
-    // note in product/perf/ quotes these.
+    // note in docs/internal/product/perf/ quotes these.
     println!(
         "M16.1: one {BODY}-byte DataRow. buffering held {held_buffering}, \
          streaming held {held_streaming}."

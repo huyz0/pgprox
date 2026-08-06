@@ -154,7 +154,7 @@ pub const RELOAD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(
 ///
 /// # Why this exists
 ///
-/// `product/architecture.md` has credited this crate with "cert hot-reload"
+/// `docs/internal/product/architecture.md` has credited this crate with "cert hot-reload"
 /// since M-1 and the crate's own `AGENTS.md` repeated it. Nothing re-read a
 /// certificate: `server_config` was called once and the `ServerConfig` it
 /// returned was fixed for the life of the process, so a cert-manager rotation

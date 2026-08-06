@@ -14,7 +14,7 @@
 # then the same 100k run with a result set large enough that the difference
 # would show". The first two are done. The third needs the three machines and
 # the real network `M7`'s full run needed, and it is recorded in
-# `product/backlog.md` as blocked rather than filed.
+# `docs/internal/product/backlog.md` as blocked rather than filed.
 #
 # So this gate checks what was built and **reports the blocked half rather than
 # asserting it passes**. A gate that quietly dropped the part nobody can run
@@ -91,7 +91,7 @@ warn "the 100k run with a large result set is not checked here"
 printf '       it needs the load generators on their own machines, a database\n'
 printf '       that can absorb the offered load, and a real network between the\n'
 printf '       three. Every latency number in this repo is loopback and is\n'
-printf '       therefore a floor; product/backlog.md records it as blocked\n'
+printf '       therefore a floor; docs/internal/product/backlog.md records it as blocked\n'
 printf '       rather than filed, because a task nobody can start is not a plan.\n'
 
 finish

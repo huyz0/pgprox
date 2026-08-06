@@ -7,7 +7,7 @@
 #   scripts/compare.sh --report           re-read a finished run, no stack
 #
 # Every claim this project makes about pooling is against its own baseline.
-# `product/perf` holds twenty run documents and not one of them has another
+# `docs/internal/product/perf` holds twenty run documents and not one of them has another
 # pooler in it. This is the one that does.
 #
 # # What it answers
@@ -51,7 +51,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 cd "$REPO_ROOT"
 
-WORKLOAD="${WORKLOAD:-product/perf/workload.yaml}"
+WORKLOAD="${WORKLOAD:-docs/internal/product/perf/workload.yaml}"
 CONNECTIONS=200
 KEEP=""
 REPORT_ONLY=""

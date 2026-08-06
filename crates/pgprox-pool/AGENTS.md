@@ -23,4 +23,4 @@ Upstream pools, lifecycle, idle reap, pinning, prepared statement mapping.
 Warm-pool acquire is a declared hot path. Use the `hot-path` skill before
 touching it.
 
-See ADR [0001](../../product/decisions/0001-transaction-pooling-with-auto-pin.md).
+See ADR [0001](../../docs/internal/product/decisions/0001-transaction-pooling-with-auto-pin.md).

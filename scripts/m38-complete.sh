@@ -16,8 +16,8 @@ cd "$REPO_ROOT"
 echo "M38: the extrapolation M36 did not need to make"
 echo
 
-CORRECTED="${PGPROX_RUN_DOC:-product/perf/run-2026-08-05-idle-connection-cost.md}"
-MEASURED="${PGPROX_MEASURED_DOC:-product/perf/run-2026-07-28-100k-hold.md}"
+CORRECTED="${PGPROX_RUN_DOC:-docs/internal/product/perf/run-2026-08-05-idle-connection-cost.md}"
+MEASURED="${PGPROX_MEASURED_DOC:-docs/internal/product/perf/run-2026-07-28-100k-hold.md}"
 
 # The measured run the correction points at. Without it the correction cites
 # nothing and the extrapolation is the only figure a reader finds.
@@ -29,7 +29,7 @@ fi
 
 # The correction itself, in the document that carried the wrong figure and in
 # the roadmap. Both, because a reader arrives at either.
-for doc in "$CORRECTED" product/roadmap.md; do
+for doc in "$CORRECTED" docs/internal/product/roadmap.md; do
   if grep -q '5,726 bytes' "$doc"; then
     ok "$(basename "$doc") carries the measured figure beside the extrapolation"
   else

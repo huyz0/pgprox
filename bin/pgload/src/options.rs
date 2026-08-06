@@ -92,7 +92,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             target: "127.0.0.1:6432".to_owned(),
-            workload: PathBuf::from("product/perf/workload.yaml"),
+            workload: PathBuf::from("docs/internal/product/perf/workload.yaml"),
             connections: 100,
             duration_secs: 30,
             seed: 1,

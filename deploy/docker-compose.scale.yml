@@ -31,7 +31,7 @@ services:
         condition: service_healthy
     entrypoint: ["sleep", "infinity"]
     volumes:
-      - ../product/perf:/workload:ro
+      - ../docs/internal/product/perf:/workload:ro
       - ../target/scale:/out
     ulimits:
       nofile:

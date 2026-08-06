@@ -26,7 +26,7 @@ cd "$REPO_ROOT"
 # every number this script produces is only comparable to another taken from
 # the same document. M7.55 uses workload-slow.yaml to hold the statement rate
 # still while the connection count moves.
-WORKLOAD="${WORKLOAD:-product/perf/workload.yaml}"
+WORKLOAD="${WORKLOAD:-docs/internal/product/perf/workload.yaml}"
 CONNECTIONS=1000
 KEEP=""
 MODE="compose"

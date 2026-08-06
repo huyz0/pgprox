@@ -7521,3 +7521,50 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `scripts/check-links.sh` in the pre-commit hook, in CI and in
   `AGENTS.md`'s list; the fifteen fixed; and a file with a link to nothing
   fails it.
+
+## M48: the design record moves under docs/
+
+- [x] `M48.0` Plan M48, and carry it out in one commit on `M38.0`'s terms. The
+  milestone is a directory move and the four hundred and sixty references that
+  follow it.
+  `product/`, `standards/` and `specs/` sat at the repository root beside
+  `crates/`, `bin/` and `deploy/`, which reads as though they were part of what
+  ships. They are not: they are how this repository is worked in. They move
+  under `docs/internal/`, which puts every word written for a reader in one
+  place and leaves the root a Rust project.
+  Visible rather than hidden, and that was the decision worth making. `.sdd/`
+  was the proposal. `rg` and `fd` skip hidden directories by default, so every
+  future search of the design record would silently return nothing, and this
+  repository's whole arrangement is that an agent is sent to read those files.
+  Hidden directories here hold tool state, not content.
+  The site is unaffected by construction: `M45` made the collection's glob
+  top-level only, so `docs/internal/` is invisible to it without anything
+  being excluded.
+  Acceptance: the three trees are under `docs/internal/`, every reference
+  follows including the `include_str!` paths the workspace compiles against,
+  the site still builds fifteen pages, and every check and gate passes.
+
+- [x] `M48.1` A check that was left matching one link in eighteen.
+  `check-drift.sh` verified that the paths `AGENTS.md` links to exist, by
+  matching `\]\((standards|product|\.agents)/`. After `M48.0` that pattern found
+  one link out of eighteen and reported that every path AGENTS.md links to
+  exists, having looked at one of them. It did not fail. It narrowed.
+  `check-links.sh` from `M47` already resolves every relative link in every
+  Markdown file, so the check was redundant as well as broken.
+  It is replaced rather than repaired, with the thing `check-links.sh` cannot
+  see: every standard in the directory is named by the index. A standard that
+  exists and is linked from nowhere is a rule every session must follow and no
+  session is pointed at.
+  Acceptance: an unindexed standard fails it, and so does an empty standards
+  directory, so it cannot pass by describing nothing.
+
+- [x] `M48.2` 240 MB of Node modules in the Docker build context.
+  `M45` moved the site's toolchain under `docs/`, and `.dockerignore` names
+  `target/`, `target-coverage/`, `reference/` and `.git/`. It did not name
+  `docs/node_modules/`, so every image build since has sent 240 MB it does not
+  use. Nothing fails; every build is just slower, which is why it went
+  unnoticed.
+  The pages themselves stay in the context, because the load generator embeds a
+  workload file from `docs/internal/product/perf/` at compile time.
+  Acceptance: the three generated directories under `docs/` are excluded and
+  the pages are not.

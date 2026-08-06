@@ -5,7 +5,7 @@
 # The milestone exists because each of the three was true as a statement and
 # false as a fact: eleven milestone gates of which CI ran three, a codec
 # described as "fuzzed, not assumed" with nothing running the fuzzer, and a
-# `standards/testing.md` claiming a nightly mutation run against a tool that was
+# `docs/internal/standards/testing.md` claiming a nightly mutation run against a tool that was
 # not installed.
 #
 # So this gate checks that each claim now has a mechanism, and it deliberately
@@ -77,13 +77,13 @@ grep -qs "schedule" "$CI" \
 
 # --- claim three: mutation testing runs ---------------------------------------
 #
-# `standards/testing.md` said this ran nightly for three milestones before
+# `docs/internal/standards/testing.md` said this ran nightly for three milestones before
 # anything ran it once.
 [[ -x scripts/mutants.sh ]] \
   && ok "scripts/mutants.sh exists and is executable" \
   || fail "no runnable scripts/mutants.sh"
 
-baseline="product/mutants-baseline.txt"
+baseline="docs/internal/product/mutants-baseline.txt"
 if [[ -f $baseline ]]; then
   ok "a mutation baseline is recorded"
 else
@@ -118,11 +118,11 @@ fi
 # here, because prose cannot be asserted, so it checks the two things that were
 # actually wrong: that the script is named, and that the timeout meaning is
 # written down where somebody reading a survivor list will find it.
-if grep -qs 'scripts/mutants.sh' standards/testing.md \
-   && grep -qs 'timeout' standards/testing.md; then
-  ok "standards/testing.md describes the run that exists"
+if grep -qs 'scripts/mutants.sh' docs/internal/standards/testing.md \
+   && grep -qs 'timeout' docs/internal/standards/testing.md; then
+  ok "docs/internal/standards/testing.md describes the run that exists"
 else
-  fail "standards/testing.md does not describe the mutation run as it is"
+  fail "docs/internal/standards/testing.md does not describe the mutation run as it is"
 fi
 
 finish

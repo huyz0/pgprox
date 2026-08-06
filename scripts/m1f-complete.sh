@@ -63,10 +63,10 @@ fi
 # still marked proposed. "Recorded decision rather than an omission" is a claim
 # about the ADR's status, so read it.
 #
-# Every ADR in `product/decisions` carries a `Status:` line and all twenty-two
+# Every ADR in `docs/internal/product/decisions` carries a `Status:` line and all twenty-two
 # are accepted, checked rather than assumed, so requiring it is a rule the tree
 # already keeps rather than a new burden.
-DECISIONS="${PGPROX_DECISIONS:-product/decisions}"
+DECISIONS="${PGPROX_DECISIONS:-docs/internal/product/decisions}"
 
 adr_decided() {
   local pattern="$1" subject="$2" missing="$3"
@@ -135,7 +135,7 @@ else
   fail "scripts/driver-matrix.sh missing: the drivers have only ever met the harness"
 fi
 
-if [[ -f product/conformance/driver-matrix.md ]]; then
+if [[ -f docs/internal/product/conformance/driver-matrix.md ]]; then
   ok "a driver matrix against the proxy is recorded"
 else
   fail "no driver matrix recorded: the result exists only in a terminal"

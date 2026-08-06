@@ -58,11 +58,11 @@ echo
 # symbol <TAB> the file that defines it <TAB> what it is for
 #
 # Tab-separated so a description can contain spaces, which is the same shape
-# `product/mutants-baseline.txt` uses and for the same reason.
-WIRED="${PGPROX_WIRED_LIST:-product/wired.txt}"
+# `docs/internal/product/mutants-baseline.txt` uses and for the same reason.
+WIRED="${PGPROX_WIRED_LIST:-docs/internal/product/wired.txt}"
 
 # A pattern may be prefixed with `?` to mean "known to be reached from nowhere,
-# and tracked". That is the shape `product/mutants-baseline.txt` uses: an entry
+# and tracked". That is the shape `docs/internal/product/mutants-baseline.txt` uses: an entry
 # is an argument, never an assertion, and the argument has to name the task that
 # will settle it. Without the marker this check would have to be either red in
 # CI or quietly missing an entry, and both of those are worse than saying so.

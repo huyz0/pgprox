@@ -7,8 +7,8 @@ description: Pick the next thing to work on, and decompose a milestone into comm
 
 ## Read the state
 
-1. `product/roadmap.md` for the current milestone and its completion condition
-2. `product/backlog.md` for tasks
+1. `docs/internal/product/roadmap.md` for the current milestone and its completion condition
+2. `docs/internal/product/backlog.md` for tasks
 3. Run the current milestone's completion condition. It tells you what is
    actually left, which is often not what the backlog says.
 
@@ -62,9 +62,9 @@ the history safe to revert.
 
 Escalate rather than improvising when the next task:
 
-- Needs a decision from the open items list in `product/plan.md`
+- Needs a decision from the open items list in `docs/internal/product/plan.md`
 - Requires a `pgprox-core` contract change touching more than one track
 - Rests on a roadmap assumption that has turned out to be wrong
 
-See `standards/behavior.md`. A loop that keeps working past the point of
+See `docs/internal/standards/behavior.md`. A loop that keeps working past the point of
 understanding produces a lot of work that gets thrown away.

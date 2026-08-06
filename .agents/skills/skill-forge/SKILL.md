@@ -10,11 +10,11 @@ standard.
 
 ## Skill, standard, or neither
 
-- **A rule that is always true** goes in `standards/`. "No unwrap outside tests"
+- **A rule that is always true** goes in `docs/internal/standards/`. "No unwrap outside tests"
   is a rule.
 - **A procedure with steps** is a skill. "Change a contract safely" is a
   procedure.
-- **A fact about the system** goes in `product/`, or a code comment.
+- **A fact about the system** goes in `docs/internal/product/`, or a code comment.
 
 If you cannot write it as steps, it is not a skill. Skills that are really
 documentation never get invoked, because the model has nothing to *do* with
@@ -71,7 +71,7 @@ tool-specific built-in works in exactly one tool.
 
 - **Imperative and ordered.** Steps, not prose about steps.
 - **Short.** A long skill gets skimmed, and the part that gets skipped is the
-  part that mattered. Push detail into `standards/` and link.
+  part that mattered. Push detail into `docs/internal/standards/` and link.
 - **Say why for anything counterintuitive.** "Watch it fail" reads like
   ceremony until you explain that a test passing before the implementation
   exists is testing nothing.
@@ -99,5 +99,5 @@ worse than no skill, because it looks like the procedure is covered.
 - [ ] Body is steps, not documentation
 - [ ] No vendor-specific paths
 - [ ] Runs scripts rather than built-ins
-- [ ] Nothing duplicated from `standards/`, only linked
+- [ ] Nothing duplicated from `docs/internal/standards/`, only linked
 - [ ] Short enough to be read rather than skimmed

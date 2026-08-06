@@ -23,7 +23,7 @@ cd "$REPO_ROOT"
 echo "M41: the docs become a site"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 DOCS="${PGPROX_DOCS:-docs}"
 CONFIG="${PGPROX_ASTRO_CONFIG:-docs/astro.config.mjs}"

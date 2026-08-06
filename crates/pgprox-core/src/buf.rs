@@ -29,7 +29,7 @@ pub const DEFAULT_BUFFER_SIZE: usize = 16 * 1024;
 /// A bounded pool of reusable byte buffers.
 ///
 /// Sharding is deliberately not implemented yet. It is an optimization, and
-/// `standards/testing.md` requires measurement before optimizing; the reference
+/// `docs/internal/standards/testing.md` requires measurement before optimizing; the reference
 /// workload that would justify it does not exist until M7.
 pub struct BufferSlab {
     free: Mutex<Vec<Vec<u8>>>,

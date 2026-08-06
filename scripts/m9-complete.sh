@@ -19,8 +19,8 @@ echo
 # First, because everything else assumes an answer to it. A cache whose
 # guarantees were never written down is a cache somebody relies on for
 # read-your-writes.
-if compgen -G 'product/decisions/*query-cache*.md' >/dev/null \
-   || grep -rlqs 'query cache' product/decisions/ 2>/dev/null; then
+if compgen -G 'docs/internal/product/decisions/*query-cache*.md' >/dev/null \
+   || grep -rlqs 'query cache' docs/internal/product/decisions/ 2>/dev/null; then
   ok "an ADR states what the cache promises"
 else
   fail "no ADR for the cache: its staleness contract is unwritten"
@@ -90,7 +90,7 @@ fi
 
 # --- measured -----------------------------------------------------------------
 #
-# This used to glob `product/perf/run-*cache*.md` and report the match count,
+# This used to glob `docs/internal/product/perf/run-*cache*.md` and report the match count,
 # which is a check that a filename exists reporting a conclusion about whether
 # the cache helps. `M12.3`.
 #
@@ -99,8 +99,8 @@ fi
 # recorded run to contain it. That ties the claim to its evidence in the
 # direction that matters: re-measure the cache and this fails until the roadmap
 # is updated, and edit the roadmap's number and this fails until a run says so.
-PERF_DIR="${PGPROX_PERF_DIR:-product/perf}"
-ROADMAP="${PGPROX_ROADMAP:-product/roadmap.md}"
+PERF_DIR="${PGPROX_PERF_DIR:-docs/internal/product/perf}"
+ROADMAP="${PGPROX_ROADMAP:-docs/internal/product/roadmap.md}"
 
 claim="$(grep -m1 '^| M9 ' "$ROADMAP" 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)?%' | head -1 || true)"
 

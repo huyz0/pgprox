@@ -84,7 +84,7 @@ fi
 # Named drivers rather than a file that exists, because the point of the matrix
 # is which client stops working under FIPS, and a matrix missing a driver
 # answers that question wrongly by omission.
-MATRIX=product/release/cipher-matrix.md
+MATRIX=docs/internal/product/release/cipher-matrix.md
 if [[ -f $MATRIX ]]; then
   ok "the cipher-suite matrix is committed"
   for driver in psql pgx asyncpg jdbc npgsql; do
@@ -153,10 +153,10 @@ else
   fail "scripts/rolling-upgrade.sh missing: the upgrade path is untested"
 fi
 
-if compgen -G 'product/release/rehearsal-*.md' >/dev/null; then
-  ok "a rehearsal is recorded ($(compgen -G 'product/release/rehearsal-*.md' | wc -l) file(s))"
+if compgen -G 'docs/internal/product/release/rehearsal-*.md' >/dev/null; then
+  ok "a rehearsal is recorded ($(compgen -G 'docs/internal/product/release/rehearsal-*.md' | wc -l) file(s))"
 else
-  fail "no rehearsal recorded in product/release/: the result exists only in a terminal"
+  fail "no rehearsal recorded in docs/internal/product/release/: the result exists only in a terminal"
 fi
 
 # --- MSRV ---------------------------------------------------------------------

@@ -85,4 +85,4 @@ scripts/check-coverage.sh <crate>
 ```
 
 If coverage is short, write tests. Never lower the threshold, never add an
-exclusion, never delete the failing test. See `standards/behavior.md`.
+exclusion, never delete the failing test. See `docs/internal/standards/behavior.md`.

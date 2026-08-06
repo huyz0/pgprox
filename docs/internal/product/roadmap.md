@@ -2450,7 +2450,7 @@ scripts/m43-complete.sh
 `M39` gave a reader orientation, a tutorial, a reference, an operations guide
 and two explanations, and left two questions it could not answer.
 
-**[Features and limits](../docs/features.md)** is the first: pooling modes
+**[Features and limits](../../features.md)** is the first: pooling modes
 and why statement pooling is absent, the seven things that pin a session,
 replica routing with the LSN watermark rule drawn out, the query cache and the
 five reasons a statement is never cached, protocol and auth support, and an
@@ -2463,7 +2463,7 @@ replication, read-your-writes from the cache, a cache shared across nodes.
 reader deciding whether to adopt this needs to know which list a missing thing
 is on.
 
-**[Request flow](../docs/request-flow.md)** is the second: one client frame
+**[Request flow](../../request-flow.md)** is the second: one client frame
 from admission to the connection going back to the pool, naming the component at
 each step. Establishing a connection, then the loop, then the three things that
 run alongside it and change what it does. It ends with a table from symptom to
@@ -2486,25 +2486,25 @@ Neither answers the questions somebody asks before they are allowed to run it.
 
 Six pages, each for a reader who arrives with a different question.
 
-**[Multitenancy](../docs/multitenancy.md)** is the one the rest hang off.
+**[Multitenancy](../../multitenancy.md)** is the one the rest hang off.
 A client does not name its own tenant; the token service does. Every shared
 structure has a key, and the key is the isolation. The section that matters most
 is the last one: the boundary is the database credential, not the tenant name,
 so two tenants mapped onto one role are one security domain to Postgres and the
 proxy will not invent a boundary the credentials do not have.
 
-**[Clustering and deployment](../docs/clustering.md)** covers the guaranteed
+**[Clustering and deployment](../../clustering.md)** covers the guaranteed
 share, the gossip round, leases, and why a partition under-subscribes. Then the
 StatefulSet, and why it is one: gossip addresses a peer by name and a
 Deployment's pods get a new name every restart.
 
-**[Admin and management](../docs/admin.md)** is every `SHOW`, every endpoint,
+**[Admin and management](../../admin.md)** is every `SHOW`, every endpoint,
 and every operation that changes a node's state, plus the sentence the API's own
 module comment makes and no page did: the admin port has no authentication of
 its own.
 
-**[Security](../docs/security.md)**, **[FIPS builds](../docs/fips.md)** and
-**[Optimizations](../docs/optimizations.md)** are the remaining three. The
+**[Security](../../security.md)**, **[FIPS builds](../../fips.md)** and
+**[Optimizations](../../optimizations.md)** are the remaining three. The
 last of those carries the negative results as prominently as the wins, because
 an idea that has been measured and refused is worth more written down than
 forgotten.
@@ -2649,3 +2649,56 @@ breaks when the file it points at moves, and that commit need not touch a
 single `.md`.
 
 Completion condition: `scripts/check-links.sh`.
+
+## M48: the design record moves under docs/ (complete)
+
+```bash
+scripts/check-links.sh
+scripts/check-drift.sh
+```
+
+`product/`, `standards/` and `specs/` sat at the repository root beside
+`crates/`, `bin/` and `deploy/`, which reads as though they were part of what
+ships. They are not. They are how this repository is worked in, and they now
+live under `docs/internal/`, which puts every word written for a reader in one
+place and leaves the root a Rust project.
+
+**Visible rather than hidden, and that was the decision.** `.sdd/` was the
+proposal. `rg` and `fd` skip hidden directories by default, so every future
+search of the design record would quietly return nothing, and this repository's
+whole arrangement is that an agent is sent to go and read those files. Hidden
+directories here hold tool state: `.github`, `.cargo`, `.claude`, `.agents`.
+These are content.
+
+The site needed no exclusion. `M45` had already made the collection's glob
+top-level only, so `docs/internal/` is invisible to it by construction, and the
+build still produces the same fifteen pages.
+
+### What the move found
+
+**A check that narrowed to one link in eighteen without failing.**
+`check-drift.sh` matched `\]\((standards|product|\.agents)/` against
+`AGENTS.md`. After the move that pattern found one link and reported that every
+path AGENTS.md links to exists, having looked at one of them.
+
+That is worse than a broken check, because it reads as a passing one. It is
+replaced rather than repaired: `check-links.sh` from `M47` already resolves
+every relative link in every Markdown file, so what sits there now is the thing
+that check cannot see. Every standard in the directory is named by the index. A
+standard that exists and is linked from nowhere is a rule every session must
+follow and no session is pointed at.
+
+**240 MB of Node modules in the Docker build context.** `M45` moved the site's
+toolchain under `docs/`, and `.dockerignore` named `target/`,
+`target-coverage/`, `reference/` and `.git/`. Nothing failed. Every image build
+since has simply been slower, which is exactly why nobody noticed.
+
+**Four hundred and sixty references, and the ones a regex missed.** The bulk
+rewrite used a negative lookbehind that excluded `-`, so it skipped every
+`${PGPROX_BACKLOG:-product/backlog.md}` default in the gate scripts, and
+excluded `/`, so it skipped every
+`include_str!("../../../product/perf/workload.yaml")` the workspace compiles
+against. The first was caught by `check-wired.sh` failing loudly; the second by
+the compiler. Neither was caught by reading the diff.
+
+Completion condition: the two checks above, plus every milestone gate.

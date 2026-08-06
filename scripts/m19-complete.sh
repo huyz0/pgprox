@@ -21,7 +21,7 @@ cd "$REPO_ROOT"
 echo "M19: a seam for peer discovery"
 echo
 
-SPEC="specs/2026-08-02-peer-discovery-seam"
+SPEC="docs/internal/specs/2026-08-02-peer-discovery-seam"
 
 # --- the spec this milestone is built from -----------------------------------
 #
@@ -108,7 +108,7 @@ run_test pgprox-cluster "coordinator::tests::a_peer_table_a_node_never_hears_fro
 # showed about one run in twenty-five, so one pass here is not evidence that it
 # is gone and this line does not say it is: what it catches is the fake losing
 # its boundary rule outright, which is the regression that would put the flake
-# back. The evidence for the flake being gone is in `product/backlog.md` and is
+# back. The evidence for the flake being gone is in `docs/internal/product/backlog.md` and is
 # eight runs out of eight at five times the exposure, against zero out of eight
 # without the rule, plus twenty consecutive runs at the committed duration.
 # `M16.8` set that shape and added no gate at all.

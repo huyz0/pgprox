@@ -27,4 +27,4 @@ and stop and escalate if the change touches more than one track.
   `pgprox-pool` and `pgprox-route` grew separate scanners that disagreed about
   where an `E'...'` string ends.
 
-See [contracts.md](../../standards/contracts.md).
+See [contracts.md](../../docs/internal/standards/contracts.md).

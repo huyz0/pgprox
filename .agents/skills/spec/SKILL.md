@@ -11,7 +11,7 @@ different crates avoid silently disagreeing about an interface.
 ## Layout
 
 ```
-specs/<YYYY-MM-DD>-<slug>/
+docs/internal/specs/<YYYY-MM-DD>-<slug>/
   spec.md         what and why, acceptance criteria
   contracts.md    exact type signatures this work owns
   tests.md        the test plan, written before the code
@@ -67,7 +67,7 @@ of whatever happened to get built.
 ## tasks.md
 
 Ordered, commit-sized, each with an ID and acceptance criteria. Use the
-`next-task` skill's sizing rules. Cross-reference into `product/backlog.md` so
+`next-task` skill's sizing rules. Cross-reference into `docs/internal/product/backlog.md` so
 there is one place to look for what is in flight.
 
 ## When a spec is not worth it

@@ -29,7 +29,7 @@
 //!
 //! A contract change is one atomic commit covering the trait, every fake, every
 //! implementation, every call site, and an ADR. If it touches more than one
-//! track, stop and escalate first. See `standards/contracts.md`.
+//! track, stop and escalate first. See `docs/internal/standards/contracts.md`.
 //!
 //! # Conventions that are easy to miss
 //!

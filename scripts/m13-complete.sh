@@ -83,7 +83,7 @@ fi
 # --- M13.5: a core trait change arrives whole ---------------------------------
 repo="$WORK/contract"
 mkdir -p "$repo/scripts" "$repo/crates/pgprox-core/src" "$repo/crates/other/src" \
-         "$repo/product/decisions"
+         "$repo/docs/internal/product/decisions"
 cp scripts/*.sh "$repo/scripts/"
 git -C "$repo" init -q .
 git -C "$repo" config user.email gate@example.com

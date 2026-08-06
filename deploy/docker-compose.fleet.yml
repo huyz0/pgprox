@@ -40,7 +40,7 @@ services:
         condition: service_healthy
     entrypoint: ["sleep", "infinity"]
     volumes:
-      - ../product/perf:/workload:ro
+      - ../docs/internal/product/perf:/workload:ro
       # Whose output directory this is, so two runs sharing this file do not
       # write over each other. `scripts/pinning.sh` sets it to `pinning`.
       - ../target/${PGPROX_RUN_DIR:-admission}:/out

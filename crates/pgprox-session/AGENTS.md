@@ -51,5 +51,5 @@ stage. Any helper that reads must take it by reference rather than owning one.
 The relay loop and frame scanning are declared hot paths. Use the `hot-path`
 skill before touching them.
 
-See ADR [0001](../../product/decisions/0001-transaction-pooling-with-auto-pin.md)
-and [0008](../../product/decisions/0008-buffer-reclaim-on-idle.md).
+See ADR [0001](../../docs/internal/product/decisions/0001-transaction-pooling-with-auto-pin.md)
+and [0008](../../docs/internal/product/decisions/0008-buffer-reclaim-on-idle.md).

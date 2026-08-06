@@ -115,7 +115,7 @@ proxy's log rather than from the driver, because only some drivers will say and
 the server knows for all of them.
 
 The recorded run is in
-[`product/release/cipher-matrix.md`](../product/release/cipher-matrix.md).
+[`docs/internal/product/release/cipher-matrix.md`](internal/product/release/cipher-matrix.md).
 Every driver that negotiated TLS 1.3 was unaffected, because all TLS 1.3 suites
 are approved. The TLS 1.2 rows are the ones to read:
 

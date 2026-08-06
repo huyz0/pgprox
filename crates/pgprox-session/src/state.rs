@@ -33,7 +33,7 @@ pub enum TlsPosture {
     ///
     /// This is the only posture that may be used with token authentication:
     /// the JWT travels in the password field, so without TLS it travels in the
-    /// clear. See `standards/security.md`.
+    /// clear. See `docs/internal/standards/security.md`.
     Required,
     /// TLS is accepted if asked for and not required.
     Optional,

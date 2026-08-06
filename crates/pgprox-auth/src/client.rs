@@ -26,7 +26,7 @@ use tonic::transport::{Channel, Endpoint, Uri};
 /// Never hand-edited, and excluded from the coverage gate: asserting on prost's
 /// output would test prost.
 // The workspace lints reach in here through include_proto!, but this code is
-// generated and standards/behavior.md forbids editing it, so linting it can only
+// generated and docs/internal/standards/behavior.md forbids editing it, so linting it can only
 // produce warnings nobody may act on.
 #[allow(clippy::all, clippy::pedantic, missing_docs)]
 pub mod pb {

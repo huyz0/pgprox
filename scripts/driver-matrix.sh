@@ -21,7 +21,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$REPO_ROOT"
 
 COMPOSE=(docker compose -f deploy/docker-compose.yml)
-OUT="${OUT:-product/conformance/driver-matrix.md}"
+OUT="${OUT:-docs/internal/product/conformance/driver-matrix.md}"
 DRIVERS=(psql pgx asyncpg jdbc npgsql)
 
 # pgprox-2 rather than pgprox-1: it requires TLS, which is the posture a real

@@ -174,7 +174,7 @@ pub enum ClientError {
 impl ClientError {
     /// The SQLSTATE this error maps to.
     ///
-    /// The table is in `standards/error-handling.md`, and the tests here assert
+    /// The table is in `docs/internal/standards/error-handling.md`, and the tests here assert
     /// this function matches it.
     #[must_use]
     pub const fn sqlstate(&self) -> SqlState {
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn mapping_matches_the_documented_table() {
-        // standards/error-handling.md is the source of truth. If this test and
+        // docs/internal/standards/error-handling.md is the source of truth. If this test and
         // that table disagree, one of them is a bug.
         let server = ServerId::new("db", 5432);
         let cases: &[(ClientError, &str)] = &[

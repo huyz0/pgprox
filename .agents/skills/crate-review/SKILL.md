@@ -31,7 +31,7 @@ cannot see.
 - [ ] **Errors carry what the reader needs to act.** `AtCap` without the cap is
       a worse error for no saving.
 - [ ] **New client-visible errors map to a real SQLSTATE**, from the table in
-      `standards/error-handling.md`, not a generic internal error.
+      `docs/internal/standards/error-handling.md`, not a generic internal error.
 
 ## Security
 
@@ -67,7 +67,7 @@ cannot see.
 ## Hot paths
 
 If the change touches one of the seven declared hot paths in
-`standards/testing.md`:
+`docs/internal/standards/testing.md`:
 
 - [ ] No allocation added to the relay loop
 - [ ] Allocation budget test still passes

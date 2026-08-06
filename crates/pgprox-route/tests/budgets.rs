@@ -1,6 +1,6 @@
 //! Allocation budget for the route decision.
 //!
-//! `standards/testing.md` names classification plus replica eligibility as a
+//! `docs/internal/standards/testing.md` names classification plus replica eligibility as a
 //! declared hot path and said `SessionRouter` keeps its replica-states buffer
 //! for the life of the session rather than building one per statement. That is
 //! the claim this file turns into an assertion.

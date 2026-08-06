@@ -1,6 +1,6 @@
 //! Allocation budgets for the two hot paths this crate owns.
 //!
-//! `standards/testing.md` names seven hot paths and says two of them were
+//! `docs/internal/standards/testing.md` names seven hot paths and says two of them were
 //! written to be allocation-free and never measured. This file measures the
 //! two that live here, and gates them on counts rather than on wall clock:
 //! a timing on a shared runner is noise, and an allocation count is the same

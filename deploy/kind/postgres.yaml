@@ -24,7 +24,7 @@ data:
       # database running out first would make the rehearsal about Postgres.
       max_connections = 200
     CONF
-    # The tables product/perf/workload.yaml replays against. The scale runs
+    # The tables docs/internal/product/perf/workload.yaml replays against. The scale runs
     # create them through the proxy with pgbench --initialize; here they are
     # made at init, because the rehearsal's first act is to put load on and a
     # missing relation would look like the restart having broken something.

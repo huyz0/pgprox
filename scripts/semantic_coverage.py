@@ -5,7 +5,7 @@ Reads `cargo llvm-cov report --json`, which carries an execution count per
 function rather than the hit/miss booleans a coverage percentage is made of,
 and writes the report `scripts/profile.sh` commits.
 
-The lists come from `standards/testing.md`:
+The lists come from `docs/internal/standards/testing.md`:
 
 * hot and under-tested   ran a lot, poorly covered. The highest-risk code here.
 * hot and expensive       ran a lot, and is big. The optimization queue.
@@ -147,7 +147,7 @@ def main():
     load_report = load(sys.argv[2])
     connections, seconds = sys.argv[3], sys.argv[4]
     # Optional: what tier 1 covers, so "under-tested" can mean what
-    # `standards/testing.md` says rather than "this replay did not reach it".
+    # `docs/internal/standards/testing.md` says rather than "this replay did not reach it".
     tested = coverage_by_function(load(sys.argv[5])) if len(sys.argv) > 5 else {}
 
     every = functions(coverage)

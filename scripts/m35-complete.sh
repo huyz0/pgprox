@@ -18,7 +18,7 @@ cd "$REPO_ROOT"
 echo "M35: per-connection memory is a curve, not a number"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 
 finished="$(sed -n '/^## M35:/,/^## /p' "$BACKLOG" \
@@ -44,7 +44,7 @@ fi
 # --- the findings that have landed -------------------------------------------
 
 # --- M35.1: per-connection memory is a curve ---------------------------------
-RUN="${PGPROX_RUN_DOC:-product/perf/run-2026-08-05-per-connection-is-not-a-number.md}"
+RUN="${PGPROX_RUN_DOC:-docs/internal/product/perf/run-2026-08-05-per-connection-is-not-a-number.md}"
 if [[ -f "$RUN" ]]; then
   ok "$RUN records the three connection counts and what they withdraw"
 else
@@ -54,9 +54,9 @@ fi
 # The documents it corrects. A correction beside a document that has gone is a
 # correction to nothing, and these are the three that report a per-connection
 # figure taken at one connection count.
-for corrected in product/perf/run-2026-08-05-pgbouncer-pgcat.md \
-                 product/perf/run-2026-08-05-what-the-others-do.md \
-                 product/perf/run-2026-08-05-arenas.md; do
+for corrected in docs/internal/product/perf/run-2026-08-05-pgbouncer-pgcat.md \
+                 docs/internal/product/perf/run-2026-08-05-what-the-others-do.md \
+                 docs/internal/product/perf/run-2026-08-05-arenas.md; do
   if [[ -f "$corrected" ]]; then
     ok "$(basename "$corrected") is still there to be corrected"
   else

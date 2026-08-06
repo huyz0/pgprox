@@ -24,7 +24,7 @@ RELEASE=pgprox
 IMAGE="${IMAGE:-pgprox-e2e-pgprox-1:latest}"
 CHART=deploy/helm/pgprox
 VALUES=deploy/kind/values.yaml
-OUT="${OUT:-product/release/rehearsal-$(date -u +%Y-%m-%d).md}"
+OUT="${OUT:-docs/internal/product/release/rehearsal-$(date -u +%Y-%m-%d).md}"
 LOAD_SECS="${LOAD_SECS:-150}"
 KEEP="${KEEP:-}"
 
@@ -201,7 +201,7 @@ hard_kill() {
 field_of() { python3 -c "import json,sys; print(json.load(sys.stdin).get('$1','?'))" 2>/dev/null; }
 
 "${KUBE[@]}" create configmap pgload-workload \
-  --from-file=workload.yaml=product/perf/workload.yaml \
+  --from-file=workload.yaml=docs/internal/product/perf/workload.yaml \
   --dry-run=client -o yaml | "${KUBE[@]}" apply -f - >/dev/null
 
 echo
@@ -271,7 +271,7 @@ mkdir -p "$(dirname "$OUT")"
   echo "## What ran"
   echo
   echo "- ${LOAD_SECS}s of \`bin/pgload\` at 40 connections against the Service,"
-  echo "  replaying \`product/perf/workload.yaml\`"
+  echo "  replaying \`docs/internal/product/perf/workload.yaml\`"
   echo "- three proxy nodes, \`drain.graceSeconds\` of 10, one Postgres"
   echo "- the restart begins 25s in, after the connections have settled, so"
   echo "  what is measured is a restart rather than a startup"

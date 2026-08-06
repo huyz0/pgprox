@@ -25,7 +25,7 @@ cd "$REPO_ROOT"
 echo "M26: what the query cache costs, measured for the first time"
 echo
 
-BACKLOG="${PGPROX_BACKLOG:-product/backlog.md}"
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
 SELF="${BASH_SOURCE[0]}"
 
 WORK="$(mktemp -d)"
@@ -86,7 +86,7 @@ fi
 
 # --- M26.1: a write stops walking the whole node ------------------------------
 #
-# The number is in product/perf/baseline.json and scripts/bench.sh is what
+# The number is in docs/internal/product/perf/baseline.json and scripts/bench.sh is what
 # holds it. What a test can hold is the invariant a second index introduces:
 # every path that removes an entry has to remove it from both, and the ones
 # that do it least visibly are eviction, expiry on read, and a tenant dropped
