@@ -7987,3 +7987,24 @@ recognised so it can be refused rather than read as a version.
   Acceptance: no gate runs a suite into `/dev/null`; a planted failing test is
   named by the gate that runs it; and the underlying CI failure, whatever it
   is, is legible on the next run.
+
+## M62: the evidence helper could not read coloured output
+
+- [x] `M62.0` `run_suite` printed "no failing test named" above the failing
+  test's name.
+  `M61.0` added the helper and its first real use on CI reported that nothing
+  named a test, directly above a tail that contained
+  `FAIL [0.176s] pgprox-route::budgets the_route_decision_stays_inside_its_budget`.
+  nextest colours `FAIL`, so the line is escape codes between the whitespace
+  and the word, and an anchored pattern misses it. It matched locally because
+  output redirected to a file is uncoloured, and missed on CI because nextest
+  colours there anyway. Every hand-run command in this session stripped those
+  escapes before matching; the helper did not.
+  It also only tailed fifteen lines, and nextest puts the assertion far above
+  the summary, so the one line that says *why* was cut off both ways.
+  Now: colour stripped before anything is matched, the failing tests named, and
+  the assertion reported separately, because which test failed and why it
+  failed are different questions and the second one was never being answered.
+  Acceptance: a planted failing test is named with its assertion, with colour
+  forced and with colour absent, and the underlying budget failure is legible
+  on the next run.

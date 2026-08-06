@@ -68,16 +68,38 @@ run_suite() {
 
   fail "$label (run: $*)"
 
+  # Colour is stripped before anything is matched.
+  #
+  # nextest colours `FAIL`, so the line is `  \e[31;1mFAIL\e[0m [ 0.1s] ...`
+  # and an anchored pattern for whitespace-then-FAIL does not match it. It
+  # matched locally, where output to a file is uncoloured, and missed on CI,
+  # where nextest colours anyway: the first real use of this helper printed
+  # "no failing test named" directly above a tail containing the failing test's
+  # name. Every hand-run command in this session stripped these escapes and the
+  # helper did not. `M62.0`.
+  local plain
+  plain="$(sed 's/\x1b\[[0-9;]*m//g' "$log")"
+
   # `|| true` on every grep: `set -e` is on and grep returns 1 when it matches
   # nothing, which is the case these branches exist to handle. That trap has
   # bitten this repository twice.
   local named
-  named="$(grep -E '^\s+(FAIL|SIGABRT|SIGSEGV|TRY [0-9])' "$log" | sort -u | head -5 || true)"
+  named="$(grep -E '^[[:space:]]+(FAIL|SIGABRT|SIGSEGV|TRY [0-9])' <<<"$plain" | sort -u | head -5 || true)"
+
+  # The assertion, separately, because it is what says why rather than which.
+  # It sits far above the summary in nextest's output, so a tail misses it.
+  local why
+  why="$(grep -E "panicked at|assertion .*failed|left ==|right ==" <<<"$plain" | sort -u | head -5 || true)"
+
   if [[ -n "$named" ]]; then
     sed 's/^/       /' <<<"$named"
-  else
-    printf '       no failing test named, so the run died another way:\n'
-    tail -15 "$log" | sed 's/^/       | /' || true
+  fi
+  if [[ -n "$why" ]]; then
+    sed 's/^/       /' <<<"$why"
+  fi
+  if [[ -z "$named" && -z "$why" ]]; then
+    printf '       nothing named a test, so the run died another way:\n'
+    tail -30 <<<"$plain" | sed 's/^/       | /' || true
   fi
   rm -f "$log"
   return 1
