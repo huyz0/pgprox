@@ -8182,3 +8182,33 @@ recognised so it can be refused rather than read as a version.
   clamps away, the ceiling and its source are written where the next person
   would set it, and the fact that a re-run cannot recover a cancelled SHA is
   recorded beside them.
+
+## M67: every action was on a runtime with a removal date
+
+- [x] `M67.0` Node 20 actions, updated before the runners stop carrying them.
+  Every CI and docs run has been printing "the following actions target Node.js
+  20 but are being forced to run on Node.js 24", once per job, for as long as
+  the workflows have existed. It reads like housekeeping and it is a deadline:
+  GitHub flipped the runner default on 2 June 2026, and removes Node 20 from
+  hosted runners entirely on 16 September 2026, after which a workflow pinned to
+  a Node 20 action stops running rather than warning.
+  Six actions moved, and the major numbers are further apart than the warning
+  suggests because each Node bump was released as a breaking change:
+  `checkout` v4 to v7, `setup-node` v4 to v7, `upload-artifact` v4 to v7,
+  `upload-pages-artifact` v3 to v5, `deploy-pages` v4 to v5, and
+  `gitleaks-action` v2 to v3.
+  Each major between here and there was read rather than assumed, and three
+  mattered. `setup-node` v6 limits automatic caching to npm, which this already
+  asks for by name. `upload-pages-artifact` v4 stopped including dotfiles, which
+  is why `docs/dist` was checked for them and has none. `checkout` v7 blocks
+  checking out a fork's pull request under `pull_request_target` and
+  `workflow_run`, neither of which this repository uses.
+  `Swatinem/rust-cache@v2` and `taiki-e/install-action@v2` are unchanged and
+  needed no move: the first is already `node24` at its v2 tag, the second is a
+  composite action with no Node runtime of its own.
+  `deploy-pages` v5 does not raise the ten-minute ceiling `M66.1` recorded. It
+  is still `MAX_TIMEOUT = 600000`, checked in the v5 source rather than assumed
+  from the version number, and the comment beside the step now says it holds for
+  both.
+  Acceptance: no action in either workflow runs on Node 20, the warning is gone
+  from the run logs, and every job that was green stays green.

@@ -30,7 +30,7 @@ jobs:
     name: tier 1 (the pre-commit gate)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         run: rustup show && rustup component add rustfmt clippy llvm-tools-preview
@@ -90,7 +90,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust
         run: rustup show
       - uses: Swatinem/rust-cache@v2
@@ -113,7 +113,7 @@ jobs:
     # survivable in code it did not touch, and only the full run sees that.
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The merge base has to be reachable, and the default shallow clone
           # does not reach it. Without this the diff is the whole tree and the
@@ -135,7 +135,7 @@ jobs:
           MUTANTS_DIFF: /tmp/pr.diff
       - name: Keep the outcomes
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mutants-diff-outcomes
           path: target/mutants-*/mutants.out/
@@ -145,7 +145,7 @@ jobs:
     name: minimum supported rust version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The version comes from Cargo.toml through scripts/msrv.sh rather than
       # being written here. A pin recorded in two places drifts, and the copy
       # that drifts is the one nobody runs.
@@ -168,7 +168,7 @@ jobs:
     name: supply chain
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
@@ -180,10 +180,10 @@ jobs:
     name: secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -191,7 +191,7 @@ jobs:
     name: instruction counts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust
         run: rustup show
       - uses: Swatinem/rust-cache@v2
@@ -217,7 +217,7 @@ jobs:
     # Until `M10.2` nothing ran the fuzzer, so it was assumed.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the nightly toolchain
         run: rustup toolchain install nightly --profile minimal
       - uses: taiki-e/install-action@v2
@@ -230,7 +230,7 @@ jobs:
       # artifact replays with `cargo +nightly fuzz run <target> <path>`.
       - name: Keep what it found
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts
           path: fuzz/artifacts/
@@ -255,7 +255,7 @@ jobs:
     # list is the crates that hold unsafe, which today is none.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the nightly toolchain with Miri
         run: |
           rustup toolchain install nightly --profile minimal --component miri
@@ -291,7 +291,7 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust
         run: rustup show
       - uses: taiki-e/install-action@v2
@@ -306,7 +306,7 @@ jobs:
       # log output.
       - name: Keep the outcomes
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mutants-outcomes-${{ matrix.shard }}
           path: target/mutants-*/outcomes.json
@@ -316,7 +316,7 @@ jobs:
     name: milestone completion condition
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The whole history, because three gates read it. `m21-complete.sh`
           # checks that the driver matrix names a commit this repository has,

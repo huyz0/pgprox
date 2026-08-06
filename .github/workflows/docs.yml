@@ -37,8 +37,8 @@ jobs:
     name: build the site
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -54,7 +54,7 @@ jobs:
         working-directory: docs
       - run: npm run build
         working-directory: docs
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: docs/dist
 
@@ -75,7 +75,8 @@ jobs:
       # No `timeout:` here, and that is a finding rather than an omission.
       #
       # The action creates a Pages deployment and polls until Pages reports it
-      # finished. Ten minutes is not its default, it is its ceiling:
+      # finished. Ten minutes is not its default, it is its ceiling, in v4 and
+      # in the v5 this now pins:
       #
       #   const MAX_TIMEOUT = 600000
       #   this.timeout = Math.min(timeoutInput, MAX_TIMEOUT)
@@ -95,4 +96,4 @@ jobs:
       # whose deployment was already cancelled fails in nine seconds with
       # "Deployment cancelled." `M66.1`.
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
