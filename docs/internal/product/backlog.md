@@ -7690,3 +7690,22 @@ recognised so it can be refused rather than read as a version.
   four ways, and the narrowing documented as a narrowing rather than a
   replacement, since a change can make a mutant survivable in code it did not
   touch and only the full run sees that.
+
+## M52: two failures from the CI replay, and what each turned out to be
+
+- [x] `M52.0` A gate that failed without saying why.
+  A full CI replay had `check-coverage.sh` report "test run failed" for
+  `pgprox-session` and `pgprox`. It was not reproducible: the same command
+  passed clean, the same gate passed clean, the exact CI sequence of negative
+  suite then `m-1` then `m0` passed clean, and two concurrent coverage runs
+  passed clean. Ephemeral port exhaustion was measured and ruled out: the range
+  here is 4,095 ports and `TIME_WAIT` stayed flat at 473 across a full run.
+  There was nothing left to look at because the only copy of which test failed
+  had gone to `/dev/null`. An intermittent failure is the one kind that most
+  needs its evidence kept, and this gate was discarding it for the two crates
+  whose tests are slowest and are the only ones binding real sockets.
+  This does not fix the flake. It makes the next occurrence diagnosable, which
+  is the most that can honestly be claimed without having seen it.
+  Acceptance: a failing test is named in the gate's output and the full log
+  path is printed; a passing run leaves no temp file behind; verified by
+  planting a failing test and reading it back.

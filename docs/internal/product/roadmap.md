@@ -2881,3 +2881,39 @@ survivable in code it did not touch, and only the full run sees that.
 
 Completion condition: `scripts/check-drift.sh`, which holds both the index and
 the rule that every gate is wired into CI.
+
+## M52: two failures from the CI replay, and what each turned out to be (complete)
+
+```bash
+scripts/check-coverage.sh
+scripts/gates/m1f-complete.sh
+```
+
+A full replay of everything CI runs on a push gave 63 of 65. Both failures were
+in the apparatus rather than the proxy, and they failed in opposite ways.
+
+### The one that could not say why
+
+`check-coverage.sh` reported "test run failed" for `pgprox-session` and
+`pgprox`, the two crates whose tests are slowest and the only ones that bind
+real sockets.
+
+It did not reproduce. The same command passed clean, the same gate passed
+clean, the exact CI sequence passed clean, and two concurrent coverage runs
+passed clean. Ephemeral port exhaustion was the best hypothesis and was
+measured and ruled out: 4,095 ports in the range and `TIME_WAIT` flat at 473
+across a whole run.
+
+There was nothing else to look at, because the only copy of which test failed
+had gone to `/dev/null`.
+
+That is the finding. An intermittent failure is the one kind that most needs
+its evidence kept, and this gate was throwing it away. It now names the failing
+tests and prints the path to the full log, which was verified by planting a
+failing test and reading it back rather than by waiting for the flake.
+
+**This does not fix the flake**, and the entry says so. It makes the next
+occurrence diagnosable, which is all that can honestly be claimed about
+something nobody has seen twice.
+
+Completion condition: `scripts/check-coverage.sh`.

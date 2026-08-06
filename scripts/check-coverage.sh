@@ -65,13 +65,37 @@ run_gate() {
   CARGO_TARGET_DIR="$target" cargo llvm-cov clean \
     --workspace --profraw-only >/dev/null 2>&1 || true
 
+  # stderr to a file rather than to /dev/null, and the file survives a failure.
+  #
+  # This used to be `2>/dev/null` with the message below and nothing else. A
+  # full CI replay had `pgprox-session` and `pgprox` both report "test run
+  # failed" here, and the run was not reproducible afterwards: the same command
+  # passed clean, the same gate passed clean, and the exact CI sequence passed
+  # clean. There was nothing left to look at, because the only copy of which
+  # test failed and why had gone to /dev/null.
+  #
+  # An intermittent failure is the one kind that most needs its evidence kept,
+  # and this gate was throwing it away for the two crates whose tests are
+  # slowest and are the only ones that bind real sockets.
+  local errs
+  errs="$(mktemp -t pgprox-coverage-"$crate"-XXXXXX.log)"
+
   if ! out="$(CARGO_TARGET_DIR="$target" cargo llvm-cov nextest \
         -p "$crate" --lib --bins \
         --ignore-filename-regex "$IGNORE_RE" \
-        --summary-only --json 2>/dev/null)"; then
+        --summary-only --json 2>"$errs")"; then
     fail "coverage ($crate): test run failed"
+    # The failing tests, named, so a rerun is not the only way to learn
+    # anything. nextest prints them to stderr as it goes.
+    # `sort -u` because nextest names a failure twice, once as it happens and
+    # once in the summary, and a gate that prints the same line twice reads
+    # like two failures.
+    grep -E '^\s+(FAIL|SIGABRT|SIGSEGV|TRY [0-9])' "$errs" | sort -u | head -5 \
+      | sed 's/^/       /' || true
+    printf '       full output: %s\n' "$errs"
     return
   fi
+  rm -f "$errs"
 
   local pct
   pct="$(printf '%s' "$out" | python3 -c '
