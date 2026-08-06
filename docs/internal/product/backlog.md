@@ -8212,3 +8212,34 @@ recognised so it can be refused rather than read as a version.
   both.
   Acceptance: no action in either workflow runs on Node 20, the warning is gone
   from the run logs, and every job that was green stays green.
+
+## M68: the docs said what read routing decides, never how
+
+- [x] `M68.0` Read routing, as a page.
+  `features.md` stated the two rules a user needs and `architecture.md` restated
+  them a shorter way. Neither said how a node learns where a replica has got to,
+  what happens when it cannot tell, or which replica gets picked when several
+  qualify, so the mechanism existed only in the crate and in ADR 0009.
+  `docs/read-routing.md` is that mechanism: the decision end to end, the three
+  tests the classifier applies and why the first word is not enough, the
+  watermark and the window between classifying a write and learning where it
+  landed, the 250 ms poll of `pg_last_wal_replay_lsn()` and
+  `pg_is_in_recovery()`, the four states that take a replica out of service, and
+  the metrics that say whether any of it is working.
+  Two things the page says plainly because a reader would otherwise assume
+  otherwise. Selection is the first eligible replica in grant order, with no
+  least-lag or round-robin policy at all. And `pg_is_in_recovery()` is not
+  decoration: a promoted replica keeps answering and keeps reporting a plausible
+  position, and routing reads to it is how a split brain starts serving two
+  versions of the truth.
+  Drafted with `SHOW REPLICAS` in the observability section. There is no such
+  command. `m44-complete.sh` would have caught it, and it was caught before that
+  by checking the claim against `show.rs` rather than by running the gate and
+  finding out.
+  `features.md` and `architecture.md` keep their sections and gain a pointer
+  rather than being trimmed: one answers "what does it do" and the other "how is
+  this built", and the detail that would have drifted between them now has one
+  home.
+  Acceptance: the page is in the sidebar and the site builds it, every claim in
+  it is checked against the code rather than against the other pages, and no
+  page documents a `SHOW` the parser would refuse.

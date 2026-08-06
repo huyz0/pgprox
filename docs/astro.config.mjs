@@ -42,6 +42,7 @@ export default defineConfig({
         { label: 'Getting started', link: '/getting-started/' },
         { label: 'Features and limits', link: '/features/' },
         { label: 'Multitenancy', link: '/multitenancy/' },
+        { label: 'Read routing', link: '/read-routing/' },
         { label: 'Configuration', link: '/configuration/' },
         { label: 'Operations', link: '/operations/' },
         { label: 'Clustering and deployment', link: '/clustering/' },

@@ -163,6 +163,11 @@ functions do. A tenant calling a write-performing function from a `SELECT` gets
 it routed as a read. `SET pgprox.route = 'primary'` is the escape hatch, and a
 `/* pgprox:replica */` comment is the per-statement override.
 
+Replica positions are polled in the background and read without I/O, because the
+route decision runs once per transaction on every connection. What is polled, how
+often, and what happens when the answer is missing or stale is in
+[Read routing](read-routing.md).
+
 ## Memory at 100,000 connections
 
 An idle connection holds a socket and a small amount of state. Read and write

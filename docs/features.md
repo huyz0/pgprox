@@ -99,6 +99,10 @@ Four things send a statement to the primary regardless of what it does: the
 session is pinned, a transaction is open, the hint says primary, or no replica
 has caught up.
 
+[Read routing](read-routing.md) is the mechanism behind all of this: how a node
+learns where each replica has got to, the four states that take one out of
+service, and which replica gets picked when several qualify.
+
 ### Overriding the decision
 
 | | |
