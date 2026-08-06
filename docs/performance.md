@@ -108,8 +108,15 @@ It is off by default and off per tenant unless that tenant opts in. See
 ## Hot paths
 
 Instruction counts per operation, measured under callgrind against a committed
-baseline that CI enforces to 5%. These are not times; they are deterministic
-and comparable across machines, which is why they gate.
+baseline that CI enforces to 5%. These are not times, which is why they gate: a
+count is the same on a loaded machine as on an idle one.
+
+Comparable across machines is a weaker claim than it looks, and this repo has
+now measured it. Every figure in the table below is bit-identical on a developer
+machine and on a GitHub runner, across six runs. Six other benchmarks, all of
+them in `pgprox-cache`, are not: they read 3 to 4% higher on the runner, so
+their baseline is measured there. See
+[`run-2026-08-06-ci-baseline.md`](internal/product/perf/run-2026-08-06-ci-baseline.md).
 
 | | instructions |
 | --- | --- |

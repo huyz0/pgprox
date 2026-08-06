@@ -1,5 +1,5 @@
 {
-  "_comment": "Instructions per iteration for the declared hot paths, measured by scripts/bench.sh as the difference between 2N and N iterations under callgrind. Rewriting this is a deliberate act with a reason in the commit message.",
+  "_comment": "Instructions per iteration for the declared hot paths, measured by scripts/bench.sh as the difference between 2N and N iterations under callgrind. Rewriting this is a deliberate act with a reason in the commit message. The ten non-cache figures are bit-identical on a developer machine and on a GitHub runner. The six pgprox-cache figures are not, and are the median of six CI runs: see run-2026-08-06-ci-baseline.md.",
   "pgprox-proto::scan_frame": 20,
   "pgprox-proto::decode_backend_message": 159,
   "pgprox-proto::relay_frame": 167,
@@ -10,10 +10,10 @@
   "pgprox-route::route_begin": 1165,
   "pgprox-pool::acquire_and_release": 278,
   "pgprox-cache::cache_hit": 1461,
-  "pgprox-cache::cache_hit_rotating": 1799,
-  "pgprox-cache::cache_miss": 1237,
-  "pgprox-cache::cache_put": 3540,
-  "pgprox-cache::invalidate_a_tenants_entries": 83378,
-  "pgprox-cache::serves_a_mix_of_tenants": 38262,
+  "pgprox-cache::cache_hit_rotating": 1810,
+  "pgprox-cache::cache_miss": 1239,
+  "pgprox-cache::cache_put": 3695,
+  "pgprox-cache::invalidate_a_tenants_entries": 85633,
+  "pgprox-cache::serves_a_mix_of_tenants": 38319,
   "pgprox-session::held_read": 2263
 }

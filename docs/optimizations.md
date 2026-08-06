@@ -68,12 +68,23 @@ A sweep across every crate, starting from a profile rather than from a reading.
 | `held_read` | 18,669 | 2,263 | **-88%** |
 | `acquire_and_release` | 443 | 278 | **-37%** |
 | `route_begin` | 1,294 | 1,165 | -10% |
-| `cache_put` | 3,770 | 3,540 | -6% |
-| `invalidate_a_tenants_entries` | 86,088 | 83,378 | -3% |
+| `cache_put` | 3,770 | 3,695 | -6% (see below) |
+| `invalidate_a_tenants_entries` | 86,088 | 85,633 | -3% (see below) |
 
 The "after" column is the committed baseline, so a rebaselined hot path that
 leaves this table alone fails a check rather than leaving the page quietly
 stale.
+
+The last two rows do not subtract, and the reason is worth more than a tidier
+table. Their before and after were measured on the same machine and the cuts
+were real, -6% and -3%. The after column then moved when the six `pgprox-cache`
+benchmarks were rebaselined onto CI, which reads that crate 3 to 4% higher than
+a developer machine does while agreeing to the instruction on every other hot
+path here. Subtracting the two columns now compares two machines and understates
+what changed; the percentages are the same-machine figures, which are the ones
+that describe the work. `cache_put` also benchmarks slightly different code than
+it did then. See
+[`run-2026-08-06-ci-baseline.md`](internal/product/perf/run-2026-08-06-ci-baseline.md).
 
 Not one line of unsafe was written, and not one of those four costs was a bounds
 check. Three were work that did not need doing at all.

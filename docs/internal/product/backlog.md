@@ -7937,16 +7937,35 @@ recognised so it can be refused rather than read as a version.
   against, measured rather than assumed, which needs CI runs of the changed
   benchmark and is why the rebaseline is a separate task.
 
-- [ ] `M59.1` Rebaseline on CI.
-  The baseline was measured on a twenty-core developer machine. Nine
-  benchmarks are identical everywhere; the cache family reads about 4% higher
-  on a GitHub runner, which eats most of a 5% budget before any noise.
+- [x] `M59.1` Rebaseline on CI.
+  The baseline was measured on a twenty-core developer machine. Ten benchmarks
+  are identical everywhere; the cache family reads about 4% higher on a GitHub
+  runner, which eats most of a 5% budget before any noise.
   Blocked on `M59.0`: rebaselining to numbers measured under the noisy scheme
-  would bake in a value that was never stable. Needs two or three CI runs of
-  the changed benchmark first.
-  `docs/optimizations.md` and `docs/performance.md` quote these figures and
-  `m44-complete.sh` enforces that the first agrees with `baseline.json`, so all
-  three move together.
+  would bake in a value that was never stable.
+  Six CI runs, `M59.0` through `M64.0`, read out of the archived logs of the
+  `instruction counts` job rather than re-run. The ten non-cache benchmarks
+  returned the same number in all six and match the committed baseline to the
+  instruction, which is what makes the other six a finding rather than noise:
+  callgrind is deterministic for a binary, so a benchmark that reads
+  differently in two places is running different instructions. All six that
+  move are `pgprox-cache`, and all six of that crate's are among them.
+  Each new figure is the lower median of six readings, so it is a number a run
+  actually produced rather than an average of numbers none did. The cost is
+  paid in the other direction: a developer now reads about 4% below the
+  baseline for `cache_put` instead of CI reading 4% above it, which is the
+  right way round, since CI is where the count gates a build.
+  This also settles `M59.0`'s acceptance, which was that the spread across CI
+  runs falls below the tolerance, measured rather than assumed: 3,686 to 3,702
+  across six runs is 0.43% against a 5% gate, from 4.63% before.
+  `docs/optimizations.md`'s table does not subtract any more for the two rows
+  that moved, and says so rather than restating the percentages: their before
+  and after were measured on one machine and the cuts were real, and the after
+  column now carries a CI figure.
+  Acceptance: `baseline.json` carries the CI figures for the cache family and
+  the developer figures nowhere it disagrees with them, the run is recorded in
+  `docs/internal/product/perf/`, and `m44-complete.sh` passes against the
+  rewritten page rather than being edited to.
 
 ## M60: three gates read history and the runner had one commit
 
