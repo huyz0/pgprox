@@ -65,9 +65,7 @@ else
   fail "no test named for OpenAPI validation"
 fi
 
-cargo nextest run -p pgprox-config -p pgprox-observe -p pgprox-admin >/dev/null 2>&1 \
-  && ok "operations suites" \
-  || fail "suites (run: cargo nextest run -p pgprox-config -p pgprox-observe -p pgprox-admin)"
+run_suite "operations suites" cargo nextest run -p pgprox-config -p pgprox-observe -p pgprox-admin || true
 
 for c in pgprox-core pgprox-config pgprox-observe pgprox-admin; do
   ./scripts/check-crate.sh "$c" >/dev/null 2>&1 \

@@ -34,8 +34,7 @@ for scenario in partition leader_loss restart; do
     && ok "simulated: $scenario" || fail "the simulation does not cover: $scenario"
 done
 
-cargo nextest run -p pgprox-cluster --features sim >/dev/null 2>&1 \
-  && ok "simulation suite" || fail "simulation suite (run: cargo nextest run -p pgprox-cluster --features sim)"
+run_suite "simulation suite" cargo nextest run -p pgprox-cluster --features sim || true
 
 ./scripts/check-crate.sh pgprox-cluster >/dev/null 2>&1 \
   && ok "fmt, clippy, doctests" || fail "workspace checks"

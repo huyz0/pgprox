@@ -7966,3 +7966,24 @@ recognised so it can be refused rather than read as a version.
   be cloned from.
   Acceptance: the milestone job checks out the full history, and the reason is
   beside the setting rather than only here.
+
+## M61: five gates that ran suites and threw away the result
+
+- [x] `M61.0` A shared runner that keeps the evidence.
+  `m5-complete.sh` failed on CI with "suites (run: cargo nextest run -p
+  pgprox-pool -p pgprox-route)" and nothing else. The suites pass locally,
+  including at twenty times the proptest case count, so the only copy of which
+  test failed was on the runner and went with it.
+  Five gates had the same shape: `cargo nextest run ... >/dev/null 2>&1`
+  followed by a one-line `fail`. That is the third time this lesson has been
+  paid for. `M52.0` learned it on the coverage gate, `M55.2` learned that
+  printing a path to a log file is worthless for the same reason, and this is
+  the same defect in five more places.
+  `run_suite` in `lib.sh` replaces the pattern: it runs the command, and on
+  failure names the failing tests inline, or prints the tail of the output when
+  nothing looks like a failing test, which is the case that keeps happening.
+  Every grep in it carries `|| true`, because `set -e` plus a grep that matches
+  nothing is the trap that has now bitten this repository twice.
+  Acceptance: no gate runs a suite into `/dev/null`; a planted failing test is
+  named by the gate that runs it; and the underlying CI failure, whatever it
+  is, is legible on the next run.

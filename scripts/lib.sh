@@ -42,6 +42,47 @@ fail() { printf '%sFAIL%s  %s\n' "$_red" "$_off" "$*"; _fail_count=$((_fail_coun
 # Report and exit with the accumulated failure count. Scripts that check many
 # things call this at the end so one run reports every problem rather than
 # stopping at the first, which matters when an agent is reading the output.
+# Runs a test suite and, when it fails, says which tests failed.
+#
+#   run_suite "pool and route suites" cargo nextest run -p pgprox-pool
+#
+# The pattern this replaces is `cargo nextest run ... >/dev/null 2>&1` followed
+# by a one-line `fail`. That reports a suite failed and destroys the only copy
+# of which test and why. On CI it is the only copy there will ever be: the
+# runner and every file on it go when the job ends.
+#
+# `M52.0` learned this on the coverage gate, `M55.2` learned that printing a
+# path to a log is worthless for the same reason, and `M61.0` is the third
+# time, on five gates at once. The output goes inline.
+run_suite() {
+  local label="$1"
+  shift
+  local log
+  log="$(mktemp -t pgprox-suite-XXXXXX.log)"
+
+  if "$@" >"$log" 2>&1; then
+    ok "$label"
+    rm -f "$log"
+    return 0
+  fi
+
+  fail "$label (run: $*)"
+
+  # `|| true` on every grep: `set -e` is on and grep returns 1 when it matches
+  # nothing, which is the case these branches exist to handle. That trap has
+  # bitten this repository twice.
+  local named
+  named="$(grep -E '^\s+(FAIL|SIGABRT|SIGSEGV|TRY [0-9])' "$log" | sort -u | head -5 || true)"
+  if [[ -n "$named" ]]; then
+    sed 's/^/       /' <<<"$named"
+  else
+    printf '       no failing test named, so the run died another way:\n'
+    tail -15 "$log" | sed 's/^/       | /' || true
+  fi
+  rm -f "$log"
+  return 1
+}
+
 finish() {
   if (( _fail_count > 0 )); then
     printf '\n%s%d check(s) failed%s\n' "$_red" "$_fail_count" "$_off"

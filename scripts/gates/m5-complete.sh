@@ -56,9 +56,7 @@ done
 [[ -f fuzz/fuzz_targets/classify.rs ]] \
   && ok "the classifier has a fuzz target" || fail "no fuzz target for the classifier"
 
-cargo nextest run -p pgprox-pool -p pgprox-route >/dev/null 2>&1 \
-  && ok "pool and route suites" \
-  || fail "suites (run: cargo nextest run -p pgprox-pool -p pgprox-route)"
+run_suite "pool and route suites" cargo nextest run -p pgprox-pool -p pgprox-route || true
 
 for c in pgprox-pool pgprox-route; do
   ./scripts/check-crate.sh "$c" >/dev/null 2>&1 \

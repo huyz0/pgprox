@@ -22,8 +22,7 @@ else
 fi
 
 # --- tests --------------------------------------------------------------------
-cargo nextest run -p pgprox-proto >/dev/null 2>&1 \
-  && ok "pgprox-proto unit tests" || fail "pgprox-proto unit tests"
+run_suite "pgprox-proto unit tests" cargo nextest run -p pgprox-proto || true
 
 ./scripts/check-coverage.sh pgprox-proto >/dev/null 2>&1 \
   && ok "coverage" || fail "coverage (run: scripts/check-coverage.sh pgprox-proto)"

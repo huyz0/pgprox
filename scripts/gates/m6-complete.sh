@@ -80,8 +80,7 @@ fi
   && ok "the e2e stack is described" || fail "deploy/docker-compose.yml missing"
 
 if [[ -f crates/pgprox-session/Cargo.toml ]]; then
-  cargo nextest run -p pgprox-session >/dev/null 2>&1 \
-    && ok "session suite" || fail "session suite (cargo nextest run -p pgprox-session)"
+  run_suite "session suite" cargo nextest run -p pgprox-session || true
 fi
 
 for c in pgprox-session pgprox; do
