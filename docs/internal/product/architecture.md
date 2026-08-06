@@ -11,9 +11,10 @@ Three stated exceptions:
 
 - `pgprox-session` composes `pgprox-proto`, `pgprox-pool`, and `pgprox-route`
 - `bin/pgprox` composes everything
-- `bin/pgload`, the load client, composes `pgprox-proto` and `pgprox-load`. It
-  speaks the wire protocol to measure the proxy, and is never a dependency of
-  the proxy itself.
+- `bin/pgload`, the load client, composes `pgprox-proto`, `pgprox-load`,
+  `pgprox-auth` and `pgprox-tls`. It speaks the wire protocol to measure the
+  proxy, which means running a real SCRAM exchange over a real client TLS
+  configuration, and it is never a dependency of the proxy itself.
 
 `pgprox-core` depends on no workspace crate and performs no I/O.
 
@@ -23,20 +24,23 @@ not left to review.
 
 ## Crates
 
+Each crate carries a `README.md` saying what it owns and what it is built on,
+which is the version to read when you are in the directory rather than here.
+
 | Crate | Owns | Track |
 | --- | --- | --- |
 | `pgprox-core` | Traits, DTOs, errors, IDs, `SecretString`, `Clock`, buffer slab, fakes | M0 |
 | `pgprox-proto` | Postgres wire codec, both directions, frame-level passthrough | A |
 | `pgprox-tls` | rustls setup, FIPS feature gate, cert hot-reload through a resolver | A |
 | `pgprox-auth` | JWT extraction, sidecar gRPC client, grant cache | B |
-| `pgprox-cluster` | SWIM gossip, membership, quota leases, tenant reservations | C |
+| `pgprox-cluster` | Pairwise gossip, membership, quota leases, tenant reservations | C |
 | `pgprox-config` | `ConfigSource` providers, validation, hot reload | D |
 | `pgprox-observe` | Metrics, tracing, log init, health | D |
 | `pgprox-admin` | HTTP/JSON API and `SHOW` pseudo-database | D |
 | `pgprox-pool` | Upstream pools, idle reap, pinning, prepared-statement mapping | E |
 | `pgprox-route` | Target selection, statement classification, LSN watermarks | E |
 | `pgprox-session` | Per-client state machine, relay loop | M6 |
-| `pgprox-cache` | Query cache, trait stub until M9 | M9 |
+| `pgprox-cache` | Query cache with bounded staleness | M9 |
 | `bin/pgprox` | Composition root. Five lines in `main.rs`, logic in a lib target. | M6 |
 | `pgprox-load` | The reference workload, its sampler, and the run report. No I/O. | M7 |
 | `bin/pgload` | The load client. Replays the reference workload and reports what happened. | M7 |

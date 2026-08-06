@@ -67,6 +67,15 @@ repos:
         # Always, not only when Markdown changes: a link breaks when the file it
         # points at moves, and that commit need not touch a single .md.
 
+      - id: readmes
+        name: every crate says what it is and what it uses
+        entry: scripts/check-readmes.sh
+        language: script
+        pass_filenames: false
+        always_run: true
+        # Always, not only when a README changes: the claim goes stale when
+        # Cargo.toml gains a dependency, and that commit need not touch one.
+
       - id: portability
         name: system stays tool-agnostic
         entry: scripts/check-portability.sh

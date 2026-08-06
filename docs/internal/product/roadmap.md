@@ -2739,3 +2739,61 @@ not move is in the file where somebody will read it before trying again.
 
 Completion condition: `scripts/check-links.sh`, plus the checks that were
 already there.
+
+## M50: a README in every crate (complete)
+
+```bash
+scripts/check-readmes.sh
+```
+
+Every crate carried an `AGENTS.md` and none carried a `README.md`.
+
+Those are different documents for different readers. `AGENTS.md` is rules and
+hazards for somebody about to change the crate. A README is orientation for
+somebody who has just landed in the directory and wants to know what this is
+and how it connects. GitHub renders one at the foot of a directory listing,
+which is where a person arrives, and it rendered nothing for any of the sixteen.
+
+Each says what the crate owns, what it is built on, what is built on it, and
+the one constraint that shapes it. That last part varies by crate deliberately:
+`pgprox-pool` gets the release rule, `pgprox-cluster` gets the invariant,
+`pgprox-testkit` gets the bug it exists to hold. A uniform page per crate would
+be a template rather than a document, and would read like one.
+
+### What is checkable about a page of prose
+
+The part a reader relies on and cannot verify: which other crates this one is
+built on. That is a list in `Cargo.toml`.
+
+`check-readmes.sh` compares the two in both directions, because they fail
+differently. A dependency the manifest has and the README does not is a reader
+with an incomplete picture. A crate the README names that does not exist is a
+reader sent looking for something renamed or deleted, which wastes more of
+their time.
+
+It caught one on its first run. `bin/pgprox`'s README said it "composes every
+crate in the workspace", which is true, unverifiable, and useless to somebody
+trying to see the shape of the thing. It now names all twelve and says what
+each is for.
+
+### The crate map had stopped being true in two rows
+
+Writing sixteen READMEs from the code meant reading the map beside them.
+
+`pgprox-cluster` was credited with "SWIM gossip". ADR `0004` was renamed in
+`M18.1` for exactly this reason, and says in as many words that no code ever
+matched the SWIM description: no `foca` dependency, no `UdpSocket`, a failure
+detector at three and ten seconds rather than sub-second. The ADR was corrected
+and the table was not.
+
+`pgprox-cache` was "trait stub until M9". M9 closed twenty-five milestones ago.
+
+And the stated exception for `bin/pgload` named two of its four workspace
+dependencies, having missed that measuring a TLS deployment means running a
+real SCRAM exchange over a real client configuration.
+
+None of the three is load-bearing on its own. Together they are the same shape
+as everything else this week: a document that was right when written, describing
+a thing that moved, with nothing comparing the two.
+
+Completion condition: `scripts/check-readmes.sh`.

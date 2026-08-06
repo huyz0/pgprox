@@ -7593,3 +7593,36 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `reference/` is gone from the root, `.dockerignore` follows it,
   the one document that cites a path inside it still cites a real one, and the
   patterns that stayed say why in `.gitignore`.
+
+## M50: a README in every crate
+
+- [x] `M50.0` A README per crate, for a person rather than an agent.
+  Every crate carries an `AGENTS.md` and none carried a `README.md`. Those are
+  different documents for different readers: `AGENTS.md` is rules and hazards
+  for somebody about to change the crate, and a README is orientation for
+  somebody who has just landed in the directory and wants to know what this is
+  and how it connects to the rest.
+  GitHub renders a README at the foot of a directory listing, which is where a
+  person arrives. It rendered nothing for any of the sixteen.
+  Each says what the crate owns, what it is built on, what is built on it, and
+  the one constraint that shapes it. The last part varies by crate on purpose,
+  because a uniform page per crate is a template rather than a document.
+  Acceptance: sixteen READMEs; `scripts/check-readmes.sh` in the pre-commit
+  hook, in CI and in `AGENTS.md`'s list, checking both directions of the
+  dependency claim; and a missing README, an undocumented dependency, an
+  invented crate name and an empty tree each failing it.
+
+- [x] `M50.1` Two rows of the crate map that had stopped being true.
+  Writing sixteen READMEs from the code meant reading the crate map beside
+  them, and two rows disagreed with it.
+  `pgprox-cluster` was credited with "SWIM gossip". ADR `0004` was renamed in
+  `M18.1` for exactly this reason and says in as many words that no code ever
+  matched the SWIM description. The table kept it.
+  `pgprox-cache` was "trait stub until M9", and M9 closed twenty-five
+  milestones ago.
+  The stated exception for `bin/pgload` named two of its four workspace
+  dependencies. It composes `pgprox-auth` and `pgprox-tls` as well, because
+  measuring a TLS deployment means running a real SCRAM exchange over a real
+  client configuration.
+  Acceptance: the three corrections, and the map points at the per-crate
+  READMEs as the version to read from inside a directory.

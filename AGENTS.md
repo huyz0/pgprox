@@ -90,6 +90,7 @@ scripts/check-crate.sh <crate>    # fmt and clippy for one crate
 scripts/check-coverage.sh <crate> # the 95% gate
 scripts/check-drift.sh            # derived files still match canonical source
 scripts/check-links.sh            # every relative Markdown link resolves
+scripts/check-readmes.sh          # every crate says what it is and what it uses
 scripts/check-sans-io.sh          # business logic touches no socket and no clock
 scripts/check-secrets.sh          # no exposed credential reaches a formatter
 scripts/check-wired.sh            # everything written to be used is used

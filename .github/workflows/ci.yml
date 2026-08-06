@@ -46,6 +46,8 @@ jobs:
       # Fifteen links in one file were wrong for several milestones, all of them
       # one `../` too deep, and nothing looked. M47.0.
       - run: scripts/check-links.sh
+      # A README claiming a crate map that Cargo.toml disagrees with. M50.0.
+      - run: scripts/check-readmes.sh
       # Non-negotiable 7, enforced rather than held up by one unit test. M13.3.
       - run: scripts/check-secrets.sh
       # Non-negotiable 5, which check-layering.sh was credited with and does
