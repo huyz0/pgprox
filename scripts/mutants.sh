@@ -66,6 +66,74 @@ MUTANTS_TMP="${MUTANTS_TMPDIR:-$REPO_ROOT/target/mutants-tmp}"
 mkdir -p "$MUTANTS_TMP"
 export TMPDIR="$MUTANTS_TMP"
 
+# Only the lines a diff touched, or all of them.
+#
+# A full run is three thousand seven hundred mutants and each is a build plus a
+# test run, which is why CI schedules it nightly. That makes it a thing that
+# tells you on Tuesday about a test you weakened on Monday.
+#
+# `MUTANTS_DIFF` narrows the run to the lines in a diff, which is the form that
+# fits on the commit path: a normal change touches tens of lines and mutating
+# those takes minutes.
+#
+#   MUTANTS_DIFF=<(git diff origin/main...) scripts/mutants.sh
+#
+# It is a narrowing, not a different check. A survivor is still compared
+# against the same baseline, so an accepted survivor on a line you touched
+# stays accepted and a new one still fails.
+#
+# What it cannot see is the mutant your change made survivable somewhere else.
+# That is what the nightly full run is for, and it is why this does not replace
+# it.
+DIFF="${MUTANTS_DIFF:-}"
+
+# One slice of the mutants, as `k/n`. The nightly splits across runners; on its
+# own this does nothing.
+#
+# cargo-mutants randomises after sharding, so the slices are comparable in cost
+# rather than one runner drawing every expensive crate.
+SHARD="${MUTANTS_SHARD:-}"
+
+# `if` rather than `[[ ... ]] && ...`: `set -e` is on, and a bare `&&` list
+# whose left side is false returns 1, which would exit the script here every
+# time neither is set, which is most of the time.
+NARROW=()
+if [[ -n "$DIFF" ]]; then
+  NARROW+=(--in-diff "$DIFF")
+fi
+if [[ -n "$SHARD" ]]; then
+  NARROW+=(--shard "$SHARD")
+fi
+
+# A diff run only pays for the crates the diff touches.
+#
+# `--in-diff` narrows which mutants are generated, not which crates are
+# visited, and visiting a crate costs a baseline build whether or not the diff
+# reached it. Sixteen baseline builds to mutate five lines is the cost that
+# would stop anybody running this on the commit path, which is the one place it
+# is worth having.
+#
+# Only when no crates were named. An explicit argument means somebody asked for
+# that crate and gets it.
+if [[ -n "$DIFF" ]] && (( $# == 0 )); then
+  touched=()
+  for crate in "${CRATES[@]}"; do
+    for dir in "crates/$crate" "bin/$crate"; do
+      if grep -qE "^\+\+\+ b/$dir/src/" "$DIFF" 2>/dev/null; then
+        touched+=("$crate")
+        break
+      fi
+    done
+  done
+  if (( ${#touched[@]} == 0 )); then
+    echo "no crate source in the diff, so there is nothing to mutate"
+    finish
+  fi
+  CRATES=("${touched[@]}")
+  echo "diff touches: ${CRATES[*]}"
+  echo
+fi
+
 JOBS="${MUTANTS_JOBS:-6}"
 # The whole-suite budget per mutant, and the backstop rather than the detector.
 #
@@ -166,7 +234,8 @@ for crate in "${CRATES[@]}"; do
   # nothing and the run reported all twelve survivors again, which is how the
   # difference was noticed rather than assumed.
   cargo mutants -p "$crate" --output "$out" --jobs "$JOBS" --timeout "$TIMEOUT" \
-    --exclude '**/src/bin/**' --test-tool=nextest >"$out.log" 2>&1 || true
+    --exclude '**/src/bin/**' --test-tool=nextest \
+    "${NARROW[@]+"${NARROW[@]}"}" >"$out.log" 2>&1 || true
   if [[ ! -f "$out/mutants.out/outcomes.json" ]]; then
     fail "$crate produced no outcomes; see $out.log"
     measured=0

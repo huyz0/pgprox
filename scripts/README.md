@@ -58,6 +58,28 @@ number, and the number goes in a run document under
 | `msrv.sh` | Prints the minimum supported Rust version, read by CI |  |
 | `semantic_coverage.py` | Turns one instrumented replay into the three lists |  |
 
+### Mutation testing without waiting for tomorrow
+
+A full run is 3,694 mutants, each a build plus a test run, which is why CI
+schedules it nightly across four shards. That makes it a thing that tells you on
+Tuesday about a test you weakened on Monday.
+
+`MUTANTS_DIFF` narrows it to the lines a diff touched, and to the crates that
+diff reached. A normal change produces single-digit mutants and takes minutes,
+which is what puts it on the commit path:
+
+```bash
+git diff origin/main...HEAD > /tmp/pr.diff
+MUTANTS_DIFF=/tmp/pr.diff scripts/mutants.sh
+```
+
+It is a narrowing, not a different check: survivors are compared against the
+same baseline. What it cannot see is a mutant your change made survivable
+somewhere it did not touch, which is what the nightly is still for.
+
+`MUTANTS_SHARD=k/n` runs one slice, which is how the nightly splits across
+runners.
+
 ## Gates: one per milestone, in `gates/`
 
 Forty-five files, and you are not expected to read them.

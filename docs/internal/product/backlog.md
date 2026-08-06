@@ -7670,3 +7670,23 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the guard serves the entry, releases the claim and wakes
   subscribers; the cold case keeps the claim; the crate holds its 95%; and
   three full-suite runs are clean.
+
+- [x] `M51.2` Mutation testing that answers before the merge.
+  A full run is 3,694 mutants and each is a build plus a test run, which is why
+  it is nightly. Nightly means it reports on Tuesday about a test weakened on
+  Monday, by which point the change is in.
+  `MUTANTS_DIFF` narrows a run to the lines a diff touched **and** to the
+  crates that diff reached. The second half matters as much as the first:
+  `--in-diff` narrows which mutants are generated, not which crates are
+  visited, and a crate costs a baseline build whether or not the diff reached
+  it. Sixteen baseline builds to mutate five lines is what would stop anybody
+  running it.
+  Measured on the previous commit: two crates instead of sixteen, five mutants
+  instead of the crate's full set.
+  `MUTANTS_SHARD=k/n` runs one slice, and the nightly splits across four
+  runners with `fail-fast: false`, because a survivor in one slice is a finding
+  and the other three slices' findings are worth having in the same run.
+  Acceptance: a per-PR job scoped to the merge-base diff, the nightly sharded
+  four ways, and the narrowing documented as a narrowing rather than a
+  replacement, since a change can make a mutant survivable in code it did not
+  touch and only the full run sees that.

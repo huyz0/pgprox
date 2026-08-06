@@ -2860,5 +2860,24 @@ extracted into its own method rather than left inline, because the branch is
 only reachable through the race: as a method it has two direct tests, and as a
 branch it would have had a coincidence.
 
+### Mutation testing that answers before the merge
+
+3,694 mutants, each a build plus a test run. Nightly, therefore, which means it
+reports on Tuesday about a test weakened on Monday.
+
+`MUTANTS_DIFF` narrows a run to the lines a diff touched **and** to the crates
+that diff reached. The second half matters as much as the first: `--in-diff`
+narrows which mutants are generated, not which crates are visited, and a crate
+costs a baseline build whether or not the diff reached it. Sixteen baseline
+builds to mutate five lines is the cost that would stop anybody running it on
+the commit path.
+
+Measured against the previous commit: two crates instead of sixteen, five
+mutants instead of the crate's full set.
+
+The nightly now shards four ways with `fail-fast: false`. It is not replaced by
+the diff run and the documentation says so: a change can make a mutant
+survivable in code it did not touch, and only the full run sees that.
+
 Completion condition: `scripts/check-drift.sh`, which holds both the index and
 the rule that every gate is wired into CI.

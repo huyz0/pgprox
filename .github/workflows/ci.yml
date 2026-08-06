@@ -86,6 +86,46 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake clang golang make
       - run: scripts/fips-check.sh
 
+  mutants-diff:
+    name: mutation testing, on what changed
+    runs-on: ubuntu-latest
+    # Every pull request, and this is the half that changes behaviour. The
+    # nightly full run tells you on Tuesday about a test weakened on Monday;
+    # this tells you before the merge, and it is minutes rather than hours
+    # because a normal change touches tens of lines rather than three thousand.
+    #
+    # It is a narrowing and not a replacement. A change can make a mutant
+    # survivable in code it did not touch, and only the full run sees that.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The merge base has to be reachable, and the default shallow clone
+          # does not reach it. Without this the diff is the whole tree and the
+          # run is the nightly with extra steps.
+          fetch-depth: 0
+      - name: Install Rust
+        run: rustup show
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants,cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+      - name: The diff this branch adds
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          git diff "origin/${{ github.base_ref }}...HEAD" > /tmp/pr.diff
+          wc -l /tmp/pr.diff
+      - run: scripts/mutants.sh
+        env:
+          MUTANTS_DIFF: /tmp/pr.diff
+      - name: Keep the outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-diff-outcomes
+          path: target/mutants-*/mutants.out/
+          if-no-files-found: ignore
+
   msrv:
     name: minimum supported rust version
     runs-on: ubuntu-latest
@@ -218,6 +258,17 @@ jobs:
     # so the criterion selected all fourteen while the array still selected
     # four; M14 closed that and this sentence with it.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Four slices rather than one runner doing three thousand seven hundred
+    # mutants in series. cargo-mutants randomises after sharding, so the slices
+    # cost about the same rather than one runner drawing every expensive crate.
+    #
+    # `fail-fast: false`, because a survivor in slice 2 is a finding and the
+    # other three slices' findings are worth having in the same run rather than
+    # in tomorrow's.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -227,6 +278,8 @@ jobs:
           tool: cargo-mutants,cargo-nextest
       - uses: Swatinem/rust-cache@v2
       - run: scripts/mutants.sh
+        env:
+          MUTANTS_SHARD: ${{ matrix.shard }}/4
       # The outcomes, kept, because the interesting part of a failing run is
       # which mutant lived and where, and that is a file rather than a line of
       # log output.
@@ -234,7 +287,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutants-outcomes
+          name: mutants-outcomes-${{ matrix.shard }}
           path: target/mutants-*/outcomes.json
           if-no-files-found: warn
 
