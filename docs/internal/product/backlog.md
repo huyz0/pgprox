@@ -8126,3 +8126,30 @@ recognised so it can be refused rather than read as a version.
   offers a table of contents, the three images resolve for both a reader on
   GitHub and the built site, and the diagrams regenerate from committed source
   rather than being unmaintainable binaries.
+
+## M66: the site stopped being published and every check was green
+
+- [x] `M66.0` A ten-minute clock on a deploy that takes longer than ten
+  minutes.
+  Three docs runs in a row failed at `actions/deploy-pages` with "Timeout
+  reached, aborting!", while the build step succeeded in sixteen seconds each
+  time and the `ci` workflow went fully green for the first time. The site
+  carried on serving a commit that was by then four behind, and nothing about
+  the repository said so: the failure was in a workflow whose name reads like
+  documentation rather than delivery.
+  Not the artefact. It is 500 KB of static HTML and 534,112 bytes on the run
+  that failed, against 538,173 on the run before it that succeeded. Not the
+  content, not the build, and not a GitHub incident: the status page reported
+  all systems operational throughout.
+  The action creates a Pages deployment and then polls until Pages reports it
+  finished, with a default timeout of ten minutes. That was always marginal for
+  this repository and nothing had ever measured it: the one deployment that did
+  succeed took 6m39s, two thirds of the budget, for a site that builds in
+  sixteen seconds. The three since crossed ten minutes and were killed by the
+  action's own clock while still `in_progress`.
+  Thirty minutes. This does not hide a stuck deployment, which still fails with
+  the same message and takes longer to say so. What it stops is a deployment
+  that would have finished being aborted for being slower than a timeout nobody
+  chose.
+  Acceptance: the timeout is a number somebody picked with the measurement
+  beside it, and the site serves the commit at the head of `main`.

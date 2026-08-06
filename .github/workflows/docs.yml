@@ -74,3 +74,21 @@ jobs:
     steps:
       - id: deploy
         uses: actions/deploy-pages@v4
+        with:
+          # Thirty minutes, against a default of ten.
+          #
+          # The action creates the deployment and then polls Pages until it
+          # reports success. That wait is not ours: the artifact is 500 KB of
+          # static HTML and the build that produced it takes sixteen seconds.
+          #
+          # The default was always marginal here and nothing said so. The one
+          # deployment that succeeded took 6m39s of it, and the three after that
+          # sat in `in_progress` past ten minutes and were aborted by the
+          # action's own clock, so the site kept serving a commit four behind
+          # while every job that mattered was green.
+          #
+          # Raising it does not paper over a stuck deployment. A deployment that
+          # is never going to finish still fails, just later and with the same
+          # message; what this stops is a deployment that would have finished
+          # being killed for being slower than a timeout nobody chose. `M66.0`.
+          timeout: 1800000
