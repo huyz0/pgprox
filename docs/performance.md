@@ -3,12 +3,19 @@ title: Performance
 description: "What has been measured, on what hardware, and what the numbers do not say."
 ---
 
+The numbers pgprox has actually produced: memory at 100,000 connections, added
+latency, what one connection costs, how it stands against pgbouncer and pgcat,
+and what pinning and the query cache are each worth.
+
 Every figure here comes from a run document in
 [`docs/internal/product/perf/`](internal/product/perf/), taken on one 20-core developer machine with
 everything in containers. That machine is the largest caveat on this page and it
 applies to all of it.
 
 ## Against the targets
+
+The three the project set out to hit. Two are numbers and one is a property, and
+the property is the one with no acceptable margin.
 
 | Target | Measured | |
 | --- | --- | --- |

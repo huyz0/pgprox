@@ -29,6 +29,9 @@ difference decides what they do next.
 
 ## SHOW, on the client port
 
+Nine commands, answered on the port clients already connect to, so an operator
+with psql open needs nothing else installed and no second credential.
+
 ```bash
 psql -h proxy -p 6432 -U pgprox_admin -c 'SHOW POOLS'
 ```
@@ -60,6 +63,9 @@ result. A dashboard receiving no rows concludes there is nothing to report; one
 receiving an error learns the command does not exist here.
 
 ## The HTTP API, on the admin port
+
+The same information as JSON, on a separate port, for anything that is not a
+person at a terminal.
 
 Reads:
 

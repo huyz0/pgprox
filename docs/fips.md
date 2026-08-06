@@ -146,6 +146,10 @@ docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.fips.yml up
 
 ## Verifying a build
 
+One script answers the question a reviewer will ask, which is not whether the
+feature was passed but whether the binary in front of them is running validated
+crypto.
+
 ```bash
 scripts/fips-check.sh
 ```

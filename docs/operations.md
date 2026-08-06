@@ -26,6 +26,11 @@ of kernel memory that no proxy design avoids. Size the node for it.
 
 ## Draining a node for upgrade
 
+Draining takes a node out of service without dropping anybody's work. It is how
+a node is upgraded, restarted or removed from the fleet, and it is a field in the
+configuration rather than a signal so that it can be set during an incident by
+the same mechanism as everything else.
+
 Set the node to draining in the document and reload:
 
 ```yaml

@@ -1,12 +1,31 @@
 ---
 title: Read routing
-description: "How pgprox decides that a statement can go to a replica, how it learns where each replica has got to, and what it does when it cannot tell."
+description: "pgprox can send reads to replicas rather than to the primary. How it decides, how it tracks replication lag, and what it does when it cannot tell."
 ---
 
-pgprox sends a statement to a replica only when it can show two things: that the
-statement does not write, and that the replica has replayed far enough to answer
-the session honestly. Neither is guessed. Where either is unknown, the statement
-goes to the primary.
+pgprox sends read traffic to replicas, not only to the primary.
+
+A Postgres deployment normally has one primary that takes the writes and one or
+more replicas that can take reads. Reads are usually most of the traffic, so
+moving them off the primary is where the headroom is, and a proxy is in the right
+place to decide statement by statement without the application knowing which
+server it reached.
+
+What makes this more than load balancing is lag. A replica follows the primary by
+replaying its write-ahead log, so at any instant it is some distance behind.
+`pgprox_replica_lag_bytes` reports that distance in WAL bytes, and it moves with
+the write rate, the network and how busy the replica is. Send a read to a replica
+that has not caught up and it can return data older than what the same session
+has already written and had acknowledged. The client has no way to detect that
+and no retry will fix it.
+
+So one question runs through this whole page: how much read traffic can be moved
+off the primary without ever letting a session see less than it has already seen.
+
+The answer is that pgprox sends a statement to a replica only when it can show
+two things: that the statement does not write, and that the replica has replayed
+far enough to answer this session honestly. Neither is guessed. Where either is
+unknown, the statement goes to the primary.
 
 This page is the mechanism. [Features and limits](features.md) states the rules a
 user needs, and this says how they are arrived at.

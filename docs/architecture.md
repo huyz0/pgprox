@@ -148,6 +148,11 @@ pinned session, never one mid-transaction, never toward a draining node.
 
 ## Replica routing without stale reads
 
+Reads can be served by a replica rather than the primary, which is where the
+headroom is in most workloads. The obstacle is that a replica lags, so the design
+problem is not choosing a server but proving a given one can answer this session
+without showing it less than it has already seen.
+
 A statement goes to a replica only if a lexical scan classifies it read-only
 and every replica considered has replayed past the session's own write
 position.

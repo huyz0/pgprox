@@ -8243,3 +8243,25 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the page is in the sidebar and the site builds it, every claim in
   it is checked against the code rather than against the other pages, and no
   page documents a `SHOW` the parser would refuse.
+
+- [x] `M68.1` Pages that opened with the constraint before the capability.
+  `read-routing.md` began "pgprox sends a statement to a replica only when it can
+  show two things", which is a rule for somebody who already knows the feature
+  exists. It never said that the proxy can route reads to replicas at all, and
+  never said what replication lag is or why it makes this harder than load
+  balancing. `features.md` had the same shape one heading down: "A statement
+  reaches a replica only when both halves hold."
+  Reviewed every page and every section for it rather than fixing the two that
+  were reported. Nine places opened with a rule, a table or a code block where a
+  reader needed a sentence saying what the thing was first:
+  read routing on three pages, the query cache, protocol support, both admin
+  surfaces, draining a node, verifying a FIPS build, the performance page's lead
+  and its targets table.
+  The rule that came out of it, and the reason this is one task rather than two:
+  a heading is not an introduction. A section that opens with a constraint reads
+  as an answer to a question the reader has not been given yet, and every one of
+  these was written by somebody who already knew the feature and could not see it
+  missing.
+  Acceptance: no page or section leads with a rule, a table or a code block where
+  the capability has not been stated, the site still builds every page, and the
+  pages that gained a lead did not lose a fact.

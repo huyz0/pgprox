@@ -71,6 +71,14 @@ longer exists.
 
 ## Replicas and LSN watermarks
 
+pgprox can send reads to replicas rather than to the primary, deciding statement
+by statement, with nothing to change in the application.
+
+The difficulty is lag. A replica replays the primary's write-ahead log and is
+always some distance behind, so a read sent to one that has not caught up can
+return data older than what the same session just wrote. The watermark below is
+what stops that.
+
 A statement reaches a replica only when both halves hold.
 
 **The statement must classify read-only.** A lexical scan, not a parser. The
@@ -124,6 +132,10 @@ of deciding from text rather than from a plan.
 
 ## Query cache
 
+pgprox can answer a repeated read out of its own memory without going to a
+server at all. The node keeps the result frames of a statement and replays them
+to the next session that asks the identical question.
+
 Off by default, and off for every tenant that has not opted in. A tenant opting
 in is stating that reads this stale are acceptable for its own workload, which
 nobody else can decide for it.
@@ -162,6 +174,8 @@ What the cache is worth is in
 [Performance](performance.md#what-the-query-cache-is-worth).
 
 ## Protocol support
+
+What a driver can expect to work when it points at pgprox instead of at Postgres.
 
 | | |
 | --- | --- |
