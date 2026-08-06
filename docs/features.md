@@ -103,6 +103,13 @@ A session that has never written has no watermark and any healthy replica will
 do. A session that has just written reads its own writes, because no replica
 behind that write can serve it.
 
+**Its own writes, and no one else's.** The watermark is per session, so a write
+by another session, another pgprox node or a client connected straight to
+Postgres does not move it, and a read can still be older than that write. That is
+what asynchronous replication is rather than a routing error, and
+[Read routing](read-routing.md#whose-writes-the-watermark-covers) covers the
+scope and the one case where a reconnect loses the floor.
+
 Four things send a statement to the primary regardless of what it does: the
 session is pinned, a transaction is open, the hint says primary, or no replica
 has caught up.

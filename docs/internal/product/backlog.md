@@ -8265,3 +8265,31 @@ recognised so it can be refused rather than read as a version.
   Acceptance: no page or section leads with a rule, a table or a code block where
   the capability has not been stated, the site still builds every page, and the
   pages that gained a lead did not lose a fact.
+
+- [x] `M68.2` The watermark's scope was never stated, so readers would infer the
+  wrong one.
+  Asked whether the route decision stays correct when the writes come from
+  another session, another pgprox node, or a client connected straight to
+  Postgres. It does, but only against a promise the docs never wrote down: the
+  guarantee is read-your-writes for one session, not global freshness and not
+  monotonic reads across sessions. The watermark is per-session state in one
+  process and there is no fleet-wide watermark anywhere in the codebase.
+  Three things the page now says. Another writer's commit does not move your
+  watermark, whoever they are, so a read can be older than it: that is what
+  asynchronous replication is rather than a routing error. More proxy nodes
+  cannot weaken the guarantee, because a session never migrates and its own
+  writes therefore always pass through the node that records its floor. And the
+  one real gap, which is that the watermark dies with the connection, so write,
+  get shed, reconnect, read can land on a replica behind that write, where a
+  plain connection to a primary would have kept read-your-writes across the
+  reconnect.
+  The gap is narrow rather than theoretical: shedding waits for a client idle at
+  a transaction boundary past 30 seconds by default, never takes one
+  mid-transaction and never takes a pinned one. Narrow is not the same as absent
+  and the page says which it is.
+  Same omission class as `M68.1`. There the scope of a feature was missing before
+  its rules; here the scope of a guarantee was missing under one. Both were
+  invisible to somebody who already knew the answer.
+  Acceptance: the read routing page states whose writes the watermark covers and
+  whose it does not, names the reconnect case, and `features.md` carries the
+  one-line version with a link rather than a second copy of the argument.

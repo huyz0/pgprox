@@ -114,6 +114,61 @@ said where the write landed. Between those two moments the session knows it has
 written and does not yet know how far, and it routes to the primary rather than
 guessing.
 
+## Whose writes the watermark covers
+
+Read-your-writes, for one session. Not global freshness, and not monotonic reads
+across sessions. The distinction decides what you can rely on, so it is worth
+stating rather than leaving to be inferred from the word "watermark".
+
+A session's watermark records **that session's own writes and nothing else**.
+There is no fleet-wide watermark anywhere in pgprox. So all three of these leave
+your watermark exactly where it was:
+
+| Somebody else writes | What your next read can see |
+| --- | --- |
+| Another session on the same node | A replica that has not replayed their write, so data older than their commit |
+| A session on another pgprox node | The same. The nodes share no memory and no watermark |
+| A client connected straight to Postgres | The same. Nobody in the proxy ever saw that commit |
+
+None of those is a routing error. It is what asynchronous replication is: a
+reader that did not perform a write has no claim on seeing it, and the only way a
+proxy could offer one is to send every read to the primary, which is the thing
+being avoided. A workload that needs a read to see somebody else's write should
+say so with `SET pgprox.route = 'primary'`, which is the same answer Postgres
+gives without a proxy in front of it.
+
+### More proxy nodes cannot weaken it
+
+Worth being explicit, because it is the part that could plausibly break and does
+not. A session never migrates. A client belongs to the node it connected to until
+that node sheds it or drains, and [shedding](clustering.md) is a reconnect rather
+than a migration.
+
+So a session's own writes always pass through the node holding that session,
+which is the node that observes the commit position and advances the watermark.
+Adding nodes cannot cost a session its own read-your-writes, however many of them
+are writing to the same primary.
+
+### The gap: a reconnect starts again from nothing
+
+The watermark is per-session state and it dies with the connection. A new session
+begins with none, which means any healthy replica will do.
+
+That matters here more than it would elsewhere, because pgprox makes reconnects
+routine: a client idle at a transaction boundary for longer than the shed
+threshold, 30 seconds by default, whose tenant is homed on another node, is
+closed with `57P01` so its driver reconnects toward that home. Write, get shed,
+reconnect, read is therefore a path on which a read can land on a replica that is
+behind your own earlier write. Against a plain connection to a primary,
+read-your-writes would have survived the reconnect, because you were never
+anywhere else.
+
+The edge is narrow. Shedding never takes a session mid-transaction and never
+takes a pinned one, it waits for the client to be idle first, and replicas
+normally catch up in milliseconds. It is still real rather than theoretical, and
+`SET pgprox.route = 'primary'` is the escape hatch for a session that cannot
+tolerate it.
+
 ## Learning where each replica is
 
 Replicas are not configured. They arrive from the token service in the grant,
