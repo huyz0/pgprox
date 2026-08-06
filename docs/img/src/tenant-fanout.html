@@ -1,0 +1,129 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Database per tenant, and the keys that separate them</title>
+<link rel="stylesheet" href="diagram.css" />
+
+<div class="sheet">
+  <h1>Database per tenant, and the three keys that keep them apart</h1>
+  <p class="sub">
+    One cluster of the hundred. The tenant is not read from the startup packet;
+    it arrives in the grant the token service returns.
+  </p>
+
+  <div class="cols" style="grid-template-columns: 1fr 300px 1fr; align-items: start">
+    <div>
+      <div class="col-title">Client sessions</div>
+      <div class="col-note">Tens of thousands, one per web thread in flight</div>
+      <div class="stack">
+        <div class="box app">
+          <div class="name">JWT &rarr; grant</div>
+          <div class="detail">
+            The token service returns the tenant, the backend credentials and the
+            pool policy. pgprox validates no JWT of its own
+          </div>
+        </div>
+        <div class="box app">
+          <div class="name">session &rarr; transaction</div>
+          <div class="detail">
+            A connection is borrowed for a transaction and returned at
+            <span class="mono">ReadyForQuery</span>, not held for the session
+          </div>
+        </div>
+        <div class="box app">
+          <div class="name">reset on release</div>
+          <div class="detail">
+            Anything a session changed is undone before the connection is reused
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mid">
+      <svg class="arrows" viewBox="0 0 260 250" fill="none" aria-hidden="true">
+        <g stroke="#2f6f4f" stroke-width="1.5" opacity="0.5">
+          <path d="M4 20 L128 125" />
+          <path d="M4 65 L128 125" />
+          <path d="M4 110 L128 125" />
+          <path d="M4 155 L128 125" />
+          <path d="M4 200 L128 125" />
+          <path d="M4 240 L128 125" />
+        </g>
+        <g stroke="#1f5fa8" stroke-width="2" opacity="0.75">
+          <path d="M132 125 L256 95" />
+          <path d="M132 125 L256 125" />
+          <path d="M132 125 L256 155" />
+        </g>
+        <circle cx="130" cy="125" r="9" fill="#1f5fa8" />
+      </svg>
+      <div class="label">
+        Many sessions, few connections.<br />
+        The pool key is
+        <b class="mono">(server, database, role)</b>, so a connection is never
+        handed to a session that would have connected as anything else.
+      </div>
+    </div>
+
+    <div>
+      <div class="col-title">One cluster, ~2,000 tenant databases</div>
+      <div class="col-note">
+        A pool per key, and one cap across all of them
+      </div>
+      <div class="stack">
+        <div class="box db">
+          <div class="name mono">tenant_acme &nbsp;/&nbsp; acme_app</div>
+          <div class="detail">Its own pool, its own credentials</div>
+        </div>
+        <div class="box db">
+          <div class="name mono">tenant_globex &nbsp;/&nbsp; globex_app</div>
+          <div class="detail">
+            A different key, so never the same connection
+          </div>
+        </div>
+        <div class="ellipsis">• • •</div>
+        <div class="box db">
+          <div class="name mono">tenant_2000 &nbsp;/&nbsp; app_2000</div>
+          <div class="detail">
+            All of them under one
+            <span class="mono">max_connections</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sums">
+    <div class="sum good">
+      <span class="k">the pool key</span>
+      <span class="v"
+        >server, database and role. The boundary is the database credential, not
+        the tenant name</span
+      >
+    </div>
+    <div class="sum good">
+      <span class="k">the cache key</span>
+      <span class="v"
+        >tenant, database, role, normalized SQL, bound parameters and
+        <span class="mono">search_path</span>: six components, all six
+        required</span
+      >
+    </div>
+    <div class="sum good">
+      <span class="k">the grant cache key</span>
+      <span class="v"
+        ><span class="mono">sha256(token)</span> plus the requested database,
+        never the tenant, so a revoked token cannot ride on another one that is
+        still valid</span
+      >
+    </div>
+  </div>
+
+  <p class="verdict good">
+    Adding a tenant adds a database and a pool key. It does not add a connection
+    to every application node in the fleet.
+  </p>
+
+  <p class="foot">
+    See <b>Multitenancy</b> for the full table of shared structures and what
+    keys each one.
+  </p>
+</div>

@@ -1,0 +1,226 @@
+/* Shared styling for the diagrams under docs/img/.
+ *
+ * Rendered to PNG by scripts/diagrams.sh with headless Chrome, so this is a
+ * stylesheet for exactly one browser at exactly one width. It does not need to
+ * be responsive and should not pretend to be.
+ *
+ * Light background rather than transparent. The site has a dark theme and a PNG
+ * cannot follow it, so the choice is between a picture that inverts badly and a
+ * picture that is deliberately a light card in both. This is the second. */
+
+:root {
+  --ink: #16181d;
+  --muted: #5c6370;
+  --line: #c9cfd8;
+  --card: #ffffff;
+  --page: #f4f6f9;
+  --app: #2f6f4f;
+  --app-bg: #e8f3ec;
+  --prox: #1f5fa8;
+  --prox-bg: #e6eff9;
+  --db: #8a4a1f;
+  --db-bg: #f8eee4;
+  --bad: #a32b2b;
+  --bad-bg: #fbeaea;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  width: 1500px;
+  background: var(--page);
+  color: var(--ink);
+  font: 20px/1.45 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.sheet {
+  padding: 40px 48px 44px;
+}
+
+h1 {
+  margin: 0 0 6px;
+  font-size: 40px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.sub {
+  margin: 0 0 34px;
+  font-size: 22px;
+  color: var(--muted);
+}
+
+.cols {
+  display: grid;
+  align-items: stretch;
+  gap: 0;
+}
+
+.col-title {
+  font-size: 22px;
+  font-weight: 650;
+  margin-bottom: 4px;
+}
+
+.col-note {
+  font-size: 17px;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.box {
+  background: var(--card);
+  border: 2px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.box .name {
+  font-size: 19px;
+  font-weight: 620;
+}
+
+.box .detail {
+  font-size: 16px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+.app .name {
+  color: var(--app);
+}
+.app {
+  border-color: #a9cdb8;
+  background: var(--app-bg);
+}
+
+.prox .name {
+  color: var(--prox);
+}
+.prox {
+  border-color: #a8c6e6;
+  background: var(--prox-bg);
+}
+
+.db .name {
+  color: var(--db);
+}
+.db {
+  border-color: #e0c3a4;
+  background: var(--db-bg);
+}
+
+.ellipsis {
+  text-align: center;
+  color: var(--muted);
+  font-size: 26px;
+  letter-spacing: 4px;
+  line-height: 1;
+  padding: 2px 0;
+}
+
+.mid {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 0 18px;
+}
+
+.arrows {
+  width: 100%;
+}
+
+.label {
+  font-size: 17px;
+  color: var(--muted);
+  text-align: center;
+  margin-top: 10px;
+  line-height: 1.35;
+}
+
+.label b {
+  color: var(--ink);
+  font-weight: 620;
+}
+
+.mono {
+  font-family: "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 0.94em;
+}
+
+.sums {
+  margin-top: 34px;
+  display: grid;
+  gap: 12px;
+}
+
+.sum {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  background: var(--card);
+  border: 2px solid var(--line);
+  border-left-width: 8px;
+  border-radius: 8px;
+  padding: 13px 18px;
+  font-size: 20px;
+}
+
+.sum .k {
+  font-family: "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-weight: 620;
+  white-space: nowrap;
+}
+
+.sum .v {
+  color: var(--muted);
+}
+
+.sum.bad {
+  border-left-color: var(--bad);
+  background: var(--bad-bg);
+}
+.sum.bad .k {
+  color: var(--bad);
+}
+
+.sum.good {
+  border-left-color: var(--prox);
+  background: var(--prox-bg);
+}
+.sum.good .k {
+  color: var(--prox);
+}
+
+.verdict {
+  margin-top: 26px;
+  font-size: 24px;
+  font-weight: 620;
+  line-height: 1.4;
+}
+
+.verdict.bad {
+  color: var(--bad);
+}
+.verdict.good {
+  color: var(--prox);
+}
+
+.foot {
+  margin-top: 26px;
+  font-size: 15px;
+  color: var(--muted);
+}

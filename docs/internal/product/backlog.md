@@ -8090,3 +8090,39 @@ recognised so it can be refused rather than read as a version.
   allocating during a measured window does not change any budget; the two
   non-zero budgets read their recorded figures; and `m7-complete.sh` looks for
   the counter that is now used.
+
+## M65: the index page did not say what fleet this is for
+
+- [x] `M65.0` The case, and three pictures of it.
+  `docs/index.md` opened with what pgprox is and went straight to a table of
+  contents. What it never said is the shape of deployment the whole design
+  answers, which is the first thing a reader needs in order to know whether any
+  of the rest applies to them.
+  The case: about a hundred Postgres clusters, a few thousand databases each at
+  one per tenant, and hundreds of application nodes running a thread-per-request
+  stack, so a worker thread holds a connection for the length of a request.
+  Every part of that is ordinary and together they do not fit. A connection is a
+  process on the server, so each cluster's cap is small next to the fleet asking
+  for it: five hundred divided by three hundred nodes is under two per node,
+  against a node with two hundred worker threads. The nodes cannot lend to each
+  other because they share no memory. So the pool cannot exist, and the
+  application connects, runs one statement and disconnects seconds later, paying
+  TCP, TLS, SCRAM and a backend fork on the request path. Demand grows with
+  nodes times clusters; the cap does not move. That is the N by M problem and it
+  is what the page now opens with.
+  Three diagrams: the problem, the same fleet with a proxy fleet holding the
+  cap, and the database-per-tenant fan-out with the three keys that separate
+  tenants. Rendered at 3,000 pixels wide so the small type survives a
+  high-density display.
+  `scripts/diagrams.sh` builds them from HTML and CSS under `docs/img/src/`
+  with headless Chrome, so a wording change is a wording change rather than a
+  layout change, and the pictures stay something that can be corrected. The
+  PNGs are committed because a site that needs a browser installed before it can
+  show a picture will one day ship without the picture. They are quantized to a
+  256-colour palette: at full colour two of the three sat within twenty
+  kilobytes of the large-file hook's 512 KB limit, so an edit could have failed
+  a commit for a reason that looked unrelated to it.
+  Acceptance: the page states the fleet shape and the arithmetic before it
+  offers a table of contents, the three images resolve for both a reader on
+  GitHub and the built site, and the diagrams regenerate from committed source
+  rather than being unmaintainable binaries.

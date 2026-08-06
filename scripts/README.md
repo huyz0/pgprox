@@ -57,6 +57,7 @@ number, and the number goes in a run document under
 | `fuzz.sh` | The decoder against bytes nobody chose | nightly, cargo-fuzz |
 | `msrv.sh` | Prints the minimum supported Rust version, read by CI |  |
 | `semantic_coverage.py` | Turns one instrumented replay into the three lists |  |
+| `diagrams.sh` | Nothing. It rebuilds the documentation diagrams from their source | Chrome or Chromium, Pillow |
 
 ### Mutation testing without waiting for tomorrow
 

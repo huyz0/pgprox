@@ -1,0 +1,144 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>The same fleet through pgprox</title>
+<link rel="stylesheet" href="diagram.css" />
+
+<div class="sheet">
+  <h1>With pgprox, the multiplication happens once and stops</h1>
+  <p class="sub">
+    The same 300 nodes and 100 clusters, with a proxy fleet that shares one cap
+    between processes that cannot see each other's memory.
+  </p>
+
+  <div
+    class="cols"
+    style="grid-template-columns: 1fr 250px 1fr 250px 1fr; align-items: stretch"
+  >
+    <div>
+      <div class="col-title">300 application nodes</div>
+      <div class="col-note">Unchanged, still thread per request</div>
+      <div class="stack">
+        <div class="box app">
+          <div class="name">app-001</div>
+          <div class="detail">200 threads, one long-lived pool to pgprox</div>
+        </div>
+        <div class="ellipsis">• • •</div>
+        <div class="box app">
+          <div class="name">app-300</div>
+          <div class="detail">Opens connections at start-up, not per request</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mid">
+      <svg class="arrows" viewBox="0 0 210 220" fill="none" aria-hidden="true">
+        <g stroke="#2f6f4f" stroke-width="1.8" opacity="0.6">
+          <path d="M4 30 L206 110" />
+          <path d="M4 80 L206 110" />
+          <path d="M4 140 L206 110" />
+          <path d="M4 190 L206 110" />
+        </g>
+      </svg>
+      <div class="label">
+        <b>Cheap connections.</b><br />
+        A client connection is a task, not a backend process, and a node holds
+        one pool instead of a hundred.
+      </div>
+    </div>
+
+    <div>
+      <div class="col-title">6 pgprox nodes</div>
+      <div class="col-note">Stateless pods, gossiping once a second</div>
+      <div class="stack">
+        <div class="box prox">
+          <div class="name">pgprox-0</div>
+          <div class="detail">
+            Holds one warm pool per
+            <span class="mono">(server, database, role)</span>
+          </div>
+        </div>
+        <div class="box prox">
+          <div class="name">pgprox-1</div>
+          <div class="detail">Multiplexes many sessions onto few connections</div>
+        </div>
+        <div class="ellipsis">• • •</div>
+        <div class="box prox">
+          <div class="name">pgprox-5</div>
+          <div class="detail">Shares the upstream cap with the other five</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mid">
+      <svg class="arrows" viewBox="0 0 210 220" fill="none" aria-hidden="true">
+        <g stroke="#1f5fa8" stroke-width="1.8" opacity="0.6">
+          <path d="M4 110 L206 30" />
+          <path d="M4 110 L206 80" />
+          <path d="M4 110 L206 140" />
+          <path d="M4 110 L206 190" />
+        </g>
+      </svg>
+      <div class="label">
+        <b>Capped connections.</b><br />
+        Held open across requests, so no client ever waits for a backend process
+        to be forked.
+      </div>
+    </div>
+
+    <div>
+      <div class="col-title">100 Postgres clusters</div>
+      <div class="col-note">Unchanged, and now never oversubscribed</div>
+      <div class="stack">
+        <div class="box db">
+          <div class="name">cluster-01</div>
+          <div class="detail">
+            <span class="mono">max_connections = 500</span>, and the fleet holds
+            to it
+          </div>
+        </div>
+        <div class="ellipsis">• • •</div>
+        <div class="box db">
+          <div class="name">cluster-100</div>
+          <div class="detail">Same cap, same guarantee</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sums">
+    <div class="sum good">
+      <span class="k">600 claims</span>
+      <span class="v"
+        >6 pgprox nodes &times; 100 clusters, down from 30,000, and every one of
+        them backed by a warm pool rather than opened per request</span
+      >
+    </div>
+    <div class="sum good">
+      <span class="k">G = 41</span>
+      <span class="v"
+        >what a node opens without asking anyone:
+        <span class="mono">floor(500 &times; 0.5 / 6)</span>. The other 250 are
+        leased on demand</span
+      >
+    </div>
+    <div class="sum good">
+      <span class="k">N is configured</span>
+      <span class="v"
+        >the divisor comes from the document, not from how many peers a node can
+        currently see, so a partition cannot let both halves award themselves the
+        whole cap</span
+      >
+    </div>
+  </div>
+
+  <p class="verdict good">
+    The application keeps its pool because the pool it keeps is local. The cap
+    that could not be divided 300 ways is divided six ways, by nodes that agree
+    about the divisor.
+  </p>
+
+  <p class="foot">
+    See <b>Clustering and deployment</b> for how the share is computed and what
+    happens when a node dies holding leases.
+  </p>
+</div>

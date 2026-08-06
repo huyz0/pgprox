@@ -7,6 +7,57 @@ pgprox pools Postgres connections for a fleet of tenants whose credentials
 differ, arrive as a JWT, and are resolved at connect time by a service you
 provide.
 
+## The shape of fleet it is for
+
+Multitenancy is not a feature here. It is the case the whole design answers, and
+the case looks like this.
+
+You run a hundred or so Postgres clusters. Each holds a few thousand databases,
+one per tenant, because a database is the isolation boundary your auditors
+understand. In front of them sit hundreds of application nodes running a
+thread-per-request web stack, so a worker thread holds a database connection for
+the length of a request and gives it back at the end.
+
+Nothing about that is exotic, and it does not fit.
+
+![Without a pooler, every application node needs its own connections on every
+cluster: 300 nodes times 100 clusters is 30,000 separate claims on caps that
+were never divided](img/nxm-without-pgprox.png)
+
+A connection to Postgres is a process on the server, so every cluster has a cap
+and the cap is small next to the fleet asking for it. Divide one cluster's five
+hundred connections across three hundred application nodes and each node's share
+is under two, while a node with two hundred worker threads can want two hundred
+at once. The nodes cannot lend to each other, because they share no memory and
+do not know what the others have already taken.
+
+So the pool that would have made this cheap cannot exist. The application
+connects, runs its statement, and drops the connection seconds later, paying a
+TCP handshake, a TLS handshake, a SCRAM exchange and a backend process fork on
+the request path. That is the N by M problem: demand grows with nodes times
+clusters, and the cap it is spent against does not move.
+
+![With pgprox, application nodes hold one long-lived local pool and six proxy
+nodes hold the capped upstream pools, so 30,000 claims become
+600](img/nxm-with-pgprox.png)
+
+pgprox is where the multiplication stops. Application nodes keep the pool they
+wanted, pointed at a proxy rather than at a database, and those connections are
+cheap: a client connection here is a task, not a process, and a node has been
+measured holding a hundred thousand of them. Behind it a small fleet of proxy
+nodes holds warm upstream pools and divides each cluster's cap between
+themselves, by a rule that does not break when they cannot see each other.
+
+The tenants stay separated while that happens, which is the part worth being
+careful about.
+
+![Database per tenant: the pool key is server, database and role, the query
+cache key has six components, and the grant cache is keyed by token hash rather
+than by tenant](img/tenant-fanout.png)
+
+Adding a tenant adds a database and a pool key. It does not add a connection to
+every application node in the fleet.
+
 Start where your question is.
 
 ## Run it

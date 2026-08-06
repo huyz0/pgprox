@@ -1,0 +1,119 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>The N by M problem</title>
+<link rel="stylesheet" href="diagram.css" />
+
+<div class="sheet">
+  <h1>Without a pooler, every app node needs a pool on every cluster</h1>
+  <p class="sub">
+    An illustrative fleet: 300 application nodes, thread per request, against
+    100 Postgres clusters holding one database per tenant.
+  </p>
+
+  <div class="cols" style="grid-template-columns: 1fr 480px 1fr">
+    <div>
+      <div class="col-title">300 application nodes</div>
+      <div class="col-note">Thread per request, 200 worker threads each</div>
+      <div class="stack">
+        <div class="box app">
+          <div class="name">app-001</div>
+          <div class="detail">
+            200 threads, each holding a connection for the length of one request
+          </div>
+        </div>
+        <div class="box app">
+          <div class="name">app-002</div>
+          <div class="detail">Needs a pool per cluster it serves a tenant on</div>
+        </div>
+        <div class="ellipsis">• • •</div>
+        <div class="box app">
+          <div class="name">app-300</div>
+          <div class="detail">Same again, and it shares no memory with the rest</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mid">
+      <svg class="arrows" viewBox="0 0 440 300" fill="none" aria-hidden="true">
+        <g stroke="#a32b2b" stroke-width="1.6" opacity="0.55">
+          <path d="M6 40 L434 40" />
+          <path d="M6 40 L434 150" />
+          <path d="M6 40 L434 260" />
+          <path d="M6 110 L434 40" />
+          <path d="M6 110 L434 150" />
+          <path d="M6 110 L434 260" />
+          <path d="M6 190 L434 40" />
+          <path d="M6 190 L434 150" />
+          <path d="M6 190 L434 260" />
+          <path d="M6 260 L434 40" />
+          <path d="M6 260 L434 150" />
+          <path d="M6 260 L434 260" />
+        </g>
+      </svg>
+      <div class="label">
+        Every node needs its own connections on every cluster.<br />
+        <b>300 &times; 100 = 30,000 separate claims</b> on caps that were never
+        divided, by processes that cannot see what the others took.
+      </div>
+    </div>
+
+    <div>
+      <div class="col-title">100 Postgres clusters</div>
+      <div class="col-note">Database per tenant, a few thousand per cluster</div>
+      <div class="stack">
+        <div class="box db">
+          <div class="name">cluster-01</div>
+          <div class="detail">
+            ~2,000 tenant databases &nbsp;·&nbsp;
+            <span class="mono">max_connections = 500</span>
+          </div>
+        </div>
+        <div class="box db">
+          <div class="name">cluster-02</div>
+          <div class="detail">One backend process per connection, always</div>
+        </div>
+        <div class="ellipsis">• • •</div>
+        <div class="box db">
+          <div class="name">cluster-100</div>
+          <div class="detail">Breaching the cap locks the operator out too</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sums">
+    <div class="sum bad">
+      <span class="k">30,000 claims</span>
+      <span class="v"
+        >300 application nodes &times; 100 clusters, each pair needing its own
+        share of a cap</span
+      >
+    </div>
+    <div class="sum bad">
+      <span class="k">1.6 connections</span>
+      <span class="v"
+        >each node's fair share of a cluster: 500 &divide; 300, and it cannot
+        borrow from a node it cannot see</span
+      >
+    </div>
+    <div class="sum bad">
+      <span class="k">200 wanted</span>
+      <span class="v"
+        >what one node needs at once, because a thread-per-request worker holds a
+        connection for the whole request</span
+      >
+    </div>
+  </div>
+
+  <p class="verdict bad">
+    So the pool cannot exist. The app connects, runs a statement, and drops the
+    connection seconds later, paying TCP, TLS, SCRAM and a backend process fork
+    on the request path.
+  </p>
+
+  <p class="foot">
+    Numbers are an illustration of the shape, not a measurement. What does not
+    change with the numbers is the multiplication: connection demand grows with
+    nodes &times; clusters, and each cluster's cap does not.
+  </p>
+</div>
