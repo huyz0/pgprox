@@ -15,9 +15,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use pgprox_core::auth::{AuthError, AuthRequest, CredentialResolver, Grant};
+use pgprox_core::auth::{AuthError, AuthRequest, CredentialResolver, Grant, GrantInvalidation};
 use pgprox_core::clock::Clock;
 use pgprox_core::error::AuthRejection;
+use pgprox_core::ids::ServerId;
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 
@@ -198,6 +199,22 @@ impl<R: CredentialResolver> CachingResolver<R> {
         entries.swept_at = None;
     }
 
+    /// Drops entries whose grant named `server` as its primary.
+    ///
+    /// A scan over the whole map rather than a second index keyed by primary,
+    /// because this runs on a demotion, which is rare, and not on the
+    /// per-connection path a second index would be justified by. At the
+    /// default capacity of 100,000 entries a full scan is comfortably under a
+    /// millisecond; see `an_invalidation_scan_stays_cheap_at_capacity`.
+    fn invalidate_primary_entries(&self, server: &ServerId) -> usize {
+        let mut entries = self.lock_entries();
+        let before = entries.map.len();
+        entries.map.retain(|_, entry| {
+            !matches!(&entry.outcome, Outcome::Resolved(grant) if &grant.primary.server == server)
+        });
+        before - entries.map.len()
+    }
+
     /// How many sweeps have run.
     ///
     /// The rate limit on the sweep is the difference between a cache
@@ -317,6 +334,12 @@ impl<R: CredentialResolver> CachingResolver<R> {
         }
 
         result
+    }
+}
+
+impl<R: CredentialResolver> GrantInvalidation for CachingResolver<R> {
+    fn invalidate_primary(&self, server: &ServerId) -> usize {
+        self.invalidate_primary_entries(server)
     }
 }
 
@@ -859,6 +882,60 @@ mod tests {
         assert!(f.cache.is_empty());
         f.cache.resolve(request(&tok, "db")).await.unwrap();
         assert_eq!(f.inner.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn invalidating_a_primary_drops_only_grants_naming_it() {
+        let f = fixture(CacheConfig::default());
+        let demoted = token("demoted-primary");
+        let other = token("other-primary");
+        f.inner
+            .insert(&demoted, grant(Duration::from_secs(60), None));
+        f.inner.insert(
+            &other,
+            Grant {
+                primary: Backend {
+                    server: ServerId::new("db-2", 5432),
+                    ..grant(Duration::from_secs(60), None).primary
+                },
+                ..grant(Duration::from_secs(60), None)
+            },
+        );
+        f.cache.resolve(request(&demoted, "db")).await.unwrap();
+        f.cache.resolve(request(&other, "db")).await.unwrap();
+        assert_eq!(f.cache.len(), 2);
+
+        let dropped = f.cache.invalidate_primary(&ServerId::new("db-1", 5432));
+
+        assert_eq!(dropped, 1, "the entry naming db-1 was not the one dropped");
+        assert_eq!(f.cache.len(), 1);
+        f.cache.resolve(request(&demoted, "db")).await.unwrap();
+        assert_eq!(
+            f.inner.call_count(),
+            3,
+            "the invalidated entry was still served from cache"
+        );
+        f.cache.resolve(request(&other, "db")).await.unwrap();
+        assert_eq!(
+            f.inner.call_count(),
+            3,
+            "an entry naming a different primary was dropped too"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalidating_a_primary_nothing_names_drops_nothing() {
+        let f = fixture(CacheConfig::default());
+        let tok = token("a");
+        f.inner.insert(&tok, grant(Duration::from_secs(60), None));
+        f.cache.resolve(request(&tok, "db")).await.unwrap();
+
+        let dropped = f
+            .cache
+            .invalidate_primary(&ServerId::new("db-unrelated", 5432));
+
+        assert_eq!(dropped, 0);
+        assert_eq!(f.cache.len(), 1);
     }
 
     #[tokio::test]

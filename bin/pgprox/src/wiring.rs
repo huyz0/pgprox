@@ -102,6 +102,13 @@ pub struct Deps {
     pub config: Arc<dyn ConfigSource>,
     /// Who resolves a token into a backend.
     pub resolver: Arc<dyn CredentialResolver>,
+    /// The handle a primary demotion invalidates cached grants through.
+    ///
+    /// `None` for a node whose resolver is not a caching one, which today is
+    /// only a test fixture: `entry.rs` always wraps the real sidecar client in
+    /// `CachingResolver`. Demotion is still probed and logged either way; only
+    /// the invalidation step has nothing to call.
+    pub invalidation: Option<Arc<dyn pgprox_core::auth::GrantInvalidation>>,
 }
 
 impl std::fmt::Debug for Deps {
@@ -403,6 +410,7 @@ mod tests {
             statics: None,
             config: FakeConfigSource::new(config).expect("the test's config is valid"),
             resolver: Arc::new(FakeCredentialResolver::new()),
+            invalidation: None,
         }
     }
 

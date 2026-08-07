@@ -38,6 +38,7 @@ pub mod http;
 pub mod logging;
 pub mod metrics;
 pub mod observatory;
+pub mod primary_watch;
 pub mod recording;
 pub mod replicas;
 pub mod routes;

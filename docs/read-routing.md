@@ -279,6 +279,43 @@ no shared locks, and no way to roll both halves back together. So the first
 statement decides, and if it is a write the whole transaction is on the primary
 whatever the rest of it does.
 
+## Detecting a primary's own demotion
+
+Everything above is about choosing a replica correctly. This is about the other
+end: what happens when the primary itself stops being one.
+
+pgprox does not fail a primary over. `SET pgprox.route = 'primary'` and every
+write still go to the host the grant named, whatever that host is doing, and a
+session already connected to a primary that demotes learns about it the way it
+always has: its next write fails with Postgres's own "cannot execute ... in a
+read-only transaction".
+
+What changes is how long a *new* client can be handed a grant naming a primary
+that already stopped being one. The grant cache has no reason to know, and
+without this it would go on serving that answer for up to `grant_ttl_cap`, 300
+seconds by default.
+
+So every primary is probed the same way and on the same 250 ms cadence as the
+replica poller above: `pg_is_in_recovery()`, over a held connection. The moment
+one answers `true`, the process drops every cached grant naming it. That is the
+whole of the action. It does not know the new primary, because nothing local
+does; only the token service's control plane does. Dropping the entry forces the
+next client presenting an affected token to ask again, which is where the
+correct answer comes from.
+
+The transition fires once. A primary that stays demoted keeps answering `true`
+on every following poll, and invalidating again on each one would turn a primary
+down for an hour into fourteen thousand redundant evictions of a cache already
+empty of it. A failed probe is treated as inconclusive rather than as a
+demotion, for the same reason a network blip must not turn a poll interval into
+a resolve storm on the sidecar for a primary that never changed.
+
+See ADR
+[0027](internal/product/decisions/0027-local-failover-detection-invalidates-rather-than-repairs.md)
+for what this rejected, including using the primary's own
+`pg_stat_replication` to learn a replacement address rather than only to detect
+that one is needed.
+
 ## Watching it
 
 | Metric | What it tells you |

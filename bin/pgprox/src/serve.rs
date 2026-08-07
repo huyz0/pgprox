@@ -178,6 +178,8 @@ pub struct Context {
     pub peers: Arc<dyn pgprox_core::cluster::PeerSource>,
     /// The replica sets this node is watching, one per primary.
     pub replicas: Arc<crate::replicas::ReplicaSets>,
+    /// The primaries this node is watching for their own demotion.
+    pub primaries: Arc<crate::primary_watch::PrimaryWatches>,
     /// Fired when the node has begun draining.
     ///
     /// A session between transactions closes on it. One inside a transaction
@@ -1016,6 +1018,13 @@ struct Live {
 impl Live {
     /// A session that has authenticated, holds nothing and has run nothing.
     fn new(context: &Context, grant: &Grant) -> Self {
+        // Every session's primary is watched for its own demotion, whether or
+        // not that grant has replicas: a tenant with no replica configured
+        // still writes to a primary that can fail over, and a fleet with no
+        // replica routing at all would otherwise never probe anything.
+        // Idempotent and cheap; see `PrimaryWatches::ensure_watched`.
+        context.primaries.ensure_watched(&grant.primary);
+
         Self {
             relay: Relay::new(),
             upstream: None,
@@ -3708,6 +3717,15 @@ mod tests {
                 crate::run::Shutdown::new(),
                 test_slab(),
             )),
+            primaries: Arc::new(crate::primary_watch::PrimaryWatches::new(
+                TcpUpstream::new(
+                    pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty())
+                        .unwrap(),
+                ),
+                crate::run::Shutdown::new(),
+                test_slab(),
+                None,
+            )),
         }
     }
 
@@ -5432,11 +5450,14 @@ mod tests {
         let _ = served.await;
     }
 
-    #[test]
-    fn a_session_that_never_binds_holds_nothing() {
+    #[tokio::test]
+    async fn a_session_that_never_binds_holds_nothing() {
         // "Allocates nothing new", at the line that would do the allocating. A
         // node with no cache pays one `serves` call per frame and never builds
         // the buffer a sequence would need.
+        //
+        // `tokio::test` rather than `test`: `Live::new` now starts a primary
+        // watch, which needs a runtime to spawn onto. `M71.0`.
         let context = context_for("127.0.0.1:1".parse().unwrap());
         let grant = grant_for("127.0.0.1:1".parse().unwrap());
 

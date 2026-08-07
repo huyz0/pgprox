@@ -512,6 +512,11 @@ pub async fn start_with(
             ..CacheConfig::default()
         },
     );
+    // Captured before the erasure below, so the failover watch has something
+    // to invalidate through. `Deps.resolver` is `Arc<dyn CredentialResolver>`,
+    // which cannot answer whether it caches anything; this is the one moment
+    // the concrete type is still in scope.
+    let invalidation = Some(Arc::clone(&resolver) as Arc<dyn pgprox_core::auth::GrantInvalidation>);
 
     App::build(Deps {
         listener_tls,
@@ -527,6 +532,7 @@ pub async fn start_with(
         tls: upstream_tls,
         config,
         resolver,
+        invalidation,
     })
     .await
 }

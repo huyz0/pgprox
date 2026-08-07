@@ -8367,3 +8367,59 @@ recognised so it can be refused rather than read as a version.
   Acceptance: an undeclared server's pools read zero, a replica of a declared
   primary reads more than zero and within its allowance, a reloaded cap moves
   the allowance, and all three were seen to fail against the old loop.
+
+## M71: a demoted primary could be handed to a new client for five minutes
+
+- [x] `M71.0` Local, fast detection that a primary stopped being one, and
+  invalidation of what it can reach: the grant cache.
+  `features.md` decides against automatic failover, correctly, and said
+  nothing about the gap beside it: the grant cache had no way to learn a
+  primary demoted, so it kept serving a stale grant to every *new* client for
+  up to `grant_ttl_cap`, 300 seconds by default. A session already connected
+  learns the ordinary way, from its next write failing; this is about the
+  clients who have not connected yet.
+  `pg_is_in_recovery()` answers the question directly, and the replica poller
+  already asks it of every replica every 250 ms. `bin/pgprox/src/primary_watch.rs`
+  asks the same question of every session's primary, on the same cadence,
+  using the same `SqlReplicaProbe` the replica poller uses, built with one
+  backend instead of a list.
+  On the transition into recovery, every cached grant naming that primary is
+  dropped, through a new `pgprox_core::auth::GrantInvalidation` trait
+  implemented by `pgprox-auth`'s `CachingResolver`. A new trait rather than a
+  new method on `CredentialResolver`: eviction is a property of the cache
+  wrapping a resolver, not of resolving itself, and a raw resolver given a
+  method it can only no-op is an API that lies about what it does. Adding it
+  required an ADR and every implementor in the same commit, per this
+  repository's rule for a `pgprox-core` trait change, satisfied by
+  `scripts/check-core-contract.sh` even though the trait is new rather than
+  changed: the gate compares method sets between HEAD and the index and does
+  not distinguish the two.
+  Edge-triggered, once: an `AtomicBool::swap` makes "was this already known"
+  and "mark it known" one step, so a primary demoted for an hour is
+  invalidated once rather than fourteen thousand times. A failed probe is
+  inconclusive rather than a demotion, for the same reason the replica poller
+  does not treat a miss as ineligible outright: a network blip must not turn a
+  poll interval into a resolve storm on the sidecar for a primary that never
+  changed.
+  Proved end to end rather than only at the unit level:
+  `a_demoted_primary_is_detected_and_invalidated_within_two_seconds` resolves a
+  grant into a real `CachingResolver`, points a real `PrimaryWatches` at a real
+  socket, and asserts the entry is gone against a real two-second deadline.
+  Caught before it reached a test assertion: `fakepg::fake_postgres()`
+  answers `pg_is_in_recovery()` with `t` unconditionally, documented as
+  modelling a replica, and every one of this module's other tests uses it as
+  a *primary*. That is the fixture already doing what this milestone is
+  about, harmlessly in tests that assert nothing about it and exactly on
+  purpose in the one that does.
+  Considered and rejected: discovering the *new* primary from
+  `pg_stat_replication` rather than only detecting the old one's demotion. The
+  view has no port, database, role or password, and `client_addr` is a
+  replication-connection address that is not necessarily where a client should
+  connect. The control plane is the one place that correctly knows what a
+  proxy should connect to; this stops serving the wrong answer rather than
+  guessing a right one.
+  Acceptance: a probe answering `pg_is_in_recovery(): true` invalidates
+  exactly the cache entries naming that primary within one poll interval, a
+  second such reading invalidates nothing further, a failed probe invalidates
+  nothing, and the whole path was proved against a real socket and a real
+  two-second clock rather than only at the unit level.

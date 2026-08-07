@@ -450,6 +450,12 @@ pub fn context(app: &App, shutdown: &Shutdown) -> Context {
             shutdown.clone(),
             Arc::clone(&app.slab),
         )),
+        primaries: Arc::new(crate::primary_watch::PrimaryWatches::new(
+            crate::dial::TcpUpstream::new(Arc::clone(&app.deps.tls)),
+            shutdown.clone(),
+            Arc::clone(&app.slab),
+            app.deps.invalidation.clone(),
+        )),
     }
 }
 
@@ -1370,6 +1376,7 @@ mod tests {
             })
             .unwrap(),
             resolver: Arc::new(FakeCredentialResolver::new()),
+            invalidation: None,
         }
     }
 

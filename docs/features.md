@@ -261,7 +261,17 @@ staleness bound is per node and why invalidation only sees writes through the
 same node.
 
 **Automatic failover of a primary.** An upstream that goes away is reported to
-the client rather than silently retried against something else.
+the client rather than silently retried against something else. A session
+already connected to a primary that demotes is not moved.
+
+What *is* done, and is a narrower thing: every primary is probed on the same
+250 ms cadence as the replica poller, and the moment one reports
+`pg_is_in_recovery()` as true, every cached grant naming it is dropped. That
+does not fail anyone over. It stops a *new* client from being handed a stale
+grant pointing at a primary that already stopped being one, which the cache
+would otherwise do for up to `grant_ttl_cap`. See
+[Read routing](read-routing.md#detecting-a-primarys-own-demotion) and ADR
+[0027](internal/product/decisions/0027-local-failover-detection-invalidates-rather-than-repairs.md).
 
 ## Not built yet
 

@@ -328,6 +328,107 @@ impl CredentialResolver for FakeCredentialResolver {
     }
 }
 
+/// Drops cached grants that named a server as their primary.
+///
+/// A separate trait from [`CredentialResolver`] rather than a new method on
+/// it, because eviction is a property of the cache wrapping a resolver, not of
+/// resolving itself: a raw resolver with nothing cached has nothing to evict,
+/// and giving it a method it can only no-op is an API that lies about what it
+/// does. Implemented by `pgprox-auth`'s `CachingResolver`; a caller that wraps
+/// nothing in one has no invalidation handle and does not need one.
+///
+/// # Why eviction and not repair
+///
+/// This does not replace an entry with the new primary, because it does not
+/// know what the new primary is: only the sidecar's control plane does. What
+/// it buys is narrower and cheaper than that. A grant naming a demoted primary
+/// is dropped, so the *next* client presenting that token gets a fresh
+/// resolve rather than the cached answer for up to `grant_ttl_cap`. A session
+/// already holding the stale grant is unaffected; it learns nothing from this.
+pub trait GrantInvalidation: Send + Sync + fmt::Debug {
+    /// Drops every cached grant whose primary is `server`.
+    ///
+    /// Returns how many were dropped, so a caller can tell a probe firing with
+    /// nothing cached from one that actually changed something.
+    fn invalidate_primary(&self, server: &crate::ids::ServerId) -> usize;
+}
+
+impl<T: GrantInvalidation + ?Sized> GrantInvalidation for Arc<T> {
+    fn invalidate_primary(&self, server: &crate::ids::ServerId) -> usize {
+        (**self).invalidate_primary(server)
+    }
+}
+
+/// An in-memory [`GrantInvalidation`] for tests.
+///
+/// Records what it was asked to invalidate rather than doing anything to a
+/// cache, since nothing here has one. That is enough to assert that a caller
+/// invalidated the right server, and no more than once for one demotion.
+#[cfg(any(test, feature = "test-fakes"))]
+#[derive(Debug, Default)]
+pub struct FakeInvalidation {
+    calls: std::sync::Mutex<Vec<crate::ids::ServerId>>,
+}
+
+#[cfg(any(test, feature = "test-fakes"))]
+impl FakeInvalidation {
+    /// A handle that has recorded nothing yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Every server this handle was asked to invalidate, in order, duplicates
+    /// included.
+    #[must_use]
+    pub fn calls(&self) -> Vec<crate::ids::ServerId> {
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+#[cfg(any(test, feature = "test-fakes"))]
+impl GrantInvalidation for FakeInvalidation {
+    fn invalidate_primary(&self, server: &crate::ids::ServerId) -> usize {
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(server.clone());
+        1
+    }
+}
+
+#[cfg(test)]
+mod invalidation_tests {
+    use super::{Arc, FakeInvalidation, GrantInvalidation};
+    use crate::ids::ServerId;
+
+    #[test]
+    fn the_fake_records_what_it_was_asked_to_invalidate() {
+        let fake = FakeInvalidation::new();
+        assert!(fake.calls().is_empty());
+
+        fake.invalidate_primary(&ServerId::new("db-1", 5432));
+        fake.invalidate_primary(&ServerId::new("db-2", 5432));
+
+        assert_eq!(
+            fake.calls(),
+            vec![ServerId::new("db-1", 5432), ServerId::new("db-2", 5432)]
+        );
+    }
+
+    #[test]
+    fn an_arc_forwards_rather_than_defaulting() {
+        // `M14.34`'s lesson applied on arrival rather than found by a mutant:
+        // a forwarding impl that returned a constant would pass every test
+        // that does not look at the count, and this is the one that does.
+        let fake: Arc<dyn GrantInvalidation> = Arc::new(FakeInvalidation::new());
+        assert_eq!(fake.invalidate_primary(&ServerId::new("db-1", 5432)), 1);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
