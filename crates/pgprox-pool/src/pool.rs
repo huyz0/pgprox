@@ -51,6 +51,13 @@ pub struct PoolConfig {
     pub min_size: u32,
     /// Statement map tuning for connections this pool opens.
     pub statements: StatementConfig,
+    /// How a failed attempt to open a new connection is retried.
+    ///
+    /// Off by default. See [`pgprox_core::retry::RetryConfig`] and ADR 0029:
+    /// nothing has been sent to any server when this applies, which is what
+    /// makes retrying here safe regardless of what the statement behind the
+    /// acquire is.
+    pub retry: pgprox_core::retry::RetryConfig,
 }
 
 impl Default for PoolConfig {
@@ -59,6 +66,7 @@ impl Default for PoolConfig {
             max_size: 20,
             min_size: 0,
             statements: StatementConfig::default(),
+            retry: pgprox_core::retry::RetryConfig::default(),
         }
     }
 }

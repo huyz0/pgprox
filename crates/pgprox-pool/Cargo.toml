@@ -8,6 +8,12 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# A fixed-roll jitter source, for a caller in another crate that wants a
+# deterministic retry delay to assert on rather than only a bound. Mirrors
+# pgprox-core's own `test-fakes`.
+test-fakes = []
+
 [dependencies]
 pgprox-core = { path = "../pgprox-core" }
 async-trait.workspace = true

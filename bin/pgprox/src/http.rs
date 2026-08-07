@@ -332,6 +332,7 @@ mod tests {
             pool: pgprox_pool::live::LivePool::new(
                 connector,
                 Arc::clone(&clock),
+                Arc::new(crate::entropy::SystemJitter),
                 pgprox_pool::pool::PoolConfig::default(),
             ),
             sessions: crate::sessions::Sessions::new(),

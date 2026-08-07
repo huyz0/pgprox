@@ -538,6 +538,7 @@ mod tests {
         let pool = LivePool::new(
             Arc::clone(&connector),
             Arc::clone(&shared),
+            Arc::new(pgprox_pool::jitter::FixedJitter(0.0)),
             PoolConfig::default(),
         );
         let sessions = Sessions::new();

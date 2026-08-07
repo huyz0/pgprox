@@ -170,6 +170,12 @@ pub struct Config {
     pub grant_ttl_cap: Duration,
     /// What the query cache does. Serves nobody by default.
     pub query_cache: QueryCacheConfig,
+    /// How a failed attempt to open an upstream connection is retried.
+    ///
+    /// Off by default (`attempts: 0`): retrying is a policy about how hard to
+    /// try again on a caller's behalf, and only an operator who has decided
+    /// that trade is worth it should turn it on. See ADR 0029.
+    pub retry: crate::retry::RetryConfig,
 }
 
 impl Default for Config {
@@ -181,6 +187,7 @@ impl Default for Config {
             drain_grace: Duration::from_secs(60),
             grant_ttl_cap: Duration::from_secs(300),
             query_cache: QueryCacheConfig::default(),
+            retry: crate::retry::RetryConfig::default(),
         }
     }
 }

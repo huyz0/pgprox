@@ -42,6 +42,42 @@ impl Entropy for SystemEntropy {
     }
 }
 
+/// Draws retry backoff jitter through the same provider, rather than a second
+/// one.
+///
+/// Not `SystemEntropy` reused directly: that trait's contract is about a
+/// cancel key's unguessability and refuses outright rather than fall back to
+/// anything predictable, which is the wrong failure mode for a retry delay
+/// that has no security property to defend. See
+/// `pgprox_pool::jitter::Jitter`'s module docs for why they are two traits.
+#[derive(Debug, Default)]
+pub struct SystemJitter;
+
+impl pgprox_pool::jitter::Jitter for SystemJitter {
+    fn roll(&self) -> f64 {
+        use aws_lc_rs::rand::{SecureRandom as _, SystemRandom};
+
+        let rng = SystemRandom::new();
+        let mut bytes = [0_u8; 8];
+
+        // A failed draw falls back to the top of the range rather than
+        // refusing anything: the caller is about to retry a *connection*, and
+        // the worst this can do is make one retry wait the full, capped delay
+        // instead of a shorter one. That is a slower retry, not a wrong one.
+        if rng.fill(&mut bytes).is_err() {
+            return 1.0;
+        }
+
+        // The top 53 bits, which is a `f64` mantissa's worth, scaled into
+        // `[0, 1)`. `2^53` rather than `u64::MAX + 1` so every representable
+        // fraction is reachable exactly rather than rounded.
+        let bits = u64::from_be_bytes(bytes) >> 11;
+        #[allow(clippy::cast_precision_loss)]
+        let fraction = bits as f64 / (1_u64 << 53) as f64;
+        fraction
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {

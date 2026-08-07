@@ -113,6 +113,9 @@ pub struct LivePool<K: Connector> {
     me: std::sync::Weak<Self>,
     connector: K,
     clock: Arc<dyn Clock>,
+    /// Draws the roll `pgprox_core::retry::backoff` turns into a delay.
+    /// Never read when `config.retry.attempts` is zero, which is the default.
+    jitter: Arc<dyn crate::jitter::Jitter>,
     config: PoolConfig,
     keyed: Mutex<HashMap<PoolKey, Keyed<K::Connection>>>,
     /// One doorbell per key, kept outside the lock so a waiter can hold an
@@ -144,16 +147,52 @@ impl<K: Connector + 'static> fmt::Debug for LivePool<K> {
 impl<K: Connector + 'static> LivePool<K> {
     /// A pool over `connector`.
     #[must_use]
-    pub fn new(connector: K, clock: Arc<dyn Clock>, config: PoolConfig) -> Arc<Self> {
+    pub fn new(
+        connector: K,
+        clock: Arc<dyn Clock>,
+        jitter: Arc<dyn crate::jitter::Jitter>,
+        config: PoolConfig,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             me: me.clone(),
             connector,
             clock,
+            jitter,
             config,
             keyed: Mutex::new(HashMap::new()),
             doorbells: Mutex::new(HashMap::new()),
             futile: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// Opens a connection, retrying a failed dial under `config.retry`.
+    ///
+    /// Every attempt calls `connector.connect` fresh: a failed dial opened
+    /// nothing, so there is no connection to reuse between attempts, only the
+    /// key to try again with.
+    async fn connect_with_retry(&self, key: &PoolKey) -> Result<K::Connection, PoolError> {
+        let mut attempt = 0;
+        loop {
+            match self.connector.connect(key).await {
+                Ok(connection) => return Ok(connection),
+                Err(err) => {
+                    let Some(delay) = pgprox_core::retry::backoff(
+                        &self.config.retry,
+                        attempt,
+                        self.jitter.roll(),
+                    ) else {
+                        return Err(err);
+                    };
+                    // No `tracing` dependency in this crate; a caller that
+                    // wants to see a retry happen reads it from how long
+                    // `acquire` took, or from `PoolError::ConnectFailed`
+                    // never reaching it. A dedicated counter is a reasonable
+                    // follow-up and is not this milestone.
+                    attempt += 1;
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
     }
 
     /// Locks the key map, recovering from a poisoned lock.
@@ -405,16 +444,19 @@ impl<K: Connector + 'static> LivePool<K> {
     }
 
     /// Opens a connection against a slot the pool has already reserved.
+    ///
+    /// A failed dial is retried under `self.config.retry`, off by default.
+    /// Safe unconditionally rather than needing the "nothing sent yet"
+    /// bookkeeping a mid-statement retry would: this method is the whole of
+    /// what it means to open a connection, so a failure here means the byte
+    /// count sent to any server is zero, on every attempt. See ADR 0029.
     async fn open(&self, key: &PoolKey) -> Result<UpstreamGuard, PoolError> {
         // Holds the reserved slot, and gives it back if this future is dropped
         // mid-connect. Without it a cancelled acquire would leak a slot, and a
         // pool that leaked its whole cap would refuse every future caller.
         let slot = SlotGuard::new(self, key);
 
-        let connection = match self.connector.connect(key).await {
-            Ok(connection) => connection,
-            Err(err) => return Err(err),
-        };
+        let connection = self.connect_with_retry(key).await?;
 
         slot.consume();
         let mut keyed = self.lock();
@@ -688,6 +730,7 @@ mod tests {
         let pool = LivePool::new(
             FakeConnector::default(),
             Arc::new(clock.clone()),
+            Arc::new(crate::jitter::FixedJitter(0.0)),
             PoolConfig {
                 max_size: max,
                 ..PoolConfig::default()
@@ -700,6 +743,28 @@ mod tests {
         clock.now() + Duration::from_secs(3_600)
     }
 
+    /// A pool whose retry policy is real, backed by real (but microsecond-
+    /// scale) delays, so a test that exercises it does not sit for seconds.
+    /// `jitter` fixes the roll rather than drawing one, so a test can assert
+    /// on the exact number of attempts made and, where it matters, the
+    /// resulting connection count, rather than only on a bound.
+    fn pool_with_retry(
+        retry: pgprox_core::retry::RetryConfig,
+        jitter: f64,
+    ) -> Arc<LivePool<FakeConnector>> {
+        let clock = FakeClock::new();
+        LivePool::new(
+            FakeConnector::default(),
+            Arc::new(clock),
+            Arc::new(crate::jitter::FixedJitter(jitter)),
+            PoolConfig {
+                max_size: 4,
+                retry,
+                ..PoolConfig::default()
+            },
+        )
+    }
+
     #[tokio::test]
     async fn acquiring_from_an_empty_pool_opens_a_connection() {
         let (pool, clock) = pool(4);
@@ -710,6 +775,78 @@ mod tests {
             pool.with_connection(&key(), guard.id(), |c| *c),
             Some(1),
             "the guard does not reach its connection"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dial_that_fails_once_is_retried_and_then_succeeds() {
+        // The safe case ADR 0029 is about: a dial that never opened a
+        // connection has sent nothing to any server, so trying again costs
+        // nothing and needs no bookkeeping about what a statement did.
+        let pool = pool_with_retry(
+            pgprox_core::retry::RetryConfig {
+                attempts: 2,
+                base: Duration::from_micros(1),
+                max: Duration::from_millis(1),
+            },
+            0.0,
+        );
+        pool.connector.fail_next(1);
+
+        let guard = pool.acquire(&key(), never(&FakeClock::new())).await;
+        assert!(
+            guard.is_ok(),
+            "the pool gave up after one failure against a policy allowing two retries"
+        );
+        assert_eq!(
+            pool.connector.opens(),
+            1,
+            "exactly one dial succeeded, after exactly one failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_off_by_default_reports_the_first_failure() {
+        // The default is `attempts: 0`. Nothing here opts in, so the first
+        // failure must be the only one, exactly as it was before this
+        // existed.
+        let pool = pool_with_retry(pgprox_core::retry::RetryConfig::default(), 0.0);
+        pool.connector.fail_next(1);
+
+        let err = pool
+            .acquire(&key(), never(&FakeClock::new()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, PoolError::ConnectFailed { .. }),
+            "the default policy retried when it is documented not to"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dial_that_never_recovers_is_reported_once_the_policy_is_exhausted() {
+        let pool = pool_with_retry(
+            pgprox_core::retry::RetryConfig {
+                attempts: 3,
+                base: Duration::from_micros(1),
+                max: Duration::from_millis(1),
+            },
+            0.0,
+        );
+        // More failures than the policy allows attempts to survive: the
+        // dial never succeeds, so the connection count staying at zero is
+        // part of what this proves.
+        pool.connector.fail_next(10);
+
+        let err = pool
+            .acquire(&key(), never(&FakeClock::new()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PoolError::ConnectFailed { .. }));
+        assert_eq!(
+            pool.connector.opens(),
+            0,
+            "a dial that never succeeds must never report a connection open"
         );
     }
 
@@ -884,6 +1021,7 @@ mod tests {
         let pool = LivePool::new(
             FakeConnector::default(),
             Arc::new(clock.clone()),
+            Arc::new(crate::jitter::FixedJitter(0.0)),
             PoolConfig {
                 max_size: 1,
                 ..PoolConfig::default()

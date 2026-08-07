@@ -57,6 +57,32 @@ pub struct ConfigDocument {
     /// The query cache. Absent is a node that caches nothing.
     #[serde(default)]
     pub query_cache: Option<QueryCacheDocument>,
+    /// How a failed attempt to open an upstream connection is retried.
+    /// Absent is a node that retries nothing, same as `attempts: 0`.
+    #[serde(default)]
+    pub retry: Option<RetryDocument>,
+}
+
+/// The retry section.
+///
+/// Absent, or present with `attempts: 0`, both mean the same thing: the first
+/// failure is the only one. Two ways to write "off" rather than one is
+/// deliberate, the same choice `query_cache` makes: a document that adds the
+/// section later to change `base` or `max` without yet deciding to turn
+/// retrying on should be able to write `attempts: 0` explicitly.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetryDocument {
+    /// How many times to retry after the first failure.
+    #[serde(default)]
+    pub attempts: Option<u32>,
+    /// The delay before the first retry, before backoff or jitter, written
+    /// with a unit: `20ms`.
+    #[serde(default)]
+    pub base: Option<String>,
+    /// The delay no retry waits longer than, written with a unit: `2s`.
+    #[serde(default)]
+    pub max: Option<String>,
 }
 
 /// The query cache section.
@@ -200,6 +226,10 @@ impl ConfigDocument {
                 None => defaults.query_cache,
                 Some(document) => document.into_query_cache_config(&defaults.query_cache)?,
             },
+            retry: match self.retry {
+                None => defaults.retry,
+                Some(document) => document.into_retry_config(&defaults.retry)?,
+            },
         };
 
         config.validate()?;
@@ -260,6 +290,19 @@ impl QueryCacheDocument {
             ttl_cap: optional_duration(self.ttl_cap.as_deref(), "query_cache.ttl_cap")?
                 .unwrap_or(defaults.ttl_cap),
             tenants,
+        })
+    }
+}
+
+impl RetryDocument {
+    fn into_retry_config(
+        self,
+        defaults: &pgprox_core::retry::RetryConfig,
+    ) -> Result<pgprox_core::retry::RetryConfig, ConfigError> {
+        Ok(pgprox_core::retry::RetryConfig {
+            attempts: self.attempts.unwrap_or(defaults.attempts),
+            base: optional_duration(self.base.as_deref(), "retry.base")?.unwrap_or(defaults.base),
+            max: optional_duration(self.max.as_deref(), "retry.max")?.unwrap_or(defaults.max),
         })
     }
 }
@@ -525,6 +568,30 @@ nodes:
         let text = "servers:\n  - server: \"[::1]:5432\"\n    max_connections: 10\n";
         let config = parse(text).unwrap();
         assert_eq!(config.servers[0].server, ServerId::new("[::1]", 5432));
+    }
+
+    #[test]
+    fn no_retry_section_means_retry_is_off() {
+        let config = parse("servers:\n  - server: db-1:5432\n    max_connections: 10\n").unwrap();
+        assert_eq!(config.retry.attempts, 0);
+    }
+
+    #[test]
+    fn a_retry_section_is_read_field_by_field() {
+        let text = "servers:\n  - server: db-1:5432\n    max_connections: 10\n\
+                     retry:\n  attempts: 5\n  base: 20ms\n  max: 3s\n";
+        let config = parse(text).unwrap();
+        assert_eq!(config.retry.attempts, 5);
+        assert_eq!(config.retry.base, Duration::from_millis(20));
+        assert_eq!(config.retry.max, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn a_retry_section_can_spell_out_off_explicitly() {
+        let text = "servers:\n  - server: db-1:5432\n    max_connections: 10\n\
+                     retry:\n  attempts: 0\n";
+        let config = parse(text).unwrap();
+        assert_eq!(config.retry.attempts, 0);
     }
 
     #[test]

@@ -62,6 +62,7 @@ pub mod error;
 pub mod hash;
 pub mod ids;
 pub mod pool;
+pub mod retry;
 pub mod route;
 pub mod secret;
 pub mod sql;

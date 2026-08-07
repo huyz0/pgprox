@@ -12,6 +12,7 @@
 //! [`pin`] decides which sessions genuinely cannot be moved, and [`statements`]
 //! removes the largest reason they otherwise would be.
 
+pub mod jitter;
 pub mod live;
 pub mod params;
 pub mod pin;

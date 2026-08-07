@@ -3695,7 +3695,12 @@ mod tests {
             resolver: Arc::new(
                 FakeCredentialResolver::new().with_grant("good.token", grant_for(addr)),
             ),
-            pool: LivePool::new(Arc::clone(&connector), clock, PoolConfig::default()),
+            pool: LivePool::new(
+                Arc::clone(&connector),
+                clock,
+                Arc::new(pgprox_pool::jitter::FixedJitter(0.0)),
+                PoolConfig::default(),
+            ),
             connector,
             parameters: Arc::new(ParameterCache::new()),
             sessions: Sessions::new(),

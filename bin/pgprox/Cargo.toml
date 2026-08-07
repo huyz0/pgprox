@@ -66,6 +66,7 @@ allocation-counter = "0.8"
 # threads rather than on the thread doing the measuring.
 dhat = "0.3"
 pgprox-core = { path = "../../crates/pgprox-core", features = ["test-fakes"] }
+pgprox-pool = { path = "../../crates/pgprox-pool", features = ["test-fakes"] }
 rcgen = "0.14"
 tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }

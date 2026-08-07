@@ -113,6 +113,45 @@ The cache promises bounded staleness and nothing stronger. It invalidates on
 writes it sees, which improves on that bound but does not make it
 read-your-writes: it only sees writes that pass through the same node.
 
+### `retry`
+
+Off unless configured. When a new connection to an upstream fails outright —
+refused, unreachable, the database mid-restart — pgprox normally reports that
+to the client on the first attempt, the same as it always has. This section
+says how many more chances to give it first.
+
+| Field | Default | What it does |
+| --- | --- | --- |
+| `attempts` | `0` | How many times to retry after the first failure. `0` disables retry entirely. |
+| `base` | `20ms` | The delay before the first retry, before backoff or jitter. |
+| `max` | `2s` | The delay no retry waits longer than. |
+
+```yaml
+retry:
+  attempts: 3
+  base: 20ms
+  max: 2s
+```
+
+Backoff is full jitter: each retry waits a random amount between zero and
+`min(max, base * 2^attempt)`, doubling the ceiling each time up to the cap.
+That is what keeps a fleet of proxies whose upstream just came back from
+retrying in lockstep and hitting it with the same burst that just knocked it
+over.
+
+**This applies only to opening a new connection, never to a statement already
+sent.** Nothing has reached any server when a dial fails, on any attempt, so
+retrying costs nothing and risks nothing: it cannot duplicate a write, because
+no write has happened yet. A statement mid-flight is a different question this
+does not answer; see ADR
+[0029](internal/product/decisions/0029-retry-is-scoped-to-a-dial-that-sent-nothing.md)
+for the reasoning and what is deliberately left undone.
+
+This section does not reload without a restart. `max_client_conns` and each
+server's cap in `servers:` do, because the tick loop that applies them was
+built to; `retry` was not wired through it. A change here takes effect the
+next time the node starts.
+
 ## Command-line arguments
 
 | Argument | Default | What it does |

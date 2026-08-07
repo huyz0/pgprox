@@ -8479,3 +8479,49 @@ recognised so it can be refused rather than read as a version.
   every one of the four crates touched — `pgprox-core`, `pgprox-auth`,
   `pgprox`, and the frozen proto itself — passes its own gates with the
   change included.
+
+## M73: a failed dial had exactly one chance, unconditionally
+
+- [x] `M73.0` Safe-only retry, scoped to a connection that sent nothing.
+  The request was broader than this: retry any transient failure, reading or
+  writing, configurably. Granted only where it can be granted without knowing
+  anything about what a statement did, because the wider case needs to know
+  whether a server already acted on bytes this process sent it, which this
+  change does not attempt to track. ADR 0029 names the distinction and the
+  follow-up left undone.
+  A failed dial has sent nothing to anyone, on every attempt, because opening
+  a connection is the whole of what happened: there is no partial state to
+  reason about, which is what makes `LivePool::open` the one place a retry
+  policy applies unconditionally rather than behind a runtime check for
+  safety.
+  `pgprox_core::retry::RetryConfig`: attempts, base, max. Off by default.
+  `pgprox_core::retry::backoff` is a pure function taking the random draw as a
+  parameter rather than drawing it, full jitter, tested exhaustively without a
+  socket or a clock including the overflow case a large configured attempt
+  count would otherwise hit.
+  A new `pgprox_pool::jitter::Jitter` trait draws the roll, implemented in
+  `bin/pgprox` by `SystemJitter` over the same `aws-lc-rs` provider the
+  cancel-key entropy source uses, so a FIPS build carries one validated
+  randomness source. Not `pgprox_session::cancel::Entropy` reused: that
+  trait's contract is a cancel key's unguessability and refuses outright
+  rather than fall back to anything predictable, which is the wrong shape for
+  a delay defending nothing; reusing it would also reach the wrong way across
+  the dependency graph, since `pgprox-session` depends on `pgprox-pool`.
+  Read from a `retry:` section in the configuration document, parsed the same
+  way `drain_grace` is. Does not hot-reload: `max_client_conns` and each
+  server's cap reload because `M70.0` wired them through the tick loop,
+  `retry` was not, and the document says so rather than leaving an operator to
+  discover it by watching a change not take effect.
+  Proved with a fake connector scripted to fail a set number of times: a dial
+  that fails once and then succeeds is retried and returns the connection; a
+  dial that never succeeds is reported once the policy is exhausted and opens
+  nothing, ever; the default policy retries nothing, unchanged from before
+  this existed. All at microsecond-scale delays, so the suite pays nothing for
+  it.
+  Considered and rejected: a `pgprox_pool_retry_total` metric, reasonable but
+  a shape nothing yet uses; hot-reloading the policy, which would need
+  threading `retry` through the same tick-loop path `M70.0` built for caps.
+  Acceptance: a scripted dial failure is retried up to the configured count
+  and no further; the default is unchanged behaviour; the pure backoff
+  function is tested including the shift-overflow case; and the whole
+  workspace, 1,957 tests across every crate, passes with the change included.

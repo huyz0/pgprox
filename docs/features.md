@@ -21,6 +21,13 @@ transparent and it gives up almost all of the multiplexing.
 It breaks any multi-statement transaction, and a proxy that resolves credentials
 per tenant has no way to warn a tenant that its own transactions will not work.
 
+**A failed attempt to open a new connection can be retried**, with a
+configurable count, backoff and jitter. Off by default. This applies only to
+opening the connection, never to a statement already sent: nothing has reached
+any server when a dial fails, on any attempt, so retrying here cannot duplicate
+a write. See [Configuration](configuration.md#retry) and ADR
+[0029](internal/product/decisions/0029-retry-is-scoped-to-a-dial-that-sent-nothing.md).
+
 ### When a session pins
 
 Pinning attaches a session to one upstream connection for the rest of its life.

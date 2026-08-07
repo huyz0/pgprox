@@ -283,6 +283,7 @@ impl App {
         let pool = LivePool::new(
             Arc::clone(&connector),
             Arc::clone(&deps.clock),
+            Arc::new(crate::entropy::SystemJitter),
             PoolConfig {
                 // Per pool, and a pool is one server, database and user. The
                 // cluster layer holds the cap that actually matters; this stops
@@ -291,6 +292,7 @@ impl App {
                     .servers
                     .first()
                     .map_or(50, |server| server.max_connections.min(50)),
+                retry: config.retry,
                 ..PoolConfig::default()
             },
         );
