@@ -400,6 +400,215 @@ impl GrantInvalidation for FakeInvalidation {
     }
 }
 
+/// Where a primary's topology stands now, asked without a token.
+///
+/// The other half of [`GrantInvalidation`]: that trait says "stop serving this
+/// answer", and this is what answers "what is the answer now". Split from
+/// [`CredentialResolver`] for the same reason a token-bearing lookup and a
+/// topology question are two different RPCs on the sidecar contract: an
+/// established session holds a [`Grant`], not a token, from the moment it
+/// authenticated, so it has nothing left to call `resolve` with. This asks a
+/// narrower question that needs none.
+///
+/// Implemented by `pgprox-auth`'s `SidecarResolver`, over the same RPC
+/// connection `resolve` uses. See ADR 0028 for why the answer deliberately
+/// carries no TTL and no claims: it says where the database is, not who may
+/// use it.
+#[async_trait::async_trait]
+pub trait TopologyRefresh: Send + Sync + fmt::Debug {
+    /// Asks where `primary`'s topology stands now.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the sidecar cannot be reached or answers with something
+    /// unusable. A caller that cannot refresh has learned nothing and changes
+    /// nothing; it is exactly as informed as it was before asking.
+    async fn refresh_topology(&self, primary: &ServerId) -> Result<Topology, AuthError>;
+}
+
+#[async_trait::async_trait]
+impl<T: TopologyRefresh + ?Sized> TopologyRefresh for Arc<T> {
+    async fn refresh_topology(&self, primary: &ServerId) -> Result<Topology, AuthError> {
+        (**self).refresh_topology(primary).await
+    }
+}
+
+/// What [`TopologyRefresh::refresh_topology`] answers.
+///
+/// Not a [`Grant`]: no tenant, no TTL, no pool hints, no claims. A `Grant`
+/// names who may use a database and for how long; this names where the
+/// database is. Reusing `Grant` and leaving those fields default would invite
+/// a caller to read them as meaningful zeros rather than as absent.
+#[derive(Clone, Debug)]
+pub struct Topology {
+    /// The primary now. May be the same server that was asked about, if
+    /// nothing changed.
+    pub primary: Backend,
+    /// Read replicas of that primary, in no particular order. May be empty.
+    pub replicas: Vec<Backend>,
+}
+
+/// An in-memory [`TopologyRefresh`] for tests.
+///
+/// Answers a topology it was taught, refuses one it was not, and can be told
+/// to fail so a caller's error path is reachable. The call counter is what
+/// lets a caller's test assert it asked at most once for something it did not
+/// need to ask about twice.
+#[cfg(any(test, feature = "test-fakes"))]
+#[derive(Debug, Default)]
+pub struct FakeTopologyRefresh {
+    topologies: std::sync::Mutex<std::collections::HashMap<ServerId, Topology>>,
+    calls: std::sync::atomic::AtomicUsize,
+    unavailable: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(any(test, feature = "test-fakes"))]
+impl FakeTopologyRefresh {
+    /// A refresher that knows nothing yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Teaches the refresher what to answer for `primary`.
+    #[must_use]
+    pub fn with_topology(self, primary: ServerId, topology: Topology) -> Self {
+        self.teach(primary, topology);
+        self
+    }
+
+    /// Teaches the refresher after construction, as a failover would change
+    /// the answer mid-test.
+    pub fn teach(&self, primary: ServerId, topology: Topology) {
+        self.lock().insert(primary, topology);
+    }
+
+    /// Makes every subsequent call fail as if the sidecar were unreachable.
+    pub fn set_unavailable(&self, unavailable: bool) {
+        self.unavailable
+            .store(unavailable, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// How many times [`TopologyRefresh::refresh_topology`] has been called.
+    #[must_use]
+    pub fn call_count(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<ServerId, Topology>> {
+        self.topologies
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+#[cfg(any(test, feature = "test-fakes"))]
+#[async_trait::async_trait]
+impl TopologyRefresh for FakeTopologyRefresh {
+    async fn refresh_topology(&self, primary: &ServerId) -> Result<Topology, AuthError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        if self.unavailable.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(AuthError::Unavailable {
+                reason: "fake topology refresh set unavailable".into(),
+            });
+        }
+
+        self.lock()
+            .get(primary)
+            .cloned()
+            .ok_or_else(|| AuthError::Malformed {
+                reason: format!("the fake was not taught a topology for {primary}"),
+            })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod topology_refresh_tests {
+    use super::{Arc, Backend, FakeTopologyRefresh, TlsMode, Topology, TopologyRefresh};
+    use crate::ids::ServerId;
+    use crate::secret::SecretString;
+
+    fn backend(host: &str) -> Backend {
+        Backend {
+            server: ServerId::new(host, 5432),
+            database: Arc::from("acme"),
+            user: Arc::from("acme_app"),
+            password: SecretString::new("hunter2"),
+            tls: TlsMode::Verified,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_taught_topology_is_returned() {
+        let old_primary = ServerId::new("db-1", 5432);
+        let fake = FakeTopologyRefresh::new().with_topology(
+            old_primary.clone(),
+            Topology {
+                primary: backend("db-2"),
+                replicas: vec![backend("db-2-replica")],
+            },
+        );
+
+        let topology = fake.refresh_topology(&old_primary).await.unwrap();
+
+        assert_eq!(topology.primary.server, ServerId::new("db-2", 5432));
+        assert_eq!(topology.replicas.len(), 1);
+        assert_eq!(fake.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_untaught_primary_is_refused_rather_than_defaulted() {
+        let fake = FakeTopologyRefresh::new();
+        let err = fake
+            .refresh_topology(&ServerId::new("db-1", 5432))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, super::AuthError::Malformed { .. }));
+    }
+
+    #[tokio::test]
+    async fn set_unavailable_fails_every_call() {
+        let fake = FakeTopologyRefresh::new().with_topology(
+            ServerId::new("db-1", 5432),
+            Topology {
+                primary: backend("db-1"),
+                replicas: vec![],
+            },
+        );
+        fake.set_unavailable(true);
+
+        let err = fake
+            .refresh_topology(&ServerId::new("db-1", 5432))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, super::AuthError::Unavailable { .. }));
+    }
+
+    #[tokio::test]
+    async fn an_arc_forwards_rather_than_defaulting() {
+        let concrete = Arc::new(FakeTopologyRefresh::new().with_topology(
+            ServerId::new("db-1", 5432),
+            Topology {
+                primary: backend("db-1"),
+                replicas: vec![],
+            },
+        ));
+        let fake: Arc<dyn TopologyRefresh> = Arc::clone(&concrete) as Arc<dyn TopologyRefresh>;
+
+        assert_eq!(
+            fake.refresh_topology(&ServerId::new("db-1", 5432))
+                .await
+                .unwrap()
+                .primary
+                .server,
+            ServerId::new("db-1", 5432)
+        );
+        assert_eq!(concrete.call_count(), 1);
+    }
+}
+
 #[cfg(test)]
 mod invalidation_tests {
     use super::{Arc, FakeInvalidation, GrantInvalidation};

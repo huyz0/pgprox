@@ -13,9 +13,10 @@ use std::time::Duration;
 
 use pgprox_auth::cache::{CacheConfig, CachingResolver};
 use pgprox_auth::client::{SidecarConfig, SidecarResolver};
-use pgprox_core::auth::{AuthError, AuthRequest, CredentialResolver};
+use pgprox_core::auth::{AuthError, AuthRequest, CredentialResolver, TopologyRefresh};
 use pgprox_core::clock::{Clock, FakeClock};
 use pgprox_core::error::AuthRejection;
+use pgprox_core::ids::ServerId;
 use pgprox_core::secret::SecretString;
 
 /// The mock sidecar process and its socket, cleaned up on drop.
@@ -191,6 +192,23 @@ async fn a_stalled_sidecar_times_out_rather_than_hanging() {
         elapsed < Duration::from_secs(5),
         "waited {elapsed:?}, so the timeout did not apply"
     );
+}
+
+#[tokio::test]
+async fn refresh_topology_answers_over_the_same_socket_with_no_token() {
+    // The other half of ADR 0028: no `AuthRequest`, no token at all, and
+    // exercised over a real socket rather than only against the fake, because
+    // the thing this test earns its keep on is that the wire encoding of the
+    // new RPC actually round-trips.
+    let sidecar = Sidecar::start();
+    let resolver = SidecarResolver::connect(&sidecar.config()).await.unwrap();
+
+    let topology = TopologyRefresh::refresh_topology(&resolver, &ServerId::new("db-1", 5432))
+        .await
+        .unwrap();
+
+    assert_eq!(topology.primary.server.as_str(), "db-1.internal:5432");
+    assert_eq!(topology.replicas.len(), 1);
 }
 
 #[tokio::test]

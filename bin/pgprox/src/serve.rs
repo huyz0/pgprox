@@ -1496,7 +1496,7 @@ async fn borrow(
 ) -> Result<(UpstreamGuard, Upstreamed<crate::dial::Stream>), ShellError> {
     // The route decision names a replica by its index in the grant. This is
     // where that becomes a backend, and therefore a pool.
-    let backend = crate::replicas::backend_for(grant, target);
+    let backend = crate::replicas::backend_for(grant, target, &context.primaries);
     let deadline = context.clock.now() + context.acquire_timeout;
     context
         .sessions
@@ -3724,6 +3724,7 @@ mod tests {
                 ),
                 crate::run::Shutdown::new(),
                 test_slab(),
+                None,
                 None,
             )),
         }

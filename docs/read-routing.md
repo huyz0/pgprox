@@ -285,23 +285,37 @@ Everything above is about choosing a replica correctly. This is about the other
 end: what happens when the primary itself stops being one.
 
 pgprox does not fail a primary over. `SET pgprox.route = 'primary'` and every
-write still go to the host the grant named, whatever that host is doing, and a
-session already connected to a primary that demotes learns about it the way it
-always has: its next write fails with Postgres's own "cannot execute ... in a
-read-only transaction".
+write still go to the host the grant named, whatever that host is doing. There
+is no election, no promotion, and no attempt to guess which server should take
+over; that stays your control plane's decision.
 
-What changes is how long a *new* client can be handed a grant naming a primary
-that already stopped being one. The grant cache has no reason to know, and
-without this it would go on serving that answer for up to `grant_ttl_cap`, 300
-seconds by default.
+What pgprox does do is notice fast and stop making the problem worse.
 
-So every primary is probed the same way and on the same 250 ms cadence as the
+Every primary is probed the same way and on the same 250 ms cadence as the
 replica poller above: `pg_is_in_recovery()`, over a held connection. The moment
-one answers `true`, the process drops every cached grant naming it. That is the
-whole of the action. It does not know the new primary, because nothing local
-does; only the token service's control plane does. Dropping the entry forces the
-next client presenting an affected token to ask again, which is where the
-correct answer comes from.
+one answers `true`, two things happen.
+
+**Every cached grant naming it is dropped.** Without this, the grant cache would
+go on handing a *new* client the same stale answer for up to `grant_ttl_cap`,
+300 seconds by default, because it has no other reason to reconsider it.
+Dropping the entry forces the next client presenting an affected token to ask
+the token service again, which is where the correct answer comes from.
+
+**The token service is asked where the primary is now, without a token.** An
+established session holds a `Grant`, not a token, from the moment it
+authenticated, so it has nothing left to call the ordinary resolve path with. A
+second, narrower RPC answers a narrower question: given the primary this process
+last knew, where is it now. The answer carries no TTL and no claims, because it
+is not a new grant of authorization, only a corrected address. A successful
+answer is applied to every session already using that primary, the next time
+each one acquires a connection, which is the next transaction boundary for a
+well-behaved client. Nothing is torn down and nothing waits for a reconnect.
+
+If the token service cannot answer, or answers with something unusable, the
+session gets no relief and behaves exactly as it would without this: its next
+write fails with Postgres's own "cannot execute ... in a read-only transaction".
+The cache invalidation above still ran regardless, so a new client is never
+worse off for the attempt having failed.
 
 The transition fires once. A primary that stays demoted keeps answering `true`
 on every following poll, and invalidating again on each one would turn a primary
@@ -312,9 +326,10 @@ a resolve storm on the sidecar for a primary that never changed.
 
 See ADR
 [0027](internal/product/decisions/0027-local-failover-detection-invalidates-rather-than-repairs.md)
-for what this rejected, including using the primary's own
-`pg_stat_replication` to learn a replacement address rather than only to detect
-that one is needed.
+for the detection design, including what was rejected there, and ADR
+[0028](internal/product/decisions/0028-topology-refresh-is-a-second-rpc-with-no-authorization-fields.md)
+for why the correction is a second RPC that cannot extend a token's authorization
+rather than a repaired copy of the original grant.
 
 ## Watching it
 

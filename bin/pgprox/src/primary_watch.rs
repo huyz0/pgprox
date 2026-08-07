@@ -22,11 +22,20 @@
 //! forces the *next* client presenting an affected token to ask the sidecar
 //! again, which is where the new primary comes from.
 //!
-//! It does not move a session already connected to the demoted host. That
-//! session's writes start failing with Postgres's own "cannot execute ... in
-//! a read-only transaction", which is a transient error a retry policy can
-//! act on; this module only shortens how long new connections keep walking
-//! into the same wall.
+//! A session already connected to the demoted host is moved, but not
+//! instantly and not by force. `M72.0`, ADR 0028: on the same edge that
+//! invalidates the cache, this also asks the sidecar's `RefreshTopology` RPC
+//! where the primary is now — a second RPC that needs no token, because an
+//! established session holds a `Grant` rather than one. A successful answer
+//! is stored keyed by the *original* primary, and `crate::replicas::backend_for` checks it
+//! before falling back to the grant's own value. A session picks up the
+//! correction at its next connection acquire, which is the next transaction
+//! boundary for a well-behaved client, without needing a new grant at all.
+//!
+//! The refresh is best-effort and is never the only thing that happens: if it
+//! fails, invalidation still ran, so a new client is no worse off than under
+//! `M71.0` alone, and an already-connected session simply keeps failing
+//! writes until it reconnects, exactly as it would have before this existed.
 //!
 //! # Why this stays a boolean rather than reusing `Replicas`
 //!
@@ -42,7 +51,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use pgprox_core::auth::{Backend, GrantInvalidation};
+use pgprox_core::auth::{Backend, GrantInvalidation, TopologyRefresh};
 use pgprox_core::buf::BufferSlab;
 use pgprox_core::ids::ServerId;
 use pgprox_route::poller::{Probe, ReplicaProbe};
@@ -70,10 +79,14 @@ struct Watched {
 /// Every primary this node has been told about, and whether it has demoted.
 pub struct PrimaryWatches {
     watched: Mutex<HashMap<ServerId, Watched>>,
+    /// Accepted refreshes, keyed by the *original* primary a grant still
+    /// names. `crate::replicas::backend_for` is the one reader.
+    overrides: Arc<Mutex<HashMap<ServerId, Backend>>>,
     upstream: TcpUpstream,
     shutdown: Shutdown,
     slab: Arc<BufferSlab>,
     invalidation: Option<Arc<dyn GrantInvalidation>>,
+    topology: Option<Arc<dyn TopologyRefresh>>,
 }
 
 impl std::fmt::Debug for PrimaryWatches {
@@ -87,25 +100,43 @@ impl std::fmt::Debug for PrimaryWatches {
 impl PrimaryWatches {
     /// A registry that has been told about nothing yet.
     ///
-    /// `invalidation` is `None` for a node built with a resolver that is not a
-    /// caching one, which today is only a test fixture: `entry.rs` always
-    /// wraps the real sidecar client in `CachingResolver`. A `None` here means
-    /// probing still runs, and its finding is only ever logged rather than
-    /// acted on.
+    /// `invalidation` and `topology` are each `None` for a node built with a
+    /// resolver that is not a caching one, which today is only a test
+    /// fixture: `entry.rs` always wraps the real sidecar client in
+    /// `CachingResolver`, which is also the `SidecarResolver` implementing
+    /// `TopologyRefresh`. A `None` here means probing still runs; only the
+    /// action taken on what it finds is skipped.
     #[must_use]
     pub fn new(
         upstream: TcpUpstream,
         shutdown: Shutdown,
         slab: Arc<BufferSlab>,
         invalidation: Option<Arc<dyn GrantInvalidation>>,
+        topology: Option<Arc<dyn TopologyRefresh>>,
     ) -> Self {
         Self {
             watched: Mutex::new(HashMap::new()),
+            overrides: Arc::new(Mutex::new(HashMap::new())),
             upstream,
             shutdown,
             slab,
             invalidation,
+            topology,
         }
+    }
+
+    /// The backend to use for `original` now, if a refresh has replaced it.
+    ///
+    /// `None` means nothing has overridden it, which is what every primary
+    /// answers until its first demotion; `crate::replicas::backend_for` falls back to the
+    /// grant's own value in that case.
+    #[must_use]
+    pub fn current_backend(&self, original: &ServerId) -> Option<Backend> {
+        self.overrides
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(original)
+            .cloned()
     }
 
     /// How many primaries are being watched.
@@ -161,6 +192,8 @@ impl PrimaryWatches {
                 Arc::clone(&self.slab),
             )),
             self.invalidation.clone(),
+            self.topology.clone(),
+            Arc::clone(&self.overrides),
             self.shutdown.clone(),
         ));
     }
@@ -185,6 +218,8 @@ async fn poll(
     demoted: Arc<AtomicBool>,
     probe: Arc<SqlReplicaProbe<TcpUpstream>>,
     invalidation: Option<Arc<dyn GrantInvalidation>>,
+    topology: Option<Arc<dyn TopologyRefresh>>,
+    overrides: Arc<Mutex<HashMap<ServerId, Backend>>>,
     shutdown: Shutdown,
 ) {
     let mut ticks = tokio::time::interval(POLL_INTERVAL);
@@ -197,18 +232,31 @@ async fn poll(
         // Index 0: the probe was built with exactly one backend, this
         // primary, so there is no second index to confuse it with.
         let result = probe.probe(0).await;
-        handle(&server, &result, &demoted, invalidation.as_deref());
+        let just_demoted = handle(&server, &result, &demoted, invalidation.as_deref());
+
+        // Only the poll that performed the transition asks for a refresh.
+        // Every later poll while still demoted finds `just_demoted` false and
+        // does nothing here, which is `handle`'s edge-trigger reaching this
+        // step too: one refresh attempt per demotion, not one per poll.
+        if just_demoted {
+            refresh(&server, topology.as_deref(), &overrides).await;
+        }
     }
 }
 
 /// Acts on one poll's result. Split from [`poll`] so the decision is testable
 /// without a socket, a clock tick, or a spawned task.
+///
+/// Returns whether *this call* performed the transition into demoted, which is
+/// distinct from `demoted`'s final value: a later call on an already-demoted
+/// primary returns `false` even though the primary is still demoted, because
+/// nothing changed on this call.
 fn handle(
     server: &ServerId,
     result: &Result<Probe, String>,
     demoted: &AtomicBool,
     invalidation: Option<&dyn GrantInvalidation>,
-) {
+) -> bool {
     let Ok(Probe { in_recovery, .. }) = *result else {
         // A failed probe is inconclusive, not a demotion. The most common
         // cause is the host being briefly unreachable, and invalidating a
@@ -218,18 +266,18 @@ fn handle(
         // which has no equivalent here because nothing routes on this value;
         // a probe that starts succeeding again finds the same `demoted` flag
         // it left, still false.
-        return;
+        return false;
     };
 
     if !in_recovery {
-        return;
+        return false;
     }
 
     // Edge-triggered: the first probe to see recovery fires the invalidation,
     // and `swap` makes "was it already true" and "mark it true" one atomic
     // step, so two polls racing on a slow tick cannot both fire.
     if demoted.swap(true, Ordering::AcqRel) {
-        return;
+        return false;
     }
 
     let dropped = invalidation.map_or(0, |handle| handle.invalidate_primary(server));
@@ -238,6 +286,47 @@ fn handle(
         dropped_grants = dropped,
         "primary reports pg_is_in_recovery(): demoted, cached grants naming it dropped"
     );
+    true
+}
+
+/// Asks where `server`'s topology stands now, and stores a usable answer.
+///
+/// Best-effort. `topology` is `None` on a node whose resolver is not a caching
+/// one, which today is only a test fixture, and a real failure just means the
+/// override table stays as it was: a session that could not be helped is
+/// exactly as unhelped as it would have been without this. See ADR 0028.
+async fn refresh(
+    server: &ServerId,
+    topology: Option<&dyn TopologyRefresh>,
+    overrides: &Mutex<HashMap<ServerId, Backend>>,
+) {
+    let Some(topology) = topology else { return };
+
+    match topology.refresh_topology(server).await {
+        Ok(answer) => {
+            let moved = answer.primary.server != *server;
+            overrides
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(server.clone(), answer.primary.clone());
+            tracing::info!(
+                %server,
+                new_primary = %answer.primary.server,
+                replicas = answer.replicas.len(),
+                moved,
+                "topology refreshed: sessions still connected pick up the correction \
+                 at their next connection acquire"
+            );
+        }
+        Err(reason) => {
+            tracing::warn!(
+                %server,
+                %reason,
+                "topology refresh failed: a session already connected keeps failing \
+                 until it reconnects, same as before this existed"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -351,6 +440,89 @@ mod tests {
     }
 
     #[test]
+    fn only_the_transition_reports_true() {
+        // `poll` asks for a refresh only on a `true` return, so this is the
+        // property that keeps a demoted-for-an-hour primary from being asked
+        // about 14,400 times: the same reason the invalidation count above is
+        // one rather than three, seen at the boundary that decides it.
+        let flag = AtomicBool::new(false);
+        let server = ServerId::new("db-1", 5432);
+
+        assert!(
+            handle(&server, &demoted_probe(), &flag, None),
+            "the first demoted reading did not report a transition"
+        );
+        assert!(
+            !handle(&server, &demoted_probe(), &flag, None),
+            "a repeat reading reported a transition that did not happen"
+        );
+        assert!(
+            !handle(&server, &healthy(), &flag, None),
+            "a healthy reading reported a transition"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_refresh_stores_the_new_primary() {
+        let server = ServerId::new("db-1", 5432);
+        let fresh = pgprox_core::auth::FakeTopologyRefresh::new().with_topology(
+            server.clone(),
+            pgprox_core::auth::Topology {
+                primary: backend("db-2"),
+                replicas: vec![backend("db-2-replica")],
+            },
+        );
+        let overrides = Mutex::new(HashMap::new());
+
+        refresh(&server, Some(&fresh), &overrides).await;
+
+        let stored = overrides
+            .lock()
+            .unwrap()
+            .get(&server)
+            .cloned()
+            .expect("the successful refresh stored nothing");
+        assert_eq!(stored.server, ServerId::new("db-2", 5432));
+    }
+
+    #[tokio::test]
+    async fn a_failed_refresh_stores_nothing() {
+        // Best-effort: a session already connected gets no relief in this
+        // case, and that is the same outcome as before this existed, not a
+        // worse one. Nothing here should make that look like progress.
+        let server = ServerId::new("db-1", 5432);
+        let fresh = pgprox_core::auth::FakeTopologyRefresh::new();
+        fresh.set_unavailable(true);
+        let overrides = Mutex::new(HashMap::new());
+
+        refresh(&server, Some(&fresh), &overrides).await;
+
+        assert!(overrides.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_topology_handle_does_nothing_and_does_not_panic() {
+        let overrides = Mutex::new(HashMap::new());
+        refresh(&ServerId::new("db-1", 5432), None, &overrides).await;
+        assert!(overrides.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn current_backend_is_none_until_something_overrides_it() {
+        let tls = pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).unwrap();
+        let watches = PrimaryWatches::new(
+            TcpUpstream::new(tls),
+            Shutdown::new(),
+            BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8),
+            None,
+            None,
+        );
+        let server = ServerId::new("db-1", 5432);
+
+        assert!(watches.current_backend(&server).is_none());
+    }
+
+    #[test]
     fn no_invalidation_handle_still_flips_the_flag() {
         // A node whose resolver is not a caching one, which today is only a
         // test fixture, still gets the visible signal even though nothing
@@ -367,6 +539,7 @@ mod tests {
             TcpUpstream::new(tls),
             Shutdown::new(),
             BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8),
+            None,
             None,
         );
         let primary = backend("db-1");
@@ -444,6 +617,7 @@ mod tests {
             Shutdown::new(),
             BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8),
             Some(Arc::clone(&caching) as Arc<dyn GrantInvalidation>),
+            None,
         );
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         watches.ensure_watched(&primary);
@@ -464,12 +638,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_established_sessions_next_acquire_finds_the_corrected_primary() {
+        // The claim ADR 0028 makes for a session that already authenticated:
+        // it holds a `Grant` naming the old primary for its whole life, and
+        // this proves the one place that matters — `backend_for`, which is
+        // what every connection acquire calls — resolves the corrected
+        // backend from that same, unmodified `Grant`, with no new grant and
+        // no reconnect involved.
+        let primary_addr = crate::fakepg::fake_postgres().await;
+        let primary = backend_at(primary_addr);
+        let new_primary = backend("db-2-after-failover");
+
+        let grant = pgprox_core::auth::Grant {
+            tenant: pgprox_core::ids::TenantId::new("acme"),
+            primary: primary.clone(),
+            replicas: Vec::new(),
+            pool: pgprox_core::auth::PoolHints::default(),
+            ttl: Duration::from_secs(300),
+            claims: pgprox_core::auth::ClaimSet::default(),
+        };
+
+        let topology = pgprox_core::auth::FakeTopologyRefresh::new().with_topology(
+            primary.server.clone(),
+            pgprox_core::auth::Topology {
+                primary: new_primary.clone(),
+                replicas: vec![],
+            },
+        );
+
+        let tls = pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).unwrap();
+        let watches = PrimaryWatches::new(
+            TcpUpstream::new(tls),
+            Shutdown::new(),
+            BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8),
+            None,
+            Some(Arc::new(topology) as Arc<dyn TopologyRefresh>),
+        );
+
+        // Before the demotion is even detected, `backend_for` resolves the
+        // grant's own primary: nothing has overridden it yet.
+        assert_eq!(
+            crate::replicas::backend_for(
+                &grant,
+                pgprox_core::route::RouteTarget::Primary,
+                &watches
+            )
+            .server,
+            primary.server
+        );
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        watches.ensure_watched(&primary);
+        while tokio::time::Instant::now() < deadline {
+            if watches.current_backend(&primary.server).is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let resolved = crate::replicas::backend_for(
+            &grant,
+            pgprox_core::route::RouteTarget::Primary,
+            &watches,
+        );
+        assert_eq!(
+            resolved.server, new_primary.server,
+            "the session's next acquire still resolved the demoted primary"
+        );
+    }
+
+    #[tokio::test]
     async fn two_primaries_are_watched_independently() {
         let tls = pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).unwrap();
         let watches = PrimaryWatches::new(
             TcpUpstream::new(tls),
             Shutdown::new(),
             BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8),
+            None,
             None,
         );
 

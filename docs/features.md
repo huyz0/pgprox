@@ -260,18 +260,24 @@ read routing disagree, routing wins.
 staleness bound is per node and why invalidation only sees writes through the
 same node.
 
-**Automatic failover of a primary.** An upstream that goes away is reported to
-the client rather than silently retried against something else. A session
-already connected to a primary that demotes is not moved.
+**Automatic failover of a primary.** There is no election and no promotion.
+pgprox never chooses which server should take over; that stays your control
+plane's job.
 
 What *is* done, and is a narrower thing: every primary is probed on the same
 250 ms cadence as the replica poller, and the moment one reports
-`pg_is_in_recovery()` as true, every cached grant naming it is dropped. That
-does not fail anyone over. It stops a *new* client from being handed a stale
-grant pointing at a primary that already stopped being one, which the cache
-would otherwise do for up to `grant_ttl_cap`. See
-[Read routing](read-routing.md#detecting-a-primarys-own-demotion) and ADR
-[0027](internal/product/decisions/0027-local-failover-detection-invalidates-rather-than-repairs.md).
+`pg_is_in_recovery()` as true, two things happen. Every cached grant naming it
+is dropped, so a *new* client is never handed a stale grant pointing at a
+primary that already stopped being one, which the cache would otherwise do for
+up to `grant_ttl_cap`. And the token service is asked, without a token, where
+that primary is now; a successful answer is applied to every session already
+using it, at each one's next connection acquire, with no reconnect and nothing
+torn down. If that ask fails, a session already connected keeps failing writes
+until it reconnects, exactly as it would without any of this. See
+[Read routing](read-routing.md#detecting-a-primarys-own-demotion) and ADRs
+[0027](internal/product/decisions/0027-local-failover-detection-invalidates-rather-than-repairs.md)
+and
+[0028](internal/product/decisions/0028-topology-refresh-is-a-second-rpc-with-no-authorization-fields.md).
 
 ## Not built yet
 

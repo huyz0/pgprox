@@ -455,7 +455,14 @@ pub async fn start(options: Options) -> Result<App, StartupError> {
         detail: err.to_string(),
     })?;
 
-    start_with(options, source, Arc::new(resolver)).await
+    // Captured before the erasure `start_with` needs: `TopologyRefresh` is a
+    // property of the sidecar client specifically, and by the time a resolver
+    // reaches `start_with` it is `Arc<dyn CredentialResolver>`, which does not
+    // carry it.
+    let resolver = Arc::new(resolver);
+    let topology = Some(Arc::clone(&resolver) as Arc<dyn pgprox_core::auth::TopologyRefresh>);
+
+    start_with(options, source, resolver, topology).await
 }
 
 /// Builds a node from a configuration source and a resolver that already
@@ -472,6 +479,7 @@ pub async fn start_with(
     options: Options,
     config: Arc<dyn pgprox_core::config::ConfigSource>,
     resolver: Arc<dyn pgprox_core::auth::CredentialResolver>,
+    topology: Option<Arc<dyn pgprox_core::auth::TopologyRefresh>>,
 ) -> Result<App, StartupError> {
     let listener_certificate = options.tls()?;
     // One configuration for the life of the process, resolving to whatever the
@@ -533,6 +541,7 @@ pub async fn start_with(
         config,
         resolver,
         invalidation,
+        topology,
     })
     .await
 }
@@ -722,6 +731,7 @@ mod tests {
             options,
             source,
             Arc::new(pgprox_core::auth::FakeCredentialResolver::new()),
+            None,
         )
         .await
         .unwrap();
@@ -792,6 +802,7 @@ mod tests {
             },
             FileSource::new(FileConfig::at(&path)).unwrap(),
             Arc::clone(&inner) as Arc<dyn CredentialResolver>,
+            None,
         )
         .await
         .unwrap();
@@ -979,6 +990,7 @@ mod tests {
             },
             FileSource::new(FileConfig::at(&path)).unwrap(),
             Arc::clone(&inner) as Arc<dyn CredentialResolver>,
+            None,
         )
         .await
         .unwrap();

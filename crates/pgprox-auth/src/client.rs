@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use pgprox_core::auth::{
     AuthError, AuthRequest, Backend, ClaimSet, CredentialResolver, Grant, PoolHints, PoolMode,
-    TlsMode,
+    TlsMode, Topology, TopologyRefresh,
 };
 use pgprox_core::error::AuthRejection;
 use pgprox_core::ids::{ServerId, TenantId};
@@ -120,6 +120,40 @@ impl CredentialResolver for SidecarResolver {
 
         let response = client.resolve(rpc).await.map_err(|s| map_status(&s))?;
         grant_from_proto(response.into_inner())
+    }
+}
+
+#[async_trait::async_trait]
+impl TopologyRefresh for SidecarResolver {
+    async fn refresh_topology(&self, primary: &ServerId) -> Result<Topology, AuthError> {
+        let proto = pb::RefreshTopologyRequest {
+            primary_host: primary.host().to_owned(),
+            primary_port: u32::from(primary.port()),
+        };
+
+        let mut client = self.client.clone();
+        let mut rpc = tonic::Request::new(proto);
+        rpc.set_timeout(self.timeout);
+
+        let response = client
+            .refresh_topology(rpc)
+            .await
+            .map_err(|s| map_status(&s))?
+            .into_inner();
+
+        let primary = response
+            .primary
+            .ok_or_else(|| AuthError::Malformed {
+                reason: "topology refresh response has no primary backend".into(),
+            })
+            .and_then(backend_from_proto)?;
+        let replicas = response
+            .replicas
+            .into_iter()
+            .map(backend_from_proto)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Topology { primary, replicas })
     }
 }
 

@@ -455,6 +455,7 @@ pub fn context(app: &App, shutdown: &Shutdown) -> Context {
             shutdown.clone(),
             Arc::clone(&app.slab),
             app.deps.invalidation.clone(),
+            app.deps.topology.clone(),
         )),
     }
 }
@@ -1377,6 +1378,7 @@ mod tests {
             .unwrap(),
             resolver: Arc::new(FakeCredentialResolver::new()),
             invalidation: None,
+            topology: None,
         }
     }
 

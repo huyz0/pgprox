@@ -140,6 +140,33 @@ impl pb::credential_resolver_server::CredentialResolver for MockSidecar {
             }),
         }))
     }
+
+    async fn refresh_topology(
+        &self,
+        request: Request<pb::RefreshTopologyRequest>,
+    ) -> Result<Response<pb::RefreshTopologyResponse>, Status> {
+        // Same environment the token-bearing path reads, because this mock
+        // has exactly one topology and answers both questions about it. What
+        // it does not do is pretend the request named the wrong primary: an
+        // e2e stack asking this at all is asking it about the one this mock
+        // knows.
+        let _ = request.into_inner();
+        let database = std::env::var("PGPROX_MOCK_DATABASE").unwrap_or_else(|_| "postgres".into());
+        let user = std::env::var("PGPROX_MOCK_USER").unwrap_or_else(|_| "postgres".into());
+        let primary =
+            std::env::var("PGPROX_MOCK_PRIMARY").unwrap_or_else(|_| "db-1.internal:5432".into());
+        let replicas = std::env::var("PGPROX_MOCK_REPLICAS")
+            .unwrap_or_else(|_| "db-1-replica.internal:5432".into());
+
+        Ok(Response::new(pb::RefreshTopologyResponse {
+            primary: Some(backend(&primary, &database, &user)),
+            replicas: replicas
+                .split(',')
+                .filter(|entry| !entry.trim().is_empty())
+                .map(|entry| backend(entry.trim(), &database, &user))
+                .collect(),
+        }))
+    }
 }
 
 #[tokio::main]

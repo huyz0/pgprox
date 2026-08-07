@@ -21,6 +21,20 @@ package pgprox.auth.v1;
 // vulnerability rather than redundancy.
 service CredentialResolver {
   rpc Resolve(ResolveRequest) returns (ResolveResponse);
+
+  // Asks where a primary's topology stands now, without a token.
+  //
+  // For a connection that already authenticated: `Resolve` needs a token and
+  // an established session holds a Grant, not a token, from the moment it
+  // authenticated, so it has nothing left to re-resolve with. This is the
+  // other half, and it deliberately answers a narrower question. See ADR
+  // 0028: no ttl, no claims, nothing that could extend what a token was
+  // originally granted. It says where the database is, not who may use it.
+  //
+  // Keyed by primary rather than by tenant, because a primary can host
+  // thousands of tenant databases and a failover is answered once for all of
+  // them rather than once per tenant.
+  rpc RefreshTopology(RefreshTopologyRequest) returns (RefreshTopologyResponse);
 }
 
 message ResolveRequest {
@@ -60,6 +74,26 @@ message ResolveResponse {
   // Claims the sidecar parsed. Supplied so the proxy does not re-parse and
   // reach a different conclusion.
   ClaimSet claims = 6;
+}
+
+message RefreshTopologyRequest {
+  // The primary as this process last knew it. Identifies which topology is
+  // being asked about; it is not necessarily still the primary by the time
+  // the sidecar answers, which is the whole point of asking.
+  string primary_host = 1;
+  uint32 primary_port = 2;
+}
+
+message RefreshTopologyResponse {
+  // Where the primary is now. May name the same server the request did, if
+  // nothing changed.
+  Backend primary = 1;
+
+  // Read replicas of the primary above, in no particular order. May be empty.
+  repeated Backend replicas = 2;
+
+  // Deliberately absent: ttl_seconds, pool hints, claims. This answers where
+  // the database is, not who may use it or for how long. See ADR 0028.
 }
 
 message Backend {

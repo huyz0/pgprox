@@ -286,14 +286,34 @@ async fn poll(
 /// A `RouteTarget` is an index into the grant's replica list, and the pool is
 /// keyed by backend. This is the one place the two meet, so a replica index
 /// that does not exist resolves to the primary rather than to a panic.
+///
+/// Owned rather than borrowed, since `M72.0`: the primary case may answer with
+/// a refreshed backend `primaries` holds rather than with the grant's own, and
+/// the two live in different places. `grant.primary` is checked first only in
+/// the sense that `primaries` is asked about *it* — the lookup key is always
+/// the grant's own primary, because that is the server every session's
+/// `PrimaryWatches` entry was started against, whatever it currently maps to.
 #[must_use]
-pub fn backend_for(grant: &Grant, target: pgprox_core::route::RouteTarget) -> &Backend {
+pub fn backend_for(
+    grant: &Grant,
+    target: pgprox_core::route::RouteTarget,
+    primaries: &crate::primary_watch::PrimaryWatches,
+) -> Backend {
     match target {
-        pgprox_core::route::RouteTarget::Replica(index) => {
-            grant.replicas.get(index).unwrap_or(&grant.primary)
-        }
-        _ => &grant.primary,
+        pgprox_core::route::RouteTarget::Replica(index) => grant
+            .replicas
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| primary_or_override(grant, primaries)),
+        _ => primary_or_override(grant, primaries),
     }
+}
+
+/// The grant's primary, or the backend a topology refresh replaced it with.
+fn primary_or_override(grant: &Grant, primaries: &crate::primary_watch::PrimaryWatches) -> Backend {
+    primaries
+        .current_backend(&grant.primary.server)
+        .unwrap_or_else(|| grant.primary.clone())
 }
 
 #[cfg(test)]
@@ -502,22 +522,36 @@ mod tests {
         );
     }
 
+    /// A registry that has no override for anything, so `backend_for` always
+    /// falls back to the grant's own primary.
+    fn no_overrides() -> crate::primary_watch::PrimaryWatches {
+        let tls = pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).unwrap();
+        crate::primary_watch::PrimaryWatches::new(
+            TcpUpstream::new(tls),
+            Shutdown::new(),
+            test_slab(),
+            None,
+            None,
+        )
+    }
+
     #[test]
     fn a_replica_index_the_grant_does_not_have_resolves_to_the_primary() {
         // The two sides of this were built by different milestones against
         // different types. The primary is the answer that cannot be wrong.
         let grant = grant(1);
+        let primaries = no_overrides();
 
         assert_eq!(
-            backend_for(&grant, RouteTarget::Replica(0)).server,
+            backend_for(&grant, RouteTarget::Replica(0), &primaries).server,
             ServerId::new("db-r0", 5432)
         );
         assert_eq!(
-            backend_for(&grant, RouteTarget::Replica(7)).server,
+            backend_for(&grant, RouteTarget::Replica(7), &primaries).server,
             ServerId::new("db-1", 5432)
         );
         assert_eq!(
-            backend_for(&grant, RouteTarget::Primary).server,
+            backend_for(&grant, RouteTarget::Primary, &primaries).server,
             ServerId::new("db-1", 5432)
         );
     }

@@ -109,6 +109,11 @@ pub struct Deps {
     /// `CachingResolver`. Demotion is still probed and logged either way; only
     /// the invalidation step has nothing to call.
     pub invalidation: Option<Arc<dyn pgprox_core::auth::GrantInvalidation>>,
+    /// The handle a demoted primary is asked for its replacement through.
+    ///
+    /// `None` for the same reason `invalidation` can be: a node whose resolver
+    /// is not the real sidecar client, which today is only a test fixture.
+    pub topology: Option<Arc<dyn pgprox_core::auth::TopologyRefresh>>,
 }
 
 impl std::fmt::Debug for Deps {
@@ -411,6 +416,7 @@ mod tests {
             config: FakeConfigSource::new(config).expect("the test's config is valid"),
             resolver: Arc::new(FakeCredentialResolver::new()),
             invalidation: None,
+            topology: None,
         }
     }
 

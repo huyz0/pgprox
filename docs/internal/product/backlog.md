@@ -8423,3 +8423,59 @@ recognised so it can be refused rather than read as a version.
   second such reading invalidates nothing further, a failed probe invalidates
   nothing, and the whole path was proved against a real socket and a real
   two-second clock rather than only at the unit level.
+
+## M72: an established session had no way to learn a corrected primary
+
+- [x] `M72.0` A second, token-free RPC, and a session's next acquire finds the
+  correction.
+  `M71.0` gave new clients fast relief from a demoted primary by invalidating
+  the grant cache. It could do nothing for a session already connected,
+  because that session holds a `Grant` rather than a token from the moment it
+  authenticated, and `Resolve` needs a token. Its only recourse was to keep
+  failing writes until it reconnected.
+  `RefreshTopology`, additive to the frozen `pgprox.auth.v1` contract: keyed
+  by the primary's host and port rather than by tenant, since one primary can
+  host thousands of tenant databases and a failover is one fact about all of
+  them. The response carries no `ttl_seconds`, no pool hints, no claims,
+  deliberately: it answers where the database is, not who may use it or for
+  how long, and reusing `ResolveResponse` with those fields left at their zero
+  values would have let a caller read a default TTL of zero as "expires now"
+  rather than "not sent". ADR 0028.
+  A new `pgprox_core::auth::TopologyRefresh` trait rather than a method on
+  `CredentialResolver`, with its own `FakeTopologyRefresh` behind
+  `test-fakes` per this crate's standing rule. Two different questions with
+  two different inputs, and a caller holding only a `Grant` should not be
+  offered a method it cannot call meaningfully.
+  On the same edge in `PrimaryWatches` that triggers `M71.0`'s invalidation,
+  a successful refresh is stored keyed by the *original* primary's
+  `ServerId`, in a table `backend_for` — the one place a `RouteTarget`
+  becomes a `Backend` to connect to — checks before falling back to the
+  grant's own value. A session's next connection acquire therefore resolves
+  the corrected primary from its own unmodified grant, at the next
+  transaction boundary, with no new grant and no reconnect. `backend_for`
+  changed from returning `&Backend` to an owned `Backend` to make this
+  possible, which costs the same Arc-clone-only allocation `PoolKey`
+  construction already pays on every acquire and is not part of any measured
+  budget.
+  Best-effort by construction: if the refresh RPC fails, invalidation still
+  ran, so a new client is exactly as well served as under `M71.0` alone, and
+  an already-connected session gets no worse an outcome than it had before
+  this existed.
+  Considered and rejected: pushing the refresh from the sidecar instead of
+  pulling it, which would need a standing connection per pod and `auth.v2`;
+  answering with the replica list only, leaving the primary implicit, which
+  is the shape of bug the frozen contract's own versioning rules exist to
+  prevent; and mutating `grant.primary` in place, which would make every
+  reader of a session's grant a place that has to reconsider whether it can
+  change underneath them.
+  Proved end to end, not only at the unit level: one new test resolves a
+  grant naming a real socket, waits on a real two-second clock, and asserts
+  `backend_for`, called against that same unmodified grant, now resolves the
+  corrected primary a `FakeTopologyRefresh` was taught — the exact call a
+  live session's connection acquire makes.
+  Acceptance: the mock sidecar implements the new RPC and the real client
+  round-trips it over a live socket; a successful refresh is visible to
+  `backend_for` without a new grant; a failed refresh changes nothing; and
+  every one of the four crates touched — `pgprox-core`, `pgprox-auth`,
+  `pgprox`, and the frozen proto itself — passes its own gates with the
+  change included.
