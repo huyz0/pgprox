@@ -252,6 +252,88 @@ fn pools_for(
     (keys, held)
 }
 
+/// Every distinct upstream this node currently holds pools for.
+///
+/// The loop iterates these rather than the document's `servers:` list, and that
+/// is `M70.0`. Iterating the document meant a pool whose server the document
+/// does not name was never passed to `set_limit` at all, so it kept the limit
+/// `PoolConfig` gave it at startup and no allowance was ever applied to it.
+/// Replicas are the case that matters: they arrive from the sidecar at runtime
+/// and an operator cannot list hosts it has not been told about yet.
+///
+/// Order is the map's, which is arbitrary and does not matter: every server gets
+/// the same treatment and none depends on another.
+fn servers_with_pools(
+    all: &[(pgprox_core::ids::PoolKey, pgprox_core::pool::PoolStats)],
+) -> Vec<pgprox_core::ids::ServerId> {
+    let mut seen = std::collections::HashSet::new();
+    let mut servers = Vec::new();
+    for (key, _) in all {
+        if seen.insert(key.server.clone()) {
+            servers.push(key.server.clone());
+        }
+    }
+    servers
+}
+
+/// The cap and split the document declares for a server, directly or inherited.
+///
+/// Direct first. Failing that, the entry for the primary this server is a
+/// replica of, because a replica set is learned from a grant and an operator
+/// has no way to list a host the sidecar has not named yet. Replicas of a
+/// primary are provisioned alike often enough that its cap is the right guess,
+/// and guessing here is bounded: the fleet still coordinates on whatever number
+/// this returns.
+///
+/// `None` means nothing declares a cap for this server, which is a
+/// misconfiguration rather than a default to invent.
+fn declared_quota(
+    config: &pgprox_core::config::Config,
+    replicas: &crate::replicas::ReplicaSets,
+    server: &pgprox_core::ids::ServerId,
+) -> Option<pgprox_cluster::coordinator::ServerQuota> {
+    let entry = config.server(server).or_else(|| {
+        let primary = replicas.primary_of(server)?;
+        config.server(&primary)
+    })?;
+    Some(pgprox_cluster::coordinator::ServerQuota {
+        cap: entry.max_connections,
+        guaranteed_fraction: entry.guaranteed_fraction,
+    })
+}
+
+/// Holds every pool for a server nothing declares a cap for at zero.
+///
+/// Refusing rather than defaulting, because the cap is the one property the
+/// mission gives no graceful degradation to and a number nobody wrote down is
+/// not a cap. A zero-limit pool waits rather than opening, so the symptom is
+/// clients queueing on that server and the log line says which and why.
+///
+/// Logged on the transition rather than every tick. `apply_quota` runs once a
+/// second and a misconfiguration that persists would otherwise write a line a
+/// second for as long as it lasts.
+fn hold_at_nothing(
+    app: &App,
+    all: &[(pgprox_core::ids::PoolKey, pgprox_core::pool::PoolStats)],
+    keys: &[pgprox_core::ids::PoolKey],
+    server: &pgprox_core::ids::ServerId,
+) {
+    let was_open = all
+        .iter()
+        .any(|(key, stats)| &key.server == server && stats.limit > 0);
+    if was_open {
+        tracing::warn!(
+            %server,
+            "no cap is declared for this server, so its pools are held at zero: \
+             add it to `servers:` in the configuration document, or give the \
+             primary it replicates an entry for it to inherit"
+        );
+    }
+    for key in keys {
+        app.pool.set_limit(key, 0);
+    }
+}
+
 /// The per-pool limit an allowance divides into.
 ///
 /// At least one, because a node holding an allowance it cannot spend on any
@@ -495,6 +577,7 @@ pub async fn run_with_peers(
 
     let _ticks = ticker(
         &app,
+        &context.replicas,
         &probes,
         &addresses,
         &Drainer {
@@ -639,17 +722,25 @@ fn shed_pass(app: &App, sessions: &Arc<Sessions>) -> usize {
 /// Divided between the pools that exist for that server, because a pool is one
 /// database and user and the cap is per server. A node with no pool for a
 /// server sets nothing: there is nothing to hold.
-async fn apply_quota(app: &App) {
+async fn apply_quota(app: &App, replicas: &crate::replicas::ReplicaSets) {
     let config = app.deps.config.watch().borrow().clone();
     let all = app.pool.all_stats();
 
-    for server in &config.servers {
-        let (keys, held) = pools_for(&all, &server.server);
-        if keys.is_empty() {
-            continue;
-        }
+    for server in servers_with_pools(&all) {
+        let (keys, held) = pools_for(&all, &server);
 
-        let mut allowance = app.cluster.allowance(&server.server);
+        let Some(quota) = declared_quota(&config, replicas, &server) else {
+            hold_at_nothing(app, &all, &keys, &server);
+            continue;
+        };
+
+        // Every tick, from the document currently loaded. Caps used to be
+        // registered once during `App::build`, so a reload that raised or
+        // lowered one never reached the cluster layer at all and the fleet went
+        // on dividing the number it started with. `M70.0`.
+        app.cluster.set_cap(server.clone(), quota);
+
+        let mut allowance = app.cluster.allowance(&server);
         // The guaranteed share needs no coordination. More than that is the
         // leader's to grant, and a refusal leaves the node on its share, which
         // is the direction that cannot breach the cap.
@@ -660,15 +751,15 @@ async fn apply_quota(app: &App) {
             // never asked, and the difference is the whole diagnosis.
             match pgprox_core::cluster::ClusterCoordinator::request_quota(
                 app.cluster.as_ref(),
-                &server.server,
+                &server,
                 want,
             )
             .await
             {
                 Ok(lease) => {
-                    allowance = app.cluster.allowance(&server.server);
+                    allowance = app.cluster.allowance(&server);
                     tracing::info!(
-                        server = %server.server,
+                        server = %server,
                         want,
                         granted = lease.count(app.deps.clock.now()),
                         guaranteed = allowance.guaranteed,
@@ -678,7 +769,7 @@ async fn apply_quota(app: &App) {
                 }
                 Err(reason) => {
                     tracing::warn!(
-                        server = %server.server,
+                        server = %server,
                         want,
                         held,
                         guaranteed = allowance.guaranteed,
@@ -845,6 +936,7 @@ async fn follow_drain(app: &App, probes: &Arc<Probes>, drainer: &Drainer<'_>) {
 
 async fn ticker(
     app: &App,
+    replicas: &Arc<crate::replicas::ReplicaSets>,
     probes: &Arc<Probes>,
     peers: &[String],
     drainer: &Drainer<'_>,
@@ -908,7 +1000,7 @@ async fn ticker(
 
         // Before the reap, so a limit that just dropped is what the reaper
         // measures against.
-        apply_quota(app).await;
+        apply_quota(app, replicas).await;
 
         // Idle connections cost the database a slot for as long as the node
         // runs, so this is not housekeeping: it is the other half of the
@@ -1246,6 +1338,17 @@ mod tests {
     use pgprox_core::config::{Config, FakeConfigSource, ServerConfig};
     use pgprox_core::ids::{NodeId, ServerId};
 
+    /// A backend on `host`, with the fields a quota test does not care about.
+    fn test_backend(host: &str) -> pgprox_core::auth::Backend {
+        pgprox_core::auth::Backend {
+            server: ServerId::new(host, 5432),
+            database: "acme".into(),
+            user: "acme_app".into(),
+            password: pgprox_core::secret::SecretString::new("hunter2"),
+            tls: pgprox_core::auth::TlsMode::Disabled,
+        }
+    }
+
     fn deps() -> Deps {
         Deps {
             listener_tls: None,
@@ -1360,7 +1463,7 @@ mod tests {
                     addresses: &[],
                     grace: Duration::from_millis(50),
                 };
-                ticker(&app, &probes, &[], &drainer, &shutdown).await
+                ticker(&app, &context.replicas, &probes, &[], &drainer, &shutdown).await
             }
         });
 
@@ -1558,7 +1661,7 @@ mod tests {
 
         let ran = tokio::time::timeout(
             Duration::from_secs(5),
-            ticker(&app, &probes, &[], &drainer, &shutdown),
+            ticker(&app, &context.replicas, &probes, &[], &drainer, &shutdown),
         )
         .await
         .expect("the tick stopped when the reaper was added");
@@ -1628,7 +1731,7 @@ mod tests {
                         tokio::time::sleep(Duration::from_millis(20)).await;
                     }
                 } => {}
-                _ = ticker(&app, &probes, &[], &drainer, &shutdown) => {}
+                _ = ticker(&app, &context.replicas, &probes, &[], &drainer, &shutdown) => {}
             }
         })
         .await;
@@ -1702,7 +1805,7 @@ mod tests {
                         tokio::time::sleep(Duration::from_millis(20)).await;
                     }
                 } => {}
-                _ = ticker(&app, &probes, &[], &drainer, &shutdown) => {}
+                _ = ticker(&app, &context.replicas, &probes, &[], &drainer, &shutdown) => {}
             }
         })
         .await;
@@ -1834,7 +1937,7 @@ mod tests {
 
         let ran = tokio::time::timeout(
             Duration::from_secs(10),
-            ticker(&app, &probes, &[], &drainer, &shutdown),
+            ticker(&app, &context.replicas, &probes, &[], &drainer, &shutdown),
         )
         .await
         .expect("the tick did not stop");
@@ -1867,7 +1970,8 @@ mod tests {
         // A pool with a limit far above anything the cluster would allow,
         // which is what the configuration document alone would have given it.
         app.pool.set_limit(&key, 999);
-        apply_quota(&app).await;
+        let ctx = context(&app, &Shutdown::new());
+        apply_quota(&app, &ctx.replicas).await;
 
         let allowance = app
             .cluster
@@ -1885,6 +1989,136 @@ mod tests {
             "a pool was allowed {limit} against an allowance of {allowance:?}"
         );
         assert!(limit > 0, "a pool was allowed nothing at all");
+    }
+
+    #[tokio::test]
+    async fn a_pool_for_a_server_the_document_never_named_is_held_at_zero() {
+        // `M70.0`. The loop iterated `config.servers`, so a pool whose server
+        // the document does not name was never passed to `set_limit` at all: it
+        // kept the default `PoolConfig` gave it and no allowance ever reached
+        // it. Three nodes each holding that default is a cap nobody declared
+        // being exceeded by a factor nobody chose.
+        let app = App::build(deps()).await.unwrap();
+        let stranger = pgprox_core::ids::PoolKey::new(
+            pgprox_core::ids::ServerId::new("db-unknown", 5432),
+            "acme",
+            "acme_app",
+        );
+        app.pool.set_limit(&stranger, 50);
+
+        let ctx = context(&app, &Shutdown::new());
+        apply_quota(&app, &ctx.replicas).await;
+
+        let limit = app
+            .pool
+            .all_stats()
+            .into_iter()
+            .find(|(key, _)| key == &stranger)
+            .map(|(_, stats)| stats.limit)
+            .expect("the pool vanished");
+        assert_eq!(
+            limit, 0,
+            "a server with no declared cap was allowed {limit} connections"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_replica_inherits_the_cap_of_the_primary_it_replicates() {
+        // The other half, and the reason zero is not simply the answer.
+        // Replicas arrive from the sidecar at runtime, so an operator cannot
+        // list a host it has not been told about. Holding every replica at
+        // zero would make read routing configuration-impossible rather than
+        // safe.
+        let app = App::build(deps()).await.unwrap();
+        let ctx = context(&app, &Shutdown::new());
+
+        // A grant naming db-1, which the document does declare, and a replica
+        // it does not.
+        let grant = pgprox_core::auth::Grant {
+            tenant: pgprox_core::ids::TenantId::new("acme"),
+            primary: test_backend("db-1"),
+            replicas: vec![test_backend("db-replica")],
+            pool: pgprox_core::auth::PoolHints::default(),
+            ttl: Duration::from_secs(60),
+            claims: pgprox_core::auth::ClaimSet::default(),
+        };
+        let _watch = ctx.replicas.watch_for(&grant).expect("a watch");
+
+        let key = pgprox_core::ids::PoolKey::new(
+            pgprox_core::ids::ServerId::new("db-replica", 5432),
+            "acme",
+            "acme_app",
+        );
+        app.pool.set_limit(&key, 50);
+        apply_quota(&app, &ctx.replicas).await;
+
+        let limit = app
+            .pool
+            .all_stats()
+            .into_iter()
+            .find(|(seen, _)| seen == &key)
+            .map(|(_, stats)| stats.limit)
+            .expect("the pool vanished");
+        assert!(
+            limit > 0,
+            "a replica of a declared primary inherited no cap, so read routing cannot open one"
+        );
+        let allowance = app
+            .cluster
+            .allowance(&pgprox_core::ids::ServerId::new("db-replica", 5432));
+        assert!(
+            limit <= allowance.guaranteed + allowance.leased,
+            "an inherited cap was not coordinated: {limit} against {allowance:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cap_the_document_changes_reaches_the_cluster() {
+        // Caps were registered once, during `App::build`. A reload that raised
+        // or lowered one never reached the cluster layer, so the fleet went on
+        // dividing the number it started with while the admin surface reported
+        // the new one. `M70.0`.
+        let server = pgprox_core::ids::ServerId::new("db-1", 5432);
+        let source = FakeConfigSource::new(Config {
+            servers: vec![ServerConfig {
+                server: server.clone(),
+                max_connections: 10,
+                guaranteed_fraction: 0.5,
+            }],
+            max_client_conns: 10,
+            ..Config::default()
+        })
+        .unwrap();
+        let app = App::build(Deps {
+            config: Arc::clone(&source) as Arc<dyn pgprox_core::ConfigSource>,
+            ..deps()
+        })
+        .await
+        .unwrap();
+        let key = pgprox_core::ids::PoolKey::new(server.clone(), "acme", "acme_app");
+        app.pool.set_limit(&key, 1);
+
+        let before = app.cluster.allowance(&server);
+        source
+            .publish(Config {
+                servers: vec![ServerConfig {
+                    server: server.clone(),
+                    max_connections: 200,
+                    guaranteed_fraction: 0.5,
+                }],
+                max_client_conns: 10,
+                ..Config::default()
+            })
+            .unwrap();
+
+        let ctx = context(&app, &Shutdown::new());
+        apply_quota(&app, &ctx.replicas).await;
+
+        let after = app.cluster.allowance(&server);
+        assert!(
+            after.guaranteed > before.guaranteed,
+            "a raised cap did not reach the cluster: {before:?} then {after:?}"
+        );
     }
 
     #[tokio::test]

@@ -692,6 +692,15 @@ mod tests {
     const PATIENCE: Duration = Duration::from_secs(30);
 
     use super::*;
+
+    /// A quota for a test, at the documented default fraction.
+    fn test_quota(cap: u32) -> pgprox_cluster::coordinator::ServerQuota {
+        pgprox_cluster::coordinator::ServerQuota {
+            cap,
+            guaranteed_fraction: 0.5,
+        }
+    }
+
     use pgprox_cluster::coordinator::CoordinatorConfig;
     use pgprox_core::clock::FakeClock;
 
@@ -920,7 +929,7 @@ mod tests {
             },
             Arc::new(clock.clone()),
         );
-        coordinator.set_cap(ServerId::new("db-1", 5432), 100);
+        coordinator.set_cap(ServerId::new("db-1", 5432), test_quota(100));
 
         for round in 1..=12 {
             for node in 1..=3 {
@@ -971,7 +980,7 @@ mod tests {
         // Two nodes granting from one free pool is the one failure the quota
         // layer has no graceful degradation for.
         let follower = coordinator(2);
-        follower.set_cap(ServerId::new("db-1", 5432), 100);
+        follower.set_cap(ServerId::new("db-1", 5432), test_quota(100));
 
         let (theirs, ours) = tokio::io::duplex(64 * 1024);
         let serving = tokio::spawn({

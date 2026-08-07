@@ -8327,3 +8327,43 @@ recognised so it can be refused rather than read as a version.
   generation in use survives the grace period, an unused one does not, and all
   three assertions were seen to fail against the old keying before they passed
   against the new.
+
+## M70: the document's server entries did not reach the cluster layer
+
+- [x] `M70.0` Three ways a declared cap failed to arrive, and one way an
+  undeclared one was invented.
+  Found while answering how pgprox learns its topology. All three are the same
+  defect class: `servers:` is the operator's statement of what the fleet may
+  hold, and three separate paths did not carry it.
+  **Pools for a server the document never names.** `apply_quota` iterated
+  `config.servers`, so a pool whose server had no entry was never passed to
+  `set_limit` at all. It kept the limit `PoolConfig` gave it at startup, derived
+  from whichever server happened to be first in the document, and no allowance
+  ever applied to it. Replicas are the case that matters and they are also the
+  case an operator cannot pre-empt: they arrive from the sidecar at runtime.
+  Three nodes each holding that default is a cap nobody declared being exceeded
+  by a factor nobody chose.
+  **A cap that changed.** `set_cap` was called once, during `App::build`. A
+  reload that raised or lowered `max_connections` never reached the cluster, so
+  the fleet went on dividing the number it started with while the admin surface
+  reported the new one.
+  **`servers[].guaranteed_fraction`.** Parsed, validated against `0.0..=1.0`,
+  defaulted, documented, and read by nothing. The split used
+  `CoordinatorConfig::guaranteed_fraction`, a fleet-wide default `wiring.rs`
+  never overrode, so setting the documented per-server field changed nothing at
+  all.
+  The loop now walks the servers that actually have pools, resolves each one's
+  quota from the document directly or from the primary it replicates, and
+  re-registers it every tick. `ServerQuota` carries the cap and the fraction
+  together, because holding them apart is how the fraction came to be orphaned.
+  A server nothing declares a cap for is held at zero rather than defaulted,
+  with a log line naming it and both fixes. Failing closed is the right
+  direction for the one property the mission gives no graceful degradation, and
+  the inheritance rule is what stops that from making read routing
+  configuration-impossible.
+  Also removed: `App::replicas`, an `Arc<ReplicaWatch>` of length zero written
+  at construction and read nowhere. The registry that matters lives on the
+  connection context, and the quota loop now takes it.
+  Acceptance: an undeclared server's pools read zero, a replica of a declared
+  primary reads more than zero and within its allowance, a reloaded cap moves
+  the allowance, and all three were seen to fail against the old loop.

@@ -37,8 +37,6 @@ use pgprox_core::ids::NodeId;
 use pgprox_observe::health::{Health, HealthConfig};
 use pgprox_pool::live::LivePool;
 use pgprox_pool::pool::PoolConfig;
-use pgprox_route::poller::ReplicaWatch;
-use pgprox_route::replica::ReplicaConfig;
 use pgprox_session::connect::PgConnector;
 
 /// Why a node could not be built.
@@ -152,8 +150,6 @@ pub struct App {
     pub deps: Deps,
     /// Membership, quota and leases.
     pub cluster: Arc<GossipCoordinator>,
-    /// Replica positions, polled on their own schedule.
-    pub replicas: Arc<ReplicaWatch>,
     /// Whether this node is draining, and until when.
     pub drain: SharedDrain,
     /// What the probes answer.
@@ -243,7 +239,13 @@ impl App {
         // server's max_connections includes the reserve an operator needs to
         // be able to log in and intervene.
         for server in &config.servers {
-            cluster.set_cap(server.server.clone(), server.max_connections);
+            cluster.set_cap(
+                server.server.clone(),
+                pgprox_cluster::coordinator::ServerQuota {
+                    cap: server.max_connections,
+                    guaranteed_fraction: server.guaranteed_fraction,
+                },
+            );
         }
 
         // Buffers are borrowed while a connection has something to say and
@@ -323,7 +325,6 @@ impl App {
             pool,
             slab,
             routes: Arc::new(crate::routes::RouteCounts::new()),
-            replicas: ReplicaWatch::new(0, ReplicaConfig::default(), Arc::clone(&deps.clock)),
             drain,
             health,
             sessions,

@@ -57,6 +57,20 @@ use crate::membership::{Membership, MembershipConfig};
 use crate::quota::{self, NodeAllowance};
 use crate::reservation::{ReservationConfig, Reservations};
 
+/// One server's cap and how it divides.
+///
+/// A pair rather than two registrations, because a cap without the fraction it
+/// splits by is only half of the answer and the two drifting apart is exactly
+/// how `servers[].guaranteed_fraction` came to be read by nothing.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ServerQuota {
+    /// Connections the whole fleet may hold on this server.
+    pub cap: u32,
+    /// The share divided evenly across nodes as a floor each may use without
+    /// asking. The rest is leased.
+    pub guaranteed_fraction: f64,
+}
+
 /// How a node's quota behaviour is tuned.
 #[derive(Clone, Copy, Debug)]
 pub struct CoordinatorConfig {
@@ -146,8 +160,8 @@ pub struct NodeCoordinator {
     ledgers: HashMap<ServerId, LeaseLedger>,
     /// Leases this node holds, one per server.
     held: HashMap<ServerId, QuotaLease>,
-    /// Configured caps.
-    caps: HashMap<ServerId, u32>,
+    /// Configured caps, and how each one splits.
+    caps: HashMap<ServerId, ServerQuota>,
     /// What this node reports about itself.
     mode: NodeMode,
     client_conns: u32,
@@ -197,9 +211,14 @@ impl NodeCoordinator {
         self.local
     }
 
-    /// Registers a server's cap.
-    pub fn set_cap(&mut self, server: ServerId, cap: u32) {
-        self.caps.insert(server, cap);
+    /// Registers a server's cap and how it splits.
+    ///
+    /// The fraction travels with the cap rather than beside it. They were
+    /// apart: the cap came from the server's own document entry and the
+    /// fraction from a fleet-wide default, so `servers[].guaranteed_fraction`
+    /// was parsed, validated, documented and read by nothing. `M70.0`.
+    pub fn set_cap(&mut self, server: ServerId, quota: ServerQuota) {
+        self.caps.insert(server, quota);
     }
 
     /// The digests this node holds, for gossip and for admin aggregates.
@@ -288,12 +307,17 @@ impl NodeCoordinator {
     /// actually see, so discovering more peers than were configured shrinks the
     /// share rather than over-subscribing the cap.
     fn split_for(&self, server: &ServerId, view: &MembershipView) -> quota::QuotaSplit {
-        let cap = self.caps.get(server).copied().unwrap_or(0);
+        let quota = self.caps.get(server).copied();
         let seen = u32::try_from(view.members().len()).unwrap_or(u32::MAX);
         quota::split(
-            cap,
+            quota.map_or(0, |quota| quota.cap),
             self.config.fleet_size.max(seen),
-            self.config.guaranteed_fraction,
+            // The server's own fraction where there is one. A server with no
+            // entry has a cap of zero, so the fraction it divides is moot and
+            // the fleet default keeps the arithmetic defined.
+            quota.map_or(self.config.guaranteed_fraction, |quota| {
+                quota.guaranteed_fraction
+            }),
         )
     }
 
@@ -564,6 +588,15 @@ impl NodeCoordinator {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A quota for a test, at the documented default fraction.
+    fn test_quota(cap: u32) -> ServerQuota {
+        ServerQuota {
+            cap,
+            guaranteed_fraction: 0.5,
+        }
+    }
+
     use crate::digest::VersionedDigest;
     use crate::sim::{Network, NetworkFaults, Rng};
     use std::time::Duration;
@@ -603,7 +636,7 @@ mod tests {
         let mut nodes: Vec<NodeCoordinator> = (1..=size)
             .map(|n| {
                 let mut c = NodeCoordinator::new(node(n), config_for(size), now);
-                c.set_cap(server(), CAP);
+                c.set_cap(server(), test_quota(CAP));
                 c
             })
             .collect();
@@ -687,7 +720,7 @@ mod tests {
     fn restart(nodes: &mut [NodeCoordinator], index: usize, at: Instant) {
         let id = nodes[index].node();
         let mut fresh = NodeCoordinator::new(id, config_for(FLEET), at);
-        fresh.set_cap(server(), CAP);
+        fresh.set_cap(server(), test_quota(CAP));
         nodes[index] = fresh;
     }
 
@@ -825,7 +858,7 @@ mod tests {
         let start = Instant::now();
         let config = config_for(2);
         let mut alone = NodeCoordinator::new(node(1), config, start);
-        alone.set_cap(server(), CAP);
+        alone.set_cap(server(), test_quota(CAP));
 
         // Heartbeat for long enough that the takeover wait cannot be the
         // reason for a refusal, keeping only itself alive.
@@ -930,7 +963,7 @@ mod tests {
         // true, this test is where it shows.
         let now = Instant::now();
         let mut alone = NodeCoordinator::new(node(1), config_for(FLEET), now);
-        alone.set_cap(server(), CAP);
+        alone.set_cap(server(), test_quota(CAP));
         // The self-heartbeat, which is how a node enters its own view. Without
         // it there is no view to lead and the assertions below would be about
         // an empty one.
@@ -1625,7 +1658,7 @@ mod tests {
         // on any node, nobody took office, and no lease was granted anywhere.
         let now = Instant::now();
         let mut alone = NodeCoordinator::new(node(1), config_for(3), now);
-        alone.set_cap(server(), CAP);
+        alone.set_cap(server(), test_quota(CAP));
 
         assert!(
             !alone
@@ -1660,7 +1693,7 @@ mod tests {
         // contribution left out, which is what `SHOW POOLS` reads.
         let now = Instant::now();
         let mut alone = NodeCoordinator::new(node(1), config_for(3), now);
-        alone.set_cap(server(), CAP);
+        alone.set_cap(server(), test_quota(CAP));
         alone.report(42, vec![(server(), 7)]);
         alone.heartbeat(now);
 
@@ -1674,7 +1707,7 @@ mod tests {
         // constructor: a node whose loop has stopped must stop leading.
         let start = Instant::now();
         let mut alone = NodeCoordinator::new(node(1), config_for(3), start);
-        alone.set_cap(server(), CAP);
+        alone.set_cap(server(), test_quota(CAP));
         alone.heartbeat(start);
         assert!(alone.membership(start).is_leader());
 
@@ -1724,7 +1757,7 @@ mod tests {
 
         let start = Instant::now();
         let mut watcher = NodeCoordinator::new(node(1), config_for(3), start);
-        watcher.set_cap(server(), CAP);
+        watcher.set_cap(server(), test_quota(CAP));
         watcher.report(10, vec![(server(), 11)]);
         watcher.heartbeat(start);
         watcher.gossip(holding(2, 1), start);
@@ -1766,7 +1799,7 @@ mod tests {
         // went red on exactly this.
         let start = Instant::now();
         let mut alone = NodeCoordinator::new(node(1), config_for(3), start);
-        alone.set_cap(server(), CAP);
+        alone.set_cap(server(), test_quota(CAP));
         alone.report(42, vec![(server(), 7)]);
         alone.heartbeat(start);
 
@@ -1833,7 +1866,7 @@ mod tests {
         let mut nodes: Vec<NodeCoordinator> = (1..=8_u16)
             .map(|n| {
                 let mut c = NodeCoordinator::new(node(n), config_for(FLEET), now);
-                c.set_cap(server(), CAP);
+                c.set_cap(server(), test_quota(CAP));
                 c
             })
             .collect();

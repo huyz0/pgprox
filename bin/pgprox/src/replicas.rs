@@ -210,6 +210,31 @@ impl ReplicaSets {
         Some(watch)
     }
 
+    /// The primary a server is a replica of, as some live grant named it.
+    ///
+    /// Exists so the quota loop can give a replica the cap of the primary it
+    /// replicates. Nothing in the configuration document lists replicas, so
+    /// without this a replica has no declared cap and no way to acquire one.
+    ///
+    /// Ambiguity resolves to nothing. A host that appears under two primaries
+    /// is not a replica of either in any sense this can act on, and inheriting
+    /// one of the two caps arbitrarily would be a cap chosen by iteration
+    /// order.
+    #[must_use]
+    pub fn primary_of(&self, server: &ServerId) -> Option<ServerId> {
+        let watches = self.lock();
+        let mut found: Option<&ServerId> = None;
+        for key in watches.keys() {
+            if key.replicas.iter().any(|replica| replica == server) {
+                if found.is_some_and(|primary| primary != &key.primary) {
+                    return None;
+                }
+                found = Some(&key.primary);
+            }
+        }
+        found.cloned()
+    }
+
     /// Drops generations no session holds and no grant has asked for lately.
     ///
     /// Both conditions, not either. A session keeps its watch for its whole

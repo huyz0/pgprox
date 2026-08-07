@@ -28,7 +28,7 @@ use pgprox_core::cluster::{
 };
 use pgprox_core::ids::{NodeId, ServerId, TenantId};
 
-use crate::coordinator::{CoordinatorConfig, NodeCoordinator};
+use crate::coordinator::{CoordinatorConfig, NodeCoordinator, ServerQuota};
 use crate::digest::{MergeOutcome, VersionedDigest};
 use crate::quota::NodeAllowance;
 
@@ -117,9 +117,9 @@ impl GossipCoordinator {
         f(&mut guard)
     }
 
-    /// Registers a server's cap.
-    pub fn set_cap(&self, server: ServerId, cap: u32) {
-        self.with(|c| c.set_cap(server, cap));
+    /// Registers a server's cap and how it splits.
+    pub fn set_cap(&self, server: ServerId, quota: ServerQuota) {
+        self.with(|c| c.set_cap(server, quota));
     }
 
     /// What this node would tell a peer right now.
@@ -346,6 +346,15 @@ impl ClusterCoordinator for GossipCoordinator {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A quota for a test, at the documented default fraction.
+    fn test_quota(cap: u32) -> ServerQuota {
+        ServerQuota {
+            cap,
+            guaranteed_fraction: 0.5,
+        }
+    }
+
     use pgprox_core::clock::FakeClock;
     use std::time::Duration;
 
@@ -389,7 +398,7 @@ mod tests {
             },
             Arc::new(clock.clone()) as Arc<dyn pgprox_core::clock::Clock>,
         );
-        coordinator.set_cap(server(), 60);
+        coordinator.set_cap(server(), test_quota(60));
 
         coordinator.tick();
         assert!(
@@ -496,7 +505,7 @@ mod tests {
             ..CoordinatorConfig::default()
         };
         let coordinator = GossipCoordinator::new(node(1), config, Arc::new(clock.clone()));
-        coordinator.set_cap(server(), 100);
+        coordinator.set_cap(server(), test_quota(100));
         // Gossip every second while the wait elapses, as the real loop does.
         // Advancing in one jump would let every peer go suspect and cost the
         // node its quorum, which is the correct behaviour and the wrong setup.
@@ -532,7 +541,7 @@ mod tests {
             ..CoordinatorConfig::default()
         };
         let coordinator = GossipCoordinator::new(node(2), config, Arc::new(clock.clone()));
-        coordinator.set_cap(server(), 100);
+        coordinator.set_cap(server(), test_quota(100));
         for round in 1..=12 {
             coordinator.gossip(digest_for(1, round));
             coordinator.gossip(digest_for(2, round));
@@ -896,7 +905,7 @@ mod tests {
             ..CoordinatorConfig::default()
         };
         let follower = GossipCoordinator::new(node(2), config, Arc::new(clock.clone()));
-        follower.set_cap(server(), 100);
+        follower.set_cap(server(), test_quota(100));
         for round in 1..=12 {
             follower.gossip(digest_for(1, round));
             follower.gossip(digest_for(2, round));
@@ -1035,7 +1044,7 @@ mod tests {
             ..CoordinatorConfig::default()
         };
         let fresh = GossipCoordinator::new(node(1), config, Arc::new(clock.clone()));
-        fresh.set_cap(server(), 100);
+        fresh.set_cap(server(), test_quota(100));
         fresh.gossip(digest_for(1, 1));
         fresh.gossip(digest_for(2, 1));
         fresh.gossip(digest_for(3, 1));

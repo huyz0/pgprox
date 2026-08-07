@@ -65,6 +65,24 @@ is uneven. At `0.0` every connection needs a lease from the leader. The default
 of `0.5` gives each node a floor it can use without asking and leaves half the
 cap to follow the load.
 
+Both fields reload. A cap raised during an incident reaches the fleet on the
+next tick rather than at the next restart.
+
+#### Replicas, which you cannot list in advance
+
+Replicas do not appear here and mostly cannot: they arrive from the token
+service in a grant, so a node learns a replica host at the moment a session
+first presents it. **A replica inherits the entry of the primary it replicates**,
+which is why the primary needs one and the replica does not.
+
+An upstream that nothing declares a cap for, directly or by inheritance, has its
+pools **held at zero** and logs a line naming the server. That is deliberate and
+it is the one place this document fails closed rather than choosing a default.
+A cap nobody wrote down is not a cap, and
+[the mission](internal/product/mission.md) gives exceeding one no graceful
+degradation. The symptom is clients queueing on that server, and the fix is
+either an entry for it or an entry for the primary it replicates.
+
 ### `nodes`
 
 Keyed by node name, which is the `--node-name` a pod was started with. An empty

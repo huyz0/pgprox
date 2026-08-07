@@ -518,7 +518,13 @@ mod tests {
             CoordinatorConfig::default(),
             Arc::clone(&shared),
         );
-        cluster.set_cap(server(), 100);
+        cluster.set_cap(
+            server(),
+            pgprox_cluster::coordinator::ServerQuota {
+                cap: 100,
+                guaranteed_fraction: 0.5,
+            },
+        );
         for node in [1_u16, 2] {
             cluster.gossip(pgprox_cluster::digest::VersionedDigest {
                 digest: digest(node),
