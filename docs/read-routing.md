@@ -192,6 +192,28 @@ a property of the database and not of whoever presented the grant. Two tenants o
 one primary share a watch and a poll loop, which is what stops a thousand
 sessions becoming a thousand `pg_last_wal_replay_lsn()` queries a second.
 
+### When the set itself changes
+
+The key is the primary **and the ordered list of replicas**, so a grant naming a
+different list gets its own watch, polling the hosts that grant actually names. A
+replica added to a tenant's set is polled from the first session that presents
+the new list, rather than waiting for the process to restart.
+
+The ordering is in the key for a reason worth stating, because it is a
+correctness one rather than an efficiency one. A route decision names a replica
+by **index**: the eligibility check reads slot `i` of the watch, and the
+connection is opened to entry `i` of the session's own grant. Those agree only
+while both lists are in the same order, and the sidecar contract is explicit that
+they need not be, since it describes replicas as arriving "in no particular
+order". Sharing one watch across two orderings would clear a read against one
+host's replay position and then send it to a different host. Keying on the list
+means the pair a session holds is always one generation of one topology.
+
+A generation that no session is holding, and that no grant has asked for in the
+last minute, is dropped and its poll loop stops. Both conditions rather than
+either: a session keeps its watch for its whole life and may be idle far longer
+than that, so the timestamp alone would take a set out from under it.
+
 ## When pgprox will not use a replica
 
 Four states take a replica out of service, and all four look identical to the

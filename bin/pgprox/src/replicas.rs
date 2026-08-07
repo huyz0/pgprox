@@ -1,12 +1,27 @@
 //! The replicas a node is watching, and the loops that watch them.
 //!
-//! # Why this is keyed by the primary
+//! # Why this is keyed by the primary and the list together
 //!
 //! A grant names a primary and its replicas together, and the set is a
 //! property of the database rather than of the client that happened to
 //! present the grant. Two tenants on the same primary therefore share one
 //! watch and one poll loop, which is what stops a thousand sessions becoming a
 //! thousand `pg_last_wal_replay_lsn()` queries per second.
+//!
+//! The key is the primary **and the ordered replica list**, and the second half
+//! is `M69.0`. It was the primary alone, so the first grant to name a primary
+//! fixed its replica set for the life of the process: `watch_for` returned the
+//! existing watch and discarded the new grant's list. A replica added later was
+//! never polled and never routed to, and a set that came back in a different
+//! order was worse than that.
+//!
+//! `RouteTarget::Replica` is an index. The eligibility check reads slot `i` of
+//! the watch and [`backend_for`] resolves `i` against the session's own grant,
+//! so the two agree only while both lists are the same. The proto is explicit
+//! that they need not be: *"Read replicas, in no particular order."* Under a
+//! reordering, the router would clear a read against one host's replay position
+//! and then send it to another. Keying on the list makes a changed list a
+//! different watch, so the pair a session holds is always one generation.
 //!
 //! # The watch is created by the first grant that names it
 //!
@@ -20,10 +35,18 @@
 //! the first poll completes therefore goes to the primary. That is the safe
 //! direction and it is why the watch is registered before its loop is spawned
 //! rather than after.
+//!
+//! # Generations are evicted, or keying on the list would be a leak
+//!
+//! One key per primary was self-limiting. One key per list is not: every
+//! topology change adds a generation that nothing would ever remove, and its
+//! poll loop would go on querying hosts no session can reach. So a watch that
+//! no session holds and that no grant has asked for in `WATCH_GRACE` is
+//! dropped, and its loop notices and stops.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::time::{Duration, Instant};
 
 use pgprox_core::auth::{Backend, Grant};
 use pgprox_core::clock::Clock;
@@ -42,9 +65,49 @@ use crate::run::Shutdown;
 /// healthy replica drops out between polls.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How long an unused generation is kept before it is dropped.
+///
+/// Long enough that a primary whose sessions all reconnect at once does not
+/// rebuild its watch from cold and route to the primary for a poll interval
+/// while it warms. Short enough that a topology that changes every few minutes
+/// does not accumulate loops. It is not a correctness bound in either
+/// direction: a watch rebuilt too eagerly starts unhealthy, which routes to the
+/// primary, and one kept too long is only a query nobody reads.
+const WATCH_GRACE: Duration = Duration::from_secs(60);
+
+/// One generation of one primary's replica set.
+///
+/// The list is part of the key rather than of the value, so a grant naming a
+/// different list cannot find this entry. See the module docs.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+struct WatchKey {
+    primary: ServerId,
+    replicas: Box<[ServerId]>,
+}
+
+impl WatchKey {
+    /// The key a grant asks for.
+    fn of(grant: &Grant) -> Self {
+        Self {
+            primary: grant.primary.server.clone(),
+            replicas: grant
+                .replicas
+                .iter()
+                .map(|replica| replica.server.clone())
+                .collect(),
+        }
+    }
+}
+
+/// A watch and when a grant last asked for it.
+struct Watched {
+    watch: Arc<ReplicaWatch>,
+    last_used: Instant,
+}
+
 /// Every replica set this node has been told about.
 pub struct ReplicaSets {
-    watches: Mutex<HashMap<ServerId, Arc<ReplicaWatch>>>,
+    watches: Mutex<HashMap<WatchKey, Watched>>,
     upstream: TcpUpstream,
     clock: Arc<dyn Clock>,
     shutdown: Shutdown,
@@ -101,10 +164,17 @@ impl ReplicaSets {
             return None;
         }
 
-        let key = grant.primary.server.clone();
+        let key = WatchKey::of(grant);
+        let now = self.clock.now();
         let mut watches = self.lock();
-        if let Some(existing) = watches.get(&key) {
-            return Some(Arc::clone(existing));
+
+        // Before the lookup rather than after, so a generation replaced by this
+        // very call is gone by the time the map grows again.
+        Self::evict_unused(&mut watches, now);
+
+        if let Some(existing) = watches.get_mut(&key) {
+            existing.last_used = now;
+            return Some(Arc::clone(&existing.watch));
         }
 
         let watch = ReplicaWatch::new(
@@ -112,14 +182,24 @@ impl ReplicaSets {
             ReplicaConfig::default(),
             Arc::clone(&self.clock),
         );
-        watches.insert(key, Arc::clone(&watch));
+        watches.insert(
+            key,
+            Watched {
+                watch: Arc::clone(&watch),
+                last_used: now,
+            },
+        );
         // Registered before the loop starts, so a session that routes in
         // between reads a watch where nothing is eligible yet and goes to the
         // primary.
         drop(watches);
 
         tokio::spawn(poll(
-            Arc::clone(&watch),
+            // Weak, so the map's own reference is the one that decides whether
+            // this generation is still wanted. A loop holding a strong one
+            // would keep every generation it ever polled alive and make the
+            // eviction below unable to fire.
+            Arc::downgrade(&watch),
             Arc::new(SqlReplicaProbe::new(
                 self.upstream.clone(),
                 grant.replicas.clone(),
@@ -130,18 +210,38 @@ impl ReplicaSets {
         Some(watch)
     }
 
-    fn lock(&self) -> MutexGuard<'_, HashMap<ServerId, Arc<ReplicaWatch>>> {
+    /// Drops generations no session holds and no grant has asked for lately.
+    ///
+    /// Both conditions, not either. A session keeps its watch for its whole
+    /// life and may sit idle far longer than the grace period, so the strong
+    /// count is what says whether anybody would notice; the timestamp only
+    /// stops a set from being rebuilt from cold between two sessions that
+    /// arrive back to back.
+    fn evict_unused(watches: &mut HashMap<WatchKey, Watched>, now: Instant) {
+        watches.retain(|_, watched| {
+            Arc::strong_count(&watched.watch) > 1
+                || now.duration_since(watched.last_used) < WATCH_GRACE
+        });
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<WatchKey, Watched>> {
         self.watches.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-/// Polls one replica set until the node stops.
+/// Polls one replica set until the node stops or the set is superseded.
 ///
 /// A failed probe is a stale reading with an age rather than a silent zero:
 /// `ReplicaWatch::poll_once` records the failure, and a replica whose reading
 /// has aged out stops being eligible on its own.
+///
+/// The watch is held weakly and the loop ends when it can no longer be
+/// upgraded, which is how a generation dropped by `evict_unused` stops
+/// querying. Upgrading per tick rather than holding a strong reference across
+/// the await is the whole mechanism: a strong one would mean no generation is
+/// ever evictable and the map would grow with every topology change.
 async fn poll(
-    watch: Arc<ReplicaWatch>,
+    watch: Weak<ReplicaWatch>,
     probe: Arc<SqlReplicaProbe<TcpUpstream>>,
     shutdown: Shutdown,
 ) {
@@ -151,6 +251,7 @@ async fn poll(
             () = shutdown.waited() => return,
             _ = ticks.tick() => {}
         }
+        let Some(watch) = watch.upgrade() else { return };
         watch.poll_once(&probe).await;
     }
 }
@@ -210,13 +311,30 @@ mod tests {
     }
 
     fn sets() -> ReplicaSets {
+        sets_with_clock().0
+    }
+
+    /// A registry and the clock it reads, for the tests about eviction.
+    fn sets_with_clock() -> (ReplicaSets, Arc<FakeClock>) {
         let tls = pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).unwrap();
-        ReplicaSets::new(
-            TcpUpstream::new(tls),
-            Arc::new(FakeClock::new()),
-            Shutdown::new(),
-            test_slab(),
+        let clock = Arc::new(FakeClock::new());
+        (
+            ReplicaSets::new(
+                TcpUpstream::new(tls),
+                Arc::clone(&clock) as Arc<dyn Clock>,
+                Shutdown::new(),
+                test_slab(),
+            ),
+            clock,
         )
+    }
+
+    /// A grant naming exactly these replica hosts, in this order.
+    fn grant_with(hosts: &[&str]) -> Grant {
+        Grant {
+            replicas: hosts.iter().map(|host| backend(host)).collect(),
+            ..grant(0)
+        }
     }
 
     #[test]
@@ -267,6 +385,82 @@ mod tests {
         // that call it both hold an empty registry. A registry that always
         // claims to be empty reports no replica polling on a node doing it.
         assert!(!sets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_reordered_replica_list_is_a_different_watch() {
+        // The correctness case, and the reason the list is in the key at all.
+        // `RouteTarget::Replica` is an index: the eligibility check reads slot
+        // `i` of the watch and `backend_for` resolves `i` against the session's
+        // grant. Sharing one watch across two orderings would clear a read
+        // against one host's replay position and then send it to another. The
+        // proto says the order means nothing, so this is a shape the sidecar is
+        // allowed to produce.
+        let sets = sets();
+        let forward = sets.watch_for(&grant_with(&["db-r0", "db-r1"])).unwrap();
+        let reversed = sets.watch_for(&grant_with(&["db-r1", "db-r0"])).unwrap();
+
+        assert!(
+            !Arc::ptr_eq(&forward, &reversed),
+            "two orderings of one replica set shared a watch, so an index means two hosts"
+        );
+        assert_eq!(sets.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_replica_added_later_is_watched_rather_than_ignored() {
+        // Until `M69.0` the first grant fixed the set for the life of the
+        // process, so this returned the two-slot watch and the third replica
+        // was never polled and never routed to.
+        let sets = sets();
+        let two = sets.watch_for(&grant(2)).unwrap();
+        let three = sets.watch_for(&grant(3)).unwrap();
+
+        assert!(!Arc::ptr_eq(&two, &three));
+        assert_eq!(two.len(), 2);
+        assert_eq!(
+            three.len(),
+            3,
+            "the new replica has no slot to be polled in"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_generation_a_session_still_holds_outlives_the_grace_period() {
+        // A session keeps its watch for its whole life and may be idle for
+        // hours. Evicting on age alone would take the set out from under it and
+        // route its reads to the primary until something rebuilt the watch.
+        let (sets, clock) = sets_with_clock();
+        let held = sets.watch_for(&grant(2)).unwrap();
+
+        clock.advance(WATCH_GRACE * 2);
+        let other = sets.watch_for(&grant(3)).unwrap();
+
+        assert_eq!(sets.len(), 2, "a generation in use was evicted");
+        drop(held);
+        drop(other);
+    }
+
+    #[tokio::test]
+    async fn a_generation_nobody_holds_is_dropped_once_it_is_old() {
+        // The other half. Keying on the list means a topology that changes
+        // every few minutes mints a generation every few minutes, and without
+        // this each one keeps a poll loop querying hosts no session can reach.
+        let (sets, clock) = sets_with_clock();
+        drop(sets.watch_for(&grant(2)).unwrap());
+        assert_eq!(sets.len(), 1);
+
+        // Not yet: inside the grace period, a set that is briefly unused is
+        // kept so back-to-back sessions do not rebuild it from cold.
+        clock.advance(WATCH_GRACE / 2);
+        let kept = sets.watch_for(&grant(2)).unwrap();
+        assert_eq!(sets.len(), 1);
+        assert_eq!(kept.len(), 2);
+        drop(kept);
+
+        clock.advance(WATCH_GRACE * 2);
+        drop(sets.watch_for(&grant(3)).unwrap());
+        assert_eq!(sets.len(), 1, "the stale generation was not dropped");
     }
 
     #[tokio::test]

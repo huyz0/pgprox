@@ -8293,3 +8293,37 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the read routing page states whose writes the watermark covers and
   whose it does not, names the reconnect case, and `features.md` carries the
   one-line version with a link rather than a second copy of the argument.
+
+## M69: a replica set that never changed after the first grant
+
+- [x] `M69.0` The watch was keyed by the primary alone.
+  `watch_for` looked up `grant.primary.server`, and on a hit returned the
+  existing watch and discarded the new grant's replica list. So the first grant
+  to name a primary fixed its replica set for the life of the process. A replica
+  added later was never polled and never routed to; one removed left a loop
+  querying a host nobody could reach.
+  The reordering case is worse than either, and it is a correctness bug rather
+  than a missed optimization. `RouteTarget::Replica` is an index: the
+  eligibility check reads slot `i` of the watch and `backend_for` resolves `i`
+  against the session's own grant. Those agree only while both lists are in the
+  same order, and `auth.proto` is explicit that they need not be, describing
+  replicas as arriving "in no particular order". Under a reordering the router
+  clears a read against one host's replay position and sends it to another,
+  which is the stale read the whole watermark design exists to prevent.
+  Fixed by putting the ordered list in the key, so a changed list is a different
+  watch and the pair a session holds is always one generation of one topology.
+  Considered and rejected: keying replica state by `ServerId` instead of by
+  position. That is the deeper fix and it is not the first one. `RouteTarget` is
+  `Copy` today, a `ServerId` would end that, and the ripple reaches
+  `pgprox-core`'s public API, the `Router` trait, its three implementors and the
+  contract gate, for a defect this closes inside one module.
+  Keying on the list turns a bounded map into an unbounded one, since every
+  topology change mints a generation, so eviction comes with it: a watch that no
+  session holds and that no grant has asked for in a minute is dropped, and its
+  poll loop holds a `Weak` so it stops on its own. Both conditions rather than
+  either, because a session keeps its watch for its whole life and may be idle
+  much longer than the grace period.
+  Acceptance: a reordered list and an added replica each get their own watch, a
+  generation in use survives the grace period, an unused one does not, and all
+  three assertions were seen to fail against the old keying before they passed
+  against the new.
