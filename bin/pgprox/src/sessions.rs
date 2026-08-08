@@ -36,13 +36,29 @@ struct Entry {
     /// node's usage against the tenant's share of this, so a made-up number
     /// here is a client bounced to a node with no room for it.
     budget: u32,
-    /// Fired to ask this one session to leave.
+    /// Fired to ask this one session to leave, for tenant affinity or for
+    /// having been idle past the configured timeout.
     ///
-    /// The registry holds the signal rather than the session, because a shed
-    /// decision is taken by the node and a session is a task on a socket. The
+    /// The registry holds the signal rather than the session, because both
+    /// decisions are the node's and a session is a task on a socket. The
     /// session watches it at the same place it watches a drain, so a client
-    /// mid-transaction is not cut off by either.
+    /// mid-transaction is not cut off by any of the three.
+    ///
+    /// One signal for both reasons rather than two: `M74.0` tried two, each
+    /// watched by its own `select!` branch, and measured what that cost. A
+    /// `tokio::sync::watch::Receiver`'s `changed()` future held across a
+    /// relay loop's awaits is not a cheap type, and a second one added 240
+    /// bytes to the per-connection future against a budget of 72 remaining,
+    /// worse than a `tokio::time::Sleep` held directly would have been. See
+    /// `idle` below and ADR 0030.
     close: crate::run::Shutdown,
+    /// Which of the two reasons `close` was fired for.
+    ///
+    /// A plain flag read synchronously when `close` fires, rather than a
+    /// second signal awaited alongside it: the session already has to wake up
+    /// and decide what to tell the client, so asking "which" costs one atomic
+    /// load rather than one more future in the `select!`'s union.
+    idle: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Every client this node is serving.
@@ -55,6 +71,7 @@ pub struct Sessions {
     transactions: AtomicU64,
     pins: AtomicU64,
     sheds: AtomicU64,
+    idle_timeouts: AtomicU64,
     /// When each tenant was last shed, most recent last.
     ///
     /// The window the per-tenant rate limit is measured over. Kept here
@@ -99,6 +116,13 @@ impl Sessions {
     }
 
     /// Registers a client, until the returned value is dropped.
+    ///
+    /// `idle` is the flag `close` firing asks the session to read; the caller
+    /// holds its own clone to pass into the session alongside `close` itself,
+    /// the same way it already holds its own clone of `close` to watch. See
+    /// the field's own docs for why this is a flag next to one signal rather
+    /// than a second signal.
+    #[allow(clippy::too_many_arguments)]
     pub fn register(
         &self,
         conn: ConnId,
@@ -107,6 +131,7 @@ impl Sessions {
         now: Instant,
         budget: u32,
         close: crate::run::Shutdown,
+        idle: Arc<std::sync::atomic::AtomicBool>,
     ) -> Registration {
         self.lock().insert(
             conn,
@@ -118,6 +143,7 @@ impl Sessions {
                 pinned: None,
                 budget,
                 close,
+                idle,
             },
         );
         Registration {
@@ -191,6 +217,48 @@ impl Sessions {
             .or_default()
             .push_back(now);
         true
+    }
+
+    /// Closes one client for having been idle past the configured timeout.
+    ///
+    /// Fires `idle_signal` rather than `close`, so the session reports
+    /// `ClientError::IdleTimeout` rather than `ClientError::Shed`: the two are
+    /// different facts about why the connection ended, and an operator
+    /// reading `pgprox_shed_total` next to a client log full of idle closures
+    /// would draw the wrong conclusion from either being folded into the
+    /// other.
+    pub fn close_idle(&self, conn: ConnId) -> bool {
+        let Some(entry) = self.lock().get(&conn).cloned() else {
+            return false;
+        };
+        // Set before firing, so a session waking on `close` never reads it
+        // before it is there. `Release`/`Acquire` is what makes that ordering
+        // guarantee cross threads rather than merely happening to work here.
+        entry.idle.store(true, Ordering::Release);
+        entry.close.fire();
+        self.idle_timeouts.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Whether `conn`'s `close` signal, if it has fired, was for having been
+    /// idle rather than for tenant affinity.
+    ///
+    /// A lookup at the moment `close` wakes a session, rather than a
+    /// reference the session holds across every await in its loop: `conn` and
+    /// the registry are already part of the relay loop's captured state, so
+    /// this adds nothing to it. See `M74.0`.
+    #[must_use]
+    pub fn was_idle_timeout(&self, conn: ConnId) -> bool {
+        self.lock()
+            .get(&conn)
+            .is_some_and(|entry| entry.idle.load(Ordering::Acquire))
+    }
+
+    /// Clients closed for having been idle past the configured timeout, since
+    /// start.
+    #[must_use]
+    pub fn idle_timeouts(&self) -> u64 {
+        self.idle_timeouts.load(Ordering::Relaxed)
     }
 
     /// How many times this tenant has been shed in the last minute.
@@ -310,6 +378,7 @@ mod tests {
             now,
             16,
             crate::run::Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         let views = sessions.views(now);
@@ -333,6 +402,7 @@ mod tests {
             now,
             16,
             crate::run::Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
         assert_eq!(sessions.len(), 1);
 
@@ -347,6 +417,7 @@ mod tests {
             now,
             16,
             crate::run::Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
         assert_eq!(sessions.len(), 2);
         drop(also);
@@ -371,6 +442,7 @@ mod tests {
             start,
             16,
             crate::run::Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         let later = start + Duration::from_secs(10);
@@ -392,6 +464,7 @@ mod tests {
             now,
             16,
             crate::run::Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         sessions.set_pinned(conn(1), "listen");
@@ -431,6 +504,7 @@ mod tests {
             now,
             16,
             signal(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
         let _b = sessions.register(
             conn(2),
@@ -439,6 +513,7 @@ mod tests {
             now,
             16,
             signal(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
         let _c = sessions.register(
             conn(3),
@@ -447,6 +522,7 @@ mod tests {
             now,
             16,
             signal(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         assert_eq!(
@@ -468,6 +544,7 @@ mod tests {
             now,
             16,
             signal(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
         let _b = sessions.register(
             conn(1),
@@ -476,6 +553,7 @@ mod tests {
             now,
             16,
             signal(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         assert_eq!(sessions.views(now), sessions.views(now));
@@ -496,6 +574,7 @@ mod tests {
             Instant::now(),
             16,
             close.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         assert!(sessions.shed(conn(1), Instant::now()));
@@ -514,6 +593,78 @@ mod tests {
     }
 
     #[test]
+    fn closing_an_idle_client_fires_the_same_signal_shed_does() {
+        // One signal for both reasons, which is `M74.0`'s whole point: the
+        // session watches one `select!` branch rather than two.
+        let sessions = Sessions::new();
+        let close = crate::run::Shutdown::new();
+        let _held = sessions.register(
+            conn(1),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            Instant::now(),
+            16,
+            close.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+
+        assert!(sessions.close_idle(conn(1)));
+        assert!(close.fired(), "the session was never asked to leave");
+        assert_eq!(sessions.idle_timeouts(), 1);
+        assert_eq!(sessions.sheds(), 0, "an idle close was counted as a shed");
+    }
+
+    #[test]
+    fn was_idle_timeout_tells_the_two_reasons_apart() {
+        let sessions = Sessions::new();
+        let shed_close = crate::run::Shutdown::new();
+        let idle_close = crate::run::Shutdown::new();
+        let _shed_session = sessions.register(
+            conn(1),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            Instant::now(),
+            16,
+            shed_close,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let _idle_session = sessions.register(
+            conn(2),
+            TenantId::new("acme"),
+            NodeId::new(1),
+            Instant::now(),
+            16,
+            idle_close,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+
+        sessions.shed(conn(1), Instant::now());
+        sessions.close_idle(conn(2));
+
+        assert!(
+            !sessions.was_idle_timeout(conn(1)),
+            "a shed read back as an idle timeout"
+        );
+        assert!(
+            sessions.was_idle_timeout(conn(2)),
+            "an idle timeout read back as a shed"
+        );
+    }
+
+    #[test]
+    fn was_idle_timeout_of_a_client_that_has_gone_is_false_rather_than_a_panic() {
+        let sessions = Sessions::new();
+        assert!(!sessions.was_idle_timeout(conn(9)));
+    }
+
+    #[test]
+    fn closing_an_idle_client_that_has_gone_does_nothing() {
+        let sessions = Sessions::new();
+        assert!(!sessions.close_idle(conn(9)));
+        assert_eq!(sessions.idle_timeouts(), 0);
+    }
+
+    #[test]
     fn recent_sheds_are_counted_per_tenant_and_expire() {
         // The rate limit's only input. A tenant shed once must not be shed
         // again immediately, and a tenant shed a minute ago is not recent.
@@ -527,6 +678,7 @@ mod tests {
             start,
             16,
             crate::run::Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         assert_eq!(sessions.recent_sheds(&acme, start), 0);

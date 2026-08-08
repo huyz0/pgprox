@@ -756,6 +756,7 @@ mod tests {
             now,
             16,
             crate::run::Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         let view = fixture.observatory.tenant(&TenantId::new("acme")).unwrap();
@@ -856,6 +857,7 @@ mod tests {
             now,
             16,
             crate::run::Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         assert_eq!(fixture.observatory.stats(Scope::Local).client_conns, 1);
@@ -955,6 +957,7 @@ mod tests {
             now,
             16,
             crate::run::Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         assert_eq!(

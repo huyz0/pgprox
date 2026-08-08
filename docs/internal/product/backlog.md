@@ -8525,3 +8525,50 @@ recognised so it can be refused rather than read as a version.
   and no further; the default is unchanged behaviour; the pure backoff
   function is tested including the shift-overflow case; and the whole
   workspace, 1,957 tests across every crate, passes with the change included.
+
+## M74: an authenticated client that went quiet had no way to be closed
+
+- [x] `M74.0` A configurable client idle timeout, and three rejected designs
+  that measured what a per-connection future can't afford.
+  `client_idle_timeout:` in the document, off by default: how long an
+  authenticated client may sit idle, between transactions, before pgprox
+  closes it. Closed with `57P05`/`idle_session_timeout`, the code Postgres's
+  own setting of the same name uses, so a driver that already handles that
+  GUC needs nothing new to handle this.
+  The obvious implementation, a `tokio::time::Sleep` or a second per-session
+  `Shutdown` watched in the relay loop's own `select!`, was tried both ways
+  and both failed the session-future size budget `M9.23` set:
+  `one_session_costs_less_than_the_slab_buffer_it_no_longer_holds` asserts
+  under 5 KiB, was 5,048, and had 72 bytes of headroom before this. A second
+  `Shutdown` measured 5,288; a raw timer measured 5,224; both fail. A future
+  is the union of everything alive across its awaits, and every branch a
+  `select!` can take is paid by every connection whether or not it uses that
+  branch.
+  The design that fits reuses the `Shutdown` `Sessions::shed` already fires,
+  for both reasons, and answers "which reason" with
+  `Sessions::was_idle_timeout(conn)` — a registry lookup made once, at the
+  moment the signal wakes, through state (`context`, `conn`) the relay loop
+  already carries, rather than a flag threaded in and held across every
+  subsequent await. That version measured 5,112: 64 bytes over baseline, with
+  margin, against a flag-as-parameter version that measured 5,136 and had
+  almost none. ADR 0030 records all four numbers and the order they were
+  found in.
+  The timer itself is not in the relay loop. `idle_timeout_pass` is a plain
+  function the existing tick loop calls beside `shed_pass`, walking the same
+  `Sessions::views` shed already walks and closing whichever clients have
+  been idle long enough: one `Instant` comparison per idle client per second,
+  in a walk that already runs, rather than a timer every connection pays for
+  whether or not it is configured.
+  Never mid-transaction, the same guard `shed_pass` uses and for the same
+  reason: a session holding a connection is doing something, whatever the
+  client on the other end of it is doing.
+  Proved end to end: a real session over a real socket, closed by
+  `Sessions::close_idle` the way the tick loop would close it, told 57P05 and
+  the idle-session-timeout message rather than 57P01 and the shed one. Also
+  proved that the pass reads each client's own age rather than a fleet clock,
+  and that a session holding a connection is left alone regardless of how
+  long it has held it.
+  Acceptance: the session future stays under the 5 KiB ceiling with the
+  feature built in, closing an idle client and shedding one are
+  distinguishable to the client and to `SHOW`-level counters, and the whole
+  workspace, 1,966 tests, passes with the change included.

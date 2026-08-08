@@ -50,6 +50,7 @@ real SQLSTATE, never a generic internal error. The mapping is one function in
 | Condition | SQLSTATE | Code |
 | --- | --- | --- |
 | Node draining, or connection shed for rebalance | `57P01` | `admin_shutdown` |
+| Client idle longer than the configured timeout | `57P05` | `idle_session_timeout` |
 | Upstream cap reached, no connection available | `53300` | `too_many_connections` |
 | JWT invalid, expired, or rejected by the sidecar | `28000` | `invalid_authorization_specification` |
 | TLS required but the client did not request it | `28000` | `invalid_authorization_specification` |

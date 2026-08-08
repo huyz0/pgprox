@@ -43,6 +43,13 @@ impl SqlState {
     /// fix. Rare on purpose: a proxy that answered `XX000` to a condition with
     /// a real code would send every operator reading it to the wrong place.
     pub const INTERNAL_ERROR: Self = Self("XX000");
+    /// `57P05`, `idle_session_timeout`.
+    ///
+    /// The code Postgres's own `idle_session_timeout` setting answers with, on
+    /// the theory that a driver already handling that GUC should not need to
+    /// learn a second code to handle the same closure coming from a proxy in
+    /// front of it.
+    pub const IDLE_SESSION_TIMEOUT: Self = Self("57P05");
 
     /// `feature_not_supported`. Something the client asked for that this proxy
     /// does not do, as opposed to something it got wrong.
@@ -101,6 +108,16 @@ pub enum ClientError {
         /// The tenant whose connection was shed.
         tenant: TenantId,
     },
+
+    /// The client authenticated and then sent nothing for longer than the
+    /// configured idle timeout.
+    ///
+    /// Only between transactions: a session holding a connection is doing
+    /// something, whatever the client itself is doing, and is never a
+    /// candidate. See `docs/configuration.md#client_idle_timeout` and
+    /// ADR 0030 for why this is a session-local timer rather than a scan.
+    #[error("client idle for longer than the configured timeout")]
+    IdleTimeout,
 
     /// The upstream server is at its configured connection cap.
     #[error("upstream {server} is at its connection cap of {cap}")]
@@ -180,6 +197,7 @@ impl ClientError {
     pub const fn sqlstate(&self) -> SqlState {
         match self {
             Self::Draining | Self::Shed { .. } => SqlState::ADMIN_SHUTDOWN,
+            Self::IdleTimeout => SqlState::IDLE_SESSION_TIMEOUT,
             Self::UpstreamAtCap { .. } => SqlState::TOO_MANY_CONNECTIONS,
             Self::AcquireTimeout { .. } => SqlState::QUERY_CANCELED,
             Self::AuthRefused(_) | Self::TlsRequired => SqlState::INVALID_AUTHORIZATION,
@@ -201,6 +219,7 @@ impl ClientError {
             Self::Draining | Self::Shed { .. } => {
                 "terminating connection due to administrator command"
             }
+            Self::IdleTimeout => "terminating connection due to idle-session timeout",
             Self::UpstreamAtCap { .. } => "too many connections, please retry",
             Self::AcquireTimeout { .. } => "timed out acquiring a database connection",
             // One message for every rejection reason. Telling a caller which
@@ -228,6 +247,7 @@ impl ClientError {
             self,
             Self::Draining
                 | Self::Shed { .. }
+                | Self::IdleTimeout
                 | Self::UpstreamAtCap { .. }
                 | Self::AcquireTimeout { .. }
                 | Self::SidecarUnavailable
@@ -285,6 +305,7 @@ mod tests {
         vec![
             ClientError::Draining,
             ClientError::UpstreamClosed,
+            ClientError::IdleTimeout,
             ClientError::Shed {
                 tenant: TenantId::new(TENANT),
             },
@@ -312,6 +333,7 @@ mod tests {
         let server = ServerId::new("db", 5432);
         let cases: &[(ClientError, &str)] = &[
             (ClientError::Draining, "57P01"),
+            (ClientError::IdleTimeout, "57P05"),
             (
                 ClientError::Shed {
                     tenant: TenantId::new("t"),

@@ -176,6 +176,13 @@ pub struct Config {
     /// try again on a caller's behalf, and only an operator who has decided
     /// that trade is worth it should turn it on. See ADR 0029.
     pub retry: crate::retry::RetryConfig,
+    /// How long an authenticated client may sit idle, between transactions,
+    /// before it is closed.
+    ///
+    /// `None` by default: a connection pool sitting on a deliberately idle
+    /// connection is ordinary, and this must not close it out from under an
+    /// operator who never asked for the behaviour. See ADR 0030.
+    pub client_idle_timeout: Option<Duration>,
 }
 
 impl Default for Config {
@@ -188,6 +195,7 @@ impl Default for Config {
             grant_ttl_cap: Duration::from_secs(300),
             query_cache: QueryCacheConfig::default(),
             retry: crate::retry::RetryConfig::default(),
+            client_idle_timeout: None,
         }
     }
 }

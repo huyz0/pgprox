@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pgprox_session::cancel::Registry;
 use pgprox_session::probe::ParameterCache;
@@ -443,6 +443,7 @@ pub fn context(app: &App, shutdown: &Shutdown) -> Context {
         cancels: Arc::new(Registry::new(app.deps.node, Box::new(SystemEntropy))),
         acquire_timeout: ACQUIRE_TIMEOUT,
         login_timeout: LOGIN_TIMEOUT,
+        client_idle_timeout: app.config.client_idle_timeout,
         peers: pgprox_core::cluster::StaticPeers::new(BTreeMap::new()),
         replicas: Arc::new(crate::replicas::ReplicaSets::new(
             crate::dial::TcpUpstream::new(Arc::clone(&app.deps.tls)),
@@ -851,6 +852,36 @@ fn shed_pass_unless_draining(app: &App, sessions: &Arc<Sessions>, draining: bool
     shed_pass(app, sessions)
 }
 
+/// Closes clients that have been idle longer than `timeout`.
+///
+/// A tick-loop pass rather than a per-connection timer, for the size budget
+/// `M9.23` set and `M74.0` would otherwise have spent: a `tokio::time::Sleep`
+/// held across the relay loop's awaits costs roughly 176 bytes per connection,
+/// whether or not that connection ever configures a timeout, because the
+/// state machine's size is the union of every branch a `select!` can take.
+/// This costs one `Instant` comparison per idle client per second instead, in
+/// a walk the shed pass already does.
+///
+/// Only between transactions, the same guard `shed_pass` uses and for the same
+/// reason: a session holding a connection is doing something, whatever the
+/// client on the other end of it is doing, and closing it mid-transaction is
+/// the one thing this proxy does not do for a reason under its own control.
+/// See ADR 0030.
+fn idle_timeout_pass(sessions: &Arc<Sessions>, timeout: Duration, now: Instant) -> usize {
+    use pgprox_core::admin::ClientState;
+
+    let mut closed = 0;
+    for view in sessions.views(now) {
+        if view.state == ClientState::Idle
+            && view.since >= timeout
+            && sessions.close_idle(view.conn)
+        {
+            closed += 1;
+        }
+    }
+    closed
+}
+
 /// Says so when the document in force is not the one on disk.
 ///
 /// A node serving a stale document looks exactly like one serving the current
@@ -1038,6 +1069,13 @@ async fn ticker(
         let shed = shed_pass_unless_draining(app, &app.sessions, probes.is_draining());
         if something_happened(shed) {
             tracing::info!(shed, "shed clients toward their home nodes");
+        }
+
+        if let Some(timeout) = app.config.client_idle_timeout {
+            let closed = idle_timeout_pass(&app.sessions, timeout, app.deps.clock.now());
+            if closed > 0 {
+                tracing::info!(closed, "closed clients idle past the configured timeout");
+            }
         }
 
         // Not every tick. A certificate is rotated on the order of weeks and
@@ -1380,6 +1418,91 @@ mod tests {
             invalidation: None,
             topology: None,
         }
+    }
+
+    #[test]
+    fn idle_timeout_pass_closes_only_what_has_been_idle_long_enough() {
+        use pgprox_core::clock::Clock as _;
+        let sessions = Sessions::new();
+        let clock = pgprox_core::clock::FakeClock::new();
+        let start = clock.now();
+
+        // Idle since the start, so once the clock moves past the timeout this
+        // one is a candidate.
+        let stale_close = Shutdown::new();
+        let _stale = sessions.register(
+            pgprox_core::ids::ConnId::new(NodeId::new(1), 1),
+            pgprox_core::ids::TenantId::new("acme"),
+            NodeId::new(1),
+            start,
+            16,
+            stale_close.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+
+        clock.advance(Duration::from_secs(30));
+
+        // Registered after the clock moved, so it has not been idle long
+        // enough even though the stale one has: this is the case that proves
+        // the pass reads each client's own age rather than a fleet-wide clock.
+        let fresh_close = Shutdown::new();
+        let _fresh = sessions.register(
+            pgprox_core::ids::ConnId::new(NodeId::new(1), 2),
+            pgprox_core::ids::TenantId::new("acme"),
+            NodeId::new(1),
+            clock.now(),
+            16,
+            fresh_close.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+
+        let closed = idle_timeout_pass(&sessions, Duration::from_secs(30), clock.now());
+
+        assert_eq!(
+            closed, 1,
+            "the pass closed {closed}, expected exactly the stale one"
+        );
+        assert!(
+            stale_close.fired(),
+            "the client idle long enough was not closed"
+        );
+        assert!(
+            !fresh_close.fired(),
+            "a client idle for less than the timeout was closed anyway"
+        );
+        assert_eq!(sessions.idle_timeouts(), 1);
+    }
+
+    #[test]
+    fn idle_timeout_pass_leaves_a_session_holding_a_connection_alone() {
+        // The same guard `shed_pass` uses, and for the same reason: a session
+        // is doing something, whatever the client on the other end of it is
+        // doing, and closing it mid-transaction is the one thing this proxy
+        // does not do for a reason under its own control.
+        use pgprox_core::clock::Clock as _;
+        let sessions = Sessions::new();
+        let clock = pgprox_core::clock::FakeClock::new();
+        let conn = pgprox_core::ids::ConnId::new(NodeId::new(1), 1);
+        let close = Shutdown::new();
+        let _held = sessions.register(
+            conn,
+            pgprox_core::ids::TenantId::new("acme"),
+            NodeId::new(1),
+            clock.now(),
+            16,
+            close.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        sessions.set_state(conn, pgprox_core::admin::ClientState::Active, clock.now());
+        clock.advance(Duration::from_secs(3_600));
+
+        let closed = idle_timeout_pass(&sessions, Duration::from_secs(30), clock.now());
+
+        assert_eq!(closed, 0);
+        assert!(
+            !close.fired(),
+            "an active session was closed for being idle"
+        );
     }
 
     fn loopback() -> Addrs {
@@ -1930,6 +2053,7 @@ mod tests {
             app.deps.clock.now(),
             16,
             Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         tokio::spawn({
@@ -2187,6 +2311,7 @@ mod tests {
             app.deps.clock.now(),
             16,
             close.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         // Past the idle threshold and past the settle window: both guard rails
@@ -2262,6 +2387,7 @@ mod tests {
             app.deps.clock.now(),
             16,
             close.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         assert_eq!(shed_pass(&app, &app.sessions), 0);

@@ -152,6 +152,25 @@ server's cap in `servers:` do, because the tick loop that applies them was
 built to; `retry` was not wired through it. A change here takes effect the
 next time the node starts.
 
+### `client_idle_timeout`
+
+Off unless configured. How long an authenticated client may go without
+sending anything, between transactions, before it is closed.
+
+```yaml
+client_idle_timeout: 10m
+```
+
+A session holding a connection is never a candidate, whatever the client on
+the other end of it is doing: this is about a client that authenticated and
+then went quiet, not about a slow transaction. Closed the same way a shed
+client is, with `57P05`/`idle_session_timeout`, the code Postgres's own
+`idle_session_timeout` setting uses, so a driver that already handles that GUC
+against a real Postgres server needs nothing new to handle this.
+
+Read once at startup, like `retry`: a change here also takes effect the next
+time the node starts, not on the next document reload.
+
 ## Command-line arguments
 
 | Argument | Default | What it does |

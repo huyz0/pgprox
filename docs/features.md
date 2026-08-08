@@ -28,6 +28,12 @@ any server when a dial fails, on any attempt, so retrying here cannot duplicate
 a write. See [Configuration](configuration.md#retry) and ADR
 [0029](internal/product/decisions/0029-retry-is-scoped-to-a-dial-that-sent-nothing.md).
 
+**A client that authenticates and then goes quiet can be closed after a
+configurable idle time**, between transactions only. Off by default. Told
+57P05, the same code Postgres's own `idle_session_timeout` uses. See
+[Configuration](configuration.md#client_idle_timeout) and ADR
+[0030](internal/product/decisions/0030-idle-timeout-costs-a-lookup-not-a-captured-signal.md).
+
 ### When a session pins
 
 Pinning attaches a session to one upstream connection for the rest of its life.

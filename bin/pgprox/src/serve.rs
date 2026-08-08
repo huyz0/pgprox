@@ -168,6 +168,17 @@ pub struct Context {
     /// sending nothing: no credentials, no traffic, no way to tell it from a
     /// slow network.
     pub login_timeout: Duration,
+    /// How long an authenticated client may sit idle, between transactions,
+    /// before it is closed.
+    ///
+    /// `None` is off, and is the default: a connection pool sitting on a
+    /// deliberately idle connection is a normal, common shape and this must
+    /// not close it out from under an operator who never asked for the
+    /// behaviour. Distinct from `pgprox_pool::reap::ReapConfig`'s idle
+    /// timeout, which reaps upstream connections this node holds against a
+    /// database; this is about a client's own connection to the proxy. See
+    /// `docs/configuration.md#client_idle_timeout` and ADR 0030.
+    pub client_idle_timeout: Option<Duration>,
     /// Where to find out where the other nodes are, for a cancel this node
     /// does not own.
     ///
@@ -446,9 +457,17 @@ where
             conn,
             settings,
         } => {
-            // The signal a shed decision fires. Registered with the session
-            // rather than held by it, because the decision is the node's and
-            // the session is a task on a socket.
+            // The signal a shed decision or an idle timeout fires. Registered
+            // with the session rather than held by it, because both decisions
+            // are the node's and the session is a task on a socket.
+            //
+            // The flag that would say which of the two is created here and
+            // handed to the registry, never to `relay` itself: nothing in the
+            // loop below reads it directly, only `Sessions::was_idle_timeout`
+            // does, through `conn`, which the loop already carries. Passing
+            // it into `relay` too would hold it live across every await in
+            // that loop for a value nothing there uses, which is exactly the
+            // cost `M74.0` measured and removed. See ADR 0030.
             let shed = crate::run::Shutdown::new();
             let _registered = context.sessions.register(
                 conn,
@@ -462,6 +481,7 @@ where
                 // direction that costs nobody a reconnect.
                 grant.pool.max_upstream.unwrap_or(0),
                 shed.clone(),
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
             );
             let outcome = relay(wire, context, &grant, conn, &shed, settings).await;
             drop(admitted);
@@ -617,6 +637,26 @@ fn apply_startup_settings(
     }
 }
 
+/// Which error a woken `shed` signal means to tell the client.
+///
+/// One signal serves both `Sessions::shed` and `Sessions::close_idle`; this is
+/// the lookup that tells them apart, at the moment something needs to know,
+/// rather than a second signal held across the relay loop's every await. See
+/// `Sessions`'s own docs and ADR 0030 for what that would have cost.
+fn shed_reason(
+    context: &Context,
+    conn: ConnId,
+    tenant: &pgprox_core::ids::TenantId,
+) -> ClientError {
+    if context.sessions.was_idle_timeout(conn) {
+        ClientError::IdleTimeout
+    } else {
+        ClientError::Shed {
+            tenant: tenant.clone(),
+        }
+    }
+}
+
 /// Moves frames between a client and the upstream connections it borrows.
 async fn relay<S>(
     wire: &mut Wire<S>,
@@ -650,16 +690,11 @@ where
             () = context.draining.waited(), if idle => {
                 return Err(wire.refuse(ClientError::Draining).await);
             }
-            // A shed is the same shape as a drain and for the same reason:
-            // 57P01 is what every mainstream driver reconnects from, and only
-            // between transactions, because relocating a client must not cost
-            // it work it had already done.
+            // A shed and an idle timeout both fire this. `shed_reason` is a
+            // lookup, not a captured flag: see `Sessions` and ADR 0030.
             () = shed.waited(), if idle => {
-                return Err(wire
-                    .refuse(ClientError::Shed {
-                        tenant: grant.tenant.clone(),
-                    })
-                    .await);
+                let reason = shed_reason(context, conn, &grant.tenant);
+                return Err(wire.refuse(reason).await);
             }
             () = context.closing.waited() => return Ok(()),
         };
@@ -3582,6 +3617,14 @@ mod tests {
         // before it, which is not luck: holding one session's state in one
         // struct costs less across an await than the same fields as eight
         // locals, and it paid for the sequence the cache holds back.
+        //
+        // 5,112 as `M74.0` leaves it, for the idle timeout. Two designs cost
+        // more and were rejected rather than shipped: a second
+        // `tokio::sync::watch::Receiver::changed()` alongside `shed`'s own
+        // measured at 5,288, and a `tokio::time::Sleep` held directly at
+        // 5,224. Both would have failed this. What is here instead is a
+        // lookup through state the loop already carries; see
+        // `Sessions::was_idle_timeout` and ADR 0030.
         let context = Arc::new(context_for("127.0.0.1:1".parse().unwrap()));
         let gate = Arc::new(Gate::new(1));
         let admitted = gate.admit().unwrap();
@@ -3707,6 +3750,7 @@ mod tests {
             cancels: Arc::new(Registry::new(NodeId::new(1), Box::new(Fixed))),
             acquire_timeout: Duration::from_secs(5),
             login_timeout: Duration::from_secs(30),
+            client_idle_timeout: None,
             statics: None,
             observatory: pgprox_core::admin::FakeObservatory::new(NodeId::new(1)),
             tls: None,
@@ -6325,6 +6369,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_client_closed_for_being_idle_is_told_57p05_and_reconnects() {
+        // The end-to-end proof, over a real session and a real socket: the
+        // tick loop's `idle_timeout_pass` fires exactly this signal
+        // (`Sessions::close_idle`), and this is what a client sees when it
+        // does. 57P05 rather than 57P01, and the idle-session-timeout message
+        // rather than the shed one, is the property `was_idle_timeout` exists
+        // to guarantee even though both share one `select!` branch.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let conn = context.sessions.views(context.clock.now())[0].conn;
+        assert!(context.sessions.close_idle(conn));
+
+        let (tag, body) = expect(&mut client).await;
+        assert_eq!(tag, Tag::ERROR_RESPONSE);
+        let rendered = String::from_utf8_lossy(&body);
+        assert!(rendered.contains("57P05"), "{rendered}");
+        assert!(
+            rendered.contains("idle-session timeout"),
+            "the wrong reason reached the client: {rendered}"
+        );
+        assert!(served.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
     async fn a_client_holding_a_connection_is_not_closed_by_the_drain_alone() {
         // Finishing in-flight work is what a drain is for. The grace timer
         // behind `closing` is what bounds it, and this asserts the two are
@@ -7296,6 +7379,7 @@ mod tests {
             now,
             16,
             crate::run::Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
         let _also = context.sessions.register(
             ConnId::new(NodeId::new(1), 2),
@@ -7304,6 +7388,7 @@ mod tests {
             now,
             16,
             crate::run::Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         let listed = context.clients();

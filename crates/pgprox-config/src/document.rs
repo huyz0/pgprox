@@ -61,6 +61,10 @@ pub struct ConfigDocument {
     /// Absent is a node that retries nothing, same as `attempts: 0`.
     #[serde(default)]
     pub retry: Option<RetryDocument>,
+    /// How long an authenticated client may sit idle before it is closed.
+    /// Absent is off, which is also the default.
+    #[serde(default)]
+    pub client_idle_timeout: Option<String>,
 }
 
 /// The retry section.
@@ -230,6 +234,10 @@ impl ConfigDocument {
                 None => defaults.retry,
                 Some(document) => document.into_retry_config(&defaults.retry)?,
             },
+            client_idle_timeout: optional_duration(
+                self.client_idle_timeout.as_deref(),
+                "client_idle_timeout",
+            )?,
         };
 
         config.validate()?;
@@ -592,6 +600,20 @@ nodes:
                      retry:\n  attempts: 0\n";
         let config = parse(text).unwrap();
         assert_eq!(config.retry.attempts, 0);
+    }
+
+    #[test]
+    fn no_client_idle_timeout_section_means_it_is_off() {
+        let config = parse("servers:\n  - server: db-1:5432\n    max_connections: 10\n").unwrap();
+        assert_eq!(config.client_idle_timeout, None);
+    }
+
+    #[test]
+    fn a_client_idle_timeout_is_read_with_its_unit() {
+        let text = "servers:\n  - server: db-1:5432\n    max_connections: 10\n\
+                     client_idle_timeout: 10m\n";
+        let config = parse(text).unwrap();
+        assert_eq!(config.client_idle_timeout, Some(Duration::from_secs(600)));
     }
 
     #[test]

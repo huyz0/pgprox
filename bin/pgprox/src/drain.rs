@@ -248,6 +248,7 @@ mod tests {
             Instant::now(),
             16,
             Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         let steps = drain_over(
@@ -277,6 +278,7 @@ mod tests {
             Instant::now(),
             16,
             Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         tokio::spawn(async move {
@@ -338,6 +340,7 @@ mod tests {
             std::time::Instant::now(),
             16,
             Shutdown::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
 
         let rendered = format!(
