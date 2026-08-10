@@ -138,6 +138,7 @@ impl Upstream for TcpUpstream {
             TlsMode::Disabled => Ok(Stream::Plain(socket)),
             TlsMode::Verified => {
                 let name = name.ok_or_else(|| refused("no server name to verify".to_owned()))?;
+                let socket = request_tls(socket, &refused).await?;
                 let stream = TlsConnector::from(Arc::clone(&self.tls))
                     .connect(name, socket)
                     .await
@@ -155,6 +156,67 @@ impl Upstream for TcpUpstream {
 
     fn scram(&self) -> Box<dyn UpstreamScram> {
         Box::new(ClientScram::default())
+    }
+}
+
+/// Asks a Postgres server to start TLS, and refuses every answer but yes.
+///
+/// # TLS on 5432 is in-band, not a port
+///
+/// Postgres does not speak TLS from the first byte. A client sends an
+/// `SSLRequest`, a bare length and a magic code with no message tag, and the
+/// server answers one byte: `S` to proceed with the handshake, `N` to say it
+/// has no TLS to offer. Only after `S` is a `ClientHello` legal.
+///
+/// This proxy sent the `ClientHello` first, so a real server read the TLS
+/// record header as a startup packet declaring a 369 MB message and hung up.
+/// The mode is the default one, and every deployment fixture in the repository
+/// sets `PGPROX_MOCK_TLS=disabled`, so no upstream this code ever met was one
+/// that would have said `S`. `M75.0`.
+///
+/// Direct TLS, the `sslnegotiation=direct` a modern libpq can ask for, is not
+/// what this does and would not be a smaller change: the server requires the
+/// `postgresql` ALPN protocol for it, and refusing a connection that omits ALPN
+/// is precisely how it tells a stray `ClientHello` from a client that meant it.
+///
+/// # `N` is a refusal, not a fallback
+///
+/// A server that answers `N` gets no further conversation. Carrying on would
+/// send this tenant's backend password over the plaintext socket that was just
+/// established, after asking for encryption and being told there is none, which
+/// is the silent downgrade this module's own header says must not happen.
+async fn request_tls<F>(mut socket: TcpStream, refused: &F) -> Result<TcpStream, PoolError>
+where
+    F: Fn(String) -> PoolError,
+{
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    // Encoded by `pgprox-proto`, which owns what this message is, rather than
+    // written out here. `bin/pgload` sends the same bytes through the same
+    // encoder: two spellings of one wire message is the mistake
+    // `pgprox_core::sql` exists to argue against.
+    let mut request = Vec::new();
+    pgprox_proto::encode_frontend::ssl_request(&mut request);
+    socket
+        .write_all(&request)
+        .await
+        .map_err(|err| refused(format!("could not ask for TLS: {err}")))?;
+
+    let mut answer = [0_u8; 1];
+    socket
+        .read_exact(&mut answer)
+        .await
+        .map_err(|err| refused(format!("no answer to the TLS request: {err}")))?;
+
+    match answer[0] {
+        b'S' => Ok(socket),
+        // Both the explicit no and anything else. A server that answered
+        // neither has not agreed to anything, and the safe reading of a byte
+        // nobody documents is that this is not the protocol we think it is.
+        other => Err(refused(format!(
+            "this server does not offer TLS: it answered {} to an SSLRequest",
+            char::from(other)
+        ))),
     }
 }
 
@@ -514,20 +576,17 @@ mod tests {
         assert_ne!(first.client_first("u"), second.client_first("u"));
     }
 
-    #[tokio::test]
-    async fn a_verified_backend_is_dialled_over_tls() {
-        // `M17.4`. Every `TlsMode::Verified` test in this file asserted a
-        // *failure*: a name TLS cannot verify, and a server that answers the
-        // ClientHello with nonsense. Nothing had ever proved the path works,
-        // so deleting the arm that performs the handshake survived, and what
-        // that leaves is a proxy that refuses every verified backend with "an
-        // upstream TLS mode this build does not know" while the mode is one it
-        // has known since M1.
-        //
-        // The certificate is generated here and trusted here, which is the
-        // whole point: a client config that trusts nothing, which is what the
-        // rest of this module uses, cannot complete a handshake and so cannot
-        // tell a working path from a missing one.
+    /// A certificate for `localhost`, and a root store that trusts it.
+    ///
+    /// Generated per test rather than shared, because a client config that
+    /// trusts nothing, which is what the rest of this module uses, cannot
+    /// complete a handshake and so cannot tell a working path from a missing
+    /// one.
+    fn trusted_localhost() -> (
+        tokio_rustls::rustls::pki_types::CertificateDer<'static>,
+        tokio_rustls::rustls::pki_types::PrivateKeyDer<'static>,
+        RootCertStore,
+    ) {
         let generated = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
         let cert =
             tokio_rustls::rustls::pki_types::CertificateDer::from(generated.cert.der().to_vec());
@@ -540,6 +599,68 @@ mod tests {
         roots
             .add(cert.clone())
             .expect("the generated cert is valid");
+        (cert, key, roots)
+    }
+
+    /// The `SSLRequest` a Postgres server expects before any TLS record.
+    ///
+    /// Written out rather than encoded, so the test is a statement about the
+    /// bytes on the wire rather than a second call to the same encoder the
+    /// implementation uses.
+    const SSL_REQUEST_ON_THE_WIRE: [u8; 8] = [0x00, 0x00, 0x00, 0x08, 0x04, 0xd2, 0x16, 0x2f];
+
+    #[tokio::test]
+    async fn the_first_bytes_upstream_are_an_ssl_request() {
+        // `M75.0`. Postgres does not accept a bare `ClientHello` on 5432: TLS
+        // is negotiated in-band, by an `SSLRequest` answered with one byte.
+        // This proxy sent the `ClientHello`, so a real server read `0x16 0x03
+        // 0x01 ...` as a startup packet declaring a 369 MB message and closed
+        // the connection. Every deployment fixture sets `PGPROX_MOCK_TLS=
+        // disabled`, so the default mode had never met a Postgres.
+        //
+        // Asserted on the bytes rather than on the dial succeeding, because
+        // the shape of the old bug is exactly a handshake that completes
+        // against something that is not a Postgres.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let observed = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt as _;
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut first = [0_u8; 8];
+            let read = socket.read(&mut first).await.unwrap_or(0);
+            first[..read].to_vec()
+        });
+
+        let _ = dialer()
+            .dial(&backend(
+                TlsMode::Verified,
+                ServerId::new("localhost", addr.port()),
+            ))
+            .await;
+
+        assert_eq!(
+            observed.await.unwrap(),
+            SSL_REQUEST_ON_THE_WIRE,
+            "the dialler did not ask for TLS the way Postgres is asked"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_verified_backend_is_dialled_over_tls() {
+        // `M17.4`. Every `TlsMode::Verified` test in this file asserted a
+        // *failure*: a name TLS cannot verify, and a server that answers the
+        // ClientHello with nonsense. Nothing had ever proved the path works,
+        // so deleting the arm that performs the handshake survived, and what
+        // that leaves is a proxy that refuses every verified backend with "an
+        // upstream TLS mode this build does not know" while the mode is one it
+        // has known since M1.
+        //
+        // `M75.0` made the fixture negotiate the way Postgres does rather than
+        // accept TLS immediately. That is the difference between proving the
+        // handshake code runs and proving it reaches a Postgres, and until the
+        // fixture drew it this test passed against a proxy that could not
+        // connect to any real server.
+        let (cert, key, roots) = trusted_localhost();
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -547,7 +668,17 @@ mod tests {
             pgprox_tls::server_config(vec![cert], key).expect("a valid server config"),
         );
         tokio::spawn(async move {
-            if let Ok((socket, _)) = listener.accept().await {
+            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = [0_u8; 8];
+                if socket.read_exact(&mut request).await.is_err()
+                    || request != SSL_REQUEST_ON_THE_WIRE
+                {
+                    return;
+                }
+                if socket.write_all(b"S").await.is_err() {
+                    return;
+                }
                 // Held rather than dropped: the handshake completes on this
                 // side before the dialler's future resolves.
                 let _ = acceptor.accept(socket).await;
@@ -566,6 +697,72 @@ mod tests {
         assert!(
             matches!(stream, Stream::Tls(_)),
             "a verified backend was given a plaintext socket"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_refuses_tls_is_not_carried_on_in_the_clear() {
+        // `N` is the other legal answer to an `SSLRequest`, and it is the one
+        // that matters here: a server built without TLS, or one whose
+        // certificate has gone, answers it. A client that carried on would
+        // send the tenant's backend password over the plaintext socket it
+        // just established, having asked for encryption and been told no.
+        //
+        // The same refusal `bin/pgload` makes, and for the same reason.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = [0_u8; 8];
+                let _ = socket.read_exact(&mut request).await;
+                let _ = socket.write_all(b"N").await;
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
+
+        let err = dialer()
+            .dial(&backend(
+                TlsMode::Verified,
+                ServerId::new("localhost", addr.port()),
+            ))
+            .await
+            .unwrap_err();
+
+        let PoolError::ConnectFailed { reason, .. } = &err else {
+            unreachable!("a refused upstream is a failed connect: {err:?}")
+        };
+        assert!(
+            reason.contains("does not offer TLS"),
+            "the dial failed for the wrong reason: {reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_vanishes_before_answering_the_ssl_request_is_refused() {
+        // The third answer, which is not an answer. A socket that closes
+        // between the request and the byte must be a refusal rather than a
+        // read of whatever the buffer held.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt as _;
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = [0_u8; 8];
+                let _ = socket.read_exact(&mut request).await;
+                drop(socket);
+            }
+        });
+
+        assert!(
+            dialer()
+                .dial(&backend(
+                    TlsMode::Verified,
+                    ServerId::new("localhost", addr.port()),
+                ))
+                .await
+                .is_err(),
+            "a server that closed mid-negotiation was treated as having agreed"
         );
     }
 }

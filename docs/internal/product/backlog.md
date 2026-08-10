@@ -8572,3 +8572,55 @@ recognised so it can be refused rather than read as a version.
   feature built in, closing an idle client and shedding one are
   distinguishable to the client and to `SHOW`-level counters, and the whole
   workspace, 1,966 tests, passes with the change included.
+
+## M75: upstream TLS sent a ClientHello where Postgres expects a request
+
+- [x] `M75.0` Negotiate TLS the way Postgres negotiates it, and refuse the
+  answer that means no.
+  `TlsMode::Verified` handed the freshly opened socket straight to
+  `TlsConnector::connect`. Postgres does not speak TLS from the first byte: a
+  client sends an `SSLRequest`, a bare length and a magic code with no message
+  tag, and the server answers one byte, `S` to proceed or `N` to say it has
+  none. A real server therefore read `0x16 0x03 0x01 ...` as a startup packet
+  declaring a 369 MB message and hung up, so the default upstream TLS mode
+  could not connect to any Postgres at all.
+  `request_tls` sends the request through `pgprox_proto::encode_frontend::
+  ssl_request`, the same encoder `bin/pgload` already used for the same three
+  bytes on the wire, and reads the answer. `S` proceeds. Everything else is a
+  refusal, `N` included: carrying on would put this tenant's backend password
+  on the plaintext socket just established, after asking for encryption and
+  being told there is none, which is the downgrade this module's own header
+  says must not happen. A socket that closes before answering is a refusal
+  too, rather than a read of whatever was in the buffer.
+  Not direct TLS. `sslnegotiation=direct` exists in a modern libpq and is not
+  a smaller change: the server requires the `postgresql` ALPN protocol for it,
+  which is exactly how it tells a stray `ClientHello` from a client that meant
+  one, and this `ClientConfig` sets no ALPN.
+  Why nothing caught it, which is the part worth keeping. `TlsMode::default()`
+  is `Verified` and an unspecified proto value maps to it, so this is what a
+  correct sidecar returns. Every fixture in the repository sets
+  `PGPROX_MOCK_TLS=disabled`: `docker-compose.yml`, `.fips.yml`, `.compare.yml`,
+  `kind/values.yaml` and `localstack.sh`. And
+  `a_verified_backend_is_dialled_over_tls` connected to a bare `TlsAcceptor`.
+  `M17.4` wrote that test precisely because every other `Verified` case
+  asserted a failure, and the fixture it chose still could not tell a
+  handshake that runs from one that reaches a Postgres. The fixture now
+  negotiates, so it can.
+  Proved against a real server, not only against the fixture: PostgreSQL 17
+  with `ssl=on` and a leaf certificate under a test CA, dialled with
+  `TlsMode::Verified`, a startup packet written through the negotiated channel
+  and an `Authentication` message read back. The same test against the same
+  container fails on the code before this change and passes after it, which is
+  what makes it evidence rather than a demonstration.
+  Not done, and named rather than left: no committed fixture exercises this.
+  The verification above was a container reachable only from inside its own
+  network namespace on this machine, which is not something `e2e.sh` can be
+  changed into without a run nobody here could execute. A compose arm with a
+  TLS-enabled primary and a mock sidecar left on its default mode is the shape
+  it wants, and until one exists the default path is covered by unit tests and
+  one manual run.
+  Acceptance: the first bytes upstream under `Verified` are the eight-byte
+  `SSLRequest`; a server answering `N` is refused with a reason naming TLS,
+  and one that vanishes mid-negotiation is refused too; the fixture that
+  proves the happy path negotiates before accepting; and the whole workspace
+  passes with the change included.

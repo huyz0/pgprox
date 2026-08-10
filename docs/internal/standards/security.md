@@ -67,7 +67,10 @@ because the token travels in the password field. A client that skips
 `SSLRequest` when `require_tls` is set gets an `ErrorResponse` explaining why,
 not a silent downgrade.
 
-Upstream TLS verifies the certificate chain against a configured CA. There is no
+Upstream TLS is negotiated the way Postgres negotiates it, with an `SSLRequest`
+answered by one byte, and it verifies the certificate chain against a configured
+CA. A server that answers `N` is refused rather than carried on with in the
+clear, for the same reason the client side gets no silent downgrade. There is no
 "skip verification" option, not even behind a flag, because that flag always
 ends up set in production.
 

@@ -143,9 +143,12 @@ The classic way to lose is to trust a declared length and allocate it.
 ## Transport
 
 Client TLS is configured with a certificate and key on disk, watched for
-rotation. Upstream TLS verifies the chain against a configured CA, and there is
-no option to skip that verification, not even behind a flag. Such a flag always
-ends up set in production.
+rotation. Upstream TLS is asked for the way Postgres expects to be asked, with
+an `SSLRequest` before any TLS record, and the chain is verified against a
+configured CA. A server that answers "no TLS here" gets no further conversation,
+because continuing would put that tenant's backend password on a plaintext
+socket. There is no option to skip verification, not even behind a flag. Such a
+flag always ends up set in production.
 
 For regulated deployments, [FIPS builds](fips.md) swap in a validated crypto
 module and assert at startup that it took.
