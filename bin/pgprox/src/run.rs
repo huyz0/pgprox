@@ -1176,6 +1176,32 @@ mod tests {
     /// build on work that was correct, which is the expensive kind of wrong.
     const PATIENCE: Duration = Duration::from_secs(30);
 
+    /// Waits until `check` holds, or fails after [`PATIENCE`] saying what did
+    /// not happen.
+    ///
+    /// The alternative, and what several tests here used to do, is to sleep
+    /// past a tick and then assert. That is two bets at once: that the work
+    /// takes less than the guess, and that the guess is short enough to be
+    /// worth paying on every run. `M81.1` lost the second one everywhere and
+    /// was one loaded machine away from losing the first: `M56.0` is this
+    /// repository's own record of a five-second timeout that was not enough on
+    /// a two-core runner.
+    ///
+    /// Waiting for the event instead is faster when the machine is fast and
+    /// patient when it is not, which is the only combination that is not a
+    /// guess.
+    async fn until<F, Fut>(what: &str, mut check: F)
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let deadline = std::time::Instant::now() + PATIENCE;
+        while !check().await {
+            assert!(std::time::Instant::now() < deadline, "{what}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     #[test]
     fn a_ceiling_above_the_descriptor_limit_is_reported_with_what_it_needs() {
         // `M17.4`. Every mutant of this survived, including replacing the whole
@@ -1759,20 +1785,26 @@ mod tests {
             shutdown.clone(),
         ));
 
-        // Two ticks' worth: the first fires immediately, so one round is
-        // enough, and the margin is for a loaded machine rather than for the
-        // protocol.
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        let learned = cluster
-            .digests()
-            .iter()
-            .any(|digest| digest.node == NodeId::new(2));
+        // Waited for rather than slept past. The old comment here said the
+        // margin was "for a loaded machine rather than for the protocol", which
+        // is the tell: a margin chosen for a machine is a number that is too
+        // long on a fast one and too short on the machine it was chosen for.
+        let heard = tokio::time::timeout(PATIENCE, async {
+            until("", || async {
+                cluster
+                    .digests()
+                    .iter()
+                    .any(|digest| digest.node == NodeId::new(2))
+            })
+            .await;
+        })
+        .await;
 
         shutdown.fire();
         let _ = tokio::time::timeout(PATIENCE, running).await;
         let _ = tokio::time::timeout(PATIENCE, peer).await;
 
-        assert!(learned, "a running node never heard from its peer");
+        assert!(heard.is_ok(), "a running node never heard from its peer");
     }
 
     #[tokio::test]
@@ -1794,16 +1826,28 @@ mod tests {
         assert_eq!(probe(addrs.admin, "GET", "/readyz").await.0, 200);
         assert_eq!(probe(addrs.admin, "POST", "/v1/drain").await.0, 200);
 
-        // The tick is what notices, so this waits for one.
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+        // The tick is what notices, so this waits for it to have noticed
+        // rather than for long enough that it probably has.
+        let admin = addrs.admin;
+        until(
+            "a drained node never failed its readiness probe",
+            || async move { probe(admin, "GET", "/readyz").await.0 == 503 },
+        )
+        .await;
 
         let (status, body) = probe(addrs.admin, "GET", "/readyz").await;
         assert_eq!(status, 503, "{body}");
-        assert_eq!(
-            cluster.outgoing().digest.mode,
-            pgprox_core::cluster::NodeMode::Draining,
-            "the fleet was never told"
-        );
+
+        // A second wait, and the reason it is second is the reason this test
+        // says "in order". Readiness flips as soon as the API sets the state;
+        // the fleet learns on the next gossip round. One wait for the first
+        // event was enough to see readiness fail and too early to see the
+        // digest move, which the first attempt at this conversion discovered by
+        // failing here with `left: Active`.
+        until("the fleet was never told", || async {
+            cluster.outgoing().digest.mode == pgprox_core::cluster::NodeMode::Draining
+        })
+        .await;
 
         // A client arriving now is told why rather than having its socket
         // dropped, which every driver reports as a network fault instead.
@@ -2124,14 +2168,24 @@ mod tests {
         let running = tokio::spawn(run(app, listeners, shutdown.clone()));
 
         std::fs::write(&path, "max_client_conns: not a number\n").unwrap();
-        tokio::time::sleep(Duration::from_millis(2500)).await;
+
+        // Waited for rather than slept past. The moment worth checking is the
+        // one just after the node has read the broken document and refused it,
+        // and the node is what knows when that was: `is_healthy` going false is
+        // the reload having been attempted and failed. Sleeping a guess instead
+        // asserted "the good config survived" at a moment that might have been
+        // before the bad one was ever read, which is a test that passes because
+        // nothing has happened yet.
+        until("a broken document was never noticed", || async {
+            !source.is_healthy()
+        })
+        .await;
 
         assert_eq!(
             watching.borrow().max_client_conns,
             100,
             "a broken document replaced a good one"
         );
-        assert!(!source.is_healthy(), "the failure was not reported");
 
         shutdown.fire();
         let _ = tokio::time::timeout(PATIENCE, running).await;

@@ -8985,3 +8985,37 @@ recognised so it can be refused rather than read as a version.
   the default parallelism, also zero.
   Acceptance: the two flaking assertions survive the stress that broke them,
   the four that could pass wrongly now cannot, and the whole workspace passes.
+
+- [x] `M81.1` Three tests wait for the event instead of sleeping past it.
+  `a_broken_document_leaves_the_previous_one_serving` slept 2,500ms,
+  `a_drain_through_the_admin_api_takes_the_node_out_of_service` and
+  `two_running_nodes_learn_about_each_other` slept 1,500ms each, and then
+  asserted. The second one's own comment admitted the shape: the margin was
+  "for a loaded machine rather than for the protocol", which is a number that
+  is too long on a fast machine and unproven on the machine it was chosen for.
+  `M56.0` is this repository's record of exactly that going wrong, a five
+  second timeout that was not enough on a two core runner.
+  An `until` helper waits for the condition with `PATIENCE`, thirty seconds, so
+  a slow machine waits rather than fails and a fast one stops as soon as the
+  work is done. 1.585s becomes 0.148s, 2.608s becomes 1.065s, and 1.5s becomes
+  1.096s.
+  The broken-document test needed the event choosing carefully. It asserts a
+  negative, that a good configuration survived a bad one, which no amount of
+  polling can prove; what it now waits for is `is_healthy` going false, the
+  node having read the bad document and refused it, and it makes the negative
+  assertion at exactly that moment. Sleeping a guess asserted it at a moment
+  that might have been before the bad document was read at all.
+  The drain test caught its own conversion. Waiting only for `/readyz` to fail
+  turned it green in 0.09s and then red at the next line with `left: Active`:
+  readiness flips when the API sets the state and the fleet learns on the next
+  gossip round, so one wait saw the first and was too early for the second. It
+  waits for both, in the order the test says it checks them, which is the
+  ordering claim it was making all along and had been getting for free from a
+  sleep long enough to cover both.
+  Not converted, and named rather than left quiet: four sleeps in this file
+  assert that the tick *ran*, `ran >= 2` and the like. A rate needs elapsed
+  time, so the only way to make those fast is an injectable `TICK`, which is a
+  change to production code bought entirely with test speed. The suite is 5.3
+  seconds; it is not worth it today.
+  Acceptance: the three tests assert the same properties, none sleeps a
+  duration chosen for a machine, and the whole workspace passes.
