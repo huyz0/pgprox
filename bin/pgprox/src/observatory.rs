@@ -813,7 +813,8 @@ mod tests {
             user: Arc::from("app"),
             normalized_sql: Arc::from("select 1"),
             params: Arc::from(&[][..]),
-            search_path: Arc::from("public"),
+            result_formats: Arc::from(&[][..]),
+            settings: Arc::from("public"),
         });
         assert_eq!(fixture.observatory.cache().misses, 1);
     }

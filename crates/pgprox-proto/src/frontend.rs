@@ -172,6 +172,7 @@ pub enum FrontendError {
 pub struct BindParameters<'a> {
     values: Vec<Option<&'a [u8]>>,
     raw: &'a [u8],
+    result_formats: &'a [u8],
 }
 
 impl<'a> BindParameters<'a> {
@@ -208,6 +209,31 @@ impl<'a> BindParameters<'a> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
+    }
+
+    /// The result format codes, as the wire carried them, or empty when every
+    /// column is text.
+    ///
+    /// # Why this is normalized rather than raw
+    ///
+    /// The `Bind` says how the server should encode the columns it returns, so
+    /// the same statement bound the same way with binary results is a different
+    /// answer in bytes. A cache that ignored this hands text rows to a client
+    /// that asked for binary, which is not a stale answer but an unreadable
+    /// one.
+    ///
+    /// Empty means every column is text, and it means that for all three
+    /// spellings of it: no codes at all, one code of zero standing for every
+    /// column, and a list of zeroes. They are one answer on the wire and have to
+    /// be one answer here, or the same request keys three ways.
+    ///
+    /// Empty is also what a simple query has, which is the point. A simple
+    /// query is always text, so it and a text-format `Bind` of the same SQL are
+    /// the same question, and `M9.22` made one entry answer both. That property
+    /// survives this only because all-text normalizes to nothing.
+    #[must_use]
+    pub const fn result_formats(&self) -> &'a [u8] {
+        self.result_formats
     }
 }
 
@@ -259,10 +285,55 @@ pub fn bind_parameters<'a>(frame: &Frame<'a>) -> Result<BindParameters<'a>, Fron
     }
 
     let read = from_the_count.len() - r.remaining().len();
+
+    // The result format codes, which decide how the answer is encoded and so
+    // are part of what the answer is. Read after the values because that is
+    // where they are: portal, statement, parameter formats, parameter values,
+    // then these.
+    //
+    // A `Bind` that stops here is legal in the sense that no client sends one,
+    // and this reads a truncated tail as all-text rather than failing: the
+    // caller's contract is that this frame decoded a moment ago, and a message
+    // that lost bytes between then and now is a bug to be starved of a cache
+    // entry rather than one to be reported from a getter.
+    let from_the_formats = r.remaining();
+    let result_formats = read_result_formats(&mut r).unwrap_or_default();
+    debug_assert!(
+        result_formats.is_empty() || from_the_formats.len() >= result_formats.len(),
+        "the formats came from somewhere other than this frame"
+    );
+
     Ok(BindParameters {
         values,
         raw: &from_the_count[..read],
+        result_formats,
     })
+}
+
+/// The result format codes, normalized so every spelling of all-text is empty.
+///
+/// Returns [`None`] where the tail is truncated, which the caller reads as
+/// all-text for the reason given at the call site.
+fn read_result_formats<'a>(r: &mut Reader<'a>) -> Option<&'a [u8]> {
+    let start = r.remaining();
+    let count = r.i16("result_format_count").ok()?;
+    let count = usize::try_from(count.max(0)).ok()?;
+
+    let mut all_text = true;
+    for _ in 0..count {
+        if r.i16("result_format").ok()? != 0 {
+            all_text = false;
+        }
+    }
+
+    if all_text {
+        // Every column is text, which is what a client that said nothing gets
+        // and what a simple query gets. One answer, one key.
+        return Some(&[]);
+    }
+
+    let read = start.len() - r.remaining().len();
+    start.get(..read)
 }
 
 /// Decodes a frontend frame.
@@ -419,6 +490,61 @@ mod tests {
 
         let params = bind_parameters(&frame(Tag::BIND, &body)).unwrap();
         assert_eq!(params.values(), &[Some(&b"abc"[..]), Some(&[0xff_u8][..])]);
+    }
+
+    /// A `Bind` of one text parameter, with these result format codes after it.
+    fn bind_with_result_formats(formats: &[i16]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"\0"); // portal
+        body.extend_from_slice(b"s\0"); // statement
+        body.extend_from_slice(&0_i16.to_be_bytes()); // no parameter formats
+        body.extend_from_slice(&1_i16.to_be_bytes()); // one value
+        body.extend_from_slice(&1_i32.to_be_bytes());
+        body.extend_from_slice(b"7");
+        body.extend_from_slice(&i16::try_from(formats.len()).unwrap().to_be_bytes());
+        for code in formats {
+            body.extend_from_slice(&code.to_be_bytes());
+        }
+        body
+    }
+
+    #[test]
+    fn every_spelling_of_all_text_results_reads_as_nothing() {
+        // `M78.0`. These are one request on the wire: no codes at all, a single
+        // code standing for every column, and a code per column. A key that
+        // told them apart would hold three entries for one question, and one
+        // that told none of them from binary would hand a client bytes it
+        // cannot decode.
+        for formats in [vec![], vec![0], vec![0, 0, 0]] {
+            let body = bind_with_result_formats(&formats);
+            let params = bind_parameters(&frame(Tag::BIND, &body)).unwrap();
+            assert!(
+                params.result_formats().is_empty(),
+                "{formats:?} did not read as all-text"
+            );
+        }
+    }
+
+    #[test]
+    fn a_binary_result_is_distinguishable_from_a_text_one() {
+        // The bug this exists for. The answer's bytes depend on this and the
+        // key did not, so a text entry could be served to a client that asked
+        // for binary.
+        let text = bind_with_result_formats(&[0]);
+        let binary = bind_with_result_formats(&[1]);
+        let mixed = bind_with_result_formats(&[0, 1]);
+
+        let text = bind_parameters(&frame(Tag::BIND, &text)).unwrap();
+        let binary = bind_parameters(&frame(Tag::BIND, &binary)).unwrap();
+        let mixed = bind_parameters(&frame(Tag::BIND, &mixed)).unwrap();
+
+        assert!(text.result_formats().is_empty());
+        assert!(!binary.result_formats().is_empty());
+        assert_ne!(binary.result_formats(), mixed.result_formats());
+        // The values are the same in all three, which is exactly why the values
+        // alone were not enough to key on.
+        assert_eq!(text.raw(), binary.raw());
+        assert_eq!(text.raw(), mixed.raw());
     }
 
     #[test]

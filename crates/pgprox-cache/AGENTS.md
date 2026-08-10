@@ -20,11 +20,19 @@ tenant's entries roughly every other lookup.
   the guarantee. Invalidation on write is an improvement on that bound; nothing
   here, in a comment or in output a human reads, may call it read-your-writes.
 - **Keyed by tenant, the database and role the grant resolved to, normalized
-  SQL, parameter values, and `search_path`.** Omitting any of them is a
-  correctness bug rather than a missed optimisation: the same SQL resolves to
-  different tables under different paths and in different databases, and to
-  different rows under different roles. The last two were absent until `M24.4`,
-  which is ADR [0024](../../docs/internal/product/decisions/0024-a-cache-key-names-the-connection-that-would-have-answered.md).
+  SQL, parameter values, the result format, and the session settings that shape
+  an answer.** Omitting any of them is a correctness bug rather than a missed
+  optimisation: the same SQL resolves to different tables under different paths
+  and in different databases, and to different rows under different roles. The
+  database and role were absent until `M24.4`, ADR
+  [0024](../../docs/internal/product/decisions/0024-a-cache-key-names-the-connection-that-would-have-answered.md).
+- **The key names how the answer was rendered, not only which rows it holds.**
+  What is stored is the server's bytes, so the result format a `Bind` asked for
+  and the settings that decide how a value is written down are part of the
+  question. Absent until `M78.0`, ADR
+  [0031](../../docs/internal/product/decisions/0031-a-cache-key-names-how-the-answer-was-rendered.md).
+  The list of which settings those are lives in `src/settings.rs`, beside the
+  rule about which statements may be cached.
 - **Bounded by bytes, not by entries.** A cache holding ten thousand entries
   holds an unbounded amount of memory, and this runs on a node whose whole
   design is about what a connection costs.

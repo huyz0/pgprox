@@ -27,8 +27,10 @@
 
 pub mod cacheable;
 pub mod normalize;
+pub mod settings;
 pub mod store;
 
 pub use cacheable::{NotCacheable, SessionFacts, cacheable};
 pub use normalize::normalize;
+pub use settings::fingerprint as settings_fingerprint;
 pub use store::{CacheStats, Store};

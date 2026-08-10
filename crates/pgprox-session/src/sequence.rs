@@ -105,6 +105,13 @@ pub struct HeldSequence {
     sql: Option<Arc<str>>,
     /// The parameter run out of the `Bind`, as the wire carried it.
     params: Arc<[u8]>,
+    /// The result format codes out of the same `Bind`, normalized so every
+    /// spelling of all-text is empty.
+    ///
+    /// Beside the parameters rather than folded into them, because appending
+    /// one client-controlled run to another makes a key material two `Bind`s
+    /// can collide on. `M78.0`.
+    result_formats: Arc<[u8]>,
     /// The portal the `Bind` named, which the `Execute` has to agree with.
     portal: String,
     /// How far through the one shape this can answer the sequence has got.
@@ -153,6 +160,16 @@ impl HeldSequence {
     #[must_use]
     pub fn params(&self) -> &Arc<[u8]> {
         &self.params
+    }
+
+    /// The result format to key on, empty when every column is text.
+    ///
+    /// Empty is what a simple query has, so a `Bind` asking for text keys the
+    /// same as the simple query of the same SQL, which is the property `M9.22`
+    /// arranged and this had to preserve.
+    #[must_use]
+    pub fn result_formats(&self) -> &Arc<[u8]> {
+        &self.result_formats
     }
 
     /// Whether the client asked for a `RowDescription`.
@@ -230,6 +247,7 @@ impl HeldSequence {
         self.frames.clear();
         self.sql = None;
         self.params = Arc::default();
+        self.result_formats = Arc::default();
         self.portal.clear();
         self.step = Step::Nothing;
         self.described = false;
@@ -333,8 +351,12 @@ impl HeldSequence {
                 // nothing bound. It cannot happen, because the frame decoded a
                 // moment ago and this reads the same bytes, and if it ever does
                 // the sequence gives up rather than guessing.
-                self.params = pgprox_proto::frontend::bind_parameters(&Frame::new(Tag::BIND, body))
+                let read = pgprox_proto::frontend::bind_parameters(&Frame::new(Tag::BIND, body));
+                self.params = read
+                    .as_ref()
                     .map_or_else(|_| Arc::default(), |read| Arc::from(read.raw()));
+                self.result_formats =
+                    read.map_or_else(|_| Arc::default(), |read| Arc::from(read.result_formats()));
             }
             FrontendMessage::Describe { .. } => self.described = true,
             FrontendMessage::Execute { .. } => self.step = Step::Executed,

@@ -577,8 +577,9 @@ fn weigh(key: &CacheKey, value: &CachedResult) -> usize {
         + key.database.len()
         + key.user.len()
         + key.normalized_sql.len()
-        + key.search_path.len()
+        + key.settings.len()
         + key.params.len()
+        + key.result_formats.len()
         + value.frames.len()
 }
 
@@ -599,7 +600,8 @@ mod tests {
             user: Arc::from("app"),
             normalized_sql: Arc::from(sql),
             params: Arc::from(&[][..]),
-            search_path: Arc::from("public"),
+            result_formats: Arc::from(&[][..]),
+            settings: Arc::from("public"),
         }
     }
 
@@ -983,7 +985,7 @@ mod tests {
         // question the server was asked.
         let (cache, _clock) = store(64 * 1024);
         let mut other_path = key("acme", "SELECT * FROM t");
-        other_path.search_path = Arc::from("tenant_acme");
+        other_path.settings = Arc::from("tenant_acme");
 
         cache.put(key("acme", "SELECT * FROM t"), result(16, 1000));
         assert!(
@@ -1050,7 +1052,7 @@ mod tests {
 
         let mut long_sql = key("acme", &"x".repeat(4096));
         long_sql.params = Arc::from(vec![0_u8; 4096].as_slice());
-        long_sql.search_path = Arc::from("y".repeat(4096));
+        long_sql.settings = Arc::from("y".repeat(4096));
         let large = weigh(&long_sql, &result(4096, 1000));
 
         assert!(
@@ -1067,7 +1069,7 @@ mod tests {
         // property that is arithmetic has to be asserted as arithmetic.
         let mut counted = key("acme", "select 1");
         counted.params = Arc::from(&b"\0\0\0\x011"[..]);
-        counted.search_path = Arc::from("public");
+        counted.settings = Arc::from("public");
         let value = result(64, 1000);
 
         assert_eq!(
@@ -1078,7 +1080,7 @@ mod tests {
                 + counted.database.len()
                 + counted.user.len()
                 + counted.normalized_sql.len()
-                + counted.search_path.len()
+                + counted.settings.len()
                 + counted.params.len()
                 + value.frames.len()
         );

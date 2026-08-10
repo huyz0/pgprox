@@ -1010,7 +1010,17 @@ fn cache_key(
         // run is the same key material as an extended statement with no
         // parameters. That is the same question asked two ways, and `M9.22` is
         // what makes one entry answer both.
-        key: key_for(grant, sql, std::sync::Arc::from(&[][..]), session),
+        // Nothing bound and everything in text, which is what a simple query
+        // is. Both are the same key material as an extended statement with no
+        // parameters that asked for text, which is the same question asked two
+        // ways and `M9.22` is what makes one entry answer both.
+        key: key_for(
+            grant,
+            sql,
+            std::sync::Arc::from(&[][..]),
+            std::sync::Arc::from(&[][..]),
+            session,
+        ),
         frames: Vec::new(),
         failed: false,
     }))
@@ -1252,7 +1262,13 @@ where
     let Some(sql) = held.sql() else {
         return Ok(false);
     };
-    let key = key_for(grant, sql, held.params().clone(), &live.session);
+    let key = key_for(
+        grant,
+        sql,
+        held.params().clone(),
+        held.result_formats().clone(),
+        &live.session,
+    );
 
     let Some(entry) = cache.get(&key) else {
         // Armed for the answer the replay is about to bring back. A `Sync` is
@@ -1381,14 +1397,20 @@ where
 /// The key a statement's answer is stored under.
 ///
 /// One place, so the two protocols cannot come to disagree about what a key is.
-/// `search_path` decides what the SQL names, so it is part of it. A session that
-/// never set one is on the server's default, which every session on this tenant
-/// shares; the empty string stands for it and cannot collide with a real path,
-/// since a real one is never empty.
+///
+/// What goes in it is everything the stored bytes depend on, which is a wider
+/// set than everything the rows depend on: the store holds the server's reply
+/// verbatim, so how the reply was rendered is as much a part of the question as
+/// which rows it holds. `search_path` was the only session setting named here
+/// until `M78.0`, and it was named for the narrower reason. See ADR 0031.
+///
+/// A session that set none of them is on the server's defaults, which every
+/// session on that backend shares, and the empty string stands for that.
 fn key_for(
     grant: &Grant,
     sql: &str,
     params: std::sync::Arc<[u8]>,
+    result_formats: std::sync::Arc<[u8]>,
     session: &pgprox_session::resume::SessionMemory,
 ) -> pgprox_core::cache::CacheKey {
     pgprox_core::cache::CacheKey {
@@ -1401,7 +1423,13 @@ fn key_for(
         user: std::sync::Arc::clone(&grant.primary.user),
         normalized_sql: std::sync::Arc::from(pgprox_cache::normalize(sql)),
         params,
-        search_path: std::sync::Arc::from(session.params.get("search_path").unwrap_or_default()),
+        result_formats,
+        // The list and the order are `pgprox-cache`'s, so the rule about which
+        // settings reach an answer lives beside the rule about which statements
+        // do rather than here.
+        settings: std::sync::Arc::from(pgprox_cache::settings_fingerprint(|name| {
+            session.params.get(name)
+        })),
     }
 }
 
@@ -2855,7 +2883,8 @@ mod tests {
                 user: Arc::from("acme_app"),
                 normalized_sql: std::sync::Arc::from("select $1"),
                 params: std::sync::Arc::from(&b""[..]),
-                search_path: std::sync::Arc::from("public"),
+                result_formats: std::sync::Arc::from(&[][..]),
+                settings: std::sync::Arc::from("public"),
             },
             frames: Vec::new(),
             failed: false,
@@ -3867,7 +3896,8 @@ mod tests {
             user: Arc::from("acme_app"),
             normalized_sql: Arc::from("select 1"),
             params: Arc::from(&[][..]),
-            search_path: Arc::from("public"),
+            result_formats: Arc::from(&[][..]),
+            settings: Arc::from("public"),
         };
         let value = pgprox_core::cache::CachedResult {
             frames: Arc::from([0_u8; 4].as_slice()),
@@ -4014,7 +4044,8 @@ mod tests {
             params: Arc::from(&[][..]),
             // Never set, so the server's own default, which every session on
             // this tenant shares.
-            search_path: Arc::from(""),
+            result_formats: Arc::from(&[][..]),
+            settings: Arc::from(""),
         };
         let stored = (cache.get(&key)).expect("nothing was stored");
 
@@ -4197,14 +4228,27 @@ mod tests {
         let session = pgprox_session::resume::SessionMemory::default();
         let params: Arc<[u8]> = Arc::from(&[][..]);
 
-        let base = key_for(&grant, "SELECT 1", Arc::clone(&params), &session);
+        let text: Arc<[u8]> = Arc::from(&[][..]);
+        let base = key_for(
+            &grant,
+            "SELECT 1",
+            Arc::clone(&params),
+            Arc::clone(&text),
+            &session,
+        );
         assert_eq!(base.database.as_ref(), "acme");
         assert_eq!(base.user.as_ref(), "acme_app");
 
         let mut elsewhere = grant_for(addr);
         elsewhere.primary.database = "acme_reporting".into();
         assert_ne!(
-            key_for(&elsewhere, "SELECT 1", Arc::clone(&params), &session),
+            key_for(
+                &elsewhere,
+                "SELECT 1",
+                Arc::clone(&params),
+                Arc::clone(&text),
+                &session
+            ),
             base,
             "one tenant's two databases built the same key"
         );
@@ -4212,9 +4256,89 @@ mod tests {
         let mut readonly = grant_for(addr);
         readonly.primary.user = "acme_readonly".into();
         assert_ne!(
-            key_for(&readonly, "SELECT 1", params, &session),
+            key_for(&readonly, "SELECT 1", params, text, &session),
             base,
             "two roles of one tenant built the same key"
+        );
+    }
+
+    #[test]
+    fn the_cache_key_carries_the_settings_the_answer_was_rendered_under() {
+        // `M78.0`. `TimeZone` is on the replay allowlist, so a session sets it
+        // without pinning and keeps it across a connection change. It reaches
+        // no row and it renders every `timestamptz` in every row, so two
+        // sessions of one tenant differing only in it were sharing an entry and
+        // one of them was being told the wrong time.
+        let addr: SocketAddr = "127.0.0.1:5432".parse().unwrap();
+        let grant = grant_for(addr);
+        let none: Arc<[u8]> = Arc::from(&[][..]);
+
+        let default = pgprox_session::resume::SessionMemory::default();
+        let base = key_for(
+            &grant,
+            "SELECT ts FROM t",
+            Arc::clone(&none),
+            Arc::clone(&none),
+            &default,
+        );
+
+        let mut utc = pgprox_session::resume::SessionMemory::default();
+        utc.params.record("timezone", "UTC");
+        let mut york = pgprox_session::resume::SessionMemory::default();
+        york.params.record("timezone", "America/New_York");
+
+        let utc = key_for(
+            &grant,
+            "SELECT ts FROM t",
+            Arc::clone(&none),
+            Arc::clone(&none),
+            &utc,
+        );
+        let york = key_for(
+            &grant,
+            "SELECT ts FROM t",
+            Arc::clone(&none),
+            Arc::clone(&none),
+            &york,
+        );
+
+        assert_ne!(utc, york, "two time zones built the same key");
+        assert_ne!(utc, base, "a set time zone keyed as the server default");
+        assert!(
+            base.settings.is_empty(),
+            "a session that set nothing paid for a fingerprint"
+        );
+    }
+
+    #[test]
+    fn the_cache_key_carries_the_format_the_answer_was_encoded_in() {
+        // The other half of `M78.0`. A `Bind` says how the server should encode
+        // the columns it returns, and what is stored is the reply verbatim, so
+        // an entry recorded in text served to a client that asked for binary is
+        // rows it cannot decode.
+        let addr: SocketAddr = "127.0.0.1:5432".parse().unwrap();
+        let grant = grant_for(addr);
+        let session = pgprox_session::resume::SessionMemory::default();
+        let params: Arc<[u8]> = Arc::from(&[][..]);
+        let text: Arc<[u8]> = Arc::from(&[][..]);
+        let binary: Arc<[u8]> = Arc::from(&[0_u8, 1, 0, 1][..]);
+
+        let as_text = key_for(
+            &grant,
+            "SELECT 1",
+            Arc::clone(&params),
+            Arc::clone(&text),
+            &session,
+        );
+        let as_binary = key_for(&grant, "SELECT 1", Arc::clone(&params), binary, &session);
+
+        assert_ne!(as_text, as_binary, "two encodings built the same key");
+        // And a text-format bind still shares with the simple query of the same
+        // SQL, which is what `M9.22` arranged and this had to leave standing.
+        assert_eq!(
+            as_text,
+            key_for(&grant, "SELECT 1", params, text, &session),
+            "a text bind stopped keying as a simple query"
         );
     }
 

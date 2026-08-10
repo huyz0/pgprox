@@ -8752,3 +8752,70 @@ recognised so it can be refused rather than read as a version.
   no admin port and no admin service; with `adminService.enabled=true` it
   yields one; and the documentation says what the change does and does not
   achieve.
+
+## M78: the cache key named which rows, not what the bytes said
+
+- [x] `M78.0` The key names how an answer was rendered, in both of the two ways
+  it was not.
+  ADR 0024 carried one observation two fields further than ADR 0021 had, and
+  its closing table has a row for "two sessions differing in nothing" answering
+  "the same". That row was wrong, because what the store holds is not rows: it
+  is the server's bytes, verbatim, for the same reason the relay never parses a
+  `DataRow`. Two sessions can agree on every row of an answer and disagree
+  entirely on what the answer looks like. ADR 0031 records the distinction and
+  the two things it found.
+  **The result format.** A `Bind` carries a result format code per column and
+  the server encodes what it returns accordingly, so `SELECT id` is two ASCII
+  bytes in text and four big-endian ones in binary. `bind_parameters` read the
+  values and skipped the format codes, so the two keyed identically and a
+  client that asked for binary could be served the text entry, with a
+  `RowDescription` telling it text while it expected binary. Reachable through
+  every driver that binds for binary results, which is most of them.
+  Normalized so that every spelling of all-text is empty: no codes, one code of
+  zero for every column, and a list of zeroes are one request on the wire and
+  have to be one key. Empty is also what a simple query has, so a text `Bind`
+  still shares an entry with the simple query of the same SQL, which is
+  `M9.22`'s property and had to be left standing.
+  **The session settings that render a value.** `TimeZone`, `DateStyle`,
+  `IntervalStyle`, `extra_float_digits`, `bytea_output` and `client_encoding`
+  are all on `pgprox-pool`'s replay allowlist, which is exactly what makes this
+  reachable: a session sets one, is not pinned, keeps it across a connection
+  change, and shares entries with every other session of that tenant, database
+  and role. `client_encoding` is the worst of them, since it decides the
+  encoding of most of the bytes in most answers. `search_path` was in the key
+  already and was there for the narrower reason, which is why the other six
+  were not noticed beside it. `standard_conforming_strings` is a seventh of a
+  different kind: it changes what the SQL text means rather than how the answer
+  prints.
+  `role` and `session_authorization` would be the most serious of the lot and
+  are safe today, because they are absent from the replay allowlist, so a
+  session that sets either is pinned and a pinned session is refused a key.
+  That is two lists happening to agree rather than a decision, so it is
+  written down in `settings.rs` where somebody adding `role` to the replay list
+  would read it.
+  The list lives in `pgprox-cache`, beside the rule about which statements may
+  be cached, rather than in the composition root that builds the key: there is
+  one rule about what reaches an answer and it should have one home.
+  The fingerprint is length-prefixed rather than delimiter-separated, and that
+  came from the test rather than from the design. Joined by newlines, a session
+  setting `TimeZone` to `UTC\ndatestyle=ISO` produces the same string as one
+  that set both, so a value can forge another session's fingerprint. The values
+  are a tenant's own text and every delimiter the format could use is one a
+  tenant can write, so the length is what makes the encoding injective.
+  `a_value_cannot_forge_another_sessions_fingerprint` failed against the first
+  implementation, which is the only reason this paragraph exists.
+  `CacheKey` changed, which is a contract change: the struct, every
+  construction site across three crates and their tests, benches and budgets,
+  the crate's `AGENTS.md`, and ADR 0031, in one commit.
+  What this costs: a tenant whose sessions disagree about their settings now
+  holds more entries, which is the correct number rather than a regression,
+  since those sessions were never asking the same question. A fleet where every
+  session sets the same `TimeZone` at connect time is unaffected. `application_name`
+  is excluded despite being replayable, because it reaches no answer and half
+  the drivers set it per process, which would give every application instance a
+  private copy of every entry.
+  Acceptance: two sessions differing only in `TimeZone` build different keys; a
+  binary-format bind and a text one build different keys; a text bind still
+  keys as the simple query of the same SQL; a session that set nothing still
+  fingerprints to empty; every setting on the list reaches the fingerprint; and
+  the whole workspace, 2,003 tests, passes with the change included.

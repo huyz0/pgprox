@@ -28,6 +28,13 @@
 //! enough. A tenant is not one database and is not one role: a grant resolves
 //! per startup database and yields a `Backend`, which is why `PoolKey` carries
 //! both. See ADR 0024, and `M24.4` for what sharing them looked like.
+//!
+//! ADR 0031 is the same observation again, twice. What is stored is the bytes
+//! the server produced, so the key has to name everything those bytes depend
+//! on, not only everything the *rows* depend on. Two things decided them and
+//! were not named: the result format the `Bind` asked for, and the session
+//! settings that govern how a value is rendered. Both are reachable without
+//! pinning a session, which is what made them shareable and wrong.
 
 use std::fmt;
 use std::sync::Arc;
@@ -75,8 +82,31 @@ pub struct CacheKey {
     /// simple query of the same SQL. That is the same question asked two ways
     /// and one entry should answer both.
     pub params: Arc<[u8]>,
-    /// The session's `search_path`, which decides what the SQL actually names.
-    pub search_path: Arc<str>,
+    /// How the client asked for the answer to be encoded.
+    ///
+    /// Empty for every column in text, which covers a client that sent no
+    /// codes, a simple query, and a `Bind` that asked for text explicitly. Any
+    /// binary column makes this the codes as the wire carried them.
+    ///
+    /// The stored bytes are the server's answer verbatim, and the server
+    /// encodes them the way the `Bind` said to. Sharing an entry between a text
+    /// request and a binary one hands a driver rows it cannot decode. See
+    /// ADR 0031, and `pgprox_proto::frontend::BindParameters::result_formats`
+    /// for why all-text normalizes to nothing.
+    pub result_formats: Arc<[u8]>,
+    /// The session settings that change what the answer is or how it reads.
+    ///
+    /// `search_path` alone until ADR 0031, which is where the reasoning had
+    /// stopped rather than where it ends. `search_path` decides what the SQL
+    /// names; `TimeZone`, `DateStyle`, `IntervalStyle`, `extra_float_digits`,
+    /// `bytea_output` and `client_encoding` decide what the bytes say, and all
+    /// six can be set by a session without pinning it, so two sessions differing
+    /// only in one of them shared an entry.
+    ///
+    /// Built canonically by the caller so two sessions that set the same things
+    /// produce the same string, and empty when a session has set none of them,
+    /// which is most of them.
+    pub settings: Arc<str>,
 }
 
 /// A cached result, stored as the raw wire bytes that produced it.
@@ -260,7 +290,8 @@ mod tests {
             user: Arc::from("app"),
             normalized_sql: Arc::from(sql),
             params: Arc::from(&b"\0\0\0\x011"[..]),
-            search_path: Arc::from(search_path),
+            result_formats: Arc::from(&[][..]),
+            settings: Arc::from(search_path),
         }
     }
 

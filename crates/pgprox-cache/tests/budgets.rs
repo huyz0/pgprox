@@ -39,7 +39,8 @@ fn key(sql: &str) -> CacheKey {
         user: Arc::from("app_role"),
         normalized_sql: Arc::from(sql),
         params: Arc::from(&b"\0\0\0\x011"[..]),
-        search_path: Arc::from("public"),
+        result_formats: Arc::from(&[][..]),
+        settings: Arc::from("public"),
     }
 }
 
