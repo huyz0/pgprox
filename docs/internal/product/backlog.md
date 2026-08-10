@@ -8819,3 +8819,19 @@ recognised so it can be refused rather than read as a version.
   keys as the simple query of the same SQL; a session that set nothing still
   fingerprints to empty; every setting on the list reaches the fingerprint; and
   the whole workspace, 2,003 tests, passes with the change included.
+
+- [x] `M78.1` A comment that described a feature the next task had already
+  built.
+  `cache_key`'s documentation said "Only the simple protocol, for now", and
+  explained that the codec could not read a `Bind`'s parameters so a bound
+  statement was deliberately a miss rather than a wrong key. That was true when
+  `M9.9` wrote it and stopped being true at `M9.12`, which taught the codec to
+  read them and added `serve_held` as the extended protocol's half of the same
+  path. The sentence outlived its reason, so a function's scope read as the
+  whole feature's, and a reader working out whether the `M78.0` bug could reach
+  bound statements would have concluded from this comment that it could not.
+  It now says which half it is and names the other, and records what it used to
+  claim, because "this was true once" is the part that stops somebody
+  re-deriving the old answer from an old commit.
+  Acceptance: the comment names both halves and the crate's tests are
+  unchanged, since nothing here is behaviour.

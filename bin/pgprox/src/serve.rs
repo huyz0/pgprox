@@ -961,17 +961,19 @@ where
 /// simple query, or a statement the cacheability rule refused. `M9.9` is what
 /// will count them apart.
 ///
-/// # Only the simple protocol, for now
+/// # This is the simple protocol's half only
 ///
-/// The extended protocol's parameter values live in a `Bind`, and
-/// `pgprox-proto` exposes that message's portal and statement names and not
-/// its parameters: the codec has never had a reason to read them, and reading
-/// them is a piece of work with its own risk.
+/// The extended protocol's half is [`serve_held`], which keys off a
+/// `HeldSequence` rather than a single frame because its question is spread
+/// across a `Parse`, a `Bind` and an `Execute`. Both build their key through
+/// [`key_for`], so the two protocols cannot come to disagree about what a key
+/// is.
 ///
-/// Until it does, a bound statement is a miss rather than a wrong key.
-/// `CacheKey::params` would be empty for two calls differing only in what was
-/// bound, so `SELECT $1` with 1 and with 2 would share an entry. That is the
-/// difference between a smaller cache and a broken one. See `M9.12`.
+/// This said "only the simple protocol, for now" until `M78.0`, and had said it
+/// since `M9.9`: the codec could not read a `Bind`'s parameters, so a bound
+/// statement was deliberately a miss rather than a wrong key. `M9.12` taught it
+/// to, and the sentence outlived the reason for it, which made this function's
+/// scope read as the whole feature's.
 fn cache_key(
     context: &Context,
     grant: &Grant,
