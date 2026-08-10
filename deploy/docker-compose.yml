@@ -69,6 +69,22 @@ x-proxy: &proxy
         [ -S /tmp/sidecar.sock ] && break
         sleep 0.5
       done
+
+      # And the upstream CA, on the node that has one. `depends_on` is not
+      # enough by itself: the primary answers pg_isready from the temporary
+      # server its own init scripts run against, so "healthy" arrives before
+      # those scripts have finished. The replica entrypoint already works
+      # around the same window, and says so.
+      if [ -n "$${PGPROX_UPSTREAM_CA:-}" ]; then
+        for _ in $$(seq 1 120); do
+          [ -s /upstream-tls/ca.crt ] && break
+          sleep 0.5
+        done
+        if [ ! -s /upstream-tls/ca.crt ]; then
+          echo "no upstream CA at /upstream-tls/ca.crt" >&2
+          exit 1
+        fi
+      fi
       # Both parameterised so a measurement run can use a different document
       # and speak plaintext, without a second copy of this entrypoint that
       # would drift from it. The defaults are the posture the e2e run asserts:
@@ -82,6 +98,7 @@ x-proxy: &proxy
         --tls-cert /tmp/tls.crt \
         --tls-key /tmp/tls.key \
         $${PGPROX_REQUIRE_TLS:---require-tls} \
+        $${PGPROX_UPSTREAM_CA:-} \
         --node "$${PGPROX_NODE}" \
         --node-name "$${PGPROX_NODE_NAME}" \
         --peer "$${PGPROX_PEER_A}" \
@@ -95,15 +112,43 @@ x-proxy: &proxy
     timeout: 2s
     retries: 30
 
+volumes:
+  # The upstream certificate authority, and the leaf the databases serve. Made
+  # once per stack by the service below and read by the databases and by the one
+  # node that dials them over TLS.
+  upstream-tls:
+
 services:
+  # A CA and a server certificate, then it exits. The postgres image has no
+  # openssl, and the proxy image does because its own entrypoint makes a
+  # certificate with it, so this borrows that rather than adding a third image.
+  #
+  # It exists at all because the proxy's upstream side has no "verify nothing"
+  # mode: proving that path reaches a Postgres needs a chain that verifies, and
+  # a self-signed server certificate is refused as a CA used as a leaf.
+  upstream-tls:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    entrypoint: ["/bin/sh", "/generate.sh"]
+    volumes:
+      - ./upstream-tls/generate.sh:/generate.sh:ro
+      - upstream-tls:/upstream-tls
+    restart: "no"
+
   primary:
     image: postgres:17-alpine
+    depends_on:
+      upstream-tls:
+        condition: service_completed_successfully
     environment:
       POSTGRES_PASSWORD: postgres
       POSTGRES_USER: postgres
       POSTGRES_DB: postgres
     volumes:
+      - ./primary/tls.sh:/docker-entrypoint-initdb.d/05-tls.sh:ro
       - ./primary/init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
+      - upstream-tls:/upstream-tls:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 2s
@@ -165,8 +210,29 @@ services:
       - "16433:6432"
       - "19091:9090"
 
+  # The node whose upstream connections are encrypted.
+  #
+  # One of the three rather than all of them, so the stack keeps a node on each
+  # side of the choice: `TlsMode::Disabled` is what the other two exercise, and
+  # a failure here names the mode rather than taking the whole fleet with it.
+  # This is also the node the watermark assertion already drives, so the TLS
+  # path carries real traffic rather than one probe.
+  #
+  # `M79.0`. Every service in this file set `PGPROX_MOCK_TLS: disabled`, which
+  # meant the proxy's *default* upstream mode had never been pointed at a
+  # Postgres. It could not have reached one: it sent a TLS ClientHello where the
+  # protocol wants an `SSLRequest`, which `M75.0` fixed and nothing here could
+  # have caught.
   pgprox-3:
     <<: *proxy
+    depends_on:
+      primary:
+        condition: service_healthy
+      upstream-tls:
+        condition: service_completed_successfully
+    volumes:
+      - ./config:/etc/pgprox:ro
+      - upstream-tls:/upstream-tls:ro
     environment:
       PGPROX_NODE: "3"
       PGPROX_NODE_NAME: pgprox-3
@@ -177,7 +243,13 @@ services:
       PGPROX_MOCK_DATABASE: tenant_acme
       PGPROX_MOCK_USER: acme_app
       PGPROX_MOCK_PASSWORD: acme-password
-      PGPROX_MOCK_TLS: disabled
+      # Anything but `disabled`, which is how the mock sidecar spells the
+      # default a real one returns when it says nothing.
+      PGPROX_MOCK_TLS: verified
+      # Whole flag and argument in one variable, so a node without one expands
+      # to nothing rather than to an empty path. The same shape as
+      # PGPROX_REQUIRE_TLS above it.
+      PGPROX_UPSTREAM_CA: --upstream-ca /upstream-tls/ca.crt
     ports:
       - "16434:6432"
       - "19092:9090"

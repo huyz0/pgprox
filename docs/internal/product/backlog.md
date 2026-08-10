@@ -8835,3 +8835,62 @@ recognised so it can be refused rather than read as a version.
   re-deriving the old answer from an old commit.
   Acceptance: the comment names both halves and the crate's tests are
   unchanged, since nothing here is behaviour.
+
+## M79: the fixture gap M75.0 named
+
+- [x] `M79.0` An e2e arm with a TLS-enabled primary, so the default upstream
+  mode meets a Postgres.
+  `M75.0` fixed a proxy that could not open a TLS connection to any Postgres
+  and said plainly what it could not do: prove it in a fixture anybody else
+  could run. Every service in `deploy/docker-compose.yml` set
+  `PGPROX_MOCK_TLS: disabled`, so the mode a real sidecar returns by default
+  had never been pointed at a database, and the one unit test of that path
+  connected to a bare `TlsAcceptor`, which cannot tell a handshake that runs
+  from one that reaches a Postgres. This is that fixture.
+  An `upstream-tls` service makes a CA and one leaf naming `primary`,
+  `replica-1` and `replica-2`, then exits. A CA rather than the self-signed
+  certificates the proxy nodes make for themselves, because the two sides are
+  not symmetrical: a client is told `PGSSLMODE=require`, which encrypts without
+  verifying, and the proxy's upstream side has no such mode. `TlsMode::Verified`
+  is the only mode it has, so a self-signed server certificate is refused as a
+  CA used as a leaf and would have proven only that the failure path works.
+  It runs on the proxy image because the postgres image has no `openssl` and
+  the proxy image has one for its own entrypoint, which is cheaper than a third
+  image.
+  The primary copies the leaf into `PGDATA` rather than opening it where it
+  lies. Postgres refuses a key it considers loosely held, and the generator
+  runs as root in another container and cannot know this image's postgres uid;
+  the init script runs *as* postgres, so its copy is owned correctly by
+  construction rather than by a uid somebody has to keep true. The paths in
+  `postgresql.conf` are relative because the replicas are `pg_basebackup`
+  clones and inherit that file: an absolute path would name the primary's
+  `PGDATA`, which is not where a replica keeps its copy.
+  One node of the three, `pgprox-3`, dials over TLS. The stack keeps a node on
+  each side of the choice, a failure names the mode instead of taking the fleet
+  with it, and it is the node the watermark assertion already drives, so the
+  TLS path carries real traffic rather than one probe.
+  The assertion asks the *database*, not the proxy: `SELECT ssl FROM
+  pg_stat_ssl WHERE pid = pg_backend_pid()` is Postgres's own record of how the
+  backend carrying this very statement is connected. Nothing the proxy reports
+  about itself could say that.
+  Proved three ways rather than asserted once. The full run is green with the
+  new check among the others. The `prove` path runs the same query through
+  `pgprox-1`, whose upstream mode is `disabled`, and requires `f`: same
+  statement, same database, same view, one difference, so the predicate is
+  shown able to tell them apart at no setup cost, because the two plaintext
+  nodes were already there. And the check was run against a build with
+  `M75.0` reverted, where it fails along with two others, which is the claim
+  that this arm would have caught the original bug rather than merely passing
+  beside it.
+  What the reverted run also showed, and what is not fixed here: a client whose
+  upstream dial fails is told "too many connections, please retry".
+  `pgprox_core::pool` maps every `PoolError::ConnectFailed` to
+  `ClientError::UpstreamAtCap` with a cap of zero, on the argument that from
+  the client's side an unreachable upstream is the same as a full one. That is
+  true of what a client should do and false of what an operator should look at,
+  and it is the same distinction `Pool::give_up` is careful to draw between
+  being at a cap and having timed out. A separate finding, named rather than
+  widened into this task.
+  Acceptance: `scripts/e2e.sh` passes with the new assertion; `scripts/e2e.sh
+  prove` shows the assertion distinguishes an encrypted upstream from a
+  plaintext one; and the assertion fails against a build without `M75.0`.

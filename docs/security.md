@@ -145,7 +145,9 @@ The classic way to lose is to trust a declared length and allocate it.
 Client TLS is configured with a certificate and key on disk, watched for
 rotation. Upstream TLS is asked for the way Postgres expects to be asked, with
 an `SSLRequest` before any TLS record, and the chain is verified against a
-configured CA. A server that answers "no TLS here" gets no further conversation,
+configured CA. The end-to-end stack runs one of its three nodes this way and
+asks the database itself, through `pg_stat_ssl`, whether the connection
+carrying the query is encrypted. A server that answers "no TLS here" gets no further conversation,
 because continuing would put that tenant's backend password on a plaintext
 socket. There is no option to skip verification, not even behind a flag. Such a
 flag always ends up set in production.

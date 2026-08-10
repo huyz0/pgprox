@@ -247,6 +247,42 @@ assert_no_read_behind_the_watermark() {
   ok "watermark: 25 write-then-read rounds, none served stale"
 }
 
+# The node configured for upstream TLS actually reaches its database over TLS.
+#
+# Asked of the server rather than of the proxy. `pg_stat_ssl` is Postgres's own
+# record of how each backend is connected, and joining it to `pg_backend_pid()`
+# narrows it to the connection this very statement arrived on: the answer is
+# the database saying whether the socket the proxy opened for this query is
+# encrypted. Nothing the proxy reports about itself could say that.
+#
+# `M79.0`. The whole stack ran with `PGPROX_MOCK_TLS: disabled`, so the mode a
+# real sidecar returns by default had never been pointed at a Postgres, and
+# `M75.0` found it could not have reached one: it sent a TLS ClientHello where
+# the protocol wants an `SSLRequest`. A unit test proved the negotiation and
+# only a real server proves the negotiation is the one Postgres expects.
+assert_upstream_tls_reaches_the_database() {
+  local answer
+
+  # That it connects at all is half the assertion and was the whole bug: a node
+  # in this mode could not open an upstream connection, so every statement
+  # failed with no answer rather than a wrong one.
+  answer="$(in_psql pgprox-3 'SELECT 1' | tr -d '[:space:]')"
+  if [[ "$answer" != "1" ]]; then
+    fail "the node dialling upstream over TLS served nothing: ${answer:-nothing}"
+    last_words pgprox-3
+    return 1
+  fi
+
+  answer="$(in_psql pgprox-3 \
+    'SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()' | tr -d '[:space:]')"
+  if [[ "$answer" != "t" ]]; then
+    fail "the upstream connection is not encrypted: pg_stat_ssl said '${answer:-nothing}'"
+    last_words pgprox-3
+    return 1
+  fi
+  ok "upstream TLS: the database says the proxy's connection to it is encrypted"
+}
+
 # ---------------------------------------------------------------------------
 # Proving the assertions are not vacuous
 #
@@ -331,6 +367,29 @@ prove_watermark_check_catches_a_stale_read() {
   fi
 
   as_superuser replica-1 'SELECT pg_wal_replay_resume()' >/dev/null
+}
+
+# The upstream TLS assertion reads `pg_stat_ssl` and expects `t`. This is the
+# same query through a node whose upstream mode is `disabled`, which must answer
+# `f`: same statement, same database, same view, and the only difference is the
+# thing being asserted. If the predicate cannot tell these two apart it was
+# reading something other than what it claims to read.
+#
+# The two nodes are why this costs nothing to prove. pgprox-1 and pgprox-2 are
+# left on plaintext deliberately, so the stack carries a control rather than
+# needing one built.
+prove_upstream_tls_check_catches_plaintext() {
+  local answer
+  answer="$(in_psql pgprox-1 \
+    'SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()' | tr -d '[:space:]')"
+
+  if [[ "$answer" == "t" ]]; then
+    fail "a node with upstream TLS disabled reported an encrypted connection, so the check proves nothing"
+  elif [[ "$answer" != "f" ]]; then
+    fail "the control node answered neither t nor f: '${answer:-nothing}'"
+  else
+    ok "proven: the upstream TLS check tells an encrypted connection from a plaintext one"
+  fi
 }
 
 # psql at a database as the superuser, for the things a tenant's role may not
@@ -449,8 +508,10 @@ if bring_up; then
     prove_pgbench_check_catches_failures || true
     prove_drain_check_catches_losses || true
     prove_watermark_check_catches_a_stale_read || true
+    prove_upstream_tls_check_catches_plaintext || true
   else
     assert_every_node_serves || true
+    assert_upstream_tls_reaches_the_database || true
     assert_pgbench_is_clean || true
     assert_drain_loses_no_transactions || true
     assert_no_read_behind_the_watermark || true

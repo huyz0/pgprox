@@ -40,7 +40,7 @@ number, and the number goes in a run document under
 | `bench.sh` | Instruction counts for the hot paths, against the committed baseline | valgrind |
 | `scale.sh` | RSS, added latency and upstream connections at N connections | Docker |
 | `compare.sh` | pgprox against pgbouncer and pgcat, one workload, one machine | Docker |
-| `e2e.sh` | The compose stack and the properties M6 is judged on | Docker |
+| `e2e.sh` | The compose stack, the properties M6 is judged on, and upstream TLS against a real server | Docker |
 | `profile.sh` | Which code the reference workload actually reaches | Docker |
 | `pinning.sh` | What pinning costs multiplexing | Docker |
 | `admission.sh` | What a fleet with no capacity left tells a client | Docker |
