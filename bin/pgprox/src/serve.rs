@@ -4030,6 +4030,36 @@ mod tests {
         }
     }
 
+    /// What the fake at `addr` was sent by sessions, with the replica poller's
+    /// own probe left out.
+    ///
+    /// # Why a filter rather than a total
+    ///
+    /// `statements_seen` records every frame body the fake was sent, and the
+    /// fake in these tests is the primary *and* the replica, so the poller's
+    /// `REPLICA_QUERY` arrives on it too, on the poller's schedule rather than
+    /// on the test's. A test that captured a total before a statement and
+    /// compared it after was comparing a number a background task could change
+    /// between the two reads.
+    ///
+    /// That is a flake in one direction and something worse in the other. The
+    /// equality assertions failed about once in fifteen suite runs at high
+    /// parallelism, reporting "a differently spelled statement missed" when the
+    /// cache had hit and the poller had simply spoken. The `>` assertions could
+    /// pass on a poller probe while the statement they were about never went
+    /// upstream at all, which is a test that holds when the behaviour it names
+    /// is broken. `M81.0`.
+    ///
+    /// The poller is doing its job here and is not the problem: what it exposed
+    /// is that "what the server heard" and "what this session sent" were being
+    /// treated as one number.
+    fn client_traffic(addr: SocketAddr) -> Vec<String> {
+        statements_seen(addr)
+            .into_iter()
+            .filter(|sql| sql != pgprox_session::probe::REPLICA_QUERY)
+            .collect()
+    }
+
     /// Runs `sql` through a session and returns what the client was sent back.
     async fn query_and_collect(context: Arc<Context>, sql: &str) -> Vec<(Tag, Vec<u8>)> {
         let gate = Arc::new(Gate::new(10));
@@ -4072,7 +4102,7 @@ mod tests {
         assert_eq!(first[0].0, Tag::ROW_DESCRIPTION);
         assert_eq!(cache.len(), 1, "the answer was not stored");
 
-        let before = statements_seen(addr).len();
+        let before = client_traffic(addr).len();
 
         // Second time, from the cache: the same bytes, and the fake server
         // never hears about it.
@@ -4082,9 +4112,10 @@ mod tests {
             "the cached answer differed from the stored one"
         );
         assert_eq!(
-            statements_seen(addr).len(),
+            client_traffic(addr).len(),
             before,
-            "a hit still sent the statement upstream"
+            "a hit still sent the statement upstream: {:?}",
+            client_traffic(addr)
         );
 
         // And it is still a statement. A hit that went uncounted makes every
@@ -4187,7 +4218,7 @@ mod tests {
         query_through_a_session(Arc::clone(&context), "SELECT 1").await;
         assert_eq!(cache.len(), 1, "the other session stored nothing");
 
-        let before = statements_seen(addr).len();
+        let before = client_traffic(addr).len();
         let mut out = Vec::new();
         pgprox_proto::encode_frontend::query(&mut out, "SELECT 1");
         client.write_all(&out).await.unwrap();
@@ -4198,8 +4229,9 @@ mod tests {
             "a hit told the client its transaction had ended"
         );
         assert!(
-            statements_seen(addr).len() > before,
-            "a read inside a transaction was answered from the cache"
+            client_traffic(addr).len() > before,
+            "a read inside a transaction was answered from the cache: {:?}",
+            client_traffic(addr)
         );
 
         // And nothing new was stored: its answer is visible only to this
@@ -4224,13 +4256,14 @@ mod tests {
         let context = Arc::new(context);
 
         query_and_collect(Arc::clone(&context), "SELECT 1").await;
-        let after_first = statements_seen(addr).len();
+        let after_first = client_traffic(addr).len();
         query_and_collect(Arc::clone(&context), "SELECT 1").await;
 
         assert_eq!(store.stats().entries, 0, "a result was stored for nobody");
         assert!(
-            statements_seen(addr).len() > after_first,
-            "the second statement was answered from a cache serving nobody"
+            client_traffic(addr).len() > after_first,
+            "the second statement was answered from a cache serving nobody: {:?}",
+            client_traffic(addr)
         );
     }
 
@@ -4245,11 +4278,11 @@ mod tests {
 
         query_and_collect(Arc::clone(&context), "SELECT 1").await;
         assert_eq!(store.stats().entries, 1, "the answer was not stored");
-        let after_first = statements_seen(addr).len();
+        let after_first = client_traffic(addr).len();
 
         // Inside the TTL, the server hears nothing.
         query_and_collect(Arc::clone(&context), "SELECT 1").await;
-        assert_eq!(statements_seen(addr).len(), after_first);
+        assert_eq!(client_traffic(addr).len(), after_first);
         assert_eq!(store.stats().hits, 1);
 
         // Past it, the statement goes upstream again. Whatever the grant said,
@@ -4257,8 +4290,9 @@ mod tests {
         clock.advance(Duration::from_secs(5));
         query_and_collect(Arc::clone(&context), "SELECT 1").await;
         assert!(
-            statements_seen(addr).len() > after_first,
-            "an entry outlived the configured TTL"
+            client_traffic(addr).len() > after_first,
+            "an entry outlived the configured TTL: {:?}",
+            client_traffic(addr)
         );
         assert_eq!(store.stats().expired, 1);
     }
@@ -4272,13 +4306,14 @@ mod tests {
         let context = Arc::new(context);
 
         query_and_collect(Arc::clone(&context), "SELECT 1").await;
-        let before = statements_seen(addr).len();
+        let before = client_traffic(addr).len();
         query_and_collect(Arc::clone(&context), "select   1").await;
 
         assert_eq!(
-            statements_seen(addr).len(),
+            client_traffic(addr).len(),
             before,
-            "a differently spelled statement missed"
+            "a differently spelled statement missed: {:?}",
+            client_traffic(addr)
         );
     }
 
@@ -5320,7 +5355,7 @@ mod tests {
         assert_eq!(cache.len(), 1, "the sequence's answer was not stored");
 
         // The same binding again: answered here, and the server never hears it.
-        let before = statements_seen(addr).len();
+        let before = client_traffic(addr).len();
         client
             .write_all(&one_binding("SELECT $1", b"1"))
             .await
@@ -5337,9 +5372,10 @@ mod tests {
         );
         assert_eq!(context.routes.cache(), 1, "the hit was not counted");
         assert_eq!(
-            statements_seen(addr).len(),
+            client_traffic(addr).len(),
             before,
-            "a hit still sent the sequence upstream"
+            "a hit still sent the sequence upstream: {:?}",
+            client_traffic(addr)
         );
 
         // A different binding is a different question, so it goes upstream and

@@ -8949,3 +8949,39 @@ recognised so it can be refused rather than read as a version.
   nor the upstream hostname reaches the client; the reason appears in the log
   with the server that produced it; the session future is unchanged in size;
   and the whole workspace, 2,004 tests, passes with the change included.
+
+## M81: a test that counted everything the fake heard
+
+- [x] `M81.0` The cache tests count what a session sent, not what the server
+  was told.
+  Six assertions in `serve.rs` captured `statements_seen(addr).len()` before a
+  statement and compared it after. The fake records every frame body it is
+  sent, and the fake in these tests is the primary *and* the replica, so the
+  replica poller's `REPLICA_QUERY` lands on it too, on the poller's schedule
+  rather than the test's. The number being compared was one a background task
+  could change between the two reads.
+  Found by running the suite thirty times at a hundred and twenty-eight test
+  threads: six failures, and the one that named itself said
+  `a differently spelled statement missed: ["SELECT 1", "SELECT
+  pg_last_wal_replay_lsn(), pg_is_in_recovery()"]`, left 2, right 1. The cache
+  had hit. The poller had spoken.
+  Two of the six failed that way, about once in fifteen suite runs at that
+  parallelism and about twice in twenty-five at the default. The other four are
+  worse and had never failed: they assert `len() > before`, so a poller probe
+  arriving in the window satisfies them whether or not the statement they are
+  about ever went upstream. A test that passes for the wrong reason does not
+  announce itself, and four of these were one background probe away from
+  holding while the behaviour they name was broken.
+  `client_traffic` filters `pgprox_session::probe::REPLICA_QUERY` out and every
+  site reads it instead. The constant rather than a literal, so the filter
+  cannot drift from the query. All six now print what the fake heard when they
+  fail, which is what made the cause obvious in a hundredth of the time it took
+  to find it.
+  The poller is not the problem and nothing about it changed. What it exposed
+  is that "what the server heard" and "what this session sent" were one number
+  in tests that only ever meant the second.
+  Proved by the same stress that found it: thirty runs at a hundred and
+  twenty-eight threads, six failures before and zero after, plus forty runs at
+  the default parallelism, also zero.
+  Acceptance: the two flaking assertions survive the stress that broke them,
+  the four that could pass wrongly now cannot, and the whole workspace passes.
