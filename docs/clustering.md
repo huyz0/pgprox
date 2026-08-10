@@ -36,6 +36,23 @@ It looks like waste and it is not: the free pool is leased, leases outlive the
 membership view they were granted under, and a remainder that moved with the
 view once produced 102 outstanding connections against a cap of 100.
 
+### What a node does with its allowance
+
+A node's allowance covers every pool it holds for that server, and a pool is one
+`(server, database, user)` triple, so a node serving many tenant databases holds
+many pools against one number. The allowance is spread across them rather than
+divided into them: each pool gets the floor, and whatever the floor leaves over
+goes one connection at a time to the pools with the most demand behind them.
+
+Where a node holds more pools than it has connections allowed, some pools get
+zero and their clients wait, exactly as they would at a cap. It is not a
+permanent condition. The split is recomputed every tick, waiting clients count
+as demand, and demand is what the leftovers follow.
+
+The alternative, giving every pool a floor of one, is what this used to do, and
+it is a cap breach with extra steps: a node allowed a hundred connections and
+holding three hundred pools opens three hundred.
+
 ## The gossip round
 
 Once a second, every node opens a connection to every peer, sends its own

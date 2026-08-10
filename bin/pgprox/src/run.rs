@@ -238,16 +238,21 @@ fn wants_more_quota(held: u32, guaranteed: u32, leased: u32) -> Option<u32> {
 ///
 /// Also one read of the pool map rather than two per configured server: it was
 /// locked, cloned and filtered twice for every server, every tick.
+/// Each pool carries its own count as well as contributing to the total, since
+/// `M76.0`: an allowance too small to reach every pool has to be pointed at the
+/// pools with clients behind them, and that decision needs the counts apart
+/// rather than summed.
 fn pools_for(
     all: &[(pgprox_core::ids::PoolKey, pgprox_core::pool::PoolStats)],
     server: &pgprox_core::ids::ServerId,
-) -> (Vec<pgprox_core::ids::PoolKey>, u32) {
+) -> (Vec<(pgprox_core::ids::PoolKey, u32)>, u32) {
     let mine = all.iter().filter(|(key, _)| &key.server == server);
     let mut keys = Vec::new();
     let mut held = 0;
     for (key, stats) in mine {
-        keys.push(key.clone());
-        held += stats.active + stats.idle + stats.waiting;
+        let demand = stats.active + stats.idle + stats.waiting;
+        keys.push((key.clone(), demand));
+        held += demand;
     }
     (keys, held)
 }
@@ -315,7 +320,7 @@ fn declared_quota(
 fn hold_at_nothing(
     app: &App,
     all: &[(pgprox_core::ids::PoolKey, pgprox_core::pool::PoolStats)],
-    keys: &[pgprox_core::ids::PoolKey],
+    keys: &[(pgprox_core::ids::PoolKey, u32)],
     server: &pgprox_core::ids::ServerId,
 ) {
     let was_open = all
@@ -329,19 +334,74 @@ fn hold_at_nothing(
              primary it replicates an entry for it to inherit"
         );
     }
-    for key in keys {
+    for (key, _) in keys {
         app.pool.set_limit(key, 0);
     }
 }
 
-/// The per-pool limit an allowance divides into.
+/// How an allowance is split across the pools it has to cover.
 ///
-/// At least one, because a node holding an allowance it cannot spend on any
-/// pool is a node that refuses every client while the cluster believes it is
-/// serving them.
-fn share_per_key(guaranteed: u32, leased: u32, keys: usize) -> u32 {
-    let total = guaranteed + leased;
-    (total / u32::try_from(keys).unwrap_or(u32::MAX)).max(1)
+/// Returns one limit per pool, in the order the demands arrived, and the sum is
+/// never more than the allowance. That last clause is the whole function.
+///
+/// # Why this is not a division
+///
+/// It was `(guaranteed + leased) / keys`, floored, with `.max(1)` under it so a
+/// node whose allowance divided to nothing still served somebody. The floor is
+/// where the cap went. With more pools than allowance every pool got a limit of
+/// 1, so a node allowed 100 connections and holding pools for 300 tenant
+/// databases would open 300. The comment beside its test called that
+/// "overshooting a division by one"; it overshoots by `keys - total`, which is
+/// unbounded and, on the fleet this is written for, routinely a multiple.
+///
+/// The mission gives the cap no graceful degradation, and this is the one place
+/// in the binary that could breach it while every layer beneath reported itself
+/// correct: `pgprox-cluster` hands out an entitlement and holds its own
+/// invariant, and the pool holds whatever limit it is given. Only the
+/// arithmetic between them was wrong.
+///
+/// # Whole connections, handed to whoever is asking
+///
+/// A connection cannot be divided, so an allowance smaller than the pool count
+/// cannot reach every pool. Each pool gets the floor, and the remainder goes one
+/// at a time to the pools with the most demand behind them. Under an allowance
+/// of 1 across 8 pools that is a single connection at whichever pool has clients
+/// waiting, and zero at the other seven.
+///
+/// A pool given zero waits rather than opening, which is the same thing that
+/// happens at a cap today and is reported the same way. It is not permanent:
+/// this runs every tick, waiting clients are demand, and demand is what the
+/// remainder follows. The alternative is the one the mission forbids.
+///
+/// Ties break by position so a fleet reading the same state twice makes the same
+/// decision, rather than shuffling limits between pools each tick.
+fn shares_across_pools(guaranteed: u32, leased: u32, demand: &[u32]) -> Vec<u32> {
+    let total = guaranteed.saturating_add(leased);
+    let Ok(count) = u32::try_from(demand.len()) else {
+        return vec![0; demand.len()];
+    };
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let base = total / count;
+    let mut shares = vec![base; demand.len()];
+
+    // What the floor left over, handed out whole. Never more than `count - 1`
+    // by construction, so this cannot loop past the end of the order below.
+    let mut remainder = total % count;
+
+    let mut order: Vec<usize> = (0..demand.len()).collect();
+    order.sort_by(|a, b| demand[*b].cmp(&demand[*a]).then(a.cmp(b)));
+    for index in order {
+        if remainder == 0 {
+            break;
+        }
+        shares[index] += 1;
+        remainder -= 1;
+    }
+
+    shares
 }
 
 /// The process's soft descriptor limit, if it can be read.
@@ -789,9 +849,10 @@ async fn apply_quota(app: &App, replicas: &crate::replicas::ReplicaSets) {
             }
         }
 
-        let each = share_per_key(allowance.guaranteed, allowance.leased, keys.len());
-        for key in keys {
-            app.pool.set_limit(&key, each);
+        let demand: Vec<u32> = keys.iter().map(|(_, count)| *count).collect();
+        let shares = shares_across_pools(allowance.guaranteed, allowance.leased, &demand);
+        for ((key, _), limit) in keys.iter().zip(shares) {
+            app.pool.set_limit(key, limit);
         }
     }
 }
@@ -1252,20 +1313,62 @@ mod tests {
     }
 
     #[test]
-    fn an_allowance_divides_across_pools_and_never_reaches_zero() {
-        assert_eq!(share_per_key(10, 0, 1), 10);
-        assert_eq!(share_per_key(10, 10, 2), 10);
-        assert_eq!(share_per_key(9, 0, 2), 4);
+    fn an_allowance_spread_across_pools_never_sums_past_itself() {
+        // The invariant, and the reason this function exists rather than a
+        // division. Exhaustive where exhaustive is cheap, the way the quota
+        // split's own test is, because this is the arithmetic that stands
+        // between an entitlement and the cap.
+        for total in 0_u32..=40 {
+            for pools in 1_usize..=12 {
+                // Demand varied so the remainder lands somewhere different
+                // each time, since where it lands is the only thing that
+                // moves between these cases.
+                let demand: Vec<u32> = (0..pools)
+                    .map(|i| u32::try_from(i * 7 % 5).unwrap_or(0))
+                    .collect();
+                let shares = shares_across_pools(total, 0, &demand);
+                assert_eq!(shares.len(), pools);
+                let sum: u32 = shares.iter().sum();
+                assert!(
+                    sum <= total,
+                    "total={total} pools={pools}: {shares:?} sums to {sum}"
+                );
+            }
+        }
+    }
 
-        // The floor. A node holding an allowance it cannot spend on any pool
-        // refuses every client while the cluster believes it is serving them,
-        // which is worse than overshooting a division by one.
-        assert_eq!(
-            share_per_key(1, 0, 8),
-            1,
-            "a pool was given a limit of zero"
-        );
-        assert_eq!(share_per_key(0, 0, 1), 1);
+    #[test]
+    fn an_allowance_smaller_than_the_pool_count_goes_where_the_clients_are() {
+        // `M76.0`. This case used to give every pool a limit of one, so a node
+        // allowed a single connection opened eight. A connection cannot be
+        // divided, so the honest answer is that seven pools wait, and the one
+        // that gets it is the one with somebody queued behind it.
+        let shares = shares_across_pools(1, 0, &[0, 0, 3, 0, 0, 0, 0, 0]);
+        assert_eq!(shares, vec![0, 0, 1, 0, 0, 0, 0, 0]);
+
+        // And with nothing to choose between them it is the first, rather than
+        // whichever the map happened to yield: a limit that moves between pools
+        // every tick is a pool that never gets to open anything.
+        assert_eq!(shares_across_pools(2, 0, &[0, 0, 0, 0]), vec![1, 1, 0, 0]);
+    }
+
+    #[test]
+    fn an_allowance_divides_evenly_where_it_can_and_strands_nothing() {
+        assert_eq!(shares_across_pools(10, 0, &[0]), vec![10]);
+        assert_eq!(shares_across_pools(10, 10, &[0, 0]), vec![10, 10]);
+
+        // The old division floored and stranded the remainder: nine across two
+        // pools was four each, and the ninth connection was allowed by the
+        // cluster and offered to nobody. It goes to the busier pool now.
+        assert_eq!(shares_across_pools(9, 0, &[1, 6]), vec![4, 5]);
+
+        // Nothing to hand out is a node that opens nothing, which is what the
+        // cap says when it has nothing left. Refusing is the safe direction and
+        // the only honest one.
+        assert_eq!(shares_across_pools(0, 0, &[9, 9]), vec![0, 0]);
+
+        // No pools at all is not a special case, it is an empty answer.
+        assert!(shares_across_pools(50, 0, &[]).is_empty());
     }
 
     #[test]
@@ -1290,10 +1393,16 @@ mod tests {
 
         let (keys, held) = pools_for(&all, &db1);
         assert_eq!(keys.len(), 2, "the other server's pool was counted");
-        assert!(keys.iter().all(|key| key.server == db1));
+        assert!(keys.iter().all(|(key, _)| key.server == db1));
         // Three, four and five, then two and one. Waiters included: a caller
         // queued behind the cap is demand the leader has to hear about.
         assert_eq!(held, 15);
+        // And per pool as well as summed, since `M76.0` spends the allowance
+        // where the demand is and cannot do that from the total alone.
+        assert_eq!(
+            keys.iter().map(|(_, demand)| *demand).collect::<Vec<_>>(),
+            vec![12, 3]
+        );
 
         let (keys, held) = pools_for(&all, &db2);
         assert_eq!(keys.len(), 1);

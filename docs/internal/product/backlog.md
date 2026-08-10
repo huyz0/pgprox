@@ -8624,3 +8624,52 @@ recognised so it can be refused rather than read as a version.
   and one that vanishes mid-negotiation is refused too; the fixture that
   proves the happy path negotiates before accepting; and the whole workspace
   passes with the change included.
+
+## M76: the allowance was divided into the pools, with a floor under the division
+
+- [x] `M76.0` Spread an allowance across pools instead of dividing it, so the
+  sum is the allowance.
+  `share_per_key` was `(guaranteed + leased) / keys` with `.max(1)` under it,
+  and the floor is where the cap went. A pool is one `(server, database, user)`
+  triple, so a node holding more pools than its allowance gave every one of
+  them a limit of one: allowed a hundred, opens three hundred. The test beside
+  it called this "overshooting a division by one". It overshoots by
+  `keys - total`, which is unbounded, and on the fleet described in
+  `mission.md`, thousands of tenant databases per server, it is routinely a
+  multiple rather than an edge.
+  This was the only arithmetic in the binary that could breach the cap while
+  every layer under it reported itself correct. `pgprox-cluster` holds
+  `guaranteed x nodes + leases <= cap` and hands out an entitlement; the pool
+  holds whatever limit it is handed. Neither was wrong. What sat between them
+  was.
+  `shares_across_pools` returns one limit per pool and its sum is never more
+  than the allowance. Each pool takes the floor and the remainder goes one
+  connection at a time to the pools with the most demand behind them, ties
+  broken by position so two reads of the same state decide the same way. The
+  remainder used to be stranded as well, so nine across two pools was four each
+  and the ninth was allowed by the cluster and offered to nobody.
+  A pool given zero waits rather than opening, which is what already happens at
+  a cap and is reported the same way. It is recomputed every tick and waiting
+  clients are demand, so a pool that gets nothing this second is first in line
+  the next. That is a real behaviour change for a node with more pools than
+  allowance: it now refuses some clients rather than serving all of them past
+  the cap. The mission gives the cap no graceful degradation and gives
+  everything else some, which is the order this resolves them in.
+  `pools_for` now carries each pool's own count as well as the total, because
+  pointing an allowance at the demand needs the counts apart.
+  Proved exhaustively over every allowance up to forty against every pool count
+  up to twelve, the way `pgprox-cluster`'s own split test is: the sum never
+  exceeds the allowance. Plus the two cases that name the behaviour, an
+  allowance smaller than the pool count landing where the clients are, and a
+  remainder going to the busier pool rather than nowhere.
+  Removed `an_allowance_divides_across_pools_and_never_reaches_zero`, whose
+  assertions were the bug: it required a limit of one where zero is the only
+  answer that holds the cap.
+  Not done: a node still does not close connections it holds above a lowered
+  limit, so an allowance that shrinks takes effect on opens rather than on what
+  is already open. That is `M76.1`, and it is the other half of the same
+  finding.
+  Acceptance: the sum of the shares never exceeds the allowance for any
+  combination in the swept range; an allowance of one across eight pools opens
+  one connection rather than eight; and the whole workspace passes with the
+  change included.
