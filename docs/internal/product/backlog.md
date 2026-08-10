@@ -9019,3 +9019,37 @@ recognised so it can be refused rather than read as a version.
   seconds; it is not worth it today.
   Acceptance: the three tests assert the same properties, none sleeps a
   duration chosen for a machine, and the whole workspace passes.
+
+- [x] `M81.2` A flake found, characterised, and left in the tree on purpose.
+  `a_connection_that_died_while_idle_is_not_handed_to_a_client` fails roughly
+  one suite run in twelve. It is not one of the two `M81.0` fixed and it is not
+  caused by anything in this milestone: it failed twice in the first hunt,
+  before any change here.
+  Characterised rather than guessed at. The panic is an `UnexpectedEof` in the
+  test's `expect` helper, and a backtrace puts the call at the read of the
+  answer to `SELECT 2`: the second statement, the one that has to be served
+  from a fresh connection after the pooled one died. So the session is ending
+  without answering and closing the client rather than writing an error to it.
+  Two candidates, neither confirmed. `fit_connection` can return
+  `ShellError::Disconnected` when `take_connection` finds no payload for a
+  guard it just acquired, which ends a session silently and is the only path
+  here that produces no message. Or the session task panics, which a
+  `tokio::spawn` swallows and which reaches the test as the same EOF. Its
+  exhaustion path is not the answer: that returns `UpstreamClosed`, which the
+  client would see as an `ErrorResponse` and the test would report differently.
+  Not fixed, and the attempt is recorded because it is the useful part. The
+  fake was given a `Notify` fired when it drops the socket, so the test could
+  wait for the close rather than sleep 20ms hoping to cover it. That is a
+  better test and it fixed nothing: the unmodified version survived thirty runs
+  pinned to one contended core, and the signalling version *raised* the failure
+  rate from about two in twenty-five suite runs to eight in forty, because
+  waiting for the close makes the dead-connection path deterministic instead of
+  sometimes skipped. A change that does not fix the fault and makes the suite
+  fail more often is not an improvement to commit, so it was reverted whole.
+  Instrumenting it to print the session's own outcome hid it: thirty stressed
+  runs of the diagnostic build produced nothing.
+  What is left in the tree is the original 20ms sleep with a comment saying it
+  is not the cause and pointing here, so the next person does not spend the
+  same afternoon proving it again.
+  Acceptance: the failure has a location and a mechanism written down, the two
+  candidate causes are named, and nothing claims to have fixed it.

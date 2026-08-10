@@ -6007,6 +6007,12 @@ mod tests {
         // driver, and on a current-thread runtime that only runs when the
         // runtime parks. See the note in
         // `a_reaped_connection_says_goodbye_rather_than_vanishing`.
+        //
+        // This test is a known flake and this sleep is not the cause. See
+        // `M81.2` in the backlog: waiting for an explicit close signal instead
+        // was tried, did not fix it, and raised the failure rate by making the
+        // dead-connection path deterministic, so it was reverted rather than
+        // committed.
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         // The second statement. It must be answered, from a fresh connection.
