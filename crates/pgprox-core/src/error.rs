@@ -128,6 +128,38 @@ pub enum ClientError {
         cap: u32,
     },
 
+    /// The proxy could not open a connection to the upstream server.
+    ///
+    /// A refused socket, a name that does not resolve, a TLS handshake the
+    /// server would not complete, a firewall. Distinct from
+    /// [`ClientError::UpstreamAtCap`], which is a server that is reachable and
+    /// full, and from [`ClientError::UpstreamClosed`], which is a connection
+    /// that existed and went away.
+    ///
+    /// # Why the distinction is worth a variant
+    ///
+    /// A client does the same thing for all three: retry. An operator does not.
+    /// "Full" sends them to capacity, "unreachable" sends them to the network,
+    /// the certificate or the hostname, and until `M80.0` a dial that failed
+    /// said the first: the SQLSTATE was `53300`, and `Display`, which is what a
+    /// log line carries, read "is at its connection cap of 0" about a server
+    /// nobody had counted.
+    ///
+    /// # No reason field
+    ///
+    /// `PoolError::ConnectFailed` carries one and this deliberately drops it.
+    /// A `String` here is 24 bytes on every `ClientError`, and this type is live
+    /// across an await in the session future, which
+    /// `one_session_costs_less_than_the_slab_buffer_it_no_longer_holds` holds
+    /// under 5 KiB with 8 bytes to spare. The reason is logged where the
+    /// conversion happens instead, which is also where it belongs: it is an
+    /// operator's detail and it was never going to reach the client.
+    #[error("could not connect to upstream {server}")]
+    UpstreamUnreachable {
+        /// The upstream server that could not be reached.
+        server: ServerId,
+    },
+
     /// No upstream connection became available in time.
     #[error("timed out after {waited:?} waiting for a connection to {server}")]
     AcquireTimeout {
@@ -201,7 +233,9 @@ impl ClientError {
             Self::UpstreamAtCap { .. } => SqlState::TOO_MANY_CONNECTIONS,
             Self::AcquireTimeout { .. } => SqlState::QUERY_CANCELED,
             Self::AuthRefused(_) | Self::TlsRequired => SqlState::INVALID_AUTHORIZATION,
-            Self::SidecarUnavailable | Self::UpstreamClosed => SqlState::CONNECTION_FAILURE,
+            Self::SidecarUnavailable | Self::UpstreamClosed | Self::UpstreamUnreachable { .. } => {
+                SqlState::CONNECTION_FAILURE
+            }
             Self::ProtocolViolation(_) => SqlState::PROTOCOL_VIOLATION,
             Self::Unsupported(_) => SqlState::FEATURE_NOT_SUPPORTED,
             Self::Internal(_) => SqlState::INTERNAL_ERROR,
@@ -221,6 +255,11 @@ impl ClientError {
             }
             Self::IdleTimeout => "terminating connection due to idle-session timeout",
             Self::UpstreamAtCap { .. } => "too many connections, please retry",
+            // Says the database rather than the proxy, and says nothing about
+            // which of the several ways a dial can fail this was: the server's
+            // name, its address and its certificate are all things a client
+            // must not learn from an error.
+            Self::UpstreamUnreachable { .. } => "could not connect to the database, please retry",
             Self::AcquireTimeout { .. } => "timed out acquiring a database connection",
             // One message for every rejection reason. Telling a caller which
             // part of their credential was wrong is an oracle.
@@ -254,6 +293,9 @@ impl ClientError {
                 // A fresh connection gets a fresh upstream, so retrying is
                 // exactly right.
                 | Self::UpstreamClosed
+                // Transient at least as often as not: a database restarting, a
+                // certificate mid-rotation, a route that came back.
+                | Self::UpstreamUnreachable { .. }
         )
     }
 }
@@ -313,6 +355,11 @@ mod tests {
                 server: server.clone(),
                 cap: 4096,
             },
+            // Carries a `ServerId`, so it belongs in the list that proves a
+            // hostname never reaches a client message. `M80.0`.
+            ClientError::UpstreamUnreachable {
+                server: server.clone(),
+            },
             ClientError::AcquireTimeout {
                 server,
                 waited: Duration::from_secs(3),
@@ -346,6 +393,12 @@ mod tests {
                     cap: 1,
                 },
                 "53300",
+            ),
+            (
+                ClientError::UpstreamUnreachable {
+                    server: server.clone(),
+                },
+                "08006",
             ),
             (
                 ClientError::AcquireTimeout {

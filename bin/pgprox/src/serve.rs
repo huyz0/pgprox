@@ -588,7 +588,7 @@ where
     .await
     {
         Ok(parameters) => parameters,
-        Err(err) => return Err(wire.refuse(err.into()).await),
+        Err(err) => return Err(wire.refuse(why_upstream_failed(err)).await),
     };
 
     // Refused rather than issued from a fallback: a cancel key is a bearer
@@ -1610,6 +1610,34 @@ async fn borrow(
 /// deadline that makes waiting finite.
 const FITNESS_ATTEMPTS: usize = 4;
 
+/// Turns a pool failure into what the client is told, logging what it is not.
+///
+/// `PoolError::ConnectFailed` carries an operator-facing reason and
+/// `ClientError` deliberately has nowhere to put one, because a `String` on
+/// that type is 24 bytes in every session future and the budget has eight to
+/// spare. So the reason is written here, at the one boundary where it would
+/// otherwise be dropped.
+///
+/// `M80.0`. Before it, that reason went nowhere *and* the error it became said
+/// "upstream is at its connection cap of 0", so an operator watching a fleet
+/// that could not reach its database read a capacity problem in the log and had
+/// nothing anywhere naming the certificate, the hostname or the route that was
+/// actually wrong. One line at `warn` is the whole diagnosis.
+///
+/// Only the dial case logs. A cap and a timeout are already fully described by
+/// the error they become, and a line per refusal on a fleet that is genuinely
+/// full is a log nobody can read.
+fn why_upstream_failed(err: pgprox_core::pool::PoolError) -> ClientError {
+    if let pgprox_core::pool::PoolError::ConnectFailed { server, reason } = &err {
+        tracing::warn!(
+            %server,
+            %reason,
+            "could not open an upstream connection; the client is told to retry"
+        );
+    }
+    err.into()
+}
+
 async fn fit_connection(
     context: &Context,
     key: &pgprox_core::ids::PoolKey,
@@ -1620,7 +1648,7 @@ async fn fit_connection(
             .pool
             .acquire(key, deadline)
             .await
-            .map_err(|err| ShellError::Refused(err.into()))?;
+            .map_err(|err| ShellError::Refused(why_upstream_failed(err)))?;
         let mut taken = context
             .pool
             .take_connection(guard.key(), guard.id())
@@ -3592,6 +3620,57 @@ mod tests {
 
         drop(client);
         let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn an_upstream_that_could_not_be_dialled_is_not_reported_as_a_full_one() {
+        // `M80.0`, on the wire rather than in the type. A dial that fails is
+        // the condition an operator most needs named correctly, because every
+        // cause of it is outside the proxy: a certificate, a hostname, a route.
+        // It used to arrive as `53300 too many connections`, which is the one
+        // answer that sends them to look at capacity instead.
+        //
+        // Found by reverting `M75.0` and watching the e2e stack report a fleet
+        // that could not reach its database as a fleet that was full.
+        use tokio::io::AsyncReadExt;
+
+        let (ours, mut client) = tokio::io::duplex(4096);
+        let mut wire = Wire::new(ours, test_slab());
+
+        let failed = why_upstream_failed(pgprox_core::pool::PoolError::ConnectFailed {
+            server: ServerId::new("db-secret-internal.prod", 5432),
+            reason: "TLS handshake failed: certificate has expired".to_owned(),
+        });
+        let refused: Result<(), ShellError> = Err(ShellError::Refused(failed));
+        let _ = told(&mut wire, refused).await.unwrap_err();
+
+        let mut header = [0_u8; 5];
+        client.read_exact(&mut header).await.unwrap();
+        assert_eq!(Tag(header[0]), Tag::ERROR_RESPONSE);
+        let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+        let mut body = vec![0; len - 4];
+        client.read_exact(&mut body).await.unwrap();
+        let rendered = String::from_utf8_lossy(&body);
+
+        assert!(
+            rendered.contains("08006"),
+            "a dial failure did not report a connection failure: {rendered}"
+        );
+        assert!(
+            !rendered.contains("53300"),
+            "a dial failure still reports a capacity problem: {rendered}"
+        );
+        assert!(
+            !rendered.contains("too many connections"),
+            "the client is still told the server is full: {rendered}"
+        );
+        // And the operator's detail stays on the operator's side. The reason
+        // names an upstream certificate; the client learns neither the reason
+        // nor the host it belongs to.
+        assert!(
+            !rendered.contains("certificate") && !rendered.contains("db-secret-internal"),
+            "the dial reason reached the client: {rendered}"
+        );
     }
 
     #[tokio::test]

@@ -128,6 +128,15 @@ at `SHOW QUOTA`: this node may be at its leased share while another holds slack.
 told rather than queued. Expected under a synchronised burst; sustained means
 the cap is too low for the load.
 
+**`08006 could not connect to the database`.** Not a capacity problem, which is
+the point of it having its own code: the proxy could not open a connection to
+the server at all. A refused socket, a name that stopped resolving, a
+certificate the upstream would not complete a handshake with. The reason is in
+the node's log at `warn`, on the line that names the server and says the client
+was told to retry; the client is never given it. Until `M80.0` this arrived as
+`53300` with a cap of zero, so the log said a server nobody had counted was
+full and every operator reading it went to look at capacity.
+
 **Multiplexing looks poor.** Compare `pgprox_client_conns` against
 `pgprox_upstream_conns`. If the ratio is near one, read `pgprox_pin_total` by
 reason.

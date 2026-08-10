@@ -8894,3 +8894,58 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `scripts/e2e.sh` passes with the new assertion; `scripts/e2e.sh
   prove` shows the assertion distinguishes an encrypted upstream from a
   plaintext one; and the assertion fails against a build without `M75.0`.
+
+## M80: a dial that failed said the server was full
+
+- [x] `M80.0` An unreachable upstream is its own condition, and its reason
+  reaches the log.
+  `M79.0` reverted `M75.0` to prove the new e2e arm could fail, and what the
+  reverted stack reported was not a proxy that could not reach its database. It
+  was `ERROR: too many connections, please retry`. `pgprox_core::pool` mapped
+  every `PoolError::ConnectFailed` to `ClientError::UpstreamAtCap` with a cap
+  of zero, on the argument that from the client's side an unreachable upstream
+  is the same as a full one.
+  That argument is right about what a client should do, retry either way, and
+  wrong about everything else. The SQLSTATE was `53300`, which says capacity to
+  anything reading it. `Display`, which is what the log line carries, read
+  "upstream primary:5432 is at its connection cap of 0" about a server nobody
+  had counted. And `PoolError::ConnectFailed`'s `reason`, the one field naming
+  the certificate or the hostname or the route that was actually wrong, was
+  dropped by the conversion and logged nowhere. So an operator whose fleet
+  could not reach its database was told to go and look at capacity, and given
+  nothing anywhere that pointed at the truth.
+  It is the same distinction `Pool::give_up` already draws, in a comment, when
+  it decides between `AtCap` and `Timeout`: "one says the server is full, the
+  other says this node is. Reporting the cap when the pool has headroom would
+  send them to the wrong place." That care had not been applied one layer up.
+  `ClientError::UpstreamUnreachable { server }`, `08006 connection_failure`,
+  retryable, and a client message that says the database could not be reached
+  and says nothing about which of the several ways a dial can fail this was.
+  No `reason` field, deliberately. A `String` is 24 bytes on every
+  `ClientError`, and that type is live across an await in the session future,
+  which `one_session_costs_less_than_the_slab_buffer_it_no_longer_holds` holds
+  under 5 KiB with eight bytes to spare after `M74.0`. Carrying it would have
+  cost sixteen and failed that test. Measured rather than assumed:
+  `ClientError` is 32 bytes before this change and 32 after.
+  So the reason is logged instead, at `why_upstream_failed`, the one boundary
+  where a `PoolError` becomes a `ClientError` on the session path. That is also
+  where it belongs, since it was never going to reach a client. Only the dial
+  case logs: a cap and a timeout are fully described by the errors they become,
+  and a line per refusal on a fleet that is genuinely full is a log nobody can
+  read.
+  Proved at both levels, and each shown able to fail. The conversion test
+  requires `08006`, requires the client message not to mention connections, and
+  requires the operator-facing `Display` not to mention a cap; it was written
+  first and failed with `left: "53300"`. The wire-level test runs a real
+  `ConnectFailed` through the production path into an `ErrorResponse` and reads
+  the bytes; against the old mapping it fails with
+  `C53300 Mtoo many connections, please retry`. It also asserts the reason and
+  the hostname do not reach the client, since the new variant carries a
+  `ServerId` and the whole point of `client_message` is that it does not travel.
+  Added to `one_of_each`, so the test that proves no hostname reaches a client
+  message covers it, and to the documented SQLSTATE table and the test that
+  holds the table and the code together.
+  Acceptance: a failed dial reports `08006` and not `53300`; neither the reason
+  nor the upstream hostname reaches the client; the reason appears in the log
+  with the server that produced it; the session future is unchanged in size;
+  and the whole workspace, 2,004 tests, passes with the change included.

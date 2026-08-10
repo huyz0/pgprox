@@ -172,9 +172,15 @@ impl From<PoolError> for ClientError {
         match err {
             PoolError::AtCap { server, cap } => Self::UpstreamAtCap { server, cap },
             PoolError::Timeout { server, waited } => Self::AcquireTimeout { server, waited },
-            // From the client's side an unreachable upstream is the same as a
-            // full one: retry and it may work.
-            PoolError::ConnectFailed { server, .. } => Self::UpstreamAtCap { server, cap: 0 },
+            // Its own condition, not a cap. From the client's side these are
+            // the same and the advice is the same, which is what the old
+            // mapping was reasoning about; from everywhere else they are not.
+            // A cap sends an operator to capacity, and the answer is usually a
+            // certificate, a hostname or a route. `M80.0`.
+            //
+            // The reason is dropped here and logged by the caller. See
+            // `ClientError::UpstreamUnreachable`.
+            PoolError::ConnectFailed { server, .. } => Self::UpstreamUnreachable { server },
         }
     }
 }
@@ -478,6 +484,34 @@ mod tests {
         assert!(
             !failed.client_message().contains("10.0.0.9"),
             "internal address leaked to the client"
+        );
+
+        // `M80.0`. This used to be `UpstreamAtCap { cap: 0 }`, on the argument
+        // that an unreachable upstream and a full one are the same to a client.
+        // That is true of what a client should do and false of everything else:
+        // the SQLSTATE said the server was out of connections, the message told
+        // the client to retry against a cap, and `Display`, which is what a log
+        // line carries, said "is at its connection cap of 0" about a server
+        // nobody had counted. An operator reading that goes and looks at
+        // capacity while the real answer is a certificate, a hostname or a
+        // firewall.
+        assert_eq!(
+            failed.sqlstate().as_str(),
+            "08006",
+            "a dial that failed reported a capacity problem"
+        );
+        assert!(
+            !failed.client_message().contains("too many connections"),
+            "an unreachable upstream told the client the server was full"
+        );
+        assert!(
+            !format!("{failed}").contains("cap"),
+            "the operator-facing rendering still talks about a cap: {failed}"
+        );
+        assert_ne!(
+            failed.sqlstate().as_str(),
+            at_cap.sqlstate().as_str(),
+            "the two conditions are indistinguishable to anything reading a SQLSTATE"
         );
     }
 
