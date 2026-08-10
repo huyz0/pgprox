@@ -8673,3 +8673,40 @@ recognised so it can be refused rather than read as a version.
   combination in the swept range; an allowance of one across eight pools opens
   one connection rather than eight; and the whole workspace passes with the
   change included.
+
+- [x] `M76.1` A lowered limit reaches the connections that already exist.
+  The other half of `M76.0`'s finding. `Pool::release` pushed a cleanly
+  released connection back into `idle` whatever the limit said, and `acquire`
+  reuses from `idle` without consulting it, so a lowered allowance only ever
+  took effect on opens. Under steady traffic nothing is idle long enough for
+  the reaper's thirty-second timeout to reach it, so a node whose lease was
+  refused held its old count until `max_lifetime`, an hour by default, retired
+  connections one at a time.
+  That is a fleet-level cap breach rather than a local untidiness, and it is
+  the case the ledger cannot see. `LeaseLedger` frees a grant's capacity the
+  moment it expires, and `lease.rs` is explicit that waiting one TTL after
+  taking office proves every lease the old leader issued "has either been
+  renewed, and so is known, or has expired, and so is gone". Gone from the
+  ledger. The sockets were never part of that argument, so a new leader could
+  hand the free pool to a peer while the old holder still had it open.
+  A clean release above the limit is now closed instead of kept. Measured
+  against what the pool would be *keeping*, `idle + opening`, rather than
+  against its total: connections still checked out are in use and are not this
+  decision's to make, and counting them would discard a healthy connection
+  because two others happened to be mid transaction. A pool told to hold one
+  while three were busy drained to nothing under the first version of this,
+  which `lowering_the_limit_does_not_close_connections_in_use` caught.
+  Bounding the idle set bounds the pool, because nothing new opens above the
+  limit and every connection in use comes back through here eventually.
+  Nothing is closed underneath a running transaction, which is the rule this
+  had to be written around rather than through: `set_limit` still closes
+  nothing at the moment it is called, and the drain happens at transaction
+  boundaries, so it goes as fast as the clients finish and no faster.
+  Proved three ways: five clean releases against a limit of two leave two; the
+  same pool under fifty rounds of acquire-and-release, which is the traffic
+  pattern that defeated the reaper, converges on the limit rather than staying
+  above it; and a pool inside its limit still keeps what it is handed, since
+  discarding a healthy connection costs the reconnect a pool exists to avoid.
+  Acceptance: a busy pool converges on a lowered limit, an unbusy one is
+  unchanged, connections in use are never closed, and the whole workspace
+  passes with the change included.

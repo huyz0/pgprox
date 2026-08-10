@@ -178,10 +178,15 @@ impl Pool {
     /// Lowers or raises the cap, within `max_size`.
     ///
     /// This is how the cluster layer's allowance reaches the pool. Lowering it
-    /// below what is already open does not close anything: connections in use
-    /// are finishing real transactions, and killing them would turn a quota
-    /// change into a client-visible error. The pool simply stops opening more
-    /// until it has drained under the new cap.
+    /// below what is already open closes nothing here and now: connections in
+    /// use are finishing real transactions, and killing them would turn a quota
+    /// change into a client-visible error.
+    ///
+    /// It drains at the boundaries instead. Nothing new opens above the limit,
+    /// and a connection handed back cleanly above it is closed rather than kept
+    /// ([`Pool::release`]). So the pool reaches the new cap at the rate its
+    /// clients finish transactions, which is as fast as it can be reached
+    /// without breaking one.
     pub fn set_limit(&mut self, limit: u32) {
         self.limit = limit.min(self.config.max_size);
     }
@@ -192,6 +197,18 @@ impl Pool {
         let idle = u32::try_from(self.idle.len()).unwrap_or(u32::MAX);
         let busy = u32::try_from(self.checked_out.len()).unwrap_or(u32::MAX);
         idle.saturating_add(busy).saturating_add(self.opening)
+    }
+
+    /// Connections this pool is holding rather than lending: idle, plus the
+    /// slots reserved for connections on their way to being opened.
+    ///
+    /// What [`Pool::release`] measures a returning connection against. Apart
+    /// from [`Pool::total`] because the two answer different questions: `total`
+    /// is what the server is counting, and this is what this pool would still
+    /// have if every client let go at once.
+    fn retained(&self) -> u32 {
+        let idle = u32::try_from(self.idle.len()).unwrap_or(u32::MAX);
+        idle.saturating_add(self.opening)
     }
 
     /// A snapshot for the admin surface.
@@ -266,15 +283,44 @@ impl Pool {
         };
 
         match outcome {
-            ReleaseOutcome::Reusable => {
+            // Clean, and there is room for it.
+            //
+            // Measured against what the pool would be *keeping*, not against
+            // its current total. Connections still checked out are in use and
+            // are not this decision's to make: counting them would discard a
+            // healthy connection because two others happened to be mid
+            // transaction, and a pool told to hold one while three were busy
+            // would drain to nothing and make the next client reconnect.
+            //
+            // Bounding the idle set is enough to bound the pool. Nothing new is
+            // opened above the limit, and every connection in use eventually
+            // comes back through here, so the steady state is at most `limit`
+            // whatever the transient was.
+            ReleaseOutcome::Reusable if self.retained() < self.limit => {
                 connection.idle_since = Some(now);
                 self.idle.push_back(connection);
                 true
             }
-            // Dropped. The socket is the caller's to close. `ReleaseOutcome`
-            // is `#[non_exhaustive]`, so a variant added later lands here and
-            // discards, which is the safe direction: a new outcome nobody has
-            // taught this pool about must not recycle a connection.
+            // Everything else is dropped, and the socket is the caller's to
+            // close. Three cases arrive here and all three want the same
+            // answer.
+            //
+            // A clean release the guard above refused, which is a pool over its
+            // limit. `M76.1`: returning it regardless is what made a lowered
+            // allowance take effect only on a pool that went quiet. Under
+            // steady traffic a connection was reused before the reaper's idle
+            // timeout could reach it, so a node whose lease was refused held
+            // its old count for up to `max_lifetime` while the leader had
+            // already handed that capacity to a peer. The ledger's arithmetic
+            // was right and the sockets were the problem. A connection this
+            // pool is not allowed to have is one the server is still counting.
+            //
+            // A `Discard`, which is the release rule at the top of this file.
+            //
+            // And anything else: `ReleaseOutcome` is `#[non_exhaustive]`, so a
+            // variant added later lands here, which is the safe direction. An
+            // outcome nobody has taught this pool about must not recycle a
+            // connection.
             _ => false,
         }
     }
@@ -542,6 +588,86 @@ mod tests {
         pool.release(b, ReleaseOutcome::Discard, now);
         pool.release(c, ReleaseOutcome::Discard, now);
         assert_eq!(pool.total(), 1);
+    }
+
+    #[test]
+    fn a_clean_release_above_the_limit_is_not_kept() {
+        // `M76.1`. Every release here is clean, which is the case that used to
+        // never drain: a connection returned at a transaction boundary went
+        // back into `idle` whatever the limit said, and under steady traffic it
+        // was reused again before the reaper's idle timeout could reach it. A
+        // node whose lease was refused therefore held its old count for up to
+        // `max_lifetime` while the leader had already freed that capacity for
+        // somebody else to lease.
+        let now = Instant::now();
+        let mut pool = pool(10);
+        let open_five: Vec<_> = (0..5).map(|_| open(&mut pool)).collect();
+
+        pool.set_limit(2);
+        for id in open_five {
+            pool.release(id, ReleaseOutcome::Reusable, now);
+        }
+
+        assert_eq!(
+            pool.total(),
+            2,
+            "a pool over its limit kept every connection a client handed back"
+        );
+        assert_eq!(pool.stats().idle, 2);
+    }
+
+    #[test]
+    fn steady_traffic_under_a_lowered_limit_converges_on_it() {
+        // The shape of the bug rather than one release of it. A busy pool
+        // acquires and releases continuously, so nothing is ever idle long
+        // enough for the reaper, which is why this had to be the release path.
+        let now = Instant::now();
+        let mut pool = pool(10);
+        let mut held: Vec<_> = (0..6).map(|_| open(&mut pool)).collect();
+        pool.set_limit(2);
+
+        for _ in 0..50 {
+            for id in held.drain(..) {
+                pool.release(id, ReleaseOutcome::Reusable, now);
+            }
+            // And straight back out again, the way a warm pool is used.
+            while let Acquired::Reused(id) = pool.acquire() {
+                held.push(id);
+            }
+        }
+        for id in held.drain(..) {
+            pool.release(id, ReleaseOutcome::Reusable, now);
+        }
+
+        assert_eq!(
+            pool.total(),
+            2,
+            "reuse kept the pool above a limit it had been given"
+        );
+    }
+
+    #[test]
+    fn a_clean_release_inside_the_limit_is_still_kept() {
+        // The direction that must not change. Discarding a healthy connection
+        // costs a reconnect on the next statement, and the whole point of a
+        // pool is not paying that.
+        let now = Instant::now();
+        let mut pool = pool(10);
+        let a = open(&mut pool);
+        let b = open(&mut pool);
+
+        pool.release(a, ReleaseOutcome::Reusable, now);
+        pool.release(b, ReleaseOutcome::Reusable, now);
+        assert_eq!(
+            pool.stats().idle,
+            2,
+            "a pool under its limit threw work away"
+        );
+        assert_eq!(
+            pool.acquire(),
+            Acquired::Reused(b),
+            "the warm one was not reused"
+        );
     }
 
     #[test]
