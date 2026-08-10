@@ -128,7 +128,26 @@ podDisruptionBudget:
   enabled: true
   minAvailable: 2
 
+# The client service. Carries the client port and nothing else: the admin API
+# authenticates nobody, and this is the address every tenant application is
+# given.
 service:
+  type: ClusterIP
+  annotations: {}
+
+# A separate address for the admin API, off by default.
+#
+# The API has no authentication of its own, so who may reach it is the
+# deployment's decision. Turning this on creates a service carrying only the
+# admin port, which can then be given its own type, annotations and
+# NetworkPolicy without any of that touching the client port.
+#
+# Leaving it off does not make the port unreachable. Pod IPs are routable
+# whatever services exist, and the headless service still resolves each pod for
+# gossip. A NetworkPolicy is what restricts the admin port; this only decides
+# whether it also gets a stable address of its own.
+adminService:
+  enabled: false
   type: ClusterIP
   annotations: {}
 

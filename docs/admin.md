@@ -164,6 +164,20 @@ operators and is expected to be reachable only from an already-authenticated
 admin surface. That is a deployment decision, and it is stated here rather than
 assumed: do not put the admin port on a network a tenant can reach.
 
+The chart used to say the opposite of that sentence with its manifests. The
+admin port was a second port on the client service, so the one address every
+tenant application is given also answered `POST /v1/drain`, and a client service
+of `type: LoadBalancer` published it. It is now its own thing:
+`adminService.enabled` creates an address for it, off by default, and the client
+service carries the client port alone.
+
+A service is not an access control, and this is worth being exact about because
+the fix looks like more than it is. Pod IPs are routable whatever services
+exist, so anything that can open a socket in the cluster can still reach the
+admin port. Restricting it is a NetworkPolicy. What the chart can do is not
+create an external address for it and not put it on the tenants' name, and that
+is what it now does.
+
 The `SHOW` surface does authenticate, with SCRAM, and a static user reaching it
 gets no database connection at all. See
 [Security](security.md#operators).

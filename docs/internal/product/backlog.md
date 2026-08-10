@@ -8710,3 +8710,45 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a busy pool converges on a lowered limit, an unbusy one is
   unchanged, connections in use are never closed, and the whole workspace
   passes with the change included.
+
+## M77: the chart put an unauthenticated write API on the tenants' address
+
+- [x] `M77.0` The admin port comes off the client service and gets its own,
+  off by default.
+  `admin.md` has said since `M43` that the HTTP API authenticates nobody, that
+  this is a deployment decision, and "do not put the admin port on a network a
+  tenant can reach". The chart then put it on the client service, as a second
+  port beside 6432, so the one address every tenant application is given also
+  answered `POST /v1/drain`, `/v1/undrain` and `/v1/pools/{...}/reset`. With
+  `service.type: LoadBalancer`, which is an ordinary choice for a client-facing
+  proxy, that address is external.
+  The client service now carries the client port alone. An `adminService`
+  block, disabled by default, creates a service carrying only the admin port
+  for an operator, a dashboard or a Prometheus that wants one address for it,
+  which can then take its own type, annotations and policy without any of that
+  reaching the port tenants use.
+  What this is not: a service is not an access control. Pod IPs are routable
+  whatever services exist, and the headless service still resolves every pod so
+  that gossip works, so anything that can open a socket in the cluster can
+  still reach the port. Restricting it is a NetworkPolicy, and the chart does
+  not ship one, because a default-deny policy on that port breaks the readiness
+  probe on any cluster whose CNI does not exempt the kubelet, and shipping a
+  security control that silently takes the fleet out of service is worse than
+  shipping none and saying so. `NOTES.txt` says so at install time, where an
+  operator is looking.
+  What the chart can do, and now does, is refuse to create an external address
+  for the port and refuse to put it on the name tenants are told to use.
+  Also considered and not done: serving the write half on a separate bind
+  address. `pgprox-admin` already splits `read_routes` from `write_routes`
+  precisely "so a deployment can expose it on a surface with different access",
+  and `bin/pgprox` merges them onto one router, so the split currently buys
+  nothing. Acting on it means a second listener, a flag, and its own tests,
+  which is a milestone rather than a line.
+  Proved by rendering: the client service carries one port, the admin service
+  appears only when enabled and carries one port, and the drain command in
+  `NOTES.txt` is unaffected because it goes through `kubectl exec` to
+  localhost.
+  Acceptance: `helm template` with default values yields a client service with
+  no admin port and no admin service; with `adminService.enabled=true` it
+  yields one; and the documentation says what the change does and does not
+  achieve.

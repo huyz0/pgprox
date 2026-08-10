@@ -1,11 +1,21 @@
 {{/*
-Two services, doing different jobs.
-
 The client service is what applications connect to, and its endpoints are
 managed by the readiness probe: a draining node fails /readyz, Kubernetes pulls
 it out here, and no new TCP arrives while its in-flight transactions finish.
 That removal is step one of the drain sequence, and it is the reason readiness
 is a separate probe from liveness rather than the same check twice.
+
+It carries the client port and nothing else. The admin port was on it until
+`M77.0`, which put an API with no authentication of its own, and `POST
+/v1/drain` on it, on the one address every tenant application is given. With
+`service.type: LoadBalancer`, an ordinary choice for a client-facing proxy,
+that address is external.
+
+A Service is not an access control and removing a port from one is not a
+security boundary: pod IPs are routable whatever Services exist, so the admin
+port still needs a NetworkPolicy. What this does fix is the part a chart can
+fix, which is not handing the port an external address and not putting it on
+the name tenants are told to use.
 */}}
 apiVersion: v1
 kind: Service
@@ -24,12 +34,42 @@ spec:
       port: {{ .Values.ports.client }}
       targetPort: postgres
       protocol: TCP
+  selector:
+    {{- include "pgprox.selectorLabels" . | nindent 4 }}
+{{- if .Values.adminService.enabled }}
+---
+{{/*
+The admin service, off by default and separate on purpose.
+
+An operator, a dashboard or a Prometheus that wants one address for the fleet's
+admin API turns this on and gets a service that carries only that port, so it
+can be given its own type, its own annotations and its own NetworkPolicy
+without any of that reaching the port tenants connect to.
+
+Off by default because the API authenticates nobody. The deployment is what
+decides who can reach it, and a chart that created the address unasked would be
+deciding on the deployment's behalf.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pgprox.fullname" . }}-admin
+  labels:
+    {{- include "pgprox.labels" . | nindent 4 }}
+  {{- with .Values.adminService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.adminService.type }}
+  ports:
     - name: admin
       port: {{ .Values.ports.admin }}
       targetPort: admin
       protocol: TCP
   selector:
     {{- include "pgprox.selectorLabels" . | nindent 4 }}
+{{- end }}
 ---
 {{/*
 The headless service is how nodes find each other. Gossip addresses a peer by

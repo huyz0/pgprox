@@ -47,6 +47,14 @@ only works on a cluster whose kubelet was started with
 --allowed-unsafe-sysctls=net.core.somaxconn. On any other cluster the pod will
 not start at all, with SysctlForbidden, which is why the default here is empty.
 
+The admin API authenticates nobody, and it can drain a node. It is not on the
+client service, so no tenant is handed its address and a LoadBalancer client
+service does not publish it. That is as far as a chart can go: pod IPs are
+routable whatever services exist, so restricting who may reach port
+{{ .Values.ports.admin }} is a NetworkPolicy, and this chart does not write one
+for you because the answer is your cluster's. `adminService.enabled` gives the
+port an address of its own if you want one to point a policy or a dashboard at.
+
 Draining a node by hand, which is what the preStop hook does automatically:
 
   kubectl exec {{ include "pgprox.fullname" . }}-0 -- \
