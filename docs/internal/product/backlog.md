@@ -9128,3 +9128,35 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `scripts/gates/m44-complete.sh` passes, both pages name seven
   components, and the two added since `M24.4` are explained rather than
   counted.
+
+## M84: the suites that need Docker, run against this session's changes
+
+- [x] `M84.0` Forty-five gates, the conformance suite and the driver matrix,
+  against the tree `M75` through `M83` left.
+  Everything committed since `M74` had been verified by the pre-commit hooks
+  and the unit suite. That is sixteen fast checks and 2,004 tests, and it is
+  not what CI runs: the forty-five milestone gates, the conformance suite
+  against real Postgres and the driver matrix against a real proxy had none of
+  them seen this work. `M75.0` changed how every upstream connection is
+  established and `M78.0` changed a `pgprox-core` DTO, which are exactly the
+  changes those suites exist to catch.
+  **The gates found one.** `m44-complete.sh` counts the `pub` fields of
+  `CacheKey` and requires two pages to agree in words; `M78.0` made it seven
+  and left both saying six. Fixed in `M83.0`. Forty-four of the forty-five
+  passed, and the one that failed failed for the right reason.
+  **Conformance passes** against Postgres 17 and 18, both directions: the codec
+  driving a real server, and psql, pgx, asyncpg, JDBC and npgsql driving a
+  harness built on the codec. No container outlived the run.
+  **The driver matrix passes** against a running three-node stack, all five
+  drivers. The regenerated report differs from the committed one only in its
+  date and the commit it describes, so the result is unchanged by everything
+  this session did to the dial path, the pool, the cache key and the error
+  taxonomy.
+  Not run, and worth naming rather than implying: `mutants.sh`, which is hours
+  and which CI shards nightly; `scale.sh`, `compare.sh`, `pinning.sh` and the
+  other measurement scripts, which produce numbers rather than verdicts; and
+  `fips-check.sh`, which needs a toolchain this machine does not have, since
+  `aws-lc-fips-sys` will not compile here against gcc.
+  Acceptance: the gate sweep is green after `M83.0`, conformance passes on both
+  major versions, the driver matrix passes and its report is refreshed, and
+  what was not run is listed.
