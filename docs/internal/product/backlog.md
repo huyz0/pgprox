@@ -9053,3 +9053,50 @@ recognised so it can be refused rather than read as a version.
   same afternoon proving it again.
   Acceptance: the failure has a location and a mechanism written down, the two
   candidate causes are named, and nothing claims to have fixed it.
+
+## M82: the flake that will explain itself next time
+
+- [x] `M82.0` Three candidates ruled out, and a failure that names its own
+  cause when it next fires.
+  `M81.2` left `a_connection_that_died_while_idle_is_not_handed_to_a_client`
+  characterised and unfixed: the client sees its half of the duplex close while
+  waiting for the answer to `SELECT 2`, so the session ends without answering
+  and without writing an error. This is the second attempt at the cause.
+  **What is now ruled out.** `M81.2` named two candidates and both are wrong.
+  Each `ShellError::Disconnected` on the statement path was temporarily made a
+  distinguishable `Internal` error, which writes to the client rather than
+  closing silently, so either firing would have arrived as an `ErrorResponse`
+  naming itself. The failure reproduced twice under that build and neither
+  marker appeared: not `fit_connection`'s `take_connection` returning `None`,
+  and not the release path's `held.take()` returning `None`. A third path was
+  ruled out by reading rather than by running: the arm that catches a dead
+  upstream mid-answer answers `wire.refuse(UpstreamClosed)`, which writes, so
+  it cannot produce silence either. What is left is a panic inside the session
+  task, which `tokio::spawn` swallows, or a silent exit from a path not yet
+  enumerated.
+  **Why it was not caught.** It needs whole-suite load and does not survive
+  being watched. In isolation it never fires: three hundred consecutive
+  executions of the same scenario in one process pass in 8.6 seconds. Under the
+  full suite at a hundred and twenty-eight test threads it fires in single
+  figures per hundred runs, and every build carrying instrumentation on the
+  read path went hundreds of runs without it. A loop harness built to force the
+  odds hit `AddrInUse` on its own listeners first, which is the harness and not
+  the proxy, and after being trimmed it went six hundred loaded executions
+  without a failure. Roughly four hundred stressed suite runs across two
+  sessions produced four usable failures, none of them under instrumentation
+  that could name the cause.
+  **What is committed instead.** The read of the answer to `SELECT 2` no longer
+  goes through `expect`, which unwraps and reports "early eof" at a line in a
+  shared helper. It reads fallibly and, on the close, joins the session task and
+  reports what it returned, whether it panicked rather than returned, what the
+  client had been sent, and the pool's state. The branch runs only when the test
+  is already failing, so the passing path is untouched.
+  Verified by forcing it: aborting the session task produces the full message,
+  including `session panicked: false` and the join error, which is exactly the
+  discrimination two sessions of debugging did not have.
+  This is diagnosis deferred, not a fix, and the entry says so. What it buys is
+  that the next occurrence, in CI or on anyone's machine, answers the question
+  instead of restarting it.
+  Acceptance: the failure path reports the session's outcome and whether it
+  panicked, the message was proven to render by forcing the condition, the
+  passing path is unchanged, and nothing claims the flake is fixed.

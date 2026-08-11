@@ -6019,9 +6019,42 @@ mod tests {
         let mut query = Vec::new();
         pgprox_proto::encode_frontend::query(&mut query, "SELECT 2");
         client.write_all(&query).await.unwrap();
-        let mut saw = Vec::new();
+        let mut saw: Vec<(Tag, String)> = Vec::new();
         loop {
-            let (tag, body) = expect(&mut client).await;
+            // Read fallibly rather than through `expect`, which unwraps. This
+            // test is a known flake whose one observed symptom is an
+            // `UnexpectedEof` here: the session ends without answering and
+            // without writing an error, so the client sees its half of the
+            // duplex close. `M82.0`.
+            //
+            // Unwrapping reports that as "early eof" at a line in a shared
+            // helper, which is every bit of what two sessions of debugging had
+            // to work from. This branch runs only when that happens, so it
+            // costs the passing path nothing, and it turns the next occurrence
+            // into the answer: what the session returned, whether it panicked
+            // rather than returned, and what the client had been sent so far.
+            let mut header = [0_u8; 5];
+            if let Err(err) = tokio::io::AsyncReadExt::read_exact(&mut client, &mut header).await {
+                let joined = served.await;
+                let panicked = joined
+                    .as_ref()
+                    .err()
+                    .is_some_and(tokio::task::JoinError::is_panic);
+                panic!(
+                    "the session closed without answering SELECT 2.\n  \
+                     read: {err:?}\n  session panicked: {panicked}\n  \
+                     session returned: {joined:?}\n  client had been sent: {saw:?}\n  \
+                     pools: {:?}\n\
+                     See M81.2 and M82.0 in the backlog for what has been ruled out.",
+                    context.pool.all_stats()
+                );
+            }
+            let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+            let mut body = vec![0; len - 4];
+            tokio::io::AsyncReadExt::read_exact(&mut client, &mut body)
+                .await
+                .unwrap();
+            let tag = Tag(header[0]);
             saw.push((tag, String::from_utf8_lossy(&body).into_owned()));
             if tag == Tag::READY_FOR_QUERY {
                 break;
@@ -6040,7 +6073,6 @@ mod tests {
         );
 
         drop(client);
-        let _ = served.await;
     }
 
     #[tokio::test]
