@@ -9100,3 +9100,31 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the failure path reports the session's outcome and whether it
   panicked, the message was proven to render by forcing the condition, the
   passing path is unchanged, and nothing claims the flake is fixed.
+
+## M83: the pages still described a six-part cache key
+
+- [x] `M83.0` Two pages catch up with the key `M78.0` widened.
+  `M78.0` added `result_formats` to `CacheKey` and renamed `search_path` to
+  `settings`, taking it from six components to seven. `docs/features.md`
+  enumerated the six and said "All six", and `docs/multitenancy.md` said "All
+  six components are load-bearing". Both were then wrong about the one thing
+  those paragraphs exist to state.
+  Caught by `scripts/gates/m44-complete.sh`, which counts the `pub` fields of
+  `CacheKey` and requires both pages to agree in words. It failed with "the
+  cache key has seven components and the pages claim otherwise", which is the
+  gate doing exactly what its own comment says it is for: "a seventh added
+  without a word on either page leaves a reader with a wrong picture of what
+  separates one tenant's answers from another's".
+  Worth recording how it was missed rather than only that it was. The gates are
+  not on the pre-commit path, by design, because they are slow; CI runs all
+  forty-five on every commit. So `M78.0` was green through every hook and would
+  have gone red on the first push. Running the full gate sweep locally is what
+  found it, and it is the only one of the forty-five that was failing.
+  The pages now say seven and say what the two new components are for, which is
+  the part a reader needs: they are about the bytes rather than the rows, so a
+  client that asked for binary results is not handed the text ones, and two
+  sessions disagreeing about `TimeZone` or `client_encoding` are not asking the
+  same question even when every row is identical.
+  Acceptance: `scripts/gates/m44-complete.sh` passes, both pages name seven
+  components, and the two added since `M24.4` are explained rather than
+  counted.

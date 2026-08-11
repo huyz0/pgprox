@@ -60,7 +60,7 @@ privileges are properties of the role, so the same SQL under two roles is two
 different answers, and sharing one entry between them publishes rows one of them
 is not allowed to see. The database is in the key for the same reason: one
 tenant reaching two databases gets two backends, and `SELECT * FROM t` names a
-different table in each. All six components are load-bearing, and
+different table in each. All seven components are load-bearing, and
 [Features](features.md#query-cache) lists them.
 
 ## The release rule

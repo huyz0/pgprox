@@ -167,9 +167,16 @@ writes are not seen, so this is not read-your-writes and nothing in the product
 calls it that.
 
 An entry is keyed on the tenant, the database, the role, the normalized SQL, the
-parameter values and the `search_path`. All six. The same SQL under a different
-role is a different answer, because row-level security and column privileges
-belong to the role.
+parameter values, the result format the client asked for, and the session
+settings that decide how a value is written down. All seven. The same SQL under
+a different role is a different answer, because row-level security and column
+privileges belong to the role.
+
+The last two are about the bytes rather than the rows, and they are in the key
+for the same reason as the rest. What is stored is the server's reply verbatim,
+so a client that asked for binary results must not be handed the text ones, and
+two sessions that disagree about `TimeZone` or `client_encoding` are not asking
+the same question even when every row is identical.
 
 ### What is never cached
 
