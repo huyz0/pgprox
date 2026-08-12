@@ -476,4 +476,46 @@ else
   fi
 fi
 
+# --- the backlog's table of contents lists every milestone --------------------
+#
+# `M85.0`. 87 milestone headings and 9,000-odd lines is not a document read top
+# to bottom looking for one of them, and grep only helps if you already know
+# the task ID. The table of contents at the top is what fixes that, and like
+# `M51`'s script index and `M12`'s gate index it is only worth what it lists:
+# a heading added here with no matching line is the same defect wearing a
+# document instead of a directory.
+#
+# The two non-milestone `## ` headings this file also carries, "Found after M7
+# closed" and "Found after M8 closed", are deliberately not required here: they
+# are reached by reading the section around them, not by jumping to them, and a
+# rule that demanded every `## ` heading appear would have to explain why those
+# two are not milestones every time someone read it.
+BACKLOG="${PGPROX_BACKLOG:-docs/internal/product/backlog.md}"
+
+if [[ -f "$BACKLOG" ]]; then
+  toc="$(awk '/<!-- toc:start -->/ { f = 1 } f { print } /<!-- toc:end -->/ { exit }' "$BACKLOG")"
+  if [[ -z "$toc" ]]; then
+    fail "$BACKLOG has no <!-- toc:start --> ... <!-- toc:end --> block to check against its headings"
+  else
+    missing=""
+    while read -r heading; do
+      [[ -n "$heading" ]] || continue
+      # The same slug GitHub renders: lowercase, strip anything that is not a
+      # letter, digit, space or hyphen, then turn spaces into hyphens. An
+      # apostrophe or a colon disappears rather than becoming a hyphen, which
+      # is why "M31: the comments at M30's optimisation sites" slugs to
+      # "m31-the-comments-at-m30s-optimisation-sites" and not "...m30-s...".
+      slug="$(printf '%s' "$heading" | tr '[:upper:]' '[:lower:]' | sed -E "s/[^a-z0-9 -]//g" | sed -E 's/ +/-/g')"
+      grep -qF "(#$slug)" <<<"$toc" || missing+=" $heading"
+    done < <(grep -oE '^## M[-A-Za-z0-9]+:.*' "$BACKLOG" | sed -E 's/^## //')
+
+    if [[ -n "$missing" ]]; then
+      fail "these backlog headings have no line in the table of contents:$missing"
+      printf '       a heading not in the index is a milestone nobody can jump to\n'
+    else
+      ok "the backlog's table of contents lists every milestone heading"
+    fi
+  fi
+fi
+
 finish

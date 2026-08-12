@@ -10,6 +10,105 @@ Decomposition rule: only the current milestone is decomposed in detail. Future
 milestones stay as roadmap entries until their turn, because decomposing them
 early produces tasks that are wrong by the time they are reached.
 
+## Contents
+
+`M85.0` added this list so a reader can jump to a milestone instead of
+scrolling or grepping for its number. `scripts/check-drift.sh` keeps it honest:
+a heading added here without a line below fails the same way an unindexed
+script or an unwired gate already does.
+
+<!-- toc:start -->
+- [M-1: AI development system](#m-1-ai-development-system)
+- [M0: contracts and quality gates](#m0-contracts-and-quality-gates)
+- [M1: protocol and TLS (track A)](#m1-protocol-and-tls-track-a)
+- [M1R: protocol revision (streaming and test breadth)](#m1r-protocol-revision-streaming-and-test-breadth)
+- [M1F: full protocol coverage](#m1f-full-protocol-coverage)
+- [M3: cluster (track C)](#m3-cluster-track-c)
+- [M2: auth and sidecar (track B)](#m2-auth-and-sidecar-track-b)
+- [M5: pooling and routing (track E)](#m5-pooling-and-routing-track-e)
+- [M4: operations (track D)](#m4-operations-track-d)
+- [M6: integration](#m6-integration)
+- [M7: scale and performance](#m7-scale-and-performance)
+- [M8: FIPS and release](#m8-fips-and-release)
+- [M9: query cache (post-MVP)](#m9-query-cache-post-mvp)
+- [M10: the claims nothing enforces](#m10-the-claims-nothing-enforces)
+- [M11: the gaps the completed milestones name](#m11-the-gaps-the-completed-milestones-name)
+- [M12: the gates that count files](#m12-the-gates-that-count-files)
+- [M13: the non-negotiables that nothing enforces](#m13-the-non-negotiables-that-nothing-enforces)
+- [M14: the crates mutation testing never reached](#m14-the-crates-mutation-testing-never-reached)
+- [M15: the protocol crate under a second reading](#m15-the-protocol-crate-under-a-second-reading)
+- [M16: the streaming relay nothing streams through](#m16-the-streaming-relay-nothing-streams-through)
+- [M17: the assumptions the last two milestones wrote down](#m17-the-assumptions-the-last-two-milestones-wrote-down)
+- [M18: what the deployment story assumes](#m18-what-the-deployment-story-assumes)
+- [M19: a seam for peer discovery](#m19-a-seam-for-peer-discovery)
+- [M20: the protocol layer against pgbouncer, pgcat and odyssey](#m20-the-protocol-layer-against-pgbouncer-pgcat-and-odyssey)
+- [M21: the driver matrix does not cover what M20 changed](#m21-the-driver-matrix-does-not-cover-what-m20-changed)
+- [M22: the mutants nobody has swept since M17](#m22-the-mutants-nobody-has-swept-since-m17)
+- [M23: the streaming question M16 left open, at the scale one machine has](#m23-the-streaming-question-m16-left-open-at-the-scale-one-machine-has)
+- [M24: a reading of every crate, and the nine things it found](#m24-a-reading-of-every-crate-and-the-nine-things-it-found)
+- [M25: the query cache against pgpool-II, and the three things it has that we do not](#m25-the-query-cache-against-pgpool-ii-and-the-three-things-it-has-that-we-do-not)
+- [M26: what the query cache costs, measured for the first time](#m26-what-the-query-cache-costs-measured-for-the-first-time)
+- [M27: unsafe becomes a governed exception rather than a closed door](#m27-unsafe-becomes-a-governed-exception-rather-than-a-closed-door)
+- [M28: the build configuration nobody had measured](#m28-the-build-configuration-nobody-had-measured)
+- [M29: the first exception the unsafe policy was asked for](#m29-the-first-exception-the-unsafe-policy-was-asked-for)
+- [M30: the same procedure, applied to every crate](#m30-the-same-procedure-applied-to-every-crate)
+- [M31: the comments at M30's optimisation sites](#m31-the-comments-at-m30s-optimisation-sites)
+- [M32: the comparison against pgbouncer and pgcat](#m32-the-comparison-against-pgbouncer-and-pgcat)
+- [M33: what pgbouncer and pgcat do differently](#m33-what-pgbouncer-and-pgcat-do-differently)
+- [M34: the seventeen kilobytes that are not the buffers](#m34-the-seventeen-kilobytes-that-are-not-the-buffers)
+- [M35: every per-connection memory figure so far was two numbers added together](#m35-every-per-connection-memory-figure-so-far-was-two-numbers-added-together)
+- [M36: what an open, quiet connection costs](#m36-what-an-open-quiet-connection-costs)
+- [M37: what a spawned task costs beyond the future it holds](#m37-what-a-spawned-task-costs-beyond-the-future-it-holds)
+- [M38: the extrapolation M36 did not need to make](#m38-the-extrapolation-m36-did-not-need-to-make)
+- [M39: documentation for people who are not this repo](#m39-documentation-for-people-who-are-not-this-repo)
+- [M40: a control that only worked where nothing else was broken](#m40-a-control-that-only-worked-where-nothing-else-was-broken)
+- [M41: the docs become a site](#m41-the-docs-become-a-site)
+- [M42: the site's toolchain leaves the repository root](#m42-the-sites-toolchain-leaves-the-repository-root)
+- [M43: what it does, and what one request touches](#m43-what-it-does-and-what-one-request-touches)
+- [M44: the pages a review asks for](#m44-the-pages-a-review-asks-for)
+- [M45: one directory for the pages and the thing that builds them](#m45-one-directory-for-the-pages-and-the-thing-that-builds-them)
+- [M46: the licence three files have claimed and none granted](#m46-the-licence-three-files-have-claimed-and-none-granted)
+- [M47: the links nothing was checking](#m47-the-links-nothing-was-checking)
+- [M48: the design record moves under docs/](#m48-the-design-record-moves-under-docs)
+- [M49: one place for what a run leaves behind](#m49-one-place-for-what-a-run-leaves-behind)
+- [M50: a README in every crate](#m50-a-readme-in-every-crate)
+- [M51: eighty scripts and no index](#m51-eighty-scripts-and-no-index)
+- [M52: two failures from the CI replay, and what each turned out to be](#m52-two-failures-from-the-ci-replay-and-what-each-turned-out-to-be)
+- [M53: the scripts read as stale, and two of them were](#m53-the-scripts-read-as-stale-and-two-of-them-were)
+- [M54: the repository URL was aspirational](#m54-the-repository-url-was-aspirational)
+- [M55: the first push found a dependency CI never installed](#m55-the-first-push-found-a-dependency-ci-never-installed)
+- [M56: what the instrumentation finally showed](#m56-what-the-instrumentation-finally-showed)
+- [M57: the cancel test discarded the line it was waiting for](#m57-the-cancel-test-discarded-the-line-it-was-waiting-for)
+- [M58: the milestone job kept finding tools it did not have](#m58-the-milestone-job-kept-finding-tools-it-did-not-have)
+- [M59: a benchmark that broke CI on a commit that did not touch it](#m59-a-benchmark-that-broke-ci-on-a-commit-that-did-not-touch-it)
+- [M60: three gates read history and the runner had one commit](#m60-three-gates-read-history-and-the-runner-had-one-commit)
+- [M61: five gates that ran suites and threw away the result](#m61-five-gates-that-ran-suites-and-threw-away-the-result)
+- [M62: the evidence helper could not read coloured output](#m62-the-evidence-helper-could-not-read-coloured-output)
+- [M63: a warning that killed the gate printing it](#m63-a-warning-that-killed-the-gate-printing-it)
+- [M64: the allocation budgets counted the whole process](#m64-the-allocation-budgets-counted-the-whole-process)
+- [M65: the index page did not say what fleet this is for](#m65-the-index-page-did-not-say-what-fleet-this-is-for)
+- [M66: the site stopped being published and every check was green](#m66-the-site-stopped-being-published-and-every-check-was-green)
+- [M67: every action was on a runtime with a removal date](#m67-every-action-was-on-a-runtime-with-a-removal-date)
+- [M68: the docs said what read routing decides, never how](#m68-the-docs-said-what-read-routing-decides-never-how)
+- [M69: a replica set that never changed after the first grant](#m69-a-replica-set-that-never-changed-after-the-first-grant)
+- [M70: the document's server entries did not reach the cluster layer](#m70-the-documents-server-entries-did-not-reach-the-cluster-layer)
+- [M71: a demoted primary could be handed to a new client for five minutes](#m71-a-demoted-primary-could-be-handed-to-a-new-client-for-five-minutes)
+- [M72: an established session had no way to learn a corrected primary](#m72-an-established-session-had-no-way-to-learn-a-corrected-primary)
+- [M73: a failed dial had exactly one chance, unconditionally](#m73-a-failed-dial-had-exactly-one-chance-unconditionally)
+- [M74: an authenticated client that went quiet had no way to be closed](#m74-an-authenticated-client-that-went-quiet-had-no-way-to-be-closed)
+- [M75: upstream TLS sent a ClientHello where Postgres expects a request](#m75-upstream-tls-sent-a-clienthello-where-postgres-expects-a-request)
+- [M76: the allowance was divided into the pools, with a floor under the division](#m76-the-allowance-was-divided-into-the-pools-with-a-floor-under-the-division)
+- [M77: the chart put an unauthenticated write API on the tenants' address](#m77-the-chart-put-an-unauthenticated-write-api-on-the-tenants-address)
+- [M78: the cache key named which rows, not what the bytes said](#m78-the-cache-key-named-which-rows-not-what-the-bytes-said)
+- [M79: the fixture gap M75.0 named](#m79-the-fixture-gap-m750-named)
+- [M80: a dial that failed said the server was full](#m80-a-dial-that-failed-said-the-server-was-full)
+- [M81: a test that counted everything the fake heard](#m81-a-test-that-counted-everything-the-fake-heard)
+- [M82: the flake that will explain itself next time](#m82-the-flake-that-will-explain-itself-next-time)
+- [M83: the pages still described a six-part cache key](#m83-the-pages-still-described-a-six-part-cache-key)
+- [M84: the suites that need Docker, run against this session's changes](#m84-the-suites-that-need-docker-run-against-this-sessions-changes)
+- [M85: eighty-seven milestones and no way to jump to one](#m85-eighty-seven-milestones-and-no-way-to-jump-to-one)
+<!-- toc:end -->
+
 ## M-1: AI development system
 
 - [x] `M-1.1` Repository bootstrap. `git init`, `.gitignore`, plan copied to
@@ -9160,3 +9259,24 @@ recognised so it can be refused rather than read as a version.
   Acceptance: the gate sweep is green after `M83.0`, conformance passes on both
   major versions, the driver matrix passes and its report is refreshed, and
   what was not run is listed.
+
+## M85: eighty-seven milestones and no way to jump to one
+
+- [x] `M85.0` A table of contents at the top of this file, one line per
+  milestone heading, and a `check-drift.sh` rule that fails if a heading is
+  added here without a matching line. Nothing else moved: every task stays at
+  the line its commit put it on, and every existing gate that greps this file
+  by exact path still reads the same content it always has.
+  Read alone, `git log` names 84 milestones; this file holds two more headings
+  that are not milestones at all, "Found after M7 closed" and "Found after M8
+  closed", so the index links milestones only and leaves those to be found by
+  reading the section around them.
+  The check reuses the shape `M51`'s script index and `M12`'s gate index
+  already use: an index is only worth its completeness, so the thing enforced
+  is not "a table of contents exists" but "every heading is in it". Planted in
+  `tests/gates/negative.sh` with a heading added and no matching line, same as
+  every other check-drift.sh rule that reads a file by path.
+  Acceptance: every `## M...` heading in this file has a link in the table of
+  contents, `scripts/check-drift.sh` fails on a planted heading with no
+  matching line and passes once one is added, and no existing task's text
+  changed.

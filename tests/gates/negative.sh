@@ -405,6 +405,89 @@ PLANT
     env PGPROX_ADR_ROOTS="$dir/*.md" scripts/check-drift.sh
 }
 
+# --- check-drift.sh, a backlog heading missing from its table of contents, M85.0
+#
+# The index is only worth what it lists. A heading added without a matching
+# line in the table of contents is a milestone nobody can jump to, and it must
+# fail the same way an unindexed script or an unwired gate already does.
+case_drift_backlog_toc() {
+  echo
+  echo "  check-drift.sh, a backlog heading missing from its table of contents"
+
+  local dir="$WORK/backlog"
+  rm -rf "$dir"; mkdir -p "$dir"
+
+  # A heading with no line in the table of contents.
+  cat > "$dir/backlog.md" <<'PLANT'
+# Backlog
+
+<!-- toc:start -->
+- [M98: a heading that is in the table](#m98-a-heading-that-is-in-the-table)
+<!-- toc:end -->
+
+## M98: a heading that is in the table
+
+- [x] `M98.0` Present.
+
+## M99: a heading with no line above it
+
+- [x] `M99.0` Missing.
+PLANT
+  expect_fail "flags a heading with no line in the table of contents" \
+    env PGPROX_BACKLOG="$dir/backlog.md" scripts/check-drift.sh
+
+  # The same file with the missing line added, and nothing else changed.
+  cat > "$dir/backlog.md" <<'PLANT'
+# Backlog
+
+<!-- toc:start -->
+- [M98: a heading that is in the table](#m98-a-heading-that-is-in-the-table)
+- [M99: a heading with no line above it](#m99-a-heading-with-no-line-above-it)
+<!-- toc:end -->
+
+## M98: a heading that is in the table
+
+- [x] `M98.0` Present.
+
+## M99: a heading with no line above it
+
+- [x] `M99.0` Missing.
+PLANT
+  expect_pass "does not flag a heading once its line is added" \
+    env PGPROX_BACKLOG="$dir/backlog.md" scripts/check-drift.sh
+
+  # A non-milestone `## ` heading, the shape "Found after M7 closed" carries,
+  # must not be demanded in the table of contents.
+  cat > "$dir/backlog.md" <<'PLANT'
+# Backlog
+
+<!-- toc:start -->
+- [M98: a heading that is in the table](#m98-a-heading-that-is-in-the-table)
+<!-- toc:end -->
+
+## M98: a heading that is in the table
+
+- [x] `M98.0` Present.
+
+## Found after M98 closed
+
+More tasks, reached by reading the section rather than by a link.
+PLANT
+  expect_pass "does not demand a non-milestone heading in the table of contents" \
+    env PGPROX_BACKLOG="$dir/backlog.md" scripts/check-drift.sh
+
+  # No table of contents block at all.
+  cat > "$dir/backlog.md" <<'PLANT'
+# Backlog
+
+## M98: a file with no table of contents
+
+- [x] `M98.0` Missing.
+PLANT
+  expect_fail "flags a backlog with no table of contents block" \
+    env PGPROX_BACKLOG="$dir/backlog.md" scripts/check-drift.sh
+}
+
 # --- check-drift.sh, the gate that cannot fail, M12.6 ------------------------
 #
 # `fail` counts into the parent shell, so calling it from a pipeline's
@@ -923,6 +1006,7 @@ if [[ -z "$WANTED" || "$WANTED" == m11-admission ]]; then case_m11_admission; ra
 if [[ -z "$WANTED" || "$WANTED" == m1f-adr ]]; then case_m1f_adr; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == drift-subshell ]]; then case_drift_subshell; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == drift-adr ]]; then case_drift_adr; ran=1; fi
+if [[ -z "$WANTED" || "$WANTED" == drift-backlog-toc ]]; then case_drift_backlog_toc; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == drift-milestone ]]; then case_drift_milestone; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == every-gate ]]; then case_every_gate; ran=1; fi
 if [[ -z "$WANTED" || "$WANTED" == m15-missing-test ]]; then case_m15_missing_test; ran=1; fi

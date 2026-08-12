@@ -2994,3 +2994,33 @@ matched one link in eighteen. The summary is corrected and the argument against
 a scanner now sits in the header, where somebody would look before writing one.
 
 Completion condition: `scripts/check-drift.sh`, which holds both indexes.
+
+## M85: eighty-seven milestones and no way to jump to one (complete)
+
+```bash
+scripts/check-drift.sh
+```
+
+`backlog.md` reached 9,162 lines and 87 milestone headings with no way to
+reach one except scrolling or grepping for a task ID you already knew. That is
+the same shape `M51` found in `scripts/` and `M12` found in `scripts/gates/`:
+a directory, or here a document, big enough that a missing entry looks the
+same as a present one until somebody counts.
+
+Archiving old milestones out of the file was the first idea and the wrong one.
+`check-commit-msg.sh` enforces the one-task-one-commit rule on every commit by
+grepping the exact task ID out of `docs/internal/product/backlog.md`, and
+roughly fifteen milestone gates read specific task text from that same path.
+Moving content out would have meant updating all of them to search two places
+instead of one, which is a change to enforcement scripts this project treats
+as load-bearing, not a readability pass. So nothing moved: the file holds
+every task at the line its commit put it there, unchanged.
+
+What shipped is a table of contents, one link per milestone heading, and a
+`check-drift.sh` rule that fails if a heading exists with no matching line —
+the same shape `M51`'s script index and `M12`'s gate index already enforce,
+because an index that can silently go stale is the defect this repo keeps
+finding in itself.
+
+Completion condition: `scripts/check-drift.sh`, which now reads the table of
+contents against the headings it is supposed to list.
