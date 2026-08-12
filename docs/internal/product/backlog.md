@@ -107,6 +107,7 @@ script or an unwired gate already does.
 - [M83: the pages still described a six-part cache key](#m83-the-pages-still-described-a-six-part-cache-key)
 - [M84: the suites that need Docker, run against this session's changes](#m84-the-suites-that-need-docker-run-against-this-sessions-changes)
 - [M85: eighty-seven milestones and no way to jump to one](#m85-eighty-seven-milestones-and-no-way-to-jump-to-one)
+- [M86: the status table nobody kept adding rows to](#m86-the-status-table-nobody-kept-adding-rows-to)
 <!-- toc:end -->
 
 ## M-1: AI development system
@@ -9280,3 +9281,25 @@ recognised so it can be refused rather than read as a version.
   contents, `scripts/check-drift.sh` fails on a planted heading with no
   matching line and passes once one is added, and no existing task's text
   changed.
+
+## M86: the status table nobody kept adding rows to
+
+- [x] `M86.0` `roadmap.md`'s status table stopped at `M29`. Rows added for
+  `M30` through `M53`, whose sections had been sitting there complete and
+  unlisted, and for `M85`. `M54` through `M84` are noted rather than rowed:
+  they have tasks and commits in this file and no roadmap section yet, and a
+  row naming a section that does not exist is the defect this milestone is
+  about, pointed the other way.
+  `check-drift.sh`'s `M18.3` rule, that every milestone in the table names a
+  real completion condition, only ever reads the table. Fifty-six milestones
+  outside it were never checked by a rule written to guarantee exactly that.
+  Backfilling the rows is what found it: `M35` and `M42` each had a section
+  whose own closing sentence named a real script, and no fenced command block
+  for the rule to read. Both scripts existed; the milestones had simply never
+  been looked at. Fixed by adding the block each section already pointed to.
+  Also moved: a sentence about `M-1` and `M0` being hard barriers that had
+  landed between two table rows, breaking the table there, to prose below it.
+  Acceptance: every milestone `M-1` through `M53` and `M85` has a row in the
+  status table, every row's section names a runnable command,
+  `scripts/check-drift.sh` passes, and `M54` through `M84`'s absence from the
+  table is stated rather than silent.

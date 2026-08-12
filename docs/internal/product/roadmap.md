@@ -42,12 +42,40 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M23 | The streaming question M16 left open, at the scale one machine has | complete; no measurable per-connection cost to a megabyte row at 600 connections, and the second pair corrected what the first appeared to show |
 | M24 | A reading of every crate, and the nine things it found | complete; nine findings, four of them one cause, and two fixed only in part with the measurement that decided how far |
 | M25 | The query cache against pgpool-II | complete; three findings, all one constant, and the two places pgpool is ahead stay open as limits rather than becoming tasks |
-
-M-1 and M0 are hard barriers. Tracks A through E run in parallel once M0 lands.
 | M26 | What the query cache costs, measured for the first time | complete; a hit is 65% cheaper and allocates nothing, a write is 97% cheaper, and the lock the store worried about was never the problem |
 | M27 | Unsafe becomes a governed exception rather than a closed door | complete; five conditions, a script that enforces them, nine cases proving each can fail, and no unsafe written |
 | M28 | The build configuration nobody had measured | complete; one lever of the four was actually available, it is worth 7 to 15% on the route decision, and a benchmark that reported a regression from it turned out to be measuring a random seed |
 | M29 | The first exception the unsafe policy was asked for | complete; it refused one, on the evidence it asks for, because LLVM had already elided the bounds checks |
+| M30 | The same procedure, applied to every crate | complete; four of five findings were work that did not need doing at all rather than a place for unsafe, and the fifth was refused by the closed-crate policy |
+| M31 | The comments at M30's optimisation sites | complete; three ways a comment fails the bar, a `debug_assert!` added at the two sites that had one available, no figure moved |
+| M32 | The comparison against pgbouncer and pgcat | complete; pgbouncer holds 200 connections in 4.5 MB against pgprox's 13.9, pgprox multiplexes onto 50 upstream connections where both others use 60, and throughput is the same across all three |
+| M33 | What pgbouncer and pgcat do differently | complete; three things pgprox found by profiling pgbouncer has had since 2007, and setting both buffers to 4 KiB moved the per-connection cost by 205 bytes out of 22,835 |
+| M34 | The seventeen kilobytes that are not the buffers | complete; the allocator arenas are not it, the worker count is, and roughly 12.7 KB stayed unexplained |
+| M35 | Per-connection memory is a curve, not a number | complete; measured at 100, 200 and 400 connections the reported per-connection figure fell as connections rose in every arm, and `M33`'s and `M34`'s per-connection totals are withdrawn while their arm-to-arm comparisons stand |
+| M36 | What an open, quiet connection costs | complete; pgprox needs 20.8 MB for 800 idle connections against pgbouncer's 4.1, and `M38` later corrected the extrapolation this milestone drew from it |
+| M37 | What a spawned task costs beyond its future | complete; `tokio::spawn`'s overhead is a constant 128 bytes across a future that grows sixteenfold, and every memory candidate any milestone had named is now eliminated with roughly 10 KB per idle connection still unaccounted for |
+| M38 | The extrapolation M36 did not need to make | complete; `M36`'s slope-based 1.47 GB at 100k connections is corrected against the measured 546 MB, and the wrong figure stays visible marked superseded rather than deleted |
+| M39 | Documentation for people who are not this repo | complete; six pages under `docs/` plus a README, each checked against the code it describes rather than proofread |
+| M40 | A control that only worked where nothing else was broken | complete; three negative test cases passed with the check they exist to test deleted entirely, on a machine with no Postgres container running |
+| M41 | The docs become a site | complete; Astro Starlight reads `docs/` directly so the same files serve GitHub and the built site, and a build-time rewrite keeps GitHub-relative links working as site routes |
+| M42 | The site's toolchain leaves the repository root | complete; `package.json`, the lockfile and `src/` moved to `docsite/`, leaving the root a Rust project |
+| M43 | What it does, and what one request touches | complete; two pages, features/limits and request flow, with pin reasons read out of the enum so a variant added later cannot go undocumented |
+| M44 | The pages a review asks for | complete; six pages plus a gate reading eight lists straight from the code, including `SHOW MEM`, which had a test rejecting it by name through four milestones of documentation work |
+| M45 | One directory for the pages and the thing that builds them | complete; `docsite/` folded back beside `docs/`, trading four files of noise in the listing for one directory instead of two with a `../` between them |
+| M46 | The licence three files have claimed and none granted | complete; `LICENSE` now holds the Apache-2.0 text verbatim and `check-drift.sh` holds every other file that names a licence to it |
+| M47 | The links nothing was checking | complete; fifteen broken links, all in the roadmap, all the same one-`../`-too-many mistake, now caught on every commit rather than by clicking |
+| M48 | The design record moves under docs/ | complete; `product/`, `standards/` and `specs/` moved under `docs/internal/`, visible rather than hidden so `rg` and `fd` still find them by default |
+| M49 | One place for what a run leaves behind | complete; `reference/` became `.tmp/reference/`, and the eight tool-specific `.gitignore` patterns that could not fold into it stay, with the reason written down |
+| M50 | A README in every crate | complete; sixteen READMEs checked against `Cargo.toml` in both directions, which caught the crate map still crediting `pgprox-cluster` with SWIM gossip twenty-five milestones after the ADR was corrected |
+| M51 | Eighty scripts and no index | complete; the forty-five gates moved to `scripts/gates/`, `scripts/README.md` indexes the rest, and a real concurrency bug surfaced by a one-in-a-few-runs flake was fixed along the way |
+| M52 | Two failures from the CI replay, and what each turned out to be | complete; one was a Docker Desktop dynamic-port-publish quirk under WSL2 with a definite fix, the other an intermittent coverage failure that could not be reproduced and is now diagnosable rather than fixed |
+| M53 | The scripts read as stale, and two of them were | complete; forty-two of forty-four scripts were not stale, `cargo fmt` ran twice on every push, and `check-wired.sh`'s summary oversold what its own body already argued against |
+| M85 | Eighty-seven milestones and no way to jump to one | complete; a table of contents for `backlog.md` and a `check-drift.sh` rule that fails if a heading has no matching line |
+
+`M54` through `M84` are complete — `backlog.md` has their tasks and commit
+references — but do not yet have roadmap sections of their own; this table
+stops naming them here until that catch-up is done. M-1 and M0 are hard
+barriers. Tracks A through E run in parallel once M0 lands.
 
 ## M-1: AI development system (complete)
 
@@ -2174,6 +2202,10 @@ Completion condition: `scripts/gates/m34-complete.sh`.
 
 ## M35: per-connection memory is a curve, not a number (complete)
 
+```bash
+scripts/gates/m35-complete.sh
+```
+
 `M34` closed naming the spawned task as the next thing to weigh. Weighing it
 would have been wrong, because the figure it would be weighed against is not a
 per-connection figure.
@@ -2424,6 +2456,10 @@ more people read first.
 Completion condition: `scripts/gates/m41-complete.sh`.
 
 ## M42: the site's toolchain leaves the repository root (complete)
+
+```bash
+scripts/gates/m41-complete.sh
+```
 
 `M41` put `package.json`, a lockfile, `astro.config.mjs`, `src/` and
 `node_modules` at the root of what is otherwise a Rust workspace, where each
@@ -3024,3 +3060,47 @@ finding in itself.
 
 Completion condition: `scripts/check-drift.sh`, which now reads the table of
 contents against the headings it is supposed to list.
+
+## M86: the status table nobody kept adding rows to (complete)
+
+```bash
+scripts/check-drift.sh
+```
+
+The status table above stopped at `M29`. Every milestone from `M30` on has a
+real section and, for `M30` through `M53`, has had one the whole time; nobody
+had gone back to add its row. `M54` through `M84` are further behind still:
+they have tasks and commit references in `backlog.md` and no roadmap section
+at all.
+
+**The table's own checker never saw the gap, because it only reads the
+table.** `check-drift.sh`'s "a milestone in the status table can be checked"
+rule, `M18.3`'s answer to `M16` and `M17` closing with nothing to run, walks
+the table's rows and requires each to name a section with a real command. A
+milestone with a section and no row is invisible to it — not exempted,
+un-considered. Fifty-six milestones sat outside a rule written to guarantee
+every milestone has a way to be checked.
+
+**Backfilling the table is what found two of them failing that rule.** `M35`
+and `M42` each had a section and a closing sentence naming their real
+completion condition — `scripts/gates/m35-complete.sh` and
+`scripts/gates/m41-complete.sh` — but no fenced command block, which is what
+the rule actually reads. Both scripts exist and both were already correct;
+the milestones were never checked because they were never in the table, the
+same shape `M40` found in a different control and `M12` before that. Fixed by
+adding the block each section's own prose already named, not by writing a new
+one.
+
+Rows added for `M30` through `M53` and for `M85`. `M54` through `M84` stay out
+of the table on purpose, with a note saying so, rather than getting rows
+pointing at sections that do not exist yet — a row with nothing behind it is
+`M18.3`'s defect with the direction reversed. Backfilling their prose is real
+work, sized for its own milestone rather than folded into this one.
+
+The stray sentence about `M-1` and `M0` being hard barriers, which had been
+sitting between two table rows and breaking the table at that point for
+anyone whose renderer takes it literally, moved to prose below the table
+where it was clearly meant to read.
+
+Completion condition: `scripts/check-drift.sh`, which now finds every
+milestone this table names and would fail again if either gap reopened.
