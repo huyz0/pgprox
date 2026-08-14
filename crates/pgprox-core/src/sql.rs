@@ -85,13 +85,38 @@ impl<'a> Lexer<'a> {
                 continue;
             }
             if self.rest.starts_with("--") {
+                let before = self.rest.len();
                 let end = self.rest.find('\n').map_or(self.rest.len(), |i| i + 1);
                 self.advance(end);
+                // `end` is always at least 2 here (`self.rest` starts with
+                // "--"), so a correct `advance` always shortens `rest`. This
+                // loop has no other way out of the "--" branch: a caller
+                // whose SQL ends in an unterminated line comment relies on
+                // this to terminate rather than spin forever. Found the hard
+                // way: `cargo mutants` replacing `advance`'s body with `()`
+                // turns this into an infinite loop with no allocation and no
+                // await point, which nothing here used to catch before the
+                // per-test timeout, and which cost a machine an OOM before
+                // that timeout could fire under load. A `debug_assert!` turns
+                // that into an immediate panic instead of a hang.
+                debug_assert!(
+                    self.rest.len() < before,
+                    "skip_trivia made no progress in a line comment"
+                );
                 continue;
             }
             if self.rest.starts_with("/*") {
+                let before = self.rest.len();
                 let end = block_comment_end(self.rest);
                 self.advance(end);
+                // Same invariant as the line-comment branch above, and the
+                // same failure mode: `block_comment_end` never returns 0 for
+                // input starting with "/*" (it opens depth 1 immediately), so
+                // a correct `advance` always shortens `rest` here too.
+                debug_assert!(
+                    self.rest.len() < before,
+                    "skip_trivia made no progress in a block comment"
+                );
                 continue;
             }
             return;
@@ -108,9 +133,10 @@ impl<'a> Iterator for Lexer<'a> {
 
     fn next(&mut self) -> Option<Token<'a>> {
         self.skip_trivia();
+        let before = self.rest.len();
         let first = self.rest.chars().next()?;
 
-        match first {
+        let token = match first {
             ';' => {
                 self.advance(1);
                 Some(Token::Semicolon)
@@ -126,11 +152,12 @@ impl<'a> Iterator for Lexer<'a> {
             '$' => {
                 if let Some(end) = dollar_quoted_end(self.rest) {
                     self.advance(end);
-                    return Some(Token::Quoted);
+                    Some(Token::Quoted)
+                } else {
+                    // A parameter placeholder like `$1`, or a stray `$`.
+                    self.advance(first.len_utf8());
+                    Some(Token::Punct(first))
                 }
-                // A parameter placeholder like `$1`, or a stray `$`.
-                self.advance(first.len_utf8());
-                Some(Token::Punct(first))
             }
             c if is_word_char(c) => {
                 let end = word_end(self.rest);
@@ -169,16 +196,41 @@ impl<'a> Iterator for Lexer<'a> {
                     if self.rest.starts_with('\'') {
                         let backslashes = word.eq_ignore_ascii_case("e");
                         self.advance(single_quoted_end(self.rest, backslashes));
-                        return Some(Token::Quoted);
+                        Some(Token::Quoted)
+                    } else {
+                        Some(Token::Word(word))
                     }
+                } else {
+                    Some(Token::Word(word))
                 }
-                Some(Token::Word(word))
             }
             other => {
                 self.advance(other.len_utf8());
                 Some(Token::Punct(other))
             }
-        }
+        };
+
+        // Every arm above calls `advance` with a positive length before
+        // returning `Some`, so `rest` always shrinks on a token. That is an
+        // invariant on the primitive each arm delegates to, not on the arms
+        // themselves, and a caller that loops on this iterator — every real
+        // one does — turns a single broken `advance` into an unbounded
+        // allocation rather than a clean hang: `next` keeps returning
+        // `Some` for the same unconsumed character, and a `collect` into a
+        // `Vec` grows it forever at whatever rate the CPU can loop.
+        //
+        // Found by `cargo mutants` replacing `advance`'s body with `()`:
+        // eleven call sites in this function alone depend on it, the
+        // `word_end` guard above catches none of them because it checks a
+        // different pair of functions, and the run went from thirty
+        // gigabytes free to swapping in under ten seconds, well inside the
+        // per-test timeout meant to catch exactly this. One assert here
+        // guards every arm, including ones written after this comment.
+        debug_assert!(
+            token.is_none() || self.rest.len() < before,
+            "Lexer::next returned a token without consuming any of `rest`"
+        );
+        token
     }
 }
 

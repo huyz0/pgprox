@@ -108,6 +108,7 @@ script or an unwired gate already does.
 - [M84: the suites that need Docker, run against this session's changes](#m84-the-suites-that-need-docker-run-against-this-sessions-changes)
 - [M85: eighty-seven milestones and no way to jump to one](#m85-eighty-seven-milestones-and-no-way-to-jump-to-one)
 - [M86: the status table nobody kept adding rows to](#m86-the-status-table-nobody-kept-adding-rows-to)
+- [M87: the mutants nobody has swept since M22](#m87-the-mutants-nobody-has-swept-since-m22)
 <!-- toc:end -->
 
 ## M-1: AI development system
@@ -9303,3 +9304,40 @@ recognised so it can be refused rather than read as a version.
   status table, every row's section names a runnable command,
   `scripts/check-drift.sh` passes, and `M54` through `M84`'s absence from the
   table is stated rather than silent.
+
+## M87: the mutants nobody has swept since M22
+
+- [x] `M87.0` A mutation sweep of `pgprox-core` found a mutant that does not
+  fail a test. It takes down the machine running it.
+  `cargo mutants` replacing `Lexer::advance`'s body with `()` turned
+  `Lexer::next` into a function that returns `Some(token)` for the same
+  unconsumed character forever, because eleven call sites across `next` and
+  `skip_trivia` depend on `advance` to shrink `self.rest` and none of them
+  re-check that it did. A caller that collects the iterator, which is what a
+  lexer is for, grows its `Vec` at whatever rate the CPU can loop: thirty
+  gigabytes free to swapping in under ten seconds, reproduced twice under a
+  supervised, memory-monitored single-mutant run before being trusted as the
+  cause rather than a coincidence of machine load.
+  Nothing here is a defect in the shipped code. `advance` is correct, and
+  `cargo nextest run -p pgprox-core` passes its real 241 tests in 0.14s with
+  memory flat. The gap is that nothing stated the invariant a mutant broke:
+  every arm of `next` assumes `advance` consumes input and nothing checked
+  that it did, the same shape `M22.5` already fixed once for `word_end` and
+  `is_word_char` disagreeing, in the same function, guarding a different pair
+  of primitives.
+  Fixed with one `debug_assert!` after `next`'s match, comparing `self.rest`'s
+  length before and after, which is upstream of all eleven call sites rather
+  than one more assert per arm. `skip_trivia`'s two comment-skipping branches
+  got the same check for the same reason: `advance -> ()` breaks them too, by
+  the same mechanism, one function up.
+  This is why the milestone runs supervised. `cargo mutants` gives a suite a
+  timeout for a hung *test*; nothing bounds a test that keeps producing output
+  a caller keeps allocating, and that is a different failure mode than the
+  ones `M10.13`'s per-test cap was built for. The fix stands on its own
+  regardless of what caused the crashes reported against this session, and it
+  was reproduced under monitoring specifically so a real fix would not be
+  confused with a flaky environment.
+  Acceptance: `cargo mutants -p pgprox-core -f crates/pgprox-core/src/sql.rs
+  -F advance` reports the mutant caught rather than hanging, `cargo nextest
+  run -p pgprox-core` passes all 241 tests unchanged, and the invariant is
+  stated once per function rather than once per call site.

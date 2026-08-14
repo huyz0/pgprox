@@ -71,6 +71,8 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M52 | Two failures from the CI replay, and what each turned out to be | complete; one was a Docker Desktop dynamic-port-publish quirk under WSL2 with a definite fix, the other an intermittent coverage failure that could not be reproduced and is now diagnosable rather than fixed |
 | M53 | The scripts read as stale, and two of them were | complete; forty-two of forty-four scripts were not stale, `cargo fmt` ran twice on every push, and `check-wired.sh`'s summary oversold what its own body already argued against |
 | M85 | Eighty-seven milestones and no way to jump to one | complete; a table of contents for `backlog.md` and a `check-drift.sh` rule that fails if a heading has no matching line |
+| M86 | The status table nobody kept adding rows to | complete; rows added for `M30` through `M53` and `M85`, and backfilling them found two milestones whose completion condition was prose with no command for `check-drift.sh` to read |
+| M87 | The mutants nobody has swept since M22 | in progress; six of sixteen crates freshly swept, and the first finding is a mutant that does not fail a test but takes the machine testing it from 30 GB free to swapping in under ten seconds |
 
 `M54` through `M84` are complete — `backlog.md` has their tasks and commit
 references — but do not yet have roadmap sections of their own; this table
@@ -3104,3 +3106,56 @@ where it was clearly meant to read.
 
 Completion condition: `scripts/check-drift.sh`, which now finds every
 milestone this table names and would fail again if either gap reopened.
+
+## M87: the mutants nobody has swept since M22
+
+```bash
+scripts/gates/m22-complete.sh
+```
+
+`M22` closed with the baseline current against sixteen crates. Sixty-two
+milestones have landed since, and `M22.4`'s own gate reports each crate's
+staleness rather than blocking on it, which is right for a fast local check
+and means nobody had looked. Reusing `m22-complete.sh` here rather than a new
+script is deliberate: the check this milestone needs already exists, and
+writing a second one that reads the same `Sweeps:` markers would be the
+two-implementations mistake this project argues against everywhere else.
+
+**Where it stands.** `pgprox-proto`, `pgprox-route`, `pgprox-cache`,
+`pgprox-session`, `pgprox-cluster` and `pgprox-pool` are freshly swept with
+every survivor checked against the baseline. `pgprox-core` found a real
+defect before finishing its own sweep, below. The other nine crates and
+binaries have not run yet.
+
+**`M87.0`, found by the sweep rather than by reading.** A mutant of
+`Lexer::advance` in `pgprox-core` does not fail a test; it takes down the
+machine testing it. `next()` returns `Some(token)` for the same unconsumed
+character forever when `advance` stops shrinking `self.rest`, and a caller
+that collects the iterator — every real one does — grows a `Vec` at whatever
+rate the CPU can loop. Thirty gigabytes free to swapping in under ten
+seconds, on a mutant `cargo mutants`' own per-test timeout cannot catch
+because nothing in the test ever fails or hangs in the way that timeout
+watches for: it keeps producing output, just never finishing.
+
+Nothing here is a defect in the shipped code — `cargo nextest run -p
+pgprox-core` passes its real 241 tests in 0.14s with memory flat, and
+`advance` is correct. The gap is upstream of the code: eleven call sites
+across `next` and `skip_trivia` assume `advance` consumes input and nothing
+checked that it did, the same shape `M22.5` already found once in the same
+function for a different pair of primitives. Fixed with one
+`debug_assert!` after the match, comparing `self.rest`'s length before and
+after, which guards every arm at once rather than one more assert per call
+site — and was reproduced twice under a monitored, single-mutant run before
+being trusted as the cause, specifically so a real fix would not be mistaken
+for a flaky machine.
+
+**What this means for how the rest of the sweep runs.** A mutant that grows
+memory without failing or hanging a test is invisible to the tooling's own
+safety net, so the remaining nine crates are swept in small shards under
+active memory monitoring rather than as one long unattended run, and any
+survivor of this shape gets the same fix — a stated invariant upstream of
+every caller — rather than a special case.
+
+Completion condition: `scripts/gates/m22-complete.sh` reporting every crate
+current, with every survivor either killed by a test or accepted in
+`docs/internal/product/mutants-baseline.txt` with a reason.
