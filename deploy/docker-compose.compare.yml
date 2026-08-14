@@ -89,6 +89,11 @@ services:
       # A space rather than an empty string: the entrypoint expands this
       # unquoted, and `:-` would substitute the default for an empty value.
       PGPROX_REQUIRE_TLS: " "
+      # `M88.7`: turning `--require-tls` off needs this said explicitly, or
+      # the node refuses to start rather than serving a token in the clear
+      # because nobody named the flag. This is that name, deliberate here for
+      # the reason the comment above `pgprox-1` gives.
+      PGPROX_INSECURE_PLAINTEXT_AUTH: --insecure-plaintext-auth
       RUST_LOG: "${COMPARE_LOG:-info}"
       PGPROX_NODE: "1"
       PGPROX_NODE_NAME: pgprox-1

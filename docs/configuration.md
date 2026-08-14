@@ -184,6 +184,7 @@ time the node starts, not on the next document reload.
 | `--gossip` | `0.0.0.0:6433` | Where peers exchange state. |
 | `--tls-cert`, `--tls-key` | none | The certificate this node presents to clients. |
 | `--require-tls` | off | Refuse clients that will not use TLS. |
+| `--insecure-plaintext-auth` | off | Starts anyway with `--require-tls` off. See below. |
 | `--upstream-ca` | none | CA for verifying upstream Postgres certificates. |
 | `--admin-user` | none | Name of a role allowed to authenticate with SCRAM instead of a JWT. Its password comes from the environment, never the command line. |
 | `--peer` | none | A peer as `number=host:port`. Repeatable. |
@@ -200,6 +201,15 @@ A deployment carrying JWTs in the password field wants `--require-tls`. The
 default is off because a node with no certificate and `require_tls` on would
 refuse every client, which is a worse first experience than a node that says
 what it is doing.
+
+A node always wires a JWT-capable resolver, so `--require-tls` off is refused
+at startup unless `--insecure-plaintext-auth` is also given, in which case a
+JWT can travel in the clear. The default `Options` sets neither, so a node
+started with nothing on this axis does not come up — this stopped being
+operator discipline the deployment could get wrong by omission with `M88.7`.
+The one place this repo names `--insecure-plaintext-auth` is the scale and
+compare measurement stacks, because `bin/pgload` does not speak TLS and the
+comparison they make needs both sides on the same axis.
 
 `--upstream-ca` is separate and applies to connections the proxy makes. Without
 it the root store is empty, so any backend whose grant asks for a verified

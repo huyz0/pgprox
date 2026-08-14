@@ -74,6 +74,17 @@ pub struct Options {
     pub tls_key: Option<PathBuf>,
     /// Whether a client may authenticate without TLS.
     pub require_tls: bool,
+    /// Starts anyway with `require_tls: false`.
+    ///
+    /// `start_with` always wires a JWT-capable resolver — the sidecar client
+    /// in a real deployment, a fake standing in for it in a test — so a token
+    /// travels in the password field in the clear whenever `require_tls` is
+    /// off. `M88.7` refuses that combination unless this says it was chosen
+    /// on purpose, which is what `bin/pgload`-based benchmarks need: `pgload`
+    /// does not speak TLS, so the compare and scale stacks pass this to keep
+    /// running against a private, non-adversarial network rather than gaining
+    /// a code path this one flag would otherwise be the only user of.
+    pub insecure_plaintext_auth: bool,
     /// Where the certificate authority for upstream connections is.
     ///
     /// Without it the root store is empty, so a backend whose grant asks for a
@@ -116,6 +127,13 @@ impl Default for Options {
             // refusing every client, which is a worse first experience than a
             // node that says what it is doing.
             require_tls: false,
+            // Off by default, which combined with `require_tls: false` above
+            // means the default `Options` refuses to start rather than
+            // serving JWT logins in the clear. Nothing reachable from a real
+            // `main` sets this without also setting `require_tls`: a
+            // deployment that wants plaintext has to say so on both flags,
+            // once each.
+            insecure_plaintext_auth: false,
             upstream_ca: None,
             admin_user: None,
             peers: std::collections::BTreeMap::new(),
@@ -164,6 +182,7 @@ impl Options {
                 "--tls-cert" => options.tls_cert = Some(PathBuf::from(value()?)),
                 "--tls-key" => options.tls_key = Some(PathBuf::from(value()?)),
                 "--require-tls" => options.require_tls = true,
+                "--insecure-plaintext-auth" => options.insecure_plaintext_auth = true,
                 "--admin-user" => options.admin_user = Some(value()?),
                 "--upstream-ca" => options.upstream_ca = Some(PathBuf::from(value()?)),
                 // Repeatable, one flag per peer, and each carries the peer's
@@ -481,6 +500,24 @@ pub async fn start_with(
     resolver: Arc<dyn pgprox_core::auth::CredentialResolver>,
     topology: Option<Arc<dyn pgprox_core::auth::TopologyRefresh>>,
 ) -> Result<App, StartupError> {
+    // `M88.7`. Every caller reaching this function already has its resolver:
+    // `start` always wires the sidecar client, which is JWT-capable, and a
+    // test that wants something else passes a fake in its place rather than
+    // a flag that turns JWT off. So a JWT travels in the clear whenever
+    // `require_tls` is off, unless `insecure_plaintext_auth` says that was
+    // chosen on purpose — which is what the `bin/pgload`-based benchmarks
+    // need, since `pgload` cannot speak TLS at all. Checked here rather than
+    // in `start`, which this function's own doc says is the one thing
+    // `start` does that a test cannot reach on its own: a check that lived
+    // there only would not hold against a second caller of this one.
+    if !options.require_tls && !options.insecure_plaintext_auth {
+        return Err(StartupError::Arguments {
+            detail: "a JWT would travel in the clear without --require-tls; \
+                      pass --insecure-plaintext-auth if that is deliberate"
+                .to_owned(),
+        });
+    }
+
     let listener_certificate = options.tls()?;
     // One configuration for the life of the process, resolving to whatever the
     // reloader currently holds. See `pgprox_tls::CertReloader`.
@@ -724,6 +761,8 @@ mod tests {
             config: path.clone(),
             node: NodeId::new(4),
             node_name: "pgprox-4".to_owned(),
+            // This test is about config loading, not TLS. `M88.7`.
+            insecure_plaintext_auth: true,
             ..Options::default()
         };
         let source = FileSource::new(FileConfig::at(&path)).unwrap();
@@ -798,6 +837,8 @@ mod tests {
         let app = start_with(
             Options {
                 config: path.clone(),
+                // This test is about the caching resolver, not TLS. `M88.7`.
+                insecure_plaintext_auth: true,
                 ..Options::default()
             },
             FileSource::new(FileConfig::at(&path)).unwrap(),
@@ -858,6 +899,71 @@ mod tests {
         assert!(
             matches!(err, StartupError::Sidecar { .. }),
             "an unreachable sidecar was reported as something else: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn jwt_auth_without_require_tls_refuses_to_start() {
+        // `M88.7`. `start_with` always gets a JWT-capable resolver in
+        // production, and `Options::default()` is `require_tls: false` with
+        // `insecure_plaintext_auth: false` to match, so the default
+        // combination is refused rather than serving a token in the clear
+        // because nobody named the flag.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, document()).unwrap();
+
+        let err = start_with(
+            Options {
+                config: path.clone(),
+                ..Options::default()
+            },
+            FileSource::new(FileConfig::at(&path)).unwrap(),
+            Arc::new(pgprox_core::auth::FakeCredentialResolver::new()),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, StartupError::Arguments { .. }),
+            "JWT auth without --require-tls started anyway: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn insecure_plaintext_auth_is_the_deliberate_way_out() {
+        // The other half: the refusal above is not `require_tls` becoming
+        // mandatory, it is a default that must be overridden by naming one
+        // flag or the other, and this is the one `bin/pgload`-based
+        // benchmarks name because `pgload` cannot speak TLS at all.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, document()).unwrap();
+
+        let app = start_with(
+            Options {
+                config: path.clone(),
+                insecure_plaintext_auth: true,
+                ..Options::default()
+            },
+            FileSource::new(FileConfig::at(&path)).unwrap(),
+            Arc::new(pgprox_core::auth::FakeCredentialResolver::new()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(app.config.servers.len(), 1);
+    }
+
+    #[test]
+    fn the_insecure_plaintext_auth_flag_parses() {
+        let options = Options::parse(["--insecure-plaintext-auth"]).unwrap();
+        assert!(options.insecure_plaintext_auth);
+        assert!(
+            !Options::default().insecure_plaintext_auth,
+            "the flag defaulted to on, which would make the M88.7 refusal never fire"
         );
     }
 
@@ -986,6 +1092,8 @@ mod tests {
         let app = start_with(
             Options {
                 config: path.clone(),
+                // This test is about the caching resolver, not TLS. `M88.7`.
+                insecure_plaintext_auth: true,
                 ..Options::default()
             },
             FileSource::new(FileConfig::at(&path)).unwrap(),

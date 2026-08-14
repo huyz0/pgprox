@@ -9710,11 +9710,22 @@ recognised so it can be refused rather than read as a version.
   line equals the true client count, not double it, and a test asserting
   `pgprox_upstream_conns` carries a `state` label with the right per-state
   counts, both failing before the fix.
-- [ ] `M88.7` TLS-required-with-JWT is operator discipline, not code. Running
+- [x] `M88.7` TLS-required-with-JWT is operator discipline, not code. Running
   JWT authentication without `--require-tls` sends a bearer token over a
   plaintext connection, and nothing in `pgprox-tls` or its wiring refuses that
   combination; the safety depends entirely on whoever writes the deployment
   config remembering the flag.
+  Landed with an escape hatch rather than an unconditional refusal:
+  `start_with` (the one function both `start` and every alternate caller
+  reach) now refuses `require_tls: false` unless a new
+  `--insecure-plaintext-auth` names that as deliberate. An unconditional
+  refusal was considered and rejected — `scripts/scale.sh` and
+  `scripts/bench.sh`'s compare stack run pgprox with `--require-tls` off on
+  purpose, because `bin/pgload` cannot speak TLS at all, and a fix that broke
+  them would trade one gap for another. The new flag is what
+  `docker-compose.scale.yml` and `docker-compose.compare.yml` now pass
+  explicitly; every other caller, including the Helm chart's default with no
+  TLS secret named, gets the refusal.
   Acceptance: a test that constructing the config with JWT auth enabled and TLS
   not required is refused at startup rather than accepted, failing before the
   fix.

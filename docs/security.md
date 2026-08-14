@@ -22,6 +22,12 @@ whenever JWT authentication is in use**. A client that skips `SSLRequest` while
 `require_tls` is set gets an `ErrorResponse` explaining why, not a silent
 downgrade to plaintext.
 
+A node always wires a JWT-capable resolver, so this is not left to whoever
+writes the deployment config remembering `--require-tls`: a node started with
+it off refuses to start at all unless `--insecure-plaintext-auth` says so
+explicitly, which names the choice rather than letting an omission make it.
+See [Configuration](configuration.md#command-line-arguments).
+
 Before the token goes anywhere, the proxy checks the header's algorithm against
 an allowlist:
 

@@ -89,6 +89,12 @@ x-proxy: &proxy
       # and speak plaintext, without a second copy of this entrypoint that
       # would drift from it. The defaults are the posture the e2e run asserts:
       # the shipped config, and TLS required.
+      #
+      # `PGPROX_INSECURE_PLAINTEXT_AUTH` travels with `PGPROX_REQUIRE_TLS`
+      # rather than defaulting on: `M88.7` refuses to start with JWT auth
+      # reachable and TLS not required unless this says that was chosen on
+      # purpose, and the two measurement overlays that turn `--require-tls`
+      # off are the only place this repo sets it.
       exec /usr/local/bin/pgprox \
         --config "$${PGPROX_CONFIG:-/etc/pgprox/config.yaml}" \
         --sidecar /tmp/sidecar.sock \
@@ -98,6 +104,7 @@ x-proxy: &proxy
         --tls-cert /tmp/tls.crt \
         --tls-key /tmp/tls.key \
         $${PGPROX_REQUIRE_TLS:---require-tls} \
+        $${PGPROX_INSECURE_PLAINTEXT_AUTH:-} \
         $${PGPROX_UPSTREAM_CA:-} \
         --node "$${PGPROX_NODE}" \
         --node-name "$${PGPROX_NODE_NAME}" \

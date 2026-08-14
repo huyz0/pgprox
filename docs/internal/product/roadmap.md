@@ -3431,3 +3431,23 @@ is not valid Prometheus exposition. Both are fixed the same way: sum
 contract, and emit one sample per `(server, state)` pair. Neither fix needed
 a contract change; both bugs were entirely in how the exporter read data it
 already had.
+
+**`M88.7`.** A node always wires a JWT-capable resolver, and nothing tied
+`require_tls` to that fact: a deployment that omitted `--require-tls` came up
+and authenticated tokens over a plaintext connection, safe only because
+whoever wrote the deployment config remembered the flag. `start_with` — the
+one function both `start` and any other caller reach, chosen over a check in
+`start` alone so it cannot be bypassed by calling the other public entry
+point — now refuses `require_tls: false` unless a new
+`--insecure-plaintext-auth` says that was chosen on purpose. An unconditional
+refusal was the first attempt and was wrong: `scripts/scale.sh` and
+`scripts/bench.sh`'s compare stack run a node with `--require-tls` off
+deliberately, because `bin/pgload` cannot speak TLS at all, and both are
+checked-in, CI-relevant scripts this fix must not break. The new flag is what
+lets that stay true while closing the gap everywhere else:
+`docker-compose.scale.yml` and `docker-compose.compare.yml` now name it
+explicitly, and the
+Helm chart's default with no TLS secret configured — previously a node that
+came up and silently accepted tokens in the clear, despite `values.yaml`'s own
+comment already claiming otherwise — now refuses to start, which is what that
+comment described all along.

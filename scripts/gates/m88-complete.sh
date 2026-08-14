@@ -139,4 +139,12 @@ run_finding pgprox \
   metrics::tests::clients_are_counted_by_state_and_tenant_together \
   "clients are counted once per (state, tenant) cell, not per dimension"
 
+# --- M88.7: JWT auth without --require-tls refuses to start, not silently --
+run_finding pgprox \
+  entry::tests::jwt_auth_without_require_tls_refuses_to_start \
+  "a node with JWT auth reachable and TLS not required refuses to start"
+run_finding pgprox \
+  entry::tests::insecure_plaintext_auth_is_the_deliberate_way_out \
+  "--insecure-plaintext-auth is the named way to start anyway"
+
 finish

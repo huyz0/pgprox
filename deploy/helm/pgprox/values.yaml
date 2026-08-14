@@ -53,7 +53,8 @@ sidecar:
 
 # Frontend TLS. Required whenever JWT auth is in use, because the token travels
 # in the password field. Naming a secret here turns on --require-tls; leaving
-# it empty produces a node that will refuse every JWT client it sees.
+# it empty is a node that refuses to start at all, per `M88.7`, rather than
+# one that comes up and refuses every JWT client it sees one at a time.
 tls:
   secretName: ""
   certKey: tls.crt
