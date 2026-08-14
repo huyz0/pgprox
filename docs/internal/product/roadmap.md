@@ -3509,3 +3509,20 @@ you write instead), a TLS section calling out that `M88.7`'s startup refusal
 means a pgbouncer deployment's `client_tls_sslmode = disable` does not carry
 over by doing nothing, and a pre-cutover checklist. Linked from `docs/index.md`,
 `README.md` and the site sidebar; the same three checks as `M89.1` pass.
+
+**`M89.4`.** `docs/security.md` and `docs/admin.md` between them state every
+decision an operator needs to have made before a tenant's token reaches a
+node — TLS posture, the admin port's network boundary, the static-admin
+credential path, log hygiene — as prose across two pages a launch review has
+to read in full and extract from by hand. The admin-port-on-a-public-load-balancer
+mistake `docs/admin.md` already records happened once in this project's own
+history because nothing forced that extraction. Added
+[`docs/security-checklist.md`](../../security-checklist.md): the same
+decisions as literal checkboxes, grouped by transport, the sidecar, the
+static admin credential, the admin port and logging, each pointing back at
+the page that explains it rather than restating the explanation, closing with
+a pointer to what the checklist is deliberately not — `security.md`'s "not a
+firewall, not an authorization layer, not a boundary your credentials do not
+have" — so a review does not mistake a completed checklist for a guarantee
+this design does not make. Linked from `docs/index.md`, `README.md` and the
+site sidebar; the same checks as `M89.1` and `M89.3` pass.

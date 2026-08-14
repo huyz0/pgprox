@@ -50,6 +50,7 @@ export default defineConfig({
         { label: 'Clustering and deployment', link: '/clustering/' },
         { label: 'Admin and management', link: '/admin/' },
         { label: 'Security', link: '/security/' },
+        { label: 'Pre-launch security checklist', link: '/security-checklist/' },
         { label: 'FIPS builds', link: '/fips/' },
         { label: 'Architecture', link: '/architecture/' },
         { label: 'Request flow', link: '/request-flow/' },

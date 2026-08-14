@@ -50,6 +50,7 @@ then asserts the properties the stack is meant to have. Full walkthrough in
 | [Clustering and deployment](docs/clustering.md) | How nodes hold one cap between them, and how to deploy them |
 | [Admin and management](docs/admin.md) | Every `SHOW`, every endpoint, every state change |
 | [Security](docs/security.md) | Threat model, authentication, credential handling |
+| [Pre-launch security checklist](docs/security-checklist.md) | The same decisions, as a checklist rather than three pages |
 | [FIPS builds](docs/fips.md) | The validated build, what it costs, how to verify it |
 | [Architecture](docs/architecture.md) | How it works and why it is built this way |
 | [Request flow](docs/request-flow.md) | One frame through the proxy, and what touches it |

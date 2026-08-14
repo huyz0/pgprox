@@ -107,6 +107,10 @@ every API endpoint, and the operations that change a node's state.
 [Security](security.md) covers the threat model, how clients and operators
 authenticate, what a grant authorizes, and how credentials are kept out of logs.
 
+[Pre-launch security checklist](security-checklist.md) is the same set of
+decisions as a checklist, extracted from Security and Admin and management so
+a launch review has something to go through item by item.
+
 [FIPS builds](fips.md) covers building against a validated crypto module, what
 it costs in cipher suites, and how to verify the binary you got.
 

@@ -9887,7 +9887,7 @@ near it. This milestone is that question, asked once, from outside.
   credential model, since pgprox's is a sidecar and a JWT) and what changed
   behaviour on both sides has to be checked for before a cutover.
   `scripts/check-links.sh` passes.
-- [ ] `M89.4` A pre-launch security checklist. `docs/security.md` and
+- [x] `M89.4` A pre-launch security checklist. `docs/security.md` and
   `docs/admin.md` between them state every decision an operator needs to have
   made before exposing this to a tenant — TLS posture, the admin port's
   network boundary, the static-admin credential path — as prose spread across
