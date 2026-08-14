@@ -81,6 +81,21 @@ impl<'a> Lexer<'a> {
         loop {
             let trimmed = trim_leading_space(self.rest);
             if trimmed.len() != self.rest.len() {
+                // `trim_leading_space` only ever returns a suffix of its
+                // input, so a correct implementation can only shrink `rest`,
+                // never grow it. This `!=` check alone cannot tell "shrank"
+                // from "grew": a mutant that replaces the function with a
+                // fixed literal returns something *longer* than an empty
+                // `rest`, and this branch would refill `rest` from nothing
+                // every time a caller's loop emptied it, producing a fresh
+                // token forever rather than ending the input. Found the way
+                // the two branches below already were, one level up: the
+                // same `advance`-shrinks-`rest` assumption, on the one
+                // branch that does not call `advance` at all.
+                debug_assert!(
+                    trimmed.len() < self.rest.len(),
+                    "skip_trivia's leading-space trim grew rest instead of shrinking it"
+                );
                 self.rest = trimmed;
                 continue;
             }

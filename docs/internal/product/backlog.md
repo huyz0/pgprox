@@ -9361,3 +9361,30 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `[profile.mutants]` in `.config/nextest.toml` states
   `test-threads = 4` with the reasoning above; the default profile used by
   ordinary `cargo nextest run` is untouched.
+
+- [x] `M87.2` Resuming the swept shard past `M87.0` found a second mutant of
+  the same shape, in the branch `M87.0` did not guard. `trim_leading_space`
+  replaced with the fixed literal `"xyzzy"` does not merely fail to shrink
+  `self.rest`: called on an empty `rest`, it **grows** it back to `"xyzzy"`.
+  `skip_trivia`'s first branch only checked `trimmed.len() != self.rest.len()`,
+  which is true either way, so it reassigned `self.rest = trimmed` without
+  asking whether that shrank or grew. Every time a caller's loop emptied
+  `rest`, this branch refilled it, `next()` tokenised the same five bytes as a
+  fresh `Word` again, and the cycle produced a `Some` forever. Reproduced
+  isolated and monitored the same way as `M87.0`: 30 GB free to 16 MB in
+  twelve seconds.
+  `M87.0` guarded the two branches that call `advance`, on the theory that
+  `advance` not shrinking `rest` was the whole shape of the risk. It was one
+  instance of a broader one: any branch that can replace `rest` needs the
+  same check, whether or not `advance` is involved, because a well-formed
+  trim can only return a suffix of its input and nothing before this
+  enforced that a mutant obeys the same rule.
+  Fixed with the same pattern one branch to the left: a `debug_assert!` that
+  `trimmed.len() < self.rest.len()` before the assignment. `next()`'s
+  after-the-match invariant from `M87.0` did not catch this one because each
+  individual `next()` call still nets a shrink — `rest` goes from 5 bytes
+  ("xyzzy") down to 0 after consuming the word — the growth happens between
+  calls, when `skip_trivia` refills what the previous call emptied.
+  Acceptance: `cargo mutants -p pgprox-core -f crates/pgprox-core/src/sql.rs
+  -F 'trim_leading_space -> &str with "xyzzy"'` reports the mutant caught,
+  `cargo nextest run -p pgprox-core` passes all 241 tests unchanged.

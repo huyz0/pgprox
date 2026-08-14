@@ -3166,6 +3166,20 @@ knobs are orthogonal and a large suite fanning out to twenty processes per
 mutant is unwanted pressure with or without a memory-growing mutant in the
 run.
 
+**`M87.2` found the same shape once more, in the one branch `M87.0` had not
+guarded.** `trim_leading_space` replaced with the fixed literal `"xyzzy"`
+does not just fail to shrink `self.rest`; called on an empty `rest`, it
+*grows* it back to five bytes, so a caller's loop that had just emptied
+`rest` gets it refilled and tokenises the same bytes forever. `M87.0`'s fix
+guarded the two branches that call `advance`, on the theory that `advance`
+not shrinking `rest` was the whole shape of the risk; it was one instance of
+a broader one, that any branch able to replace `rest` needs the same check.
+Fixed the same way, one branch over: `debug_assert!(trimmed.len() <
+self.rest.len())` before the assignment. `next()`'s own invariant from
+`M87.0` did not catch this, because each individual call still nets a
+shrink — the growth happens between calls, when `skip_trivia` refills what
+the previous call just emptied.
+
 Completion condition: `scripts/gates/m22-complete.sh` reporting every crate
 current, with every survivor either killed by a test or accepted in
 `docs/internal/product/mutants-baseline.txt` with a reason.
