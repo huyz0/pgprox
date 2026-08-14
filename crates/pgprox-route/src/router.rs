@@ -240,7 +240,17 @@ fn begins_transaction(sql: &str) -> bool {
     // Compared in place rather than lowercased. Lowercasing built a `String`
     // per statement, which made the route decision the only declared hot path
     // that allocated; M7.10's budget test found it.
-    let Some(word) = sql.split_whitespace().next() else {
+    //
+    // The shared lexer rather than `split_whitespace`, which read a leading
+    // comment as the first word and never got past it. This crate's own
+    // `hints` module documents exactly that shape as a per-statement routing
+    // hint — `/* pgprox:primary */ BEGIN` — so a client following it had its
+    // `BEGIN` go unrecognised, the fixed target never set, and the two
+    // statements of one explicit transaction free to land on different
+    // servers, which the module comment above says has no coherent
+    // semantics. `Lexer::next` borrows rather than allocating, so this stays
+    // inside the same zero-allocation budget.
+    let Some(pgprox_core::sql::Token::Word(word)) = pgprox_core::sql::Lexer::new(sql).next() else {
         return false;
     };
     word.eq_ignore_ascii_case("begin") || word.eq_ignore_ascii_case("start")
@@ -555,6 +565,31 @@ mod tests {
             route(&mut router, "SELECT * FROM other", true),
             Routed::To(RouteTarget::Replica(0))
         );
+    }
+
+    #[test]
+    fn a_hint_comment_before_begin_does_not_hide_the_transaction() {
+        // `begins_transaction` used to read `sql.split_whitespace().next()`,
+        // which returns a leading comment's own `/*` or `--` rather than
+        // skipping past it. This crate's `hints` module documents exactly
+        // that shape as a per-statement routing hint, so a client following
+        // its own documentation — `/* pgprox:primary */ BEGIN` — had its
+        // `BEGIN` go unrecognised, the target never fixed, and the second
+        // statement of the same explicit transaction free to land somewhere
+        // else, which this module's own comment says has no coherent
+        // semantics.
+        for sql in [
+            "/* pgprox:primary */ BEGIN",
+            "-- pgprox:primary\nBEGIN",
+            "/* pgprox:primary */ START TRANSACTION",
+        ] {
+            let mut router = SessionRouter::new();
+            route(&mut router, sql, false);
+            assert!(
+                router.fixed_target().is_some(),
+                "{sql:?} did not fix a target"
+            );
+        }
     }
 
     #[test]

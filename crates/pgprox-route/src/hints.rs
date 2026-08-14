@@ -24,6 +24,7 @@
 //! honoured, because it is always safe.
 
 use pgprox_core::route::RouteHint;
+use pgprox_core::sql::{Lexer, Token};
 
 /// The prefix a per-statement hint comment must start with.
 const COMMENT_PREFIX: &str = "pgprox:";
@@ -113,15 +114,23 @@ pub enum RouteAssignment {
 /// ```
 #[must_use]
 pub fn parse_route_assignment(sql: &str) -> Option<RouteAssignment> {
-    let mut words = sql.split_whitespace();
-    let verb = words.next()?;
+    let mut lexer = Lexer::new(sql);
+    let Some(Token::Word(verb)) = lexer.next() else {
+        return None;
+    };
 
     if verb.eq_ignore_ascii_case("reset") {
-        let target = words.next()?;
-        // `RESET ALL` clears every parameter, this one included.
-        let matched = target.eq_ignore_ascii_case(ROUTE_PARAMETER)
-            || (target.eq_ignore_ascii_case("all") && words.next().is_none());
-        return matched.then_some(RouteAssignment::Reset);
+        // `RESET ALL` clears every parameter, this one included, matched only
+        // when nothing else follows: whatever comes after `ROUTE_PARAMETER`
+        // itself is never checked, which is the same asymmetry the previous
+        // scanner had.
+        let mut probe = lexer.clone();
+        let is_all = matches!(probe.next(), Some(Token::Word(w)) if w.eq_ignore_ascii_case("all"))
+            && probe.next().is_none();
+        if is_all {
+            return Some(RouteAssignment::Reset);
+        }
+        return route_parameter(&mut lexer).then_some(RouteAssignment::Reset);
     }
 
     if !verb.eq_ignore_ascii_case("set") {
@@ -129,29 +138,59 @@ pub fn parse_route_assignment(sql: &str) -> Option<RouteAssignment> {
     }
 
     // `SET pgprox.route = x`, `SET pgprox.route TO x`, and the unspaced
-    // `SET pgprox.route=x` all reach the server, so all three reach here.
-    let rest = sql.get(verb.len()..)?.trim_start();
-    let rest = strip_prefix_ignore_ascii_case(rest, ROUTE_PARAMETER)?;
-    let rest = rest.trim_start();
+    // `SET pgprox.route=x` all reach the server, so all three reach here. The
+    // shared lexer rather than `split_whitespace` or a raw prefix match on the
+    // string: a comment anywhere before the value — after `SET`, inside the
+    // dotted name, before the operator — is trivia the lexer already skips,
+    // where the previous scanner read it as the first word or as the start of
+    // the parameter name and silently failed to recognise the assignment at
+    // all.
+    if !route_parameter(&mut lexer) {
+        return None;
+    }
 
-    // `SET pgprox.routex = ...` names a different parameter, so a separator
-    // has to follow the name for this to be an assignment to ours.
-    let value = match rest.strip_prefix('=') {
-        Some(after) => after,
-        None => strip_prefix_ignore_ascii_case(rest, "to")?,
+    let mut probe = lexer.clone();
+    let matched_operator = match probe.next() {
+        Some(Token::Punct('=')) => true,
+        Some(Token::Word(w)) => w.eq_ignore_ascii_case("to"),
+        _ => false,
     };
+    if !matched_operator {
+        return None;
+    }
+    lexer = probe;
+    lexer.skip_trivia();
 
-    // A trailing semicolon is part of the statement, not of the value.
-    let value = value.trim().trim_end_matches(';').trim();
+    // The value's own quoting and case must reach `parse_hint_value`
+    // unchanged, which is why this reads the lexer's remaining raw text
+    // rather than tokenizing further. A trailing semicolon is part of the
+    // statement, not of the value.
+    let value = lexer.rest().trim().trim_end_matches(';').trim();
     Some(parse_hint_value(value).map_or(RouteAssignment::Invalid, RouteAssignment::Set))
 }
 
-/// Strips a prefix case-insensitively, returning what follows.
-fn strip_prefix_ignore_ascii_case<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
-    let candidate = input.get(..prefix.len())?;
-    candidate
-        .eq_ignore_ascii_case(prefix)
-        .then(|| &input[prefix.len()..])
+/// Consumes `pgprox.route` from `lexer`, case-insensitively, as the three
+/// tokens the shared lexer splits a dotted name into: a word, a `.`, and a
+/// word. Leaves `lexer` unmoved on a mismatch, so `SET pgprox.routex = ...` —
+/// a different parameter that merely shares a prefix — falls through to
+/// [`None`] rather than partially consuming it.
+fn route_parameter(lexer: &mut Lexer<'_>) -> bool {
+    // Split from `ROUTE_PARAMETER` itself rather than repeating "pgprox" and
+    // "route" as separate literals, so the two cannot drift apart. The
+    // fallback is unreachable for the constant actually defined above; a
+    // fallback rather than `expect` because this crate denies it even here.
+    let (namespace, name) = ROUTE_PARAMETER
+        .split_once('.')
+        .unwrap_or(("pgprox", "route"));
+
+    let mut probe = lexer.clone();
+    let matched = matches!(probe.next(), Some(Token::Word(w)) if w.eq_ignore_ascii_case(namespace))
+        && matches!(probe.next(), Some(Token::Punct('.')))
+        && matches!(probe.next(), Some(Token::Word(w)) if w.eq_ignore_ascii_case(name));
+    if matched {
+        *lexer = probe;
+    }
+    matched
 }
 
 /// Reads a per-statement hint from a leading comment.
@@ -436,6 +475,45 @@ mod tests {
             "",
         ] {
             assert_eq!(parse_route_assignment(sql), None, "{sql:?}");
+        }
+    }
+
+    #[test]
+    fn a_comment_anywhere_before_the_value_does_not_hide_the_assignment() {
+        // The previous scanner was `sql.split_whitespace()`, which reads a
+        // leading comment as the first word rather than skipping it. This
+        // crate's own `statement_hint` documents exactly the pattern that
+        // breaks: a comment immediately before the statement it applies to —
+        // here, a `SET` a client might tag the same way an ORM tags a query.
+        for sql in [
+            "/* app:tag */ SET pgprox.route = 'replica'",
+            "-- app:tag\nSET pgprox.route = 'replica'",
+            "SET /* c */ pgprox.route = 'replica'",
+            "SET pgprox./* c */route = 'replica'",
+            "SET pgprox.route /* c */ = 'replica'",
+            "SET pgprox.route = /* c */ 'replica'",
+            "/* c1 */ SET /* c2 */ pgprox.route /* c3 */ = /* c4 */ 'replica'",
+        ] {
+            assert_eq!(
+                parse_route_assignment(sql),
+                Some(RouteAssignment::Set(RouteHint::Replica)),
+                "{sql:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_leading_comment_does_not_hide_a_reset_either() {
+        for sql in [
+            "/* app:tag */ RESET pgprox.route",
+            "RESET /* c */ pgprox.route",
+            "/* c */ RESET ALL",
+        ] {
+            assert_eq!(
+                parse_route_assignment(sql),
+                Some(RouteAssignment::Reset),
+                "{sql:?}"
+            );
         }
     }
 

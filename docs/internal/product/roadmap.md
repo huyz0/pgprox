@@ -3360,3 +3360,21 @@ every round rather than only at construction. Safe to move either direction:
 `available` and `grant` both compute headroom as `pool.saturating_sub(...)`,
 so a pool dropped below what is already outstanding reads as no headroom
 rather than underflowing, and nothing already granted is revoked.
+
+**`M88.3`.** `pgprox-route`'s `parse_route_assignment` and `begins_transaction`
+read SQL with `sql.split_whitespace()`, the exact second-scanner mistake this
+crate carries a written rule against. Neither is comment-aware: a leading
+comment before the statement, or between `SET` and the parameter name, becomes
+the first "word", and the real token behind it is never reached. That is not a
+corner case for this crate specifically — its own `hints` module documents a
+leading `/* pgprox:replica */` comment as the supported way to send a
+per-statement routing hint, so a client following that same convention in
+front of a session-scoped `SET pgprox.route = ...` or an explicit `BEGIN` had
+the assignment or the transaction go unrecognised, silently. A `BEGIN` missed
+this way is the sharper of the two: the target is never fixed, and the second
+statement of what the client believes is one transaction is free to land on a
+different server, which this crate's own module comment says has no coherent
+semantics. Fixed by reading both through `pgprox_core::sql::Lexer`, which
+skips comments as trivia before it hands back a token; `begins_transaction`
+stays inside its zero-allocation budget, since `Lexer::next` borrows rather
+than allocating.

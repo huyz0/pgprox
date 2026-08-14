@@ -98,4 +98,15 @@ run_finding pgprox-cluster \
   lease::tests::set_pool_below_what_is_already_leased_reads_as_no_headroom_rather_than_underflowing \
   "a pool lowered below what is outstanding reads as none, not a u32 wraparound"
 
+# --- M88.3: pgprox-route reads through the shared lexer, not split_whitespace
+run_finding pgprox-route \
+  hints::tests::a_comment_anywhere_before_the_value_does_not_hide_the_assignment \
+  "a comment before a route SET's value does not hide the assignment"
+run_finding pgprox-route \
+  hints::tests::a_leading_comment_does_not_hide_a_reset_either \
+  "a comment before a route RESET does not hide it either"
+run_finding pgprox-route \
+  router::tests::a_hint_comment_before_begin_does_not_hide_the_transaction \
+  "a leading hint comment does not hide an explicit BEGIN"
+
 finish

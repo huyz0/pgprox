@@ -9653,7 +9653,7 @@ recognised so it can be refused rather than read as a version.
   whose cap shrinks keeps leasing above the new one.
   Acceptance: a test that changes a live cap and shows an existing ledger's
   ceiling moves with it, failing before the fix.
-- [ ] `M88.3` `pgprox-route` reads SQL with `split_whitespace()` instead of the
+- [x] `M88.3` `pgprox-route` reads SQL with `split_whitespace()` instead of the
   shared lexer. `parse_route_assignment` and `begins_transaction` tokenize on
   raw whitespace, which is exactly the second-scanner mistake `M24` found and
   fixed twice elsewhere and both `pgprox-pool` and `pgprox-route` carry a
