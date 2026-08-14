@@ -9448,3 +9448,30 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `cargo mutants -p pgprox-auth -f crates/pgprox-auth/src/scram.rs
   -F 'client_first|client_final|ClientExchange::verify'` reports all eleven
   mutants caught, `cargo nextest run -p pgprox-auth` passes all 82 tests.
+
+- [x] `M87.6` The same sweep found `Entries::sweep` in `cache.rs` had never
+  been exercised past its capacity trigger: existing tests filled the cache
+  and checked what stayed, but none advanced a clock far enough past an
+  entry's TTL and *then* forced a sweep to watch it actually get dropped.
+  `cargo mutants` found two live mutants at the guard `entry.expires_at >
+  now`: replacing the whole function with `()` (nothing ever swept) and
+  replacing `>` with `==` (nothing swept unless the clock reads the exact
+  expiry instant) both survived.
+  Fixed by adding a test that inserts a short-TTL and a long-TTL entry at
+  capacity, advances a `FakeClock` two seconds past the short entry's TTL and
+  the sweep interval, then inserts a third entry to force `sweep()` to run at
+  capacity, and asserts the short entry is gone, the long entry survived
+  without a new resolve, and the new entry was admitted. That kills `()` and
+  `==` outright.
+  A third mutant at the same guard, `>` replaced by `>=`, survives this test
+  and every test that could be written against a real clock: the two
+  programs disagree only when `now` reads exactly `expires_at`, which
+  `Clock::now()` cannot be made to do from outside the module without
+  injecting the exact instant being compared against, the same shape as the
+  `Drain<'_>::settled` and `pgload::one_connection` entries already accepted
+  below. Accepted in `mutants-baseline.txt` rather than chased, with the
+  reason written out there.
+  Acceptance: `cargo mutants -p pgprox-auth -f crates/pgprox-auth/src/cache.rs
+  -F 'Entries::sweep'` reports one surviving mutant, matching the accepted
+  entry; `cargo nextest run -p pgprox-auth` passes all 82 tests;
+  `scripts/check-coverage.sh pgprox-auth` holds at 98.45%.

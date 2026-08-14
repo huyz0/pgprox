@@ -3207,6 +3207,16 @@ stateful wrapper around them, was not — eleven live mutants across
 that plays both sides of a real exchange, including a forged server
 signature that must be rejected.
 
+**`M87.6` found a third case in the same sweep, in `cache.rs`'s
+`Entries::sweep`.** It had never been driven past its capacity trigger with a
+clock advanced far enough to actually expire an entry; fixed with a test that
+does, which kills two of the three live mutants at its guard. The third, `>`
+replaced by `>=`, is accepted in the baseline: the two programs disagree only
+when a real clock reads the exact expiry instant, which nothing outside the
+module can manufacture without injecting the instant itself, the same
+argument already accepted for `Drain<'_>::settled` and
+`pgload::one_connection`.
+
 Completion condition: `scripts/gates/m22-complete.sh` reporting every crate
 current, with every survivor either killed by a test or accepted in
 `docs/internal/product/mutants-baseline.txt` with a reason.

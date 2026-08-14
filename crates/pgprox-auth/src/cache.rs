@@ -871,6 +871,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_sweep_drops_only_what_has_actually_expired() {
+        // `M87.6`. `Entries::sweep` keeps an entry when `expires_at > now`.
+        // `a_full_cache_of_live_entries_still_refuses` proves a sweep evicts
+        // nothing when every entry is live, and
+        // `a_full_cache_does_not_sweep_on_every_miss` proves it runs at the
+        // right rate, but neither ever advances the clock past a real
+        // entry's expiry: with every `expires_at` far in the future and
+        // `now` fixed, "not yet expired" and "not exactly now" are the same
+        // condition, so neither test can tell `>` from `==`. `cargo mutants`
+        // replacing the comparison with `==` evicts every live entry on the
+        // first sweep, which is the opposite of what both tests above check
+        // for, and neither noticed.
+        let f = fixture(CacheConfig {
+            capacity: 2,
+            ..CacheConfig::default()
+        });
+
+        let short = token("short");
+        f.inner.insert(&short, grant(Duration::from_secs(1), None));
+        f.cache.resolve(request(&short, "db")).await.unwrap();
+
+        let long = token("long");
+        f.inner.insert(&long, grant(Duration::from_secs(600), None));
+        f.cache.resolve(request(&long, "db")).await.unwrap();
+        assert_eq!(f.cache.len(), 2, "both entries should be cached");
+
+        // Past `short`'s one-second TTL and past `SWEEP_INTERVAL`, which is
+        // also one second, so one advance clears both rate limits at once.
+        f.clock.advance(Duration::from_secs(2));
+
+        // A third, new key at capacity is what triggers a sweep.
+        let third = token("third");
+        f.inner
+            .insert(&third, grant(Duration::from_secs(600), None));
+        f.cache.resolve(request(&third, "db")).await.unwrap();
+        assert_eq!(
+            f.cache.len(),
+            2,
+            "the expired entry should have been swept and the new one admitted \
+             without needing to refuse anything"
+        );
+
+        // And the still-live entry is untouched: resolving it again must not
+        // call the inner resolver a second time.
+        let calls_before = f.inner.call_count();
+        f.cache.resolve(request(&long, "db")).await.unwrap();
+        assert_eq!(
+            f.inner.call_count(),
+            calls_before,
+            "a live entry was swept along with the expired one"
+        );
+    }
+
+    #[tokio::test]
     async fn clearing_drops_everything() {
         let f = fixture(CacheConfig::default());
         let tok = token("a");
