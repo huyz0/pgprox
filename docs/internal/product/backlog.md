@@ -9481,3 +9481,10 @@ recognised so it can be refused rather than read as a version.
   `pgprox-admin`, `pgprox-observe`, `pgprox-load`, `pgprox` and `pgload`.
   Acceptance: `scripts/gates/m22-complete.sh` no longer lists `pgprox-auth`
   as behind its sweep.
+
+- [x] `M87.8` `pgprox-observe` swept clean: 62 mutants, 55 caught, 7
+  unviable (all `Default`/leaked-`Vec` bodies cargo-mutants cannot even
+  compile against this crate's stricter return types), 0 missed, 0
+  timeout. No fix needed.
+  Acceptance: `cargo nextest run -p pgprox-observe` passes all 54 tests,
+  `Sweeps:` marker updated.

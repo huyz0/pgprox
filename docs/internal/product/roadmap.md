@@ -72,7 +72,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M53 | The scripts read as stale, and two of them were | complete; forty-two of forty-four scripts were not stale, `cargo fmt` ran twice on every push, and `check-wired.sh`'s summary oversold what its own body already argued against |
 | M85 | Eighty-seven milestones and no way to jump to one | complete; a table of contents for `backlog.md` and a `check-drift.sh` rule that fails if a heading has no matching line |
 | M86 | The status table nobody kept adding rows to | complete; rows added for `M30` through `M53` and `M85`, and backfilling them found two milestones whose completion condition was prose with no command for `check-drift.sh` to read |
-| M87 | The mutants nobody has swept since M22 | in progress; eleven of sixteen crates freshly swept, two real gaps fixed with tests and one memory-exhaustion mutant fixed with `debug_assert!` invariants after it took the machine from 30 GB free to swapping in under ten seconds |
+| M87 | The mutants nobody has swept since M22 | in progress; twelve of sixteen crates freshly swept, two real gaps fixed with tests and one memory-exhaustion mutant fixed with `debug_assert!` invariants after it took the machine from 30 GB free to swapping in under ten seconds |
 
 `M54` through `M84` are complete — `backlog.md` has their tasks and commit
 references — but do not yet have roadmap sections of their own; this table
@@ -3123,9 +3123,9 @@ two-implementations mistake this project argues against everywhere else.
 
 **Where it stands.** `pgprox-proto`, `pgprox-route`, `pgprox-cache`,
 `pgprox-session`, `pgprox-cluster`, `pgprox-pool`, `pgprox-core`,
-`pgprox-testkit` and `pgprox-config` are freshly swept with every survivor
-checked against the baseline. `pgprox-tls` and `pgprox-auth` each found a
-real gap of the same shape, below. `pgprox-admin`, `pgprox-observe`,
+`pgprox-testkit`, `pgprox-config` and `pgprox-observe` are freshly swept with
+every survivor checked against the baseline. `pgprox-tls` and `pgprox-auth`
+each found a real gap of the same shape, below. `pgprox-admin`,
 `pgprox-load`, `pgprox`, and `pgload` have not run yet.
 
 **`M87.0`, found by the sweep rather than by reading.** A mutant of
@@ -3220,6 +3220,10 @@ argument already accepted for `Drain<'_>::settled` and
 **`M87.7` closed `pgprox-auth` out.** `Sweeps:` marker updated now that both
 gaps are fixed. Five crates and binaries remain: `pgprox-admin`,
 `pgprox-observe`, `pgprox-load`, `pgprox` and `pgload`.
+
+**`M87.8` swept `pgprox-observe` clean.** 62 mutants, 55 caught, 7 unviable,
+none missed or timed out. Four crates and binaries remain:
+`pgprox-admin`, `pgprox-load`, `pgprox` and `pgload`.
 
 Completion condition: `scripts/gates/m22-complete.sh` reporting every crate
 current, with every survivor either killed by a test or accepted in
