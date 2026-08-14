@@ -3475,3 +3475,15 @@ structural risk four new pages carry is a broken relative link.
 ### Where it stands
 
 Open. Findings land one per commit.
+
+**`M89.1`.** `docs/getting-started.md` runs entirely against the bundled mock
+token service and a Postgres compose brings up itself, and nothing said what
+changes to point at a database an operator runs and a sidecar they wrote.
+Added [`docs/going-to-production.md`](../../going-to-production.md), which
+walks through the two RPCs `proto/pgprox/auth/v1/auth.proto` requires — what
+each field of `Resolve` and `RefreshTopology` means and why `RefreshTopology`
+is a separate call rather than `Resolve` with an empty token — then the
+`servers` entry and TLS arguments that follow from having a real backend
+rather than a container compose started itself. Linked from
+`docs/index.md` and the site's sidebar; `scripts/check-links.sh`,
+`scripts/gates/m41-complete.sh` and `scripts/gates/m44-complete.sh` all pass.

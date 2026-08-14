@@ -40,6 +40,7 @@ export default defineConfig({
       // has to sign off on it, then understand how it works.
       sidebar: [
         { label: 'Getting started', link: '/getting-started/' },
+        { label: 'Going to production', link: '/going-to-production/' },
         { label: 'Features and limits', link: '/features/' },
         { label: 'Multitenancy', link: '/multitenancy/' },
         { label: 'Read routing', link: '/read-routing/' },

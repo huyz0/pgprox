@@ -9854,7 +9854,7 @@ near it. This milestone is that question, asked once, from outside.
   with no single list to work through before launch.
   Acceptance: the roadmap has an M89 section and a status row, and this list
   is written, on this commit.
-- [ ] `M89.1` A getting-started path for a real Postgres and a real sidecar.
+- [x] `M89.1` A getting-started path for a real Postgres and a real sidecar.
   `docs/getting-started.md` is the only quickstart, and it runs entirely
   against the bundled mock token service and a Postgres compose brings up
   itself; nothing shows what changes to point at an existing database and a

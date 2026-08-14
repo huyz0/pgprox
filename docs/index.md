@@ -65,6 +65,10 @@ Start where your question is.
 [Getting started](getting-started.md) brings the stack up on your machine and
 sends a query through it. Fifteen minutes, needs Docker and Rust.
 
+[Going to production](going-to-production.md) is what changes from there: the
+sidecar contract you implement instead of the mock, pointing `servers` at a
+database you run, and the TLS arguments a real deployment needs.
+
 ## Know what it does
 
 [Features and limits](features.md) covers pooling modes, when a session pins,
