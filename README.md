@@ -42,6 +42,7 @@ then asserts the properties the stack is meant to have. Full walkthrough in
 | --- | --- |
 | [Getting started](docs/getting-started.md) | Run the stack and send it a query |
 | [Going to production](docs/going-to-production.md) | What changes to run this against a real database and a real sidecar |
+| [Migrating from PgBouncer](docs/migrating-from-pgbouncer.md) | What maps directly, what has no equivalent, what to check before cutting over |
 | [Features and limits](docs/features.md) | Pooling, pinning, replicas, caching, and what is not supported |
 | [Multitenancy](docs/multitenancy.md) | What keeps tenants apart, and where the boundary really is |
 | [Configuration](docs/configuration.md) | Every setting, what it does, what it defaults to |

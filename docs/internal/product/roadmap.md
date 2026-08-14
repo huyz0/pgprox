@@ -3496,3 +3496,16 @@ includes, organized by capability rather than by commit, with security notes
 called out separately and known limitations linking `docs/features.md` rather
 than duplicating it. Tagged `v0.1.0` on this commit. `README.md` now names the
 current release and links the changelog in its first paragraph.
+
+**`M89.3`.** `docs/admin.md` already keeps pgbouncer's five overlapping `SHOW`
+commands identical in column name and order "so an existing dashboard reads
+them unchanged" — real migration-friendliness invisible unless a reader
+already suspects it and goes looking in the admin reference for it. Added
+[`docs/migrating-from-pgbouncer.md`](../../migrating-from-pgbouncer.md): a
+settings table mapping `pgbouncer.ini`'s pooling directives to their
+`config.yaml` or command-line equivalent, the one thing with no equivalent
+(the static `userlist.txt`/`auth_query` credential model, against a sidecar
+you write instead), a TLS section calling out that `M88.7`'s startup refusal
+means a pgbouncer deployment's `client_tls_sslmode = disable` does not carry
+over by doing nothing, and a pre-cutover checklist. Linked from `docs/index.md`,
+`README.md` and the site sidebar; the same three checks as `M89.1` pass.

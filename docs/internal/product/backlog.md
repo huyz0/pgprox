@@ -9876,7 +9876,7 @@ near it. This milestone is that question, asked once, from outside.
   contains and what it explicitly does not (linking `docs/features.md` for the
   latter rather than duplicating it), a `v0.1.0` git tag on this commit, and
   `README.md` pointing at the changelog.
-- [ ] `M89.3` A migration guide from PgBouncer. `docs/admin.md` already keeps
+- [x] `M89.3` A migration guide from PgBouncer. `docs/admin.md` already keeps
   the five overlapping `SHOW` commands' column names and order identical to
   pgbouncer's "so an existing dashboard reads them unchanged" — real
   migration-friendliness that is invisible unless someone already suspects it

@@ -41,6 +41,7 @@ export default defineConfig({
       sidebar: [
         { label: 'Getting started', link: '/getting-started/' },
         { label: 'Going to production', link: '/going-to-production/' },
+        { label: 'Migrating from PgBouncer', link: '/migrating-from-pgbouncer/' },
         { label: 'Features and limits', link: '/features/' },
         { label: 'Multitenancy', link: '/multitenancy/' },
         { label: 'Read routing', link: '/read-routing/' },

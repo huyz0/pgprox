@@ -69,6 +69,11 @@ sends a query through it. Fifteen minutes, needs Docker and Rust.
 sidecar contract you implement instead of the mock, pointing `servers` at a
 database you run, and the TLS arguments a real deployment needs.
 
+[Migrating from PgBouncer](migrating-from-pgbouncer.md) maps `pgbouncer.ini`'s
+pooling settings onto their pgprox equivalent, names what has none — the
+credential model — and what to check before cutting an existing deployment's
+traffic over.
+
 ## Know what it does
 
 [Features and limits](features.md) covers pooling modes, when a session pins,
