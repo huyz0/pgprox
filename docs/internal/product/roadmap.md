@@ -74,6 +74,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M86 | The status table nobody kept adding rows to | complete; rows added for `M30` through `M53` and `M85`, and backfilling them found two milestones whose completion condition was prose with no command for `check-drift.sh` to read |
 | M87 | The mutants nobody has swept since M22 | complete; all sixteen crates and binaries freshly swept, real testing gaps found and fixed across `pgprox-tls`, `pgprox-auth`, `pgprox` and `pgprox-pool` (the last reachable only through a new test-only accessor), two memory-exhaustion mutants fixed with `debug_assert!` invariants after one took the machine from 30 GB free to swapping in under ten seconds, and every remaining survivor accepted in the baseline with a written reason |
 | M88 | A second reading of every crate, and the eighteen things it found | open |
+| M89 | The review from outside this repo, and the four gaps it found | open |
 
 `M54` through `M84` are complete — `backlog.md` has their tasks and commit
 references — but do not yet have roadmap sections of their own; this table
@@ -3451,3 +3452,26 @@ Helm chart's default with no TLS secret configured — previously a node that
 came up and silently accepted tokens in the clear, despite `values.yaml`'s own
 comment already claiming otherwise — now refuses to start, which is what that
 comment described all along.
+
+## M89: the review from outside this repo, and the four gaps it found
+
+```bash
+scripts/check-links.sh
+```
+
+`M39` documented pgprox for people who are not this repo, and `M88` read the
+code a second time against correctness, completeness, design, performance and
+test quality. Neither asked the question a prospective adopter asks first: can
+I actually run this against my database, pin a version, migrate off what I run
+today, and know what to check before a tenant's token reaches it. This
+milestone is that question, asked once, from outside the codebase rather than
+inside it.
+
+Four gaps, each a doc or a release artefact rather than a code change.
+Completion condition: `scripts/check-links.sh`, which the docs this milestone
+adds must pass along with everything that already does, since the only new
+structural risk four new pages carry is a broken relative link.
+
+### Where it stands
+
+Open. Findings land one per commit.

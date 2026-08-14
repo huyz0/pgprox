@@ -110,6 +110,7 @@ script or an unwired gate already does.
 - [M86: the status table nobody kept adding rows to](#m86-the-status-table-nobody-kept-adding-rows-to)
 - [M87: the mutants nobody has swept since M22](#m87-the-mutants-nobody-has-swept-since-m22)
 - [M88: a second reading of every crate, and the eighteen things it found](#m88-a-second-reading-of-every-crate-and-the-eighteen-things-it-found)
+- [M89: the review from outside this repo, and the four gaps it found](#m89-the-review-from-outside-this-repo-and-the-four-gaps-it-found)
 <!-- toc:end -->
 
 ## M-1: AI development system
@@ -9833,3 +9834,72 @@ recognised so it can be refused rather than read as a version.
   records which findings shared a cause with `M24`'s (the quoting and
   raw-scanner shape recurring in `M88.3`, `M88.4` and `M88.12`) and which were
   new shapes `M24` did not have a category for.
+
+## M89: the review from outside this repo, and the four gaps it found
+
+`M39` wrote documentation for people who are not this repo; `M88` read the code
+a second time for correctness, completeness, design, performance and test
+quality. Neither asked whether someone who is not already convinced could
+actually adopt this: point it at a real database, pin a version, migrate off
+what they run today, and know what to check before they let a tenant's token
+near it. This milestone is that question, asked once, from outside.
+
+- [x] `M89.0` Plan M89, and give it a status row and a section before any of it
+  lands. Four gaps, each a doc or a release artefact rather than a code change,
+  found by reviewing the project the way a prospective adopter would rather
+  than the way a contributor grading its internals would: no path from the
+  bundled mock stack to a real Postgres and a real sidecar; no tagged release
+  or changelog to pin against; the `SHOW`-command compatibility with pgbouncer
+  built and undocumented; and a security posture spread across three pages
+  with no single list to work through before launch.
+  Acceptance: the roadmap has an M89 section and a status row, and this list
+  is written, on this commit.
+- [ ] `M89.1` A getting-started path for a real Postgres and a real sidecar.
+  `docs/getting-started.md` is the only quickstart, and it runs entirely
+  against the bundled mock token service and a Postgres compose brings up
+  itself; nothing shows what changes to point at an existing database and a
+  sidecar built against `proto/pgprox/auth/v1/auth.proto` rather than the
+  mock. The gap is invisible until someone has already committed to the
+  architecture and gone looking.
+  Acceptance: a new doc, linked from `docs/index.md`, that names every
+  argument and document field that changes between the mock stack and a real
+  one, walks through implementing the two RPCs the contract requires, and
+  says what a sidecar built against the frozen proto owes a client versus what
+  pgprox owes it. `scripts/check-links.sh` passes.
+- [ ] `M89.2` A first tagged release and a changelog. Every artefact —
+  `Cargo.toml`, the Helm chart's `Chart.yaml`/`appVersion` — has said `0.1.0`
+  since before this milestone existed, and nothing has ever tagged that
+  version or written down what it contains. An operator deciding whether to
+  adopt this has no artefact to pin against and no record of what changed
+  between one commit and the next.
+  Acceptance: a `CHANGELOG.md` at the repository root describing what `0.1.0`
+  contains and what it explicitly does not (linking `docs/features.md` for the
+  latter rather than duplicating it), a `v0.1.0` git tag on this commit, and
+  `README.md` pointing at the changelog.
+- [ ] `M89.3` A migration guide from PgBouncer. `docs/admin.md` already keeps
+  the five overlapping `SHOW` commands' column names and order identical to
+  pgbouncer's "so an existing dashboard reads them unchanged" — real
+  migration-friendliness that is invisible unless someone already suspects it
+  exists and goes reading the admin reference for it.
+  Acceptance: a new doc, linked from `docs/index.md`, mapping `pgbouncer.ini`'s
+  pooling-relevant directives to their `config.yaml` or command-line
+  equivalent, naming what has no equivalent (the userlist/auth_query
+  credential model, since pgprox's is a sidecar and a JWT) and what changed
+  behaviour on both sides has to be checked for before a cutover.
+  `scripts/check-links.sh` passes.
+- [ ] `M89.4` A pre-launch security checklist. `docs/security.md` and
+  `docs/admin.md` between them state every decision an operator needs to have
+  made before exposing this to a tenant — TLS posture, the admin port's
+  network boundary, the static-admin credential path — as prose spread across
+  two pages a launch review has to read in full and extract from by hand.
+  The admin-port-on-a-public-load-balancer mistake `docs/admin.md` already
+  records happened once in this project's own history because nothing forced
+  that extraction.
+  Acceptance: a new doc, linked from `docs/index.md`, structured as a checklist
+  rather than prose, with every item pointing back at the page that explains
+  it rather than restating the explanation. `scripts/check-links.sh` passes.
+- [ ] `M89.5` Close M89. Filed as its own task for the reason `M24.10` and
+  `M88.19` were: closing a milestone is a claim about the whole of it.
+  Acceptance: the status row says complete and the section names what, if
+  anything, a prospective adopter would still hit that this milestone left
+  open.
