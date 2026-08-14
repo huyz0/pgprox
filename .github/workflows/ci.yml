@@ -491,3 +491,10 @@ jobs:
         run: scripts/gates/m43-complete.sh
       - name: M44
         run: scripts/gates/m44-complete.sh
+      # M45 through M87 point their completion condition at an existing check
+      # rather than a dedicated gate file, per `scripts/gates/README.md`'s
+      # "Not every milestone has one" table, so none of them gets a step here.
+      # M88 is `M24`-shaped again: a named test per finding with no existing
+      # check that does that, so it gets its own gate, on M24's terms.
+      - name: M88
+        run: scripts/gates/m88-complete.sh

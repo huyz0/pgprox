@@ -73,6 +73,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M85 | Eighty-seven milestones and no way to jump to one | complete; a table of contents for `backlog.md` and a `check-drift.sh` rule that fails if a heading has no matching line |
 | M86 | The status table nobody kept adding rows to | complete; rows added for `M30` through `M53` and `M85`, and backfilling them found two milestones whose completion condition was prose with no command for `check-drift.sh` to read |
 | M87 | The mutants nobody has swept since M22 | complete; all sixteen crates and binaries freshly swept, real testing gaps found and fixed across `pgprox-tls`, `pgprox-auth`, `pgprox` and `pgprox-pool` (the last reachable only through a new test-only accessor), two memory-exhaustion mutants fixed with `debug_assert!` invariants after one took the machine from 30 GB free to swapping in under ten seconds, and every remaining survivor accepted in the baseline with a written reason |
+| M88 | A second reading of every crate, and the eighteen things it found | open |
 
 `M54` through `M84` are complete — `backlog.md` has their tasks and commit
 references — but do not yet have roadmap sections of their own; this table
@@ -3306,3 +3307,32 @@ fix or a written reason in the baseline.
 Completion condition: `scripts/gates/m22-complete.sh` reporting every crate
 current, with every survivor either killed by a test or accepted in
 `docs/internal/product/mutants-baseline.txt` with a reason.
+
+## M88: a second reading of every crate, and the eighteen things it found
+
+```bash
+scripts/gates/m88-complete.sh
+```
+
+`M24` was a reading of every crate against correctness, completeness, design,
+performance and test quality, and found nine things mutation testing cannot:
+missing logic rather than wrong logic. Sixty-four milestones have landed since,
+`M87` swept every crate for mutants and found four real gaps, but nothing has
+read the crates themselves again in the way `M24` did. This milestone is that
+second reading, against the same five questions, over the whole workspace as
+it now stands.
+
+Eighteen findings, filed below in the order of what they cost rather than the
+order they were found. The costliest is a resource leak on cancellation in
+`pgprox-auth`'s singleflight grant resolution; the cheapest are documentation
+and test-quality gaps that cost nothing at runtime but leave a gap in what the
+suite would catch.
+
+Completion condition: `scripts/gates/m88-complete.sh`, which runs a named test
+for each finding and reads its exit status, per `M12.8` and on `M24`'s exact
+template.
+
+### Where it stands
+
+Open. Findings land one per commit, each with a test that fails before the fix
+and passes after.

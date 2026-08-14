@@ -83,7 +83,7 @@ runners.
 
 ## Gates: one per milestone, in `gates/`
 
-Forty-five files, and you are not expected to read them.
+Forty-six files, and you are not expected to read them.
 
 Each is one milestone's completion condition: the thing that has to keep being
 true for a milestone to still count as done. They are frozen. `m7-complete.sh`

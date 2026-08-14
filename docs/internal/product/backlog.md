@@ -109,6 +109,7 @@ script or an unwired gate already does.
 - [M85: eighty-seven milestones and no way to jump to one](#m85-eighty-seven-milestones-and-no-way-to-jump-to-one)
 - [M86: the status table nobody kept adding rows to](#m86-the-status-table-nobody-kept-adding-rows-to)
 - [M87: the mutants nobody has swept since M22](#m87-the-mutants-nobody-has-swept-since-m22)
+- [M88: a second reading of every crate, and the eighteen things it found](#m88-a-second-reading-of-every-crate-and-the-eighteen-things-it-found)
 <!-- toc:end -->
 
 ## M-1: AI development system
@@ -9613,3 +9614,188 @@ recognised so it can be refused rather than read as a version.
   crate's own `pool_with_retry` fixture. `pgprox-pool` is otherwise
   unchanged since its `M22`-era sweep: 218 mutants, 171 caught, 47
   unviable, 0 surviving.
+
+## M88: a second reading of every crate, and the eighteen things it found
+
+- [x] `M88.0` Plan M88, and give it a gate that passes from this commit.
+  A second read of every crate against correctness, completeness, design,
+  performance and test quality, the same five questions `M24` asked over the
+  workspace as it stood sixty-four milestones ago. Eighteen findings, filed
+  below in the order of what they cost rather than the order they were found.
+  The costliest is a resource leak on future cancellation in `pgprox-auth`'s
+  singleflight grant resolution, reachable on every client disconnect during
+  an in-flight sidecar call. The cheapest are documentation and test-quality
+  gaps that cost nothing at runtime but leave the suite unable to catch a
+  regression a reader would.
+  Acceptance: the roadmap has an M88 section and a status row, this list is
+  written, and `scripts/gates/m88-complete.sh` exists, is named in CI, and
+  passes on this commit by checking what has landed rather than what is
+  planned.
+- [ ] `M88.1` A resolver whose leader is cancelled leaks its own bookkeeping.
+  `CachingResolver::resolve` and `resolve_and_store` coordinate concurrent
+  callers asking for the same grant through a singleflight `inflight` map: the
+  first caller becomes the leader and does the sidecar RPC, the rest await its
+  result. If the leader's future is dropped before it finishes — a client that
+  disconnects mid-lookup, cancelled by the connection task that was awaiting
+  it — nothing removes its entry from `inflight`. Every follower still parked
+  on it awaits forever, and every subsequent request for that grant joins a
+  singleflight that will never resolve, until the process restarts.
+  Acceptance: a test that drops the leader's future mid-RPC and shows a new
+  caller for the same key still gets an answer rather than joining the dead
+  entry, failing before the fix; the cleanup runs through a drop guard rather
+  than a line that cancellation can skip over.
+- [ ] `M88.2` The free-pool ceiling `LeaseLedger` hands out does not move when
+  a live cap does. `coordinator.rs::observe` computes each node's share via
+  `split_for`, but an existing `LeaseLedger` only reads that value when it is
+  first created; a cap change afterward recomputes `split_for`'s answer and
+  never writes it back into the ledger already handing out leases against the
+  old one. A node whose cap grows stays capped at the stale ceiling, and a node
+  whose cap shrinks keeps leasing above the new one.
+  Acceptance: a test that changes a live cap and shows an existing ledger's
+  ceiling moves with it, failing before the fix.
+- [ ] `M88.3` `pgprox-route` reads SQL with `split_whitespace()` instead of the
+  shared lexer. `parse_route_assignment` and `begins_transaction` tokenize on
+  raw whitespace, which is exactly the second-scanner mistake `M24` found and
+  fixed twice elsewhere and both `pgprox-pool` and `pgprox-route` carry a
+  written rule against: a comment or a quoted string containing route-looking
+  or transaction-looking words is read as SQL rather than as data.
+  Acceptance: a test with a `-- BEGIN` comment or a quoted literal that would
+  misparse under `split_whitespace()` and does not under `pgprox_core::sql`,
+  failing before the fix.
+- [ ] `M88.4` `pgprox-pool`'s `ParsedSet::parse` is not comment-aware. A `SET`
+  statement preceded or followed by a SQL comment containing text that looks
+  like another `SET` or a semicolon confuses the parser, the same shape `M24.1`
+  fixed for statement splitting, not yet closed for `ParsedSet` itself; the
+  crate's own `deallocates_everything` matcher has the same gap.
+  Acceptance: a test with a comment adjacent to a `SET` or `DEALLOCATE ALL`
+  that a comment-blind scanner reads wrong, using the shared lexer, failing
+  before the fix.
+- [ ] `M88.5` `SHOW CLIENTS`, `SHOW SERVERS` and `SHOW STATS` report wrong data.
+  `SHOW CLIENTS` prints the wrong `user`/`database` columns; `SHOW SERVERS`
+  emits one row per pool rather than one per upstream connection, hiding how
+  many server connections a pool actually holds; `SHOW STATS`'s
+  `total_query_count` is fabricated rather than accumulated from real query
+  counts. An operator running these to diagnose a live incident gets numbers
+  that do not describe the process.
+  Acceptance: a test per command showing the correct field or row count against
+  a constructed pool/session state, each failing before its fix.
+- [ ] `M88.6` `bin/pgprox` doubles one metric and drops a label from another.
+  `pgprox_client_conns` is incremented from two call sites that both fire on
+  the same accept, doubling the reported count; `pgprox_upstream_conns` is
+  emitted without the `state` label its own metric description promises,
+  collapsing idle and active upstream connections into one number.
+  Acceptance: a test asserting `pgprox_client_conns` increments once per
+  accepted connection and a test asserting `pgprox_upstream_conns` carries a
+  `state` label, both failing before the fix.
+- [ ] `M88.7` TLS-required-with-JWT is operator discipline, not code. Running
+  JWT authentication without `--require-tls` sends a bearer token over a
+  plaintext connection, and nothing in `pgprox-tls` or its wiring refuses that
+  combination; the safety depends entirely on whoever writes the deployment
+  config remembering the flag.
+  Acceptance: a test that constructing the config with JWT auth enabled and TLS
+  not required is refused at startup rather than accepted, failing before the
+  fix.
+- [ ] `M88.8` `pgprox-config`'s `FileSource::read` blocks the shared async
+  runtime. It performs synchronous file I/O directly on a Tokio task rather
+  than through `tokio::task::spawn_blocking`, which under the async-concurrency
+  standard's rule stalls every other task on that worker thread for the
+  duration of the read, on a proxy meant to hold tens of thousands of
+  concurrent connections.
+  Acceptance: a test (or a `debug_assert!`/structural check, whichever proves
+  it) that the read path yields to the runtime rather than blocking it, failing
+  before the fix.
+- [ ] `M88.9` `pgprox-session`'s `ParameterCache::ensure` drops its probe
+  connection without saying goodbye. It opens a connection to discover a
+  backend's server parameters and drops it when done, skipping the `.goodbye()`
+  call every other exit path uses, which under load leaves the backend holding
+  a connection slot until its own TCP timeout notices the client vanished.
+  Acceptance: a test that `ensure`'s probe connection sends the goodbye message
+  before it is dropped, failing before the fix.
+- [ ] `M88.10` `pgload`'s `NoConnection` error swallows the reason. It reports
+  that no connection could be obtained without carrying the per-attempt failure
+  that caused it, so a load test failing to connect gives no signal about
+  whether the backend refused, timed out, or the pool was exhausted.
+  Acceptance: a test that `NoConnection`'s message or fields carry the real
+  underlying error from the last attempt, failing before the fix.
+- [ ] `M88.11` `pgprox-tls`'s `CertReloader` never checks a certificate's
+  validity window. `read`/`reload` parse and swap in a new certificate without
+  checking `notBefore`/`notAfter`, so a certificate that has already expired,
+  or one dated in the future, is served without complaint until a TLS peer
+  rejects it, one connection at a time.
+  Acceptance: a test that a certificate outside its validity window is refused
+  by `reload` rather than swapped in, with the previous certificate left
+  serving, failing before the fix.
+- [ ] `M88.12` The query cache denylist misses a quoted built-in function name.
+  `cacheable()` and `statement_words` fail to catch a denylisted function name
+  when it is written quoted (`"pg_advisory_lock"(1)` or similarly), the same
+  quoting gap `M24.2` found and fixed for `SET`'s parameter name, not yet
+  closed for the cache's own denylist check.
+  Acceptance: a test with a quoted denylisted function name that a
+  quote-blind check would cache and a quote-aware one refuses, failing before
+  the fix.
+- [ ] `M88.13` `PoolConfig.min_size` is a dead field. It is read from config,
+  stored, and never consulted by anything that opens or reaps a connection —
+  `min_pool` is documented elsewhere in this crate as always 0, which is a
+  design decision this field contradicts by existing and accepting a different
+  value silently.
+  Acceptance: either the field is removed (with every construction site and
+  the ADR touched together, per non-negotiable 6 if it is a `pgprox-core`
+  type, or a plain removal otherwise) or it is wired to something a test
+  observes; whichever, a test proves the field's value now has an effect or
+  the field no longer exists to have none.
+- [ ] `M88.14` `Lsn`'s `Display` impl does not zero-pad its low half. The type's
+  own doc comment says the textual form is the standard `XXXXXXXX/XXXXXXXX`
+  Postgres LSN format, which zero-pads each half to eight hex digits; the
+  actual impl formats the low half without padding, so an LSN like
+  `0/A` prints as `0/A` instead of `0/0000000A`, disagreeing with every real
+  Postgres tool that reads or greps for this format.
+  Acceptance: a test that a low half needing padding prints as
+  `XXXXXXXX/0000000A` rather than `XXXXXXXX/A`, failing before the fix.
+- [ ] `M88.15` `pgprox-config`'s `AGENTS.md` and ADR 0006 claim three config
+  providers; the crate implements one. Whichever is true, the other is a
+  reader-facing claim that does not match the workspace, the same shape
+  `M24.9` found for certificate hot reload and `M13` found for the
+  non-negotiables list: a document asserting a capability with no code behind
+  it, or code with no document catching up to it.
+  Acceptance: `AGENTS.md` and the ADR describe what the crate actually does,
+  or the crate is extended to match and a test proves the added provider
+  works; whichever, checked by `scripts/check-drift.sh` finding no remaining
+  mismatch it can detect and by a reading of both documents against the code.
+- [ ] `M88.16` `pgprox-core`'s `lib.rs` contracts table is missing four traits.
+  The crate-level doc comment tables the traits non-negotiable 6 governs, and
+  four defined in the crate are not rows in it, which means a future
+  `check-core-contract.sh` reader or a human skimming the doc comment cannot
+  tell those four traits are covered by the same rule the table exists to
+  advertise.
+  Acceptance: the table lists all traits `check-core-contract.sh` actually
+  governs, checked by a script or a manual cross-check recorded in the commit,
+  and a test or doctest that the table's row count matches the trait count if
+  one can be written cheaply.
+- [ ] `M88.17` `pgprox-proto`'s `FrameRelay::push` has no fuzz target. It is the
+  function that decides how a partially-read frame from an untrusted peer is
+  buffered and re-assembled, exactly the kind of function `M15` fuzzed
+  elsewhere in this crate for the same reason, and it has none.
+  Acceptance: a fuzz target exercising `FrameRelay::push` exists under the
+  crate's fuzz directory, and `scripts/fuzz.sh` (or the equivalent invocation
+  named in `pgprox-proto`'s `AGENTS.md`) runs it for a bounded duration without
+  finding a crash.
+- [ ] `M88.18` Five smaller test-quality gaps, grouped because none is worth
+  its own task on its own: `pgprox-cache`'s `result_formats` field has no test
+  touching it; `pgprox-testkit`'s truncated-body test is weak enough to pass
+  for reasons unrelated to truncation; the agreement between the `role` and
+  `session_authorization` replayable-parameter lists has no cross-crate
+  regression guard, so the two could drift apart silently; `routes.rs` and
+  `metrics.rs` each match a non-exhaustive enum with a wildcard arm that would
+  silently swallow a new variant instead of failing to compile; `fakepg.rs`
+  does not distinguish `CopyFail` from `CopyDone` in its test fixtures.
+  Acceptance: one test (or one compile-time check, for the wildcard arms)
+  addressing each of the five, five failing before their fix or five
+  `#[deny]`-equivalent compile failures demonstrated removed.
+- [ ] `M88.19` Close M88. Filed as its own task for the reason `M24.10` was:
+  closing a milestone is a claim about the whole of it, and bundling that
+  claim into the last piece of work makes it look like a side effect of that
+  piece rather than a judgement about all of them.
+  Acceptance: the gate passes, the status row says complete, and the section
+  records which findings shared a cause with `M24`'s (the quoting and
+  raw-scanner shape recurring in `M88.3`, `M88.4` and `M88.12`) and which were
+  new shapes `M24` did not have a category for.

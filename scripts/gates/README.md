@@ -15,7 +15,7 @@ script, and is the thing worth reading.
 
 ## Not every milestone has one
 
-Fifty-six milestones, forty-four gates. The gap is deliberate and is the most
+Fifty-seven milestones, forty-five gates. The gap is deliberate and is the most
 confusing thing about this directory, so it is written down rather than left to
 be inferred from a missing filename:
 
@@ -85,6 +85,7 @@ between `m19` and `m20`, and `m3` after `m29`.
 | `m41-complete.sh` | M41 | the docs become a site |
 | `m43-complete.sh` | M43 | what it does, and what one request touches |
 | `m44-complete.sh` | M44 | the pages a review asks for |
+| `m88-complete.sh` | M88 | a second reading of every crate, and the eighteen things it found |
 
 ## release-check.sh
 
