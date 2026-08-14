@@ -88,51 +88,37 @@ pub async fn render(
     out
 }
 
-/// Client connections, by state and by tenant.
+/// Clients grouped by state and tenant label together, one count per pair.
 ///
-/// By state because that is what the registry's label says, and an aggregate
-/// without it would be a different metric wearing this one's name. By tenant
-/// only for the tenants an operator asked to see: a `tenant` label taken from
-/// the data is one series per tenant, which is the unbounded label the
-/// registry's own cardinality test names as the example of what not to do.
-/// Clients by state: idle, active, waiting, in that order.
+/// One grouping rather than two, which is what `pgprox_client_conns` used to
+/// be: a state-only breakdown and a tenant-only breakdown emitted as
+/// separate sets of samples under the same metric name. Both were the full
+/// client count, sliced two different ways, so `sum(pgprox_client_conns)`
+/// with no label filter counted every client twice. A joint breakdown counts
+/// each client in exactly one cell, which is what makes the metric's own
+/// total meaningful again.
 ///
-/// Split out by `M17.4`, which found eight surviving mutants in this counting.
-/// Every `+= 1` could become `*= 1` or `-= 1` and the whole file stayed green,
-/// because the only test drove the writer and looked at its text rather than
-/// at the numbers in it. An array rather than three returns so a caller cannot
-/// take them in the wrong order without saying so.
-fn count_by_state(clients: &[pgprox_core::admin::ClientView]) -> [u32; 3] {
-    use pgprox_core::admin::ClientState;
-
-    let mut counts = [0_u32; 3];
-    for view in clients {
-        let at = match view.state {
-            ClientState::Active => 1,
-            ClientState::Waiting => 2,
-            _ => 0,
-        };
-        counts[at] += 1;
-    }
-    counts
-}
-
-/// Clients per tenant label, in label order.
+/// The tenant half of the key is the allowlist's label, not the tenant
+/// itself: everything outside it collapses into `OTHER`, which is the
+/// cardinality bound `pgprox-observe`'s registry checks `TENANT` against.
 ///
-/// The allowlist decides the label, so everything outside it collapses into one
-/// entry rather than becoming a series per tenant. That is the cardinality
-/// bound, and it is why this counts labels and not tenants.
-fn count_by_tenant<'a>(
+/// A `BTreeMap` rather than the fixed three-element array `M17.4` used for
+/// state alone: that shape hardened `+= 1` against becoming `*= 1` or `-= 1`
+/// by making every arm's count independently observable, and a map keyed on
+/// both dimensions keeps that property — each `(state, tenant)` cell is one
+/// counter nothing else can be confused with.
+fn count_by_state_and_tenant<'a>(
     clients: &'a [pgprox_core::admin::ClientView],
     tenants: &'a TenantAllowlist,
-) -> std::collections::BTreeMap<&'a str, u32> {
-    let mut per_tenant: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+) -> std::collections::BTreeMap<(&'static str, &'a str), u32> {
+    let mut counts: std::collections::BTreeMap<(&'static str, &'a str), u32> =
+        std::collections::BTreeMap::new();
     for view in clients {
-        *per_tenant
-            .entry(tenants.label_for(&view.tenant))
+        *counts
+            .entry((view.state.as_str(), tenants.label_for(&view.tenant)))
             .or_default() += 1;
     }
-    per_tenant
+    counts
 }
 
 fn client_samples(
@@ -142,22 +128,46 @@ fn client_samples(
     node: &str,
     tenants: &TenantAllowlist,
 ) {
-    let [idle, active, waiting] = count_by_state(clients);
-    for (state, count) in [("idle", idle), ("active", active), ("waiting", waiting)] {
+    for ((state, tenant), count) in count_by_state_and_tenant(clients, tenants) {
         let _ = writeln!(
             out,
-            "{}{{node=\"{node}\",state=\"{state}\"}} {count}",
+            "{}{{node=\"{node}\",state=\"{state}\",tenant=\"{tenant}\"}} {count}",
             metric.name
         );
     }
+}
 
-    let per_tenant = count_by_tenant(clients, tenants);
-    for (tenant, count) in per_tenant {
-        let _ = writeln!(
-            out,
-            "{}{{node=\"{node}\",state=\"any\",tenant=\"{tenant}\"}} {count}",
-            metric.name
-        );
+/// Upstream connections, by server and state.
+///
+/// The registry declares `pgprox_upstream_conns` with a `state` label —
+/// `"Upstream connections held by this node, by server and state"` — and the
+/// exporter used to fold `active + idle` into one number with no `state`
+/// label at all, so a rising count could not say whether the pool was busy
+/// or merely holding warm connections it did not need.
+///
+/// One pool per `(server, database, user)` key, and one server can have
+/// several. Summed per server here rather than emitted per pool, which fixes
+/// a second thing the per-pool version did wrong: two pools on the same
+/// server produced two samples with an identical label set, which is not
+/// valid Prometheus exposition (Prometheus requires one sample per distinct
+/// label combination). Grouping by server first is what a `server`-labelled
+/// gauge is supposed to mean anyway.
+fn upstream_samples(out: &mut String, metric: &Metric, observatory: &dyn Observatory, node: &str) {
+    let mut totals: std::collections::BTreeMap<String, (u32, u32)> =
+        std::collections::BTreeMap::new();
+    for pool in observatory.pools(Scope::Local) {
+        let entry = totals.entry(pool.key.server.to_string()).or_default();
+        entry.0 += pool.stats.active;
+        entry.1 += pool.stats.idle;
+    }
+    for (server, (active, idle)) in totals {
+        for (state, count) in [("active", active), ("idle", idle)] {
+            let _ = writeln!(
+                out,
+                "{}{{node=\"{node}\",server=\"{server}\",state=\"{state}\"}} {count}",
+                metric.name
+            );
+        }
     }
 }
 
@@ -288,17 +298,7 @@ fn samples(out: &mut String, metric: &Metric, from: &Sources<'_>) {
         "pgprox_buffer_slab" => slab_samples(out, metric, node, slab),
         "pgprox_route_total" => route_samples(out, metric, node, routes),
         "pgprox_client_conns" => client_samples(out, metric, clients, node, tenants),
-        "pgprox_upstream_conns" => {
-            for pool in observatory.pools(Scope::Local) {
-                let _ = writeln!(
-                    out,
-                    "{}{{node=\"{node}\",server=\"{}\"}} {}",
-                    metric.name,
-                    pool.key.server,
-                    pool.stats.active + pool.stats.idle
-                );
-            }
-        }
+        "pgprox_upstream_conns" => upstream_samples(out, metric, observatory, node),
         "pgprox_quota_leased" => {
             for server in observatory.servers(Scope::Local) {
                 let _ = writeln!(
@@ -396,58 +396,52 @@ mod tests {
     }
 
     #[test]
-    fn clients_are_counted_by_state_and_the_counts_are_the_counts() {
-        // `M17.4`. Eight mutants survived here: every `+= 1` could become
-        // `*= 1` or `-= 1` and nothing noticed, because the only test drove the
-        // writer and read its text rather than the numbers in it.
+    fn clients_are_counted_by_state_and_tenant_together() {
+        // `M17.4`'s hardening carried forward: every `+= 1` here could become
+        // `*= 1` or `-= 1` and a test that only read the writer's text would
+        // not notice. Each `(state, tenant)` cell below is a distinct,
+        // directly observed count, so no arm can be deleted or miscounted
+        // without one of these numbers moving.
         use pgprox_core::admin::{ClientState, ClientView};
 
-        fn view(state: ClientState) -> ClientView {
-            client("acme", state)
+        fn view(tenant: &str, state: ClientState) -> ClientView {
+            client(tenant, state)
         }
-
-        let clients = vec![
-            view(ClientState::Active),
-            view(ClientState::Active),
-            view(ClientState::Waiting),
-            view(ClientState::Idle),
-            view(ClientState::Idle),
-            view(ClientState::Idle),
-        ];
-
-        // idle, active, waiting, and all three distinct so a swapped index is
-        // visible rather than hidden by two equal numbers.
-        assert_eq!(count_by_state(&clients), [3, 2, 1]);
-        assert_eq!(count_by_state(&[]), [0, 0, 0]);
-
-        // One of each state on its own, so no arm can be deleted without a
-        // count moving.
-        assert_eq!(count_by_state(&[view(ClientState::Active)]), [0, 1, 0]);
-        assert_eq!(count_by_state(&[view(ClientState::Waiting)]), [0, 0, 1]);
-        assert_eq!(count_by_state(&[view(ClientState::Idle)]), [1, 0, 0]);
-    }
-
-    #[test]
-    fn clients_outside_the_allowlist_collapse_into_one_label() {
-        // The cardinality bound, which is why this counts labels rather than
-        // tenants: a series per tenant at five thousand tenants is the metric
-        // surface `pgprox-observe` exists to keep bounded.
-        use pgprox_core::admin::{ClientState, ClientView};
 
         let allowed = TenantAllowlist::from_configured([pgprox_core::ids::TenantId::new("acme")])
             .expect("a one-tenant allowlist is within the cap");
-        let clients: Vec<ClientView> = ["acme", "acme", "other", "third"]
-            .into_iter()
-            .map(|tenant| client(tenant, ClientState::Idle))
-            .collect();
 
-        let counted = count_by_tenant(&clients, &allowed);
-        assert_eq!(counted.get("acme").copied(), Some(2));
+        let clients = vec![
+            view("acme", ClientState::Active),
+            view("acme", ClientState::Active),
+            view("acme", ClientState::Idle),
+            view("other-tenant", ClientState::Idle),
+            view("another-tenant", ClientState::Idle),
+            view("acme", ClientState::Waiting),
+        ];
+
+        let counted = count_by_state_and_tenant(&clients, &allowed);
+
+        assert_eq!(counted.get(&("active", "acme")).copied(), Some(2));
+        assert_eq!(counted.get(&("idle", "acme")).copied(), Some(1));
+        assert_eq!(counted.get(&("waiting", "acme")).copied(), Some(1));
+        // Two different unlisted tenants, both idle, collapse into one cell
+        // rather than becoming two series: the cardinality bound this counts
+        // labels rather than tenants to get.
         assert_eq!(
-            counted.len(),
-            2,
+            counted
+                .get(&("idle", pgprox_observe::tenants::OTHER))
+                .copied(),
+            Some(2),
             "two unlisted tenants became two series: {counted:?}"
         );
+        // No cell for a state nobody was in, and no accidental cross terms:
+        // the total over every cell is the client count and nothing more.
+        assert_eq!(
+            counted.values().sum::<u32>(),
+            u32::try_from(clients.len()).unwrap()
+        );
+        assert_eq!(count_by_state_and_tenant(&[], &allowed).len(), 0);
     }
 
     /// A slab for the exporter's tests, with a bound the assertions can name.
@@ -627,6 +621,50 @@ mod tests {
 
         assert!(
             out.contains("pgprox_config_reload_total{node=\"1\",result=\"stale\"} 0"),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pgprox_client_conns_does_not_double_count_a_bare_sum() {
+        // The bug this whole rework exists for: a state-only breakdown and a
+        // tenant-only breakdown, both the same total, emitted as two
+        // overlapping sets of samples under one metric name. `sum()` with no
+        // label filter — the query anyone writes first — counted every
+        // client twice. `seeded()` has exactly one client, so the sum of
+        // every `pgprox_client_conns` sample must be exactly one.
+        let out = rendered().await;
+
+        let total: u32 = out
+            .lines()
+            .filter(|line| line.starts_with("pgprox_client_conns{"))
+            .filter_map(|line| line.rsplit(' ').next())
+            .filter_map(|value| value.parse::<u32>().ok())
+            .sum();
+
+        assert_eq!(
+            total, 1,
+            "a bare sum over the metric was not the client count: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pgprox_upstream_conns_carries_the_state_label() {
+        // The registry declares this metric "by server and state"; the
+        // exporter used to fold active and idle into one number with no
+        // `state` label at all, so a rising count could not say whether a
+        // pool was busy or merely holding warm connections. `seeded()`'s
+        // pool has 2 active and 3 idle.
+        let out = rendered().await;
+
+        assert!(
+            out.contains(
+                "pgprox_upstream_conns{node=\"1\",server=\"db-1:5432\",state=\"active\"} 2"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("pgprox_upstream_conns{node=\"1\",server=\"db-1:5432\",state=\"idle\"} 3"),
             "{out}"
         );
     }

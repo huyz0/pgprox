@@ -9689,14 +9689,27 @@ recognised so it can be refused rather than read as a version.
   connections a pool holds without needing a new field anywhere.
   Acceptance: a test per command showing the correct field or row count against
   a constructed pool/session state, each failing before its fix.
-- [ ] `M88.6` `bin/pgprox` doubles one metric and drops a label from another.
-  `pgprox_client_conns` is incremented from two call sites that both fire on
-  the same accept, doubling the reported count; `pgprox_upstream_conns` is
-  emitted without the `state` label its own metric description promises,
-  collapsing idle and active upstream connections into one number.
-  Acceptance: a test asserting `pgprox_client_conns` increments once per
-  accepted connection and a test asserting `pgprox_upstream_conns` carries a
-  `state` label, both failing before the fix.
+- [x] `M88.6` `bin/pgprox` doubles one metric and drops a label from another.
+  The actual mechanism was narrower than filed and in the exporter rather than
+  the counters: `pgprox_client_conns` was not double-incremented, it was
+  emitted as two separate marginal breakdowns under one metric name — a
+  state-only set of samples and a tenant-only set, both covering the full
+  client count — so a bare `sum(pgprox_client_conns)` with no label filter
+  counted every client twice. Fixed by merging into one joint
+  `(state, tenant)` breakdown, one sample per pair, with `tenant` added to
+  `pgprox-observe`'s registry as a properly bounded label (the allowlist plus
+  `other`, cardinality 17) rather than a second ungoverned dimension.
+  `pgprox_upstream_conns` was emitted per pool with no `state` label at all,
+  collapsing active and idle into one number, and — a second bug the fix for
+  the first one exposed — two pools sharing a server produced two samples
+  with an identical label set, which is not valid Prometheus exposition.
+  Fixed by summing `active`/`idle` per server from `PoolStats` (already on
+  the `Observatory` contract, no contract change needed) and emitting one
+  `state="active"` and one `state="idle"` sample per server.
+  Acceptance: a test asserting a bare sum over every `pgprox_client_conns`
+  line equals the true client count, not double it, and a test asserting
+  `pgprox_upstream_conns` carries a `state` label with the right per-state
+  counts, both failing before the fix.
 - [ ] `M88.7` TLS-required-with-JWT is operator discipline, not code. Running
   JWT authentication without `--require-tls` sends a bearer token over a
   plaintext connection, and nothing in `pgprox-tls` or its wiring refuses that

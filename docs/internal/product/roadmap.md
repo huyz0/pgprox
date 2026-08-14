@@ -3410,3 +3410,24 @@ others and is not one is worse than an empty column. Building a real query
 counter, or threading the client's actual startup `user`/`database` through
 the cluster-scoped `ClientView`, is a contract change this finding did not
 take on.
+
+**`M88.6`.** The exporter, not the counters, was where `bin/pgprox` went
+wrong. `pgprox_client_conns` was never double-incremented; it was rendered
+twice, as a state-only breakdown and a separate tenant-only breakdown, both
+covering the same full client count under one metric name — so
+`sum(pgprox_client_conns)` with no label filter read twice the real total.
+The per-tenant slice itself was not the mistake: it is the allowlist-bounded
+feature `pgprox-observe`'s own tests already argue for ("if a tenant label is
+ever genuinely needed, it goes behind the allowlist"), and the fix keeps it,
+merging the two marginal breakdowns into one joint `(state, tenant)`
+breakdown with one sample per pair. `tenant` now sits in the registry as a
+declared, bounded label — the allowlist plus `other`, cardinality 17 — rather
+than a dimension the exporter invented on its own. Fixing this exposed a
+second bug in `pgprox_upstream_conns`, emitted per pool with no `state`
+label, folding active and idle into one number, and — where a server had more
+than one pool — producing two samples sharing an identical label set, which
+is not valid Prometheus exposition. Both are fixed the same way: sum
+`active`/`idle` per server from `PoolStats`, already on the `Observatory`
+contract, and emit one sample per `(server, state)` pair. Neither fix needed
+a contract change; both bugs were entirely in how the exporter read data it
+already had.

@@ -112,6 +112,27 @@ const STATE: Label = Label {
     bounded_because: "the fixed set of connection states",
 };
 
+/// The one place a tenant label is allowed, per `tenant_is_the_label_this_rule_
+/// is_about`'s own comment: "if a tenant label is ever genuinely needed, it
+/// goes behind the allowlist in `tenants`."
+///
+/// Bounded by `MAX_ALLOWLISTED` plus one bucket for everything else
+/// ([`crate::tenants::OTHER`]), which is what keeps this a small constant
+/// rather than the five thousand the crate doc warns about.
+const TENANT: Label = Label {
+    name: "tenant",
+    // `crate::tenants::MAX_ALLOWLISTED` (16) plus one bucket for everything
+    // outside it. Not computed from the constant directly: `u32::from` does
+    // not exist for `usize` and a cast trips `cast_possible_truncation`, so
+    // the value is written out and the assertion below is what keeps it
+    // honest against `MAX_ALLOWLISTED` moving without this one following.
+    cardinality: 17,
+    bounded_because: "the configured tenant allowlist plus one bucket for everything outside it, \
+                      see pgprox_observe::tenants",
+};
+
+const _: () = assert!(TENANT.cardinality as usize == crate::tenants::MAX_ALLOWLISTED + 1);
+
 const SERVER: Label = Label {
     name: "server",
     cardinality: 32,
@@ -143,12 +164,18 @@ const REPLICA: Label = Label {
     bounded_because: "replicas of one upstream, listed in the grant",
 };
 
-/// Client connections, by state.
+/// Client connections, by state and by tenant.
+///
+/// The tenant half is the `tenant` label's allowlist, not every tenant: everything
+/// outside it collapses into `OTHER`. Each sample carries both labels, so a
+/// client is counted exactly once across the whole metric rather than once
+/// under a state-only breakdown and again under a tenant-only one.
 pub const CLIENT_CONNS: Metric = Metric {
     name: "pgprox_client_conns",
     kind: Kind::Gauge,
-    help: "Client connections held by this node, by state",
-    labels: &[STATE],
+    help: "Client connections held by this node, by state and by tenant (allowlisted tenants \
+           only, the rest under \"other\")",
+    labels: &[STATE, TENANT],
 };
 
 /// Upstream connections, by server and state.

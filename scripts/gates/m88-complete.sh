@@ -128,4 +128,15 @@ run_finding pgprox-admin \
   rows::tests::show_stats_does_not_invent_a_query_count_from_the_transaction_one \
   "SHOW STATS does not copy the transaction count into the query column"
 
+# --- M88.6: pgprox_client_conns is one joint breakdown, not two overlapping
+run_finding pgprox \
+  metrics::tests::pgprox_client_conns_does_not_double_count_a_bare_sum \
+  "pgprox_client_conns's bare sum is the real client count, not double it"
+run_finding pgprox \
+  metrics::tests::pgprox_upstream_conns_carries_the_state_label \
+  "pgprox_upstream_conns carries a state label and sums per server"
+run_finding pgprox \
+  metrics::tests::clients_are_counted_by_state_and_tenant_together \
+  "clients are counted once per (state, tenant) cell, not per dimension"
+
 finish
