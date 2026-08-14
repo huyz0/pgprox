@@ -3253,6 +3253,18 @@ documented for `pgprox-core`. Shard 2/8 found a real gap in
 survived. Fixed with one test covering both the empty and non-empty cases
 through both `is_empty()` and the `Debug` string.
 
+**`M87.13` found four more, shards 3/8 and 4/8, all the log-only shape
+`M17.4` named first.** `refresh`'s `moved` field, `primary_of`'s ambiguity
+guard (entirely untested, including the one branch its own doc comment
+argues for), `evict_unused`'s grace boundary (two existing tests bracket
+it without ever reaching it, fixed with an exact-boundary test `FakeClock`
+makes reachable on the nanosecond), and `hold_at_nothing`'s open-pool
+filter together with a `ticker` log guard structurally identical to the
+already-extracted `something_happened` and `peers_went_unanswered`. One
+further survivor, `TICKS_PER_RELOAD`'s `/` replaced with `*`, is
+equivalent while `TICK` is one second, and is accepted in the baseline
+with the arithmetic written out.
+
 Completion condition: `scripts/gates/m22-complete.sh` reporting every crate
 current, with every survivor either killed by a test or accepted in
 `docs/internal/product/mutants-baseline.txt` with a reason.

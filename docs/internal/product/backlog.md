@@ -9531,3 +9531,37 @@ recognised so it can be refused rather than read as a version.
   bin/pgprox/src/primary_watch.rs -F 'fmt|is_empty'` reports all three
   mutants caught, `cargo nextest run -p pgprox -E 'test(primary_watch)'`
   passes all 15 tests.
+
+- [x] `M87.13` Shards 3/8 and 4/8 found four more real gaps, all the shape
+  `M17.4` and `standards/observability.md` already named: a comparison
+  feeding only a log line, untested because nothing reads logs.
+  `primary_watch.rs::refresh` computes `moved` from `answer.primary.server
+  != *server` and only ever logs it; `!=` survived as `==`. Fixed with a
+  `logged()` helper (the same pattern `run.rs` already has for exactly this
+  problem) and a second test giving `refresh` a same-primary answer, so
+  both `moved=true` and `moved=false` are asserted from a captured log.
+  `replicas.rs::primary_of` was entirely untested, including the one
+  branch its own doc comment argues for: `!=` survived as `==`, which
+  would call two *agreeing* sightings of a replica's primary a conflict.
+  Fixed with four direct tests, including one naming the same replica
+  under two generations of the same primary.
+  `replicas.rs::evict_unused`'s `<` against `WATCH_GRACE` had two
+  existing tests, at half and double the grace period, neither of which
+  can separate `<` from `<=` or `==`. Fixed with a third test at exactly
+  `WATCH_GRACE`, reachable and exact because `FakeClock`'s offset is
+  arithmetic rather than a real clock reading.
+  `run.rs::hold_at_nothing`'s `was_open` filter (`&&`, `==`, `>`, four live
+  mutants) and a `closed > 0` log guard in `ticker` were both untested,
+  the second the same shape `something_happened` and
+  `peers_went_unanswered` already exist to avoid. Fixed by extracting both
+  into named predicates, `was_previously_open` and `some_were_closed`,
+  each with direct unit tests in the same style as their siblings.
+  One further survivor, `run.rs`'s `TICKS_PER_RELOAD / with *`, is
+  equivalent given today's constants: `TICK` is one second, and dividing
+  or multiplying by one is the same operation. Accepted in
+  `mutants-baseline.txt` with the arithmetic written out.
+  Acceptance: `cargo mutants -p pgprox -f bin/pgprox/src/primary_watch.rs
+  -f bin/pgprox/src/replicas.rs -F 'refresh|primary_of|evict_unused'`
+  reports all fourteen mutants caught or unviable; `cargo mutants -p
+  pgprox -f bin/pgprox/src/run.rs -F 'was_previously_open|some_were_closed'`
+  reports all thirteen caught; `scripts/check-crate.sh pgprox` passes.

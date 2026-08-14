@@ -382,6 +382,15 @@ mod tests {
         }
     }
 
+    /// A grant naming a specific primary and replica hosts.
+    fn grant_from(primary: &str, replicas: &[&str]) -> Grant {
+        Grant {
+            primary: backend(primary),
+            replicas: replicas.iter().map(|host| backend(host)).collect(),
+            ..grant(0)
+        }
+    }
+
     #[test]
     fn an_empty_set_registry_counts_zero_and_says_so() {
         // `M17.4`. `len` returning 1 and `is_empty` returning true both
@@ -471,6 +480,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn primary_of_answers_none_for_a_host_nobody_watches() {
+        let sets = sets();
+        sets.watch_for(&grant_from("db-1", &["db-r0"]));
+        assert_eq!(sets.primary_of(&ServerId::new("db-r9", 5432)), None);
+    }
+
+    #[tokio::test]
+    async fn primary_of_finds_the_one_primary_a_replica_belongs_to() {
+        let sets = sets();
+        sets.watch_for(&grant_from("db-1", &["db-r0"]));
+        assert_eq!(
+            sets.primary_of(&ServerId::new("db-r0", 5432)),
+            Some(ServerId::new("db-1", 5432))
+        );
+    }
+
+    #[tokio::test]
+    async fn primary_of_is_not_confused_by_a_replica_seen_in_two_generations_of_the_same_primary() {
+        // Two different `WatchKey`s (the replica lists differ), same primary,
+        // both naming `db-r0`. Not ambiguous: every sighting agrees, and the
+        // guard's job is to notice disagreement, not repetition.
+        let sets = sets();
+        sets.watch_for(&grant_from("db-1", &["db-r0"]));
+        sets.watch_for(&grant_from("db-1", &["db-r0", "db-r1"]));
+
+        assert_eq!(
+            sets.primary_of(&ServerId::new("db-r0", 5432)),
+            Some(ServerId::new("db-1", 5432)),
+            "two generations agreeing on the primary were read as a conflict"
+        );
+    }
+
+    #[tokio::test]
+    async fn primary_of_refuses_to_guess_between_two_disagreeing_primaries() {
+        // The actual ambiguity: the same host named as a replica of two
+        // different primaries. Nothing here can act on that, so it answers
+        // "unknown" rather than picking one.
+        let sets = sets();
+        sets.watch_for(&grant_from("db-1", &["db-r0"]));
+        sets.watch_for(&grant_from("db-2", &["db-r0"]));
+
+        assert_eq!(sets.primary_of(&ServerId::new("db-r0", 5432)), None);
+    }
+
+    #[tokio::test]
     async fn a_generation_a_session_still_holds_outlives_the_grace_period() {
         // A session keeps its watch for its whole life and may be idle for
         // hours. Evicting on age alone would take the set out from under it and
@@ -506,6 +560,27 @@ mod tests {
         clock.advance(WATCH_GRACE * 2);
         drop(sets.watch_for(&grant(3)).unwrap());
         assert_eq!(sets.len(), 1, "the stale generation was not dropped");
+    }
+
+    #[tokio::test]
+    async fn the_grace_period_is_exclusive_at_its_own_boundary() {
+        // `evict_unused` guards on `now.duration_since(last_used) < WATCH_GRACE`.
+        // The other two tests advance by half and by double, neither of which
+        // can tell `<` apart from `<=` or `==`. `FakeClock` makes the boundary
+        // itself reachable, unlike a real clock: the offset is arithmetic, so
+        // advancing by exactly `WATCH_GRACE` produces a duration equal to it
+        // on the nanosecond, not almost equal to it.
+        let (sets, clock) = sets_with_clock();
+        drop(sets.watch_for(&grant(2)).unwrap());
+        assert_eq!(sets.len(), 1);
+
+        clock.advance(WATCH_GRACE);
+        drop(sets.watch_for(&grant(3)).unwrap());
+        assert_eq!(
+            sets.len(),
+            1,
+            "a generation exactly WATCH_GRACE old was kept rather than dropped"
+        );
     }
 
     #[tokio::test]

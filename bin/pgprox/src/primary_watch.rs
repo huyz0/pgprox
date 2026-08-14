@@ -355,6 +355,56 @@ mod tests {
         }
     }
 
+    /// What one `.await` writes to the log.
+    ///
+    /// Same idea as `run.rs`'s helper of the same name, adapted for an async
+    /// callee: `set_default`'s guard lives across the `.await` rather than
+    /// wrapping a synchronous call, which is sound because these tests run
+    /// on `#[tokio::test]`'s single-threaded flavour and never hop threads
+    /// mid-future. `refresh`'s `moved` field is computed and logged but
+    /// never stored, so this is the only way a test can observe it.
+    async fn logged(f: impl std::future::Future<Output = ()>) -> String {
+        use std::sync::Mutex as StdMutex;
+
+        #[derive(Clone)]
+        struct Sink(Arc<StdMutex<Vec<u8>>>);
+
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Sink {
+            type Writer = Self;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buffer = Arc::new(StdMutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(Sink(Arc::clone(&buffer)))
+            .with_ansi(false)
+            .finish();
+
+        let guard = tracing::subscriber::set_default(subscriber);
+        f.await;
+        drop(guard);
+
+        let held = buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        String::from_utf8_lossy(&held).into_owned()
+    }
+
     // Both fixtures return `Ok`, unlike a real probe: `handle` takes
     // `Result<Probe, String>` and the failure case is written inline at its
     // one call site instead, so keeping these `Result`-shaped is what lets a
@@ -474,7 +524,7 @@ mod tests {
         );
         let overrides = Mutex::new(HashMap::new());
 
-        refresh(&server, Some(&fresh), &overrides).await;
+        let noisy = logged(refresh(&server, Some(&fresh), &overrides)).await;
 
         let stored = overrides
             .lock()
@@ -483,6 +533,34 @@ mod tests {
             .cloned()
             .expect("the successful refresh stored nothing");
         assert_eq!(stored.server, ServerId::new("db-2", 5432));
+        assert!(
+            noisy.contains("moved=true"),
+            "a refresh that changed the primary did not say so: {noisy}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_confirms_the_same_primary_says_so() {
+        // The other side of `moved`: the sidecar can answer a `RefreshTopology`
+        // call with the primary a session already has, and that is not a
+        // move. Both branches write to the same `overrides` entry either way,
+        // so `moved` is the one place this distinction is visible at all.
+        let server = ServerId::new("db-1", 5432);
+        let fresh = pgprox_core::auth::FakeTopologyRefresh::new().with_topology(
+            server.clone(),
+            pgprox_core::auth::Topology {
+                primary: backend("db-1"),
+                replicas: vec![backend("db-1-replica")],
+            },
+        );
+        let overrides = Mutex::new(HashMap::new());
+
+        let noisy = logged(refresh(&server, Some(&fresh), &overrides)).await;
+
+        assert!(
+            noisy.contains("moved=false"),
+            "a refresh confirming the same primary reported a move: {noisy}"
+        );
     }
 
     #[tokio::test]

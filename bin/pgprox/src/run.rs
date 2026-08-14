@@ -307,6 +307,24 @@ fn declared_quota(
     })
 }
 
+/// Whether `server` had a pool open above zero, going into this pass.
+///
+/// A predicate rather than the filter inline, same reason as
+/// [`something_happened`]: `M87.13`'s sweep found `&&` interchangeable with
+/// `||`, `==` interchangeable with `!=`, and `>` interchangeable with `==`,
+/// `<` and `>=`, all four silent because the only thing downstream of this is
+/// a log line. `||` warns about every server the pool has ever heard of,
+/// `!=` warns about every server except the one that just lost its cap, and
+/// the three broken comparisons either warn on a pool already at zero or
+/// never warn on one that was not.
+fn was_previously_open(
+    all: &[(pgprox_core::ids::PoolKey, pgprox_core::pool::PoolStats)],
+    server: &pgprox_core::ids::ServerId,
+) -> bool {
+    all.iter()
+        .any(|(key, stats)| &key.server == server && stats.limit > 0)
+}
+
 /// Holds every pool for a server nothing declares a cap for at zero.
 ///
 /// Refusing rather than defaulting, because the cap is the one property the
@@ -323,10 +341,7 @@ fn hold_at_nothing(
     keys: &[(pgprox_core::ids::PoolKey, u32)],
     server: &pgprox_core::ids::ServerId,
 ) {
-    let was_open = all
-        .iter()
-        .any(|(key, stats)| &key.server == server && stats.limit > 0);
-    if was_open {
+    if was_previously_open(all, server) {
         tracing::warn!(
             %server,
             "no cap is declared for this server, so its pools are held at zero: \
@@ -896,6 +911,16 @@ const fn something_happened(shed: usize) -> bool {
     shed > 0
 }
 
+/// Whether an idle-timeout pass closed anything worth a line.
+///
+/// Same shape and same reason as [`something_happened`], kept separate
+/// because `M87.13` found `>` interchangeable with `==` and `>=` here too:
+/// `==` reports only when nothing closed, which is backwards, and `>=`
+/// reports "closed 0 clients" every tick a client-idle timeout is configured.
+const fn some_were_closed(closed: usize) -> bool {
+    closed > 0
+}
+
 /// Moves clients toward their home nodes, unless this node is draining.
 ///
 /// Never while draining: a draining node's clients are leaving anyway, and
@@ -1134,7 +1159,7 @@ async fn ticker(
 
         if let Some(timeout) = app.config.client_idle_timeout {
             let closed = idle_timeout_pass(&app.sessions, timeout, app.deps.clock.now());
-            if closed > 0 {
+            if some_were_closed(closed) {
                 tracing::info!(closed, "closed clients idle past the configured timeout");
             }
         }
@@ -1441,6 +1466,36 @@ mod tests {
     }
 
     #[test]
+    fn was_previously_open_is_this_servers_pool_and_only_above_zero() {
+        // `M87.13`: `&&` interchangeable with `||`, `==` with `!=`, `>` with
+        // `==`, `<` and `>=`. Every case below moves exactly one of the two
+        // conditions across its boundary.
+        let stats = |limit| pgprox_core::pool::PoolStats {
+            active: 0,
+            idle: 0,
+            waiting: 0,
+            limit,
+        };
+        let key = |server| pgprox_core::ids::PoolKey::new(server, "acme", "acme_app");
+        let db1 = pgprox_core::ids::ServerId::new("db-1", 5432);
+        let db2 = pgprox_core::ids::ServerId::new("db-2", 5432);
+
+        assert!(
+            !was_previously_open(&[], &db1),
+            "a server with no pools at all was open"
+        );
+        assert!(was_previously_open(&[(key(db1.clone()), stats(50))], &db1));
+        assert!(
+            !was_previously_open(&[(key(db1.clone()), stats(0))], &db1),
+            "a pool already at zero was open"
+        );
+        assert!(
+            !was_previously_open(&[(key(db2.clone()), stats(50))], &db1),
+            "another server's open pool counted as this one's"
+        );
+    }
+
+    #[test]
     fn a_drain_step_is_taken_only_when_the_two_facts_disagree() {
         // `M17.4`: three mutants of the conditions this replaces survived.
         assert_eq!(drain_step(true, false), DrainStep::Start);
@@ -1475,11 +1530,14 @@ mod tests {
     }
 
     #[test]
-    fn the_ticks_two_log_gates_fire_on_the_event_and_not_on_the_quiet_case() {
-        // `M17.4`: six mutants, every relational operator interchangeable with
-        // every other, because a log line is invisible to a test that does not
-        // read logs. A gate that fires on the quiet case is a line a second
-        // per node, and one that never fires loses the event.
+    fn the_ticks_log_gates_fire_on_the_event_and_not_on_the_quiet_case() {
+        // `M17.4` found six mutants across the first two gates, every
+        // relational operator interchangeable with every other, because a log
+        // line is invisible to a test that does not read logs. `M87.13` added
+        // a third, extracted the same way once its own sweep found the inline
+        // comparison had the same three live mutants. A gate that fires on
+        // the quiet case is a line a second per node, and one that never
+        // fires loses the event.
         assert!(peers_went_unanswered(0, 1));
         assert!(peers_went_unanswered(2, 3));
         assert!(!peers_went_unanswered(3, 3), "a full round warned");
@@ -1488,6 +1546,10 @@ mod tests {
         assert!(something_happened(1));
         assert!(something_happened(9));
         assert!(!something_happened(0), "a pass that shed nothing spoke");
+
+        assert!(some_were_closed(1));
+        assert!(some_were_closed(9));
+        assert!(!some_were_closed(0), "a pass that closed nothing spoke");
     }
 
     #[test]
