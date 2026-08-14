@@ -72,7 +72,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M53 | The scripts read as stale, and two of them were | complete; forty-two of forty-four scripts were not stale, `cargo fmt` ran twice on every push, and `check-wired.sh`'s summary oversold what its own body already argued against |
 | M85 | Eighty-seven milestones and no way to jump to one | complete; a table of contents for `backlog.md` and a `check-drift.sh` rule that fails if a heading has no matching line |
 | M86 | The status table nobody kept adding rows to | complete; rows added for `M30` through `M53` and `M85`, and backfilling them found two milestones whose completion condition was prose with no command for `check-drift.sh` to read |
-| M87 | The mutants nobody has swept since M22 | in progress; six of sixteen crates freshly swept, and the first finding is a mutant that does not fail a test but takes the machine testing it from 30 GB free to swapping in under ten seconds |
+| M87 | The mutants nobody has swept since M22 | in progress; ten of sixteen crates freshly swept, two real gaps fixed with tests, one memory-exhaustion mutant fixed with `debug_assert!` invariants after it took the machine from 30 GB free to swapping in under ten seconds, and a second gap found in `pgprox-auth` |
 
 `M54` through `M84` are complete — `backlog.md` has their tasks and commit
 references — but do not yet have roadmap sections of their own; this table
@@ -3122,10 +3122,11 @@ writing a second one that reads the same `Sweeps:` markers would be the
 two-implementations mistake this project argues against everywhere else.
 
 **Where it stands.** `pgprox-proto`, `pgprox-route`, `pgprox-cache`,
-`pgprox-session`, `pgprox-cluster` and `pgprox-pool` are freshly swept with
-every survivor checked against the baseline. `pgprox-core` found a real
-defect before finishing its own sweep, below. The other nine crates and
-binaries have not run yet.
+`pgprox-session`, `pgprox-cluster`, `pgprox-pool`, `pgprox-core`,
+`pgprox-testkit` and `pgprox-config` are freshly swept with every survivor
+checked against the baseline. `pgprox-tls` and `pgprox-auth` each found a
+real gap of the same shape, below. `pgprox-admin`, `pgprox-observe`,
+`pgprox-load`, `pgprox`, and `pgload` have not run yet.
 
 **`M87.0`, found by the sweep rather than by reading.** A mutant of
 `Lexer::advance` in `pgprox-core` does not fail a test; it takes down the
@@ -3179,6 +3180,32 @@ self.rest.len())` before the assignment. `next()`'s own invariant from
 `M87.0` did not catch this, because each individual call still nets a
 shrink — the growth happens between calls, when `skip_trivia` refills what
 the previous call just emptied.
+
+**`M87.3` closed the first batch out.** `Sweeps:` markers updated for the
+seven crates fully swept by that point — `pgprox-proto`, `pgprox-route`,
+`pgprox-cache`, `pgprox-session`, `pgprox-cluster`, `pgprox-pool` and
+`pgprox-core` — plus `pgprox-testkit` and `pgprox-config`, swept clean
+earlier in the session while diagnosing the crash before `M87.0` had a name.
+Nine crates and binaries remained: `pgprox-admin`, `pgprox-auth`,
+`pgprox-observe`, `pgprox-load`, `pgprox-tls`, `pgprox`, and `pgload`.
+
+**`M87.4` found a survivor rather than a hang.** `pgprox-tls`'s sweep turned
+up a mutant of a different shape than `M87.0`–`M87.2`: `CertReloader::resolve`
+replaced with a body that returns `None` refuses every TLS handshake, and
+nothing caught it. Every existing test in the crate read `serving()`, an
+accessor that never goes through `resolve`, so a crate can be otherwise
+well-tested and still miss the one function rustls itself calls. Fixed by
+adding the handshake the crate had never actually run: a real
+`rustls::ServerConnection` and `rustls::ClientConnection`, pumped by hand,
+using `rustls`'s own synchronous API so no new dependency or runtime was
+needed.
+
+**`M87.5` found the same shape once more, in `pgprox-auth`'s `scram.rs`.**
+Every free function was individually tested and `ClientExchange`, the
+stateful wrapper around them, was not — eleven live mutants across
+`client_first`, `client_final` and `verify`, fixed with one end-to-end test
+that plays both sides of a real exchange, including a forged server
+signature that must be rejected.
 
 Completion condition: `scripts/gates/m22-complete.sh` reporting every crate
 current, with every survivor either killed by a test or accepted in

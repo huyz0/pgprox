@@ -812,4 +812,75 @@ mod tests {
             let _ = verify_client_proof(bytes.as_slice(), &keys.stored_key, &text);
         }
     }
+
+    #[test]
+    fn a_full_exchange_authenticates_and_a_forged_server_signature_is_rejected() {
+        // `M87.5`. `ClientExchange` had no test anywhere in this crate: every
+        // test above exercises the free functions it is built from, never the
+        // stateful object a real connection drives. `cargo mutants` replacing
+        // `verify`'s body with `Ok(())` made every server indistinguishable
+        // from an impostor; replacing `client_first` or `client_final` with a
+        // fixed string made every exchange the same exchange regardless of
+        // username or server response. All five survived, because nothing
+        // here ever called the object at all.
+        //
+        // This plays both sides. The client half is the real `ClientExchange`
+        // under test; the server half is the free functions above, already
+        // proven against the RFC vectors, standing in for the database this
+        // crate has no server to talk to.
+        let password = SecretString::from("correct horse battery staple");
+        let salt = b"0123456789012345".to_vec();
+        let iterations = 4096;
+        let keys = ScramKeys::derive(password.expose().as_bytes(), &salt, iterations).unwrap();
+
+        let mut client = ClientExchange::default();
+        let first = client.client_first("tenant");
+        assert!(
+            first.starts_with("n,,n=tenant,r="),
+            "a real server could not parse this: {first}"
+        );
+        let client_nonce = first.rsplit_once("r=").unwrap().1.to_string();
+
+        let server_nonce = format!("{client_nonce}server-suffix");
+        let server_first = format!("r={server_nonce},s={},i={iterations}", BASE64.encode(&salt));
+
+        let final_msg = client.client_final(&password, &server_first).unwrap();
+        assert!(
+            final_msg.starts_with("c=biws,r="),
+            "a real server could not parse this: {final_msg}"
+        );
+
+        // The server's own half of the same exchange, reconstructed from the
+        // messages actually sent rather than from anything `client` exposes,
+        // the way a real database would build it from bytes on the wire.
+        let without_proof = client_final_without_proof(&server_nonce);
+        let auth_msg = auth_message(
+            &client_first_bare("tenant", &client_nonce),
+            &server_first,
+            &without_proof,
+        );
+        let proof = BASE64
+            .decode(final_msg.rsplit_once("p=").unwrap().1)
+            .unwrap();
+        assert!(
+            verify_client_proof(&proof, &keys.stored_key, &auth_msg).is_ok(),
+            "the server rejected a proof from a client with the right password"
+        );
+
+        // An impostor without the password cannot produce this signature; a
+        // mutated `verify` cannot tell it from a real one.
+        let wrong_keys = ScramKeys::derive(b"not the password", &salt, iterations).unwrap();
+        let forged = format!(
+            "v={}",
+            BASE64.encode(server_signature(&wrong_keys, &auth_msg))
+        );
+        assert!(
+            client.verify(&forged).is_err(),
+            "a forged server signature was accepted"
+        );
+
+        // And the real server's own signature is accepted.
+        let good = format!("v={}", BASE64.encode(server_signature(&keys, &auth_msg)));
+        assert!(client.verify(&good).is_ok(), "a real server was rejected");
+    }
 }

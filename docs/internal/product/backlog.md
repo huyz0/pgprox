@@ -9426,3 +9426,25 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `cargo mutants -p pgprox-tls -F 'resolve -> ... with None'`
   reports the mutant caught, `cargo nextest run -p pgprox-tls` passes all 22
   tests, `scripts/check-coverage.sh pgprox-tls` holds at 100%.
+
+- [x] `M87.5` `pgprox-auth` swept and found a gap in `scram.rs` of the same
+  shape as `M87.4`: every existing test in the module drives the free
+  functions (`client_first_bare`, `parse_server_first`, `client_proof`,
+  `verify_server_final`, ...) directly, and none drives `ClientExchange`
+  itself through a real exchange. `cargo mutants` had eleven live mutants
+  across `ClientExchange::client_first`, `client_final` and `verify` — wrong
+  message prefixes, a skipped proof check, a signature check that always
+  passes — none caught, because the struct that holds the exchange's own
+  state was never the thing under test.
+  Fixed by adding one end-to-end test that plays both sides: derives real
+  `ScramKeys`, drives `ClientExchange::default()` through `client_first` and
+  `client_final` against a hand-built server-first message, independently
+  reconstructs the server's own auth message and calls `verify_client_proof`
+  on the client's output, then calls `.verify()` against both a forged
+  signature (built from the wrong password) and the real one. This is the
+  same argument as `M87.4`: a crate can have a correct free-function library
+  and an untested stateful wrapper around it, and only a test that goes
+  through the wrapper's own entry points finds the gap.
+  Acceptance: `cargo mutants -p pgprox-auth -f crates/pgprox-auth/src/scram.rs
+  -F 'client_first|client_final|ClientExchange::verify'` reports all eleven
+  mutants caught, `cargo nextest run -p pgprox-auth` passes all 82 tests.
