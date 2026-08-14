@@ -9493,3 +9493,12 @@ recognised so it can be refused rather than read as a version.
   unviable, 0 missed, 0 timeout. No fix needed.
   Acceptance: `cargo nextest run -p pgprox-admin` passes all 81 tests,
   `Sweeps:` marker updated.
+
+- [x] `M87.10` `pgprox-load` swept: 218 mutants, 203 caught, 7 unviable, 8
+  surviving, 0 timeout. All eight were already carried in
+  `mutants-baseline.txt` from `M14.43`, six distinct keys (`bucket|<=`,
+  `bucket|+`, `bucket|/`, `weighted|+`, `weighted|/`,
+  `validate_tenants|>=`) covering boundary and unreachable-fallback
+  equivalences argued out at the time. No new finding, no fix needed.
+  Acceptance: `cargo nextest run -p pgprox-load` passes all 70 tests,
+  `Sweeps:` marker updated.
