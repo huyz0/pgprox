@@ -74,7 +74,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M86 | The status table nobody kept adding rows to | complete; rows added for `M30` through `M53` and `M85`, and backfilling them found two milestones whose completion condition was prose with no command for `check-drift.sh` to read |
 | M87 | The mutants nobody has swept since M22 | complete; all sixteen crates and binaries freshly swept, real testing gaps found and fixed across `pgprox-tls`, `pgprox-auth`, `pgprox` and `pgprox-pool` (the last reachable only through a new test-only accessor), two memory-exhaustion mutants fixed with `debug_assert!` invariants after one took the machine from 30 GB free to swapping in under ten seconds, and every remaining survivor accepted in the baseline with a written reason |
 | M88 | A second reading of every crate, and the eighteen things it found | open |
-| M89 | The review from outside this repo, and the four gaps it found | open |
+| M89 | The review from outside this repo, and the four gaps it found | complete; four pages and a first tagged release, none of them a code change, and the two adoption-relevant findings from `M88` stayed tracked there rather than duplicated here |
 
 `M54` through `M84` are complete — `backlog.md` has their tasks and commit
 references — but do not yet have roadmap sections of their own; this table
@@ -3453,7 +3453,7 @@ came up and silently accepted tokens in the clear, despite `values.yaml`'s own
 comment already claiming otherwise — now refuses to start, which is what that
 comment described all along.
 
-## M89: the review from outside this repo, and the four gaps it found
+## M89: the review from outside this repo, and the four gaps it found (complete)
 
 ```bash
 scripts/check-links.sh
@@ -3474,7 +3474,7 @@ structural risk four new pages carry is a broken relative link.
 
 ### Where it stands
 
-Open. Findings land one per commit.
+Complete. Four findings, each a doc or a release artefact.
 
 **`M89.1`.** `docs/getting-started.md` runs entirely against the bundled mock
 token service and a Postgres compose brings up itself, and nothing said what
@@ -3526,3 +3526,19 @@ firewall, not an authorization layer, not a boundary your credentials do not
 have" — so a review does not mistake a completed checklist for a guarantee
 this design does not make. Linked from `docs/index.md`, `README.md` and the
 site sidebar; the same checks as `M89.1` and `M89.3` pass.
+
+**What this milestone leaves open.** `M88.11` and `M88.12` — a certificate's
+validity window never checked before it is served, and a quoted builtin
+function name bypassing the query cache's denylist — are the two still-open
+findings from the second reading with the clearest consequence for someone
+adopting this today, and they stay tracked there: this milestone is
+documentation and a release artefact, not a code fix, and duplicating that
+tracking here would be two places for one fact to drift apart. `M16`'s
+100,000-connection run that also serves load, rather than only holding the
+connections, stays the roadmap's own open item — it needs the multi-machine
+setup `docs/performance.md` already says the latency figures are a floor
+without, and no amount of documentation changes that. A reader who works
+through all four pages this milestone added still cannot verify the scale
+claims this project has not yet been able to measure; what changed is that
+they now know, before committing to anything, what to build and what to
+check first.

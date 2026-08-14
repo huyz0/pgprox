@@ -9898,8 +9898,19 @@ near it. This milestone is that question, asked once, from outside.
   Acceptance: a new doc, linked from `docs/index.md`, structured as a checklist
   rather than prose, with every item pointing back at the page that explains
   it rather than restating the explanation. `scripts/check-links.sh` passes.
-- [ ] `M89.5` Close M89. Filed as its own task for the reason `M24.10` and
+- [x] `M89.5` Close M89. Filed as its own task for the reason `M24.10` and
   `M88.19` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if
   anything, a prospective adopter would still hit that this milestone left
   open.
+  What is left open: `M88.11` and `M88.12`, the two still-open findings from
+  the second reading with the clearest adoption-time consequence (certificate
+  expiry never checked before serving, and a quoted builtin name bypassing
+  the query cache's denylist), are tracked there, not here — this milestone
+  is documentation and a release artefact, not a code fix, and did not
+  duplicate that tracking. `M16`'s multi-machine 100k-connections-serving run
+  stays the roadmap's own open item. Nothing this milestone added changes
+  what pgprox does; a reader who works through all four new pages still
+  cannot verify the scale claims `docs/performance.md` already marks as
+  unmeasured, because verifying them needs hardware this repository's own CI
+  does not have, not more documentation.
