@@ -9341,3 +9341,23 @@ recognised so it can be refused rather than read as a version.
   -F advance` reports the mutant caught rather than hanging, `cargo nextest
   run -p pgprox-core` passes all 241 tests unchanged, and the invariant is
   stated once per function rather than once per call site.
+
+- [x] `M87.1` `nextest`'s `[profile.mutants]` capped at `test-threads = 4`.
+  Added before `M87.0` found the actual cause of this session's crashes, on
+  the working theory that `nextest` running one OS process per test, in
+  parallel up to one per logical CPU by default, was compounding whatever
+  `MUTANTS_JOBS` already had building or testing. That theory turned out to
+  be incomplete rather than wrong: `M87.0`'s mutant crashed the machine in a
+  single-mutant, `MUTANTS_JOBS=1` run where `test-threads` was never the
+  limiting factor, so capping it did not and could not have fixed that class
+  of defect on its own.
+  Kept anyway, as a second, independent bound. `MUTANTS_JOBS` governs how
+  many *cargo-mutants* workers build and test at once; `test-threads`
+  governs how wide one worker's own test run fans out, and the two are
+  orthogonal. A large suite (`pgprox-core`, `pgprox-session`) fanning out to
+  twenty concurrent processes for every mutant, on top of `MUTANTS_JOBS`'s
+  own parallelism, is unnecessary resource pressure with or without a
+  memory-growing mutant in the mix.
+  Acceptance: `[profile.mutants]` in `.config/nextest.toml` states
+  `test-threads = 4` with the reasoning above; the default profile used by
+  ordinary `cargo nextest run` is untouched.

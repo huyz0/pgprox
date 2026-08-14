@@ -3156,6 +3156,16 @@ active memory monitoring rather than as one long unattended run, and any
 survivor of this shape gets the same fix — a stated invariant upstream of
 every caller — rather than a special case.
 
+**`M87.1` is a second, independent bound rather than the fix.** `nextest`'s
+`[profile.mutants]` was capped at `test-threads = 4` before `M87.0` found the
+actual cause, on the theory that `nextest`'s own one-process-per-test
+parallelism was compounding `MUTANTS_JOBS`. `M87.0`'s mutant crashed the
+machine at `MUTANTS_JOBS=1` with `test-threads` never the limiting factor, so
+that theory was incomplete rather than wrong. The cap stays, because the two
+knobs are orthogonal and a large suite fanning out to twenty processes per
+mutant is unwanted pressure with or without a memory-growing mutant in the
+run.
+
 Completion condition: `scripts/gates/m22-complete.sh` reporting every crate
 current, with every survivor either killed by a test or accepted in
 `docs/internal/product/mutants-baseline.txt` with a reason.

@@ -62,3 +62,14 @@
 # by having a cap they cannot reach.
 [profile.mutants]
 slow-timeout = { period = "30s", terminate-after = 2 }
+
+# nextest runs each test as its own OS process, in parallel up to one per
+# logical CPU by default. `MUTANTS_JOBS` bounds how many *cargo-mutants*
+# workers run at once, which is a different axis: each worker's own test run
+# still fans out to nextest's default width. On a twenty-core machine that is
+# twenty concurrent `pgprox_core-<hash>` processes for one mutant's check, on
+# top of whatever else `MUTANTS_JOBS` already has building or testing, and it
+# repeats for every mutant. Capped here rather than left to the default so a
+# crate with a large suite (`pgprox-core`, `pgprox-session`) cannot fan out
+# past what the run intends, regardless of how many cores the machine reports.
+test-threads = 4
