@@ -5,6 +5,10 @@ an external service resolves which database and credentials that token maps to,
 and the proxy multiplexes a very large number of client connections onto a small
 capped pool of upstream ones across several nodes.
 
+Current release: **v0.1.0**. See [CHANGELOG.md](CHANGELOG.md) for what it
+contains, and [Going to production](docs/going-to-production.md) for what
+changes between the stack `scripts/e2e.sh` brings up and a real deployment.
+
 ## What it is for
 
 One Postgres server hosts up to 5,000 tenant databases, each with its own role
@@ -37,6 +41,7 @@ then asserts the properties the stack is meant to have. Full walkthrough in
 | | |
 | --- | --- |
 | [Getting started](docs/getting-started.md) | Run the stack and send it a query |
+| [Going to production](docs/going-to-production.md) | What changes to run this against a real database and a real sidecar |
 | [Features and limits](docs/features.md) | Pooling, pinning, replicas, caching, and what is not supported |
 | [Multitenancy](docs/multitenancy.md) | What keeps tenants apart, and where the boundary really is |
 | [Configuration](docs/configuration.md) | Every setting, what it does, what it defaults to |

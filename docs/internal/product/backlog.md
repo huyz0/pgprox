@@ -9866,7 +9866,7 @@ near it. This milestone is that question, asked once, from outside.
   one, walks through implementing the two RPCs the contract requires, and
   says what a sidecar built against the frozen proto owes a client versus what
   pgprox owes it. `scripts/check-links.sh` passes.
-- [ ] `M89.2` A first tagged release and a changelog. Every artefact —
+- [x] `M89.2` A first tagged release and a changelog. Every artefact —
   `Cargo.toml`, the Helm chart's `Chart.yaml`/`appVersion` — has said `0.1.0`
   since before this milestone existed, and nothing has ever tagged that
   version or written down what it contains. An operator deciding whether to

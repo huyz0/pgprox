@@ -3487,3 +3487,12 @@ is a separate call rather than `Resolve` with an empty token — then the
 rather than a container compose started itself. Linked from
 `docs/index.md` and the site's sidebar; `scripts/check-links.sh`,
 `scripts/gates/m41-complete.sh` and `scripts/gates/m44-complete.sh` all pass.
+
+**`M89.2`.** Every artefact that names a version — `Cargo.toml`, the Helm
+chart's `Chart.yaml` and `appVersion` — has said `0.1.0` since before this
+milestone existed, and nothing had ever tagged that version or written down
+what it contains. Added `CHANGELOG.md` at the repository root: what `0.1.0`
+includes, organized by capability rather than by commit, with security notes
+called out separately and known limitations linking `docs/features.md` rather
+than duplicating it. Tagged `v0.1.0` on this commit. `README.md` now names the
+current release and links the changelog in its first paragraph.
