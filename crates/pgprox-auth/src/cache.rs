@@ -167,6 +167,37 @@ impl<R> std::fmt::Debug for CachingResolver<R> {
     }
 }
 
+/// Removes a resolver's inflight claim and wakes anyone waiting on it, on
+/// drop rather than on a line the leader might never reach.
+///
+/// `resolve` is a plain `async fn`, and the two places that used to do this —
+/// the end of the leader branch and inside `recheck_before_calling` — are both
+/// on the far side of the `.await` for the sidecar call. A leader's future is
+/// dropped without finishing whenever the client that caused it disconnects
+/// while that call is outstanding, and a dropped future runs none of what
+/// comes after the point it was suspended at. Without this, the claim
+/// outlives the caller who took it, and every follower parked on
+/// `rx.recv().await` in the loop below waits forever on a broadcast channel
+/// nothing will ever send on.
+///
+/// A guard's `Drop` runs on every exit from its scope, cancellation included,
+/// which a `finally` this language does not have would otherwise need. The
+/// removals this replaces stay in place: they are idempotent with this one
+/// (`HashMap::remove` on an absent key is a no-op), so leaving both costs
+/// nothing and this is the only path that needed adding.
+struct InflightGuard<'a, R: CredentialResolver> {
+    resolver: &'a CachingResolver<R>,
+    key: CacheKey,
+}
+
+impl<R: CredentialResolver> Drop for InflightGuard<'_, R> {
+    fn drop(&mut self) {
+        if let Some(tx) = self.resolver.lock_inflight().remove(&self.key) {
+            let _ = tx.send(());
+        }
+    }
+}
+
 impl<R: CredentialResolver> CachingResolver<R> {
     /// Wraps a resolver.
     #[must_use]
@@ -380,6 +411,15 @@ impl<R: CredentialResolver> CredentialResolver for CachingResolver<R> {
                 continue;
             }
 
+            // Held for the rest of this leader turn, including across the
+            // `.await` below: if this future is dropped before it returns —
+            // the caller that owns it disconnected — the guard's `Drop` still
+            // runs and still wakes anyone waiting on this key.
+            let _guard = InflightGuard {
+                resolver: self,
+                key: key.clone(),
+            };
+
             if let Some(outcome) = self.recheck_before_calling(&key) {
                 return outcome.into_result();
             }
@@ -387,7 +427,12 @@ impl<R: CredentialResolver> CredentialResolver for CachingResolver<R> {
             let result = self.resolve_and_store(key.clone(), request).await;
 
             // Wake the waiters whatever happened, so a failure does not leave
-            // them blocked until their own timeouts fire.
+            // them blocked until their own timeouts fire. Redundant with the
+            // guard above on this path — it will find nothing left to remove —
+            // and kept anyway because it is what makes the wake happen before
+            // `return` rather than after the guard drops, which is the same
+            // instant this task yields the lock but the more obviously correct
+            // order to read.
             if let Some(tx) = self.lock_inflight().remove(&key) {
                 let _ = tx.send(());
             }
@@ -1023,6 +1068,112 @@ mod tests {
         assert!(
             config.negative_ttl < config.max_ttl,
             "a refusal outliving a grant makes a reversal look broken"
+        );
+    }
+
+    /// A resolver whose call parks until released, so a test can abort the
+    /// future awaiting it at a known point rather than racing a fast one.
+    ///
+    /// `release` stores at most one permit ([`tokio::sync::Notify`]'s own
+    /// documented behaviour): calling `release()` before anything is parked
+    /// on it arms a single admission, consumed by whichever call to
+    /// `resolve` reaches the `.await` next.
+    #[derive(Debug)]
+    struct HangingResolver {
+        release: tokio::sync::Notify,
+        calls: std::sync::atomic::AtomicUsize,
+        grant: Grant,
+    }
+
+    impl HangingResolver {
+        fn new(grant: Grant) -> Self {
+            Self {
+                release: tokio::sync::Notify::new(),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                grant,
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn release(&self) {
+            self.release.notify_one();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CredentialResolver for HangingResolver {
+        async fn resolve(&self, _request: AuthRequest) -> Result<Grant, AuthError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.release.notified().await;
+            Ok(self.grant.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_leader_does_not_leak_its_claim() {
+        // `resolve` is a plain async fn. Dropping the future that is running
+        // it — exactly what happens when the client that caused a lookup
+        // disconnects while the sidecar call is still outstanding — used to
+        // skip both places that removed the leader's `inflight` entry and
+        // woke its waiters, since both sat on the far side of the `.await`
+        // this cancellation lands inside. The entry, and every follower
+        // parked on it, then outlived the leader that abandoned it.
+        let inner = Arc::new(HangingResolver::new(grant(Duration::from_secs(60), None)));
+        let cache = CachingResolver::new(
+            Arc::clone(&inner),
+            Arc::new(FakeClock::new()) as Arc<dyn Clock>,
+            CacheConfig::default(),
+        );
+        let tok = token("cancelled");
+        let key = CacheKey::new(&tok, "tenant_acme");
+
+        let leader_cache = Arc::clone(&cache);
+        let leader_request = request(&tok, "tenant_acme");
+        let leader = tokio::spawn(async move { leader_cache.resolve(leader_request).await });
+
+        // Wait until the leader has actually reached the inner call and is
+        // parked inside it, so the abort below lands mid-`.await` rather than
+        // before the claim is even taken.
+        while inner.calls() == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        leader.abort();
+        assert!(leader.await.unwrap_err().is_cancelled());
+
+        assert!(
+            !cache.lock_inflight().contains_key(&key),
+            "the cancelled leader's claim outlived it"
+        );
+
+        // A fresh caller for the same key, on the same cache, must become
+        // leader and resolve on its own rather than join a singleflight entry
+        // the cancelled leader left behind and nobody will ever complete.
+        // Armed before the call so the new leader's own `.await` admits it
+        // immediately rather than needing a second synchronization step.
+        inner.release();
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(200),
+            cache.resolve(request(&tok, "tenant_acme")),
+        )
+        .await;
+
+        assert!(
+            outcome.is_ok(),
+            "a fresh caller hung, as it would joining a dead singleflight entry"
+        );
+        assert_eq!(
+            outcome.unwrap().unwrap().tenant,
+            TenantId::new("acme"),
+            "the fresh caller did not get a real answer"
+        );
+        assert_eq!(
+            inner.calls(),
+            2,
+            "the fresh caller was served from a cache a cancelled leader never wrote to"
         );
     }
 }

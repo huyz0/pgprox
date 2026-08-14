@@ -9631,7 +9631,7 @@ recognised so it can be refused rather than read as a version.
   written, and `scripts/gates/m88-complete.sh` exists, is named in CI, and
   passes on this commit by checking what has landed rather than what is
   planned.
-- [ ] `M88.1` A resolver whose leader is cancelled leaks its own bookkeeping.
+- [x] `M88.1` A resolver whose leader is cancelled leaks its own bookkeeping.
   `CachingResolver::resolve` and `resolve_and_store` coordinate concurrent
   callers asking for the same grant through a singleflight `inflight` map: the
   first caller becomes the leader and does the sidecar RPC, the rest await its

@@ -3336,3 +3336,15 @@ template.
 
 Open. Findings land one per commit, each with a test that fails before the fix
 and passes after.
+
+**`M88.1`, the costliest.** `CachingResolver::resolve`'s singleflight claim was
+released by a line at the end of the leader's turn and by a line inside
+`recheck_before_calling`, both on the far side of the `.await` for the sidecar
+call. `resolve` is a plain `async fn`, so a client that disconnects while that
+call is outstanding drops the future running it, and a dropped future never
+reaches either line. The claim then outlives the leader that took it, and
+every follower parked on it — this one and every later caller for the same
+key — waits forever on a broadcast channel nothing will ever send on again,
+until the process restarts. Fixed with an `InflightGuard` whose `Drop` removes
+the claim and wakes waiters on every exit from the leader's scope, cancellation
+included, which is the one path a line placed after the `.await` cannot cover.

@@ -84,8 +84,10 @@ else
 fi
 
 # --- the findings that have landed -------------------------------------------
-#
-# Empty at this milestone's first commit. Each finding below gets its own
-# `run_finding` line, added in the commit that fixes it.
+
+# --- M88.1: a cancelled leader does not leak its singleflight claim ---------
+run_finding pgprox-auth \
+  cache::tests::a_cancelled_leader_does_not_leak_its_claim \
+  "a leader's inflight claim is removed on cancellation, not only on return"
 
 finish
