@@ -9488,3 +9488,8 @@ recognised so it can be refused rather than read as a version.
   timeout. No fix needed.
   Acceptance: `cargo nextest run -p pgprox-observe` passes all 54 tests,
   `Sweeps:` marker updated.
+
+- [x] `M87.9` `pgprox-admin` swept clean: 152 mutants, 74 caught, 78
+  unviable, 0 missed, 0 timeout. No fix needed.
+  Acceptance: `cargo nextest run -p pgprox-admin` passes all 81 tests,
+  `Sweeps:` marker updated.
