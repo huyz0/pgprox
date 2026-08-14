@@ -9502,3 +9502,16 @@ recognised so it can be refused rather than read as a version.
   equivalences argued out at the time. No new finding, no fix needed.
   Acceptance: `cargo nextest run -p pgprox-load` passes all 70 tests,
   `Sweeps:` marker updated.
+
+- [x] `M87.11` `pgload` swept: 135 mutants, 90 caught, 40 unviable, 5
+  surviving, 0 timeout. All five match keys already accepted in
+  `mutants-baseline.txt`. `cargo mutants` also flagged two more accepted
+  keys, `one_connection|` and `one_connection|<`, as "now caught" — both
+  are timing-dependent by their own written reason, and the sibling entry
+  `run|` already documents this class flipping between missed and caught
+  across runs of an unchanged tree. Left as accepted rather than removed:
+  one run catching a mutant that depends on which of two concurrent
+  connections a fake server answers first is not evidence the mutant
+  became reliably observable. No new finding, no fix needed.
+  Acceptance: `cargo nextest run -p pgload` passes all 51 tests, `Sweeps:`
+  marker updated.
