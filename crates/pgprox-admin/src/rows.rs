@@ -324,29 +324,44 @@ fn pool_rows(observatory: &dyn Observatory, scope: Scope) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// One row per upstream connection a pool holds, not one row per pool.
+///
+/// `PgBouncer`'s `SHOW SERVERS` is a socket view: an operator counting rows
+/// is counting actual backend connections. `PoolStats` does not track
+/// individual sockets, only how many are active and how many are idle, so a
+/// row here cannot carry a connection's own `connect_time` the way
+/// `PLACEHOLDERS` already admits for `ptr` and `link`. It can carry the right
+/// count and the right state per row, which one row per pool did not: an
+/// operator reading `SHOW SERVERS` to see how many backend connections a pool
+/// actually holds saw one row regardless of whether it held one or a hundred.
+///
+/// `id` is the server address repeated across every row from the same pool
+/// rather than a connection identifier, for the same reason: nothing here
+/// knows one socket from another.
 fn server_socket_rows(observatory: &dyn Observatory, scope: Scope) -> Vec<Vec<String>> {
     observatory
         .pools(scope)
         .into_iter()
-        .map(|pool| {
-            let mut row = vec![blank(); SOCKETS.len()];
-            // Positional rather than a literal, because most of these columns
-            // are placeholders and a literal would bury the four real values in
-            // seventeen empty strings.
-            set(&mut row, "type", "S");
-            set(&mut row, "user", &pool.key.user);
-            set(&mut row, "database", &pool.key.database);
-            set(
-                &mut row,
-                "state",
-                if pool.stats.active > 0 {
-                    "active"
-                } else {
-                    "idle"
-                },
-            );
-            set(&mut row, "id", &pool.key.server.to_string());
-            row
+        .flat_map(|pool| {
+            // Active rows first, idle after: arbitrary within a pool, since
+            // nothing here can attribute a specific connection to either
+            // count, but fixed so two reads of an unchanged pool agree.
+            let states = [(pool.stats.active, "active"), (pool.stats.idle, "idle")];
+            states.into_iter().flat_map(move |(count, state)| {
+                let pool = pool.clone();
+                (0..count).map(move |_| {
+                    let mut row = vec![blank(); SOCKETS.len()];
+                    // Positional rather than a literal, because most of these
+                    // columns are placeholders and a literal would bury the
+                    // four real values in seventeen empty strings.
+                    set(&mut row, "type", "S");
+                    set(&mut row, "user", &pool.key.user);
+                    set(&mut row, "database", &pool.key.database);
+                    set(&mut row, "state", state);
+                    set(&mut row, "id", &pool.key.server.to_string());
+                    row
+                })
+            })
         })
         .collect()
 }
@@ -361,8 +376,15 @@ async fn client_rows(
         .map(|client| {
             let mut row = vec![blank(); SOCKETS.len()];
             set(&mut row, "type", "C");
-            set(&mut row, "user", client.tenant.as_str());
-            set(&mut row, "database", client.tenant.as_str());
+            // `user` and `database` left blank rather than filled with the
+            // tenant: `ClientView` does not carry the client's actual startup
+            // `user`/`database`, only which tenant it belongs to, and those
+            // are three different strings (a grant's `user` and `database`
+            // are not the tenant ID either; see `PoolKey`). Writing the
+            // tenant into both columns put the same wrong-looking value in
+            // two places an operator reads as real, which this module's own
+            // policy on placeholder columns argues against: an invented
+            // value that looks like the others is worse than an empty one.
             set(&mut row, "state", client.state.as_str());
             // Whole seconds and the remainder, as PgBouncer splits them. The
             // total in microseconds in both would have a dashboard adding them
@@ -388,7 +410,13 @@ fn stats_rows(observatory: &dyn Observatory, scope: Scope) -> Vec<Vec<String>> {
         // SHOW TENANTS.
         "*".to_owned(),
         stats.transactions.to_string(),
-        stats.transactions.to_string(),
+        // `total_query_count` left blank rather than filled with the
+        // transaction count. `Stats` has no per-query counter — pgprox counts
+        // transactions, not the statements inside them — and a transaction
+        // count copied into this column reads as "one query per transaction",
+        // which is false for most real workloads and worse than an empty
+        // column: it looks like a real number rather than an absent one.
+        blank(),
         stats.client_conns.to_string(),
         stats.upstream_conns.to_string(),
         stats.waiting.to_string(),
@@ -772,6 +800,65 @@ mod tests {
         let rows = show(ShowTarget::Stats, Scope::Cluster).await;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows.get(0, "database"), Some("*"));
+    }
+
+    #[tokio::test]
+    async fn show_stats_does_not_invent_a_query_count_from_the_transaction_one() {
+        // `total_query_count` used to be `stats.transactions.to_string()`, the
+        // same value already written into `total_xact_count` two columns
+        // earlier. Nothing here counts queries, only transactions, and a
+        // transaction count copied into the query column reads as "exactly
+        // one query per transaction", which is false for most workloads and
+        // worse than blank: it looks like a real measurement.
+        let rows = show(ShowTarget::Stats, Scope::Cluster).await;
+        assert_eq!(rows.get(0, "total_xact_count"), Some("0"));
+        assert_ne!(
+            rows.get(0, "total_query_count"),
+            rows.get(0, "total_xact_count"),
+            "the query count was copied from the transaction count"
+        );
+        assert_eq!(rows.get(0, "total_query_count"), Some(""));
+    }
+
+    #[tokio::test]
+    async fn show_clients_does_not_put_the_tenant_in_the_user_and_database_columns() {
+        // `ClientView` carries which tenant a client belongs to, not the
+        // `user`/`database` it actually started up with, and the two are not
+        // the same string: a grant's `user` and `database` differ from the
+        // tenant ID and from each other, the same way `PoolKey`'s do for
+        // `SHOW SERVERS`. Writing the tenant into both columns put one wrong
+        // value in two places an operator reads as independent facts.
+        let rows = show(ShowTarget::Clients, Scope::Cluster).await;
+        assert_eq!(rows.get(0, "user"), Some(""));
+        assert_eq!(rows.get(0, "database"), Some(""));
+    }
+
+    #[tokio::test]
+    async fn show_servers_reports_one_row_per_connection_not_one_per_pool() {
+        // `observatory()`'s one pool holds 2 active and 3 idle connections.
+        // One row regardless of that count hid how many backend connections a
+        // pool actually held from an operator counting rows, which is what
+        // `SHOW SERVERS` is a socket view for.
+        let rows = show(ShowTarget::Servers, Scope::Cluster).await;
+        assert_eq!(rows.len(), 5, "2 active + 3 idle collapsed to one row");
+
+        let states: Vec<&str> = (0..rows.len())
+            .filter_map(|i| rows.get(i, "state"))
+            .collect();
+        assert_eq!(
+            states.iter().filter(|s| **s == "active").count(),
+            2,
+            "{states:?}"
+        );
+        assert_eq!(
+            states.iter().filter(|s| **s == "idle").count(),
+            3,
+            "{states:?}"
+        );
+        assert!(
+            (0..rows.len()).all(|i| rows.get(i, "type") == Some("S")),
+            "an expanded row lost its own type"
+        );
     }
 
     #[tokio::test]

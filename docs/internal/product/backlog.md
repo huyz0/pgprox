@@ -9670,13 +9670,23 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a test with a comment adjacent to a `SET` or `DEALLOCATE ALL`
   that a comment-blind scanner reads wrong, using the shared lexer, failing
   before the fix.
-- [ ] `M88.5` `SHOW CLIENTS`, `SHOW SERVERS` and `SHOW STATS` report wrong data.
-  `SHOW CLIENTS` prints the wrong `user`/`database` columns; `SHOW SERVERS`
-  emits one row per pool rather than one per upstream connection, hiding how
-  many server connections a pool actually holds; `SHOW STATS`'s
-  `total_query_count` is fabricated rather than accumulated from real query
-  counts. An operator running these to diagnose a live incident gets numbers
-  that do not describe the process.
+- [x] `M88.5` `SHOW CLIENTS`, `SHOW SERVERS` and `SHOW STATS` report wrong data.
+  `SHOW CLIENTS` printed `client.tenant` into both the `user` and `database`
+  columns, which are not the tenant ID and not each other; `SHOW SERVERS`
+  emitted one row per pool rather than one per upstream connection, hiding
+  how many server connections a pool actually held; `SHOW STATS`'s
+  `total_query_count` was `stats.transactions.to_string()`, the same value
+  already in `total_xact_count` two columns earlier.
+  Landed narrower than filed: `total_query_count` is blanked rather than
+  computed, because nothing in the workspace counts queries, only
+  transactions, and building a real counter is a new instrumentation feature
+  rather than a display fix. Blanking follows this module's own stated
+  policy for a column pgprox does not have real data for: an invented value
+  that looks like the others is worse than an empty one, which is why
+  `SHOW CLIENTS`'s `user`/`database` are blanked the same way rather than
+  filled with the tenant. `SHOW SERVERS` is fixed in full: `PoolStats`
+  already carries `active`/`idle` counts, so the row count now matches the
+  connections a pool holds without needing a new field anywhere.
   Acceptance: a test per command showing the correct field or row count against
   a constructed pool/session state, each failing before its fix.
 - [ ] `M88.6` `bin/pgprox` doubles one metric and drops a label from another.

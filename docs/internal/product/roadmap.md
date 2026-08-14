@@ -3390,3 +3390,23 @@ erroring, on a `SET` that then pinned the session for the wrong reason and a
 through the lexer, not only the first; a quoted parameter name is
 unaffected and still correctly falls through to pinning, which is `M24.2`'s
 answer and not this finding's to change.
+
+**`M88.5`.** `pgprox-admin`'s `SHOW CLIENTS`, `SHOW SERVERS` and `SHOW STATS`
+each reported a value the module's own doc comment argues against inventing.
+`SHOW CLIENTS` wrote `client.tenant` into both the `user` and `database`
+columns, which are neither the tenant ID nor each other — a grant's `user`
+and `database` differ from the tenant and from each other the same way
+`PoolKey`'s do, and `ClientView` does not carry either. `SHOW STATS`'s
+`total_query_count` was `stats.transactions.to_string()`, the value already
+sitting two columns earlier in `total_xact_count`: nothing in the workspace
+counts queries, only transactions, and the copy read as "exactly one query
+per transaction". `SHOW SERVERS` emitted one row per pool regardless of how
+many connections it held, which is the one of the three fixed in full rather
+than blanked: `PoolStats` already carries `active`/`idle` counts, so each pool
+now expands into one row per connection it actually holds. The other two are
+blanked rather than invented, following this same file's stated policy for
+every other column pgprox has no real value for: a value that looks like the
+others and is not one is worse than an empty column. Building a real query
+counter, or threading the client's actual startup `user`/`database` through
+the cluster-scoped `ClientView`, is a contract change this finding did not
+take on.

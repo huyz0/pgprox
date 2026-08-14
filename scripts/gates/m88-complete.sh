@@ -117,4 +117,15 @@ run_finding pgprox-pool \
   statements::tests::a_comment_between_the_words_does_not_hide_the_deallocation \
   "a comment inside DISCARD/DEALLOCATE ALL does not hide it"
 
+# --- M88.5: SHOW CLIENTS/SERVERS/STATS report real data or none -------------
+run_finding pgprox-admin \
+  rows::tests::show_clients_does_not_put_the_tenant_in_the_user_and_database_columns \
+  "SHOW CLIENTS does not print the tenant into user and database"
+run_finding pgprox-admin \
+  rows::tests::show_servers_reports_one_row_per_connection_not_one_per_pool \
+  "SHOW SERVERS reports one row per connection a pool holds"
+run_finding pgprox-admin \
+  rows::tests::show_stats_does_not_invent_a_query_count_from_the_transaction_one \
+  "SHOW STATS does not copy the transaction count into the query column"
+
 finish
