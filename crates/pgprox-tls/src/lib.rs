@@ -758,4 +758,65 @@ mod tests {
         assert!(RELOAD_INTERVAL >= std::time::Duration::from_secs(30));
         assert!(RELOAD_INTERVAL <= std::time::Duration::from_secs(600));
     }
+
+    #[test]
+    fn a_real_handshake_reaches_the_reloaded_certificate() {
+        // `M87.4`. `CertReloader::resolve` is `ResolvesServerCert::resolve`,
+        // and rustls itself is the only caller: there is no public way to
+        // build a `ClientHello` to call it directly outside a real
+        // handshake. Every other test here reads `serving()` instead, which
+        // never goes through `resolve` at all. `cargo mutants` replacing the
+        // whole body with `None` refused every handshake and nothing
+        // noticed, because nothing here ever asked rustls to try one.
+        //
+        // No new dependency: `rustls`'s own synchronous `ServerConnection`
+        // and `ClientConnection` exchange handshake bytes without a socket
+        // or a runtime, pumped by hand below.
+        let (_dir, cert_path, key_path) = test_cert();
+        let reloader = CertReloader::new(&cert_path, &key_path).unwrap();
+        let server_config = server_config_reloading(reloader).unwrap();
+
+        let mut roots = RootCertStore::empty();
+        for cert in load_certs(&cert_path).unwrap() {
+            roots.add(cert).unwrap();
+        }
+        let client_config = client_config(roots).unwrap();
+
+        let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let mut server_conn = rustls::ServerConnection::new(server_config).unwrap();
+        let mut client_conn = rustls::ClientConnection::new(client_config, server_name).unwrap();
+
+        // A real handshake is a handful of round trips; twenty is generous
+        // headroom rather than a number this needs to reach.
+        for _ in 0..20 {
+            if !client_conn.is_handshaking() && !server_conn.is_handshaking() {
+                break;
+            }
+            let mut to_server = Vec::new();
+            if client_conn.wants_write() {
+                client_conn.write_tls(&mut to_server).unwrap();
+            }
+            if !to_server.is_empty() {
+                server_conn
+                    .read_tls(&mut std::io::Cursor::new(to_server))
+                    .unwrap();
+                server_conn.process_new_packets().unwrap();
+            }
+            let mut to_client = Vec::new();
+            if server_conn.wants_write() {
+                server_conn.write_tls(&mut to_client).unwrap();
+            }
+            if !to_client.is_empty() {
+                client_conn
+                    .read_tls(&mut std::io::Cursor::new(to_client))
+                    .unwrap();
+                client_conn.process_new_packets().unwrap();
+            }
+        }
+
+        assert!(
+            !client_conn.is_handshaking() && !server_conn.is_handshaking(),
+            "the handshake never completed, which is what `resolve -> None` does"
+        );
+    }
 }

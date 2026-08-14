@@ -9404,3 +9404,25 @@ recognised so it can be refused rather than read as a version.
   and `pgload`.
   Acceptance: `scripts/gates/m22-complete.sh` reports these seven crates at
   zero commits past their sweep.
+  Also folded in: `pgprox-testkit` and `pgprox-config`, swept clean earlier
+  in the same session while diagnosing the crash before `M87.0` had a name.
+
+- [x] `M87.4` `pgprox-tls` swept clean and found one real gap, of a different
+  shape than `M87.0`–`M87.2`: not a hang, a survivor. `cargo mutants`
+  replacing `CertReloader::resolve`'s body with `None` refuses every TLS
+  handshake, and no test caught it.
+  `resolve` is `ResolvesServerCert::resolve`, called by rustls during a
+  handshake and by nothing else; `ClientHello` has no public constructor a
+  test could use to call it directly. Every existing test in this crate
+  reads `serving()` instead, which is a different accessor on the same
+  struct that never goes through `resolve` at all — correct on its own
+  terms, and it is why a mutant this severe survived twenty-one tests.
+  Fixed by adding the handshake the crate's tests never ran: a real
+  `rustls::ServerConnection` and `rustls::ClientConnection`, pumping
+  handshake bytes between them by hand, with the client's root store built
+  from the same self-signed test certificate. No new dependency —
+  `rustls`'s own synchronous connection API needs neither a socket nor a
+  runtime.
+  Acceptance: `cargo mutants -p pgprox-tls -F 'resolve -> ... with None'`
+  reports the mutant caught, `cargo nextest run -p pgprox-tls` passes all 22
+  tests, `scripts/check-coverage.sh pgprox-tls` holds at 100%.
