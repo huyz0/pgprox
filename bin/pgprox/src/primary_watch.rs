@@ -724,4 +724,31 @@ mod tests {
         assert_eq!(watches.len(), 2);
         assert!(!watches.is_empty());
     }
+
+    #[tokio::test]
+    async fn a_freshly_built_registry_is_empty_and_says_so_in_its_debug_form() {
+        let tls = pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).unwrap();
+        let watches = PrimaryWatches::new(
+            TcpUpstream::new(tls),
+            Shutdown::new(),
+            BufferSlab::new(pgprox_core::buf::DEFAULT_BUFFER_SIZE, 8),
+            None,
+            None,
+        );
+
+        assert_eq!(watches.len(), 0);
+        assert!(watches.is_empty());
+        assert!(
+            format!("{watches:?}").contains("watched: 0"),
+            "Debug did not report the count it holds"
+        );
+
+        watches.ensure_watched(&backend("db-1"));
+
+        assert!(!watches.is_empty());
+        assert!(
+            format!("{watches:?}").contains("watched: 1"),
+            "Debug did not track a watch added after construction"
+        );
+    }
 }

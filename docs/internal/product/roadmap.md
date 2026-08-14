@@ -3241,6 +3241,18 @@ flipping between missed and caught across runs of an unchanged tree, so
 neither was removed on the strength of one run. One crate remains:
 `pgprox`, the largest.
 
+**`M87.12` is `pgprox`'s sweep, running sharded.** 685 mutants at
+`MUTANTS_JOBS=1` is too long for one supervised run, so it runs as eight
+shards, each compared against the baseline only once every shard has
+reported — a sharded comparison flags baseline entries outside that
+shard's own subset as spuriously "now caught", the same artifact `M87.3`
+documented for `pgprox-core`. Shard 2/8 found a real gap in
+`primary_watch.rs`: `PrimaryWatches::is_empty` was asserted `false` after
+`ensure_watched` and never `true` on a fresh registry, and nothing read its
+`Debug` output, so a no-op `fmt` and a constant-`false` `is_empty` both
+survived. Fixed with one test covering both the empty and non-empty cases
+through both `is_empty()` and the `Debug` string.
+
 Completion condition: `scripts/gates/m22-complete.sh` reporting every crate
 current, with every survivor either killed by a test or accepted in
 `docs/internal/product/mutants-baseline.txt` with a reason.

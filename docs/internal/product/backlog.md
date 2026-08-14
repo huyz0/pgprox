@@ -9515,3 +9515,19 @@ recognised so it can be refused rather than read as a version.
   became reliably observable. No new finding, no fix needed.
   Acceptance: `cargo nextest run -p pgload` passes all 51 tests, `Sweeps:`
   marker updated.
+
+- [x] `M87.12` `pgprox`'s sweep is running sharded, 1/8 through 8/8, since a
+  full run is 685 mutants. Shard 2/8 found a real gap in
+  `bin/pgprox/src/primary_watch.rs`: `PrimaryWatches::is_empty` was never
+  asserted `true` on a freshly built registry, only `false` after
+  `ensure_watched`, and its `Debug` impl was never read by anything,
+  so `fmt` replaced with a no-op `Ok(Default::default())` and `is_empty`
+  replaced with a constant `false` both survived.
+  Fixed with one test that checks a fresh `PrimaryWatches` reports
+  `len() == 0`, `is_empty() == true`, and a `Debug` string containing
+  `"watched: 0"`, then does the same past `ensure_watched` for the
+  non-empty and `"watched: 1"` cases.
+  Acceptance: `cargo mutants -p pgprox -f
+  bin/pgprox/src/primary_watch.rs -F 'fmt|is_empty'` reports all three
+  mutants caught, `cargo nextest run -p pgprox -E 'test(primary_watch)'`
+  passes all 15 tests.
