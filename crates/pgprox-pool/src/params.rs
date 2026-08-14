@@ -247,91 +247,88 @@ enum ParsedSet {
 
 impl ParsedSet {
     /// Reads a parameter statement, or [`None`] if it is not one.
+    ///
+    /// Through [`pgprox_core::sql::Lexer`] throughout, not only at the start.
+    /// This used to skip leading trivia once and then read every word after
+    /// with `split_whitespace`, which is comment-blind past that first skip:
+    /// `SET /* c */ search_path = x` read `/*` as the parameter name rather
+    /// than skipping the comment and finding `search_path`. A quoted name is
+    /// still refused here rather than read: `Token::Word` does not match
+    /// [`pgprox_core::sql::Token::Quoted`], so `SET "search_path" = x` still
+    /// returns [`None`] and still falls through to pinning, which is `M24.2`'s
+    /// answer and not this finding's to change.
     fn parse(sql: &str) -> Option<Self> {
-        let trimmed = strip_leading_trivia(sql);
-        let mut words = trimmed.split_whitespace();
-        let verb = words.next()?.to_ascii_lowercase();
+        use pgprox_core::sql::{Lexer, Token};
 
-        if verb == "discard" {
+        let mut lexer = Lexer::new(sql);
+        let Some(Token::Word(verb)) = lexer.next() else {
+            return None;
+        };
+
+        if verb.eq_ignore_ascii_case("discard") {
             // `DISCARD ALL` resets parameters among much else. The narrower
             // forms leave them alone.
-            let what = words.next()?.to_ascii_lowercase();
-            return (what == "all").then_some(Self::ResetAll);
+            let Some(Token::Word(what)) = lexer.next() else {
+                return None;
+            };
+            return what.eq_ignore_ascii_case("all").then_some(Self::ResetAll);
         }
 
-        if verb == "reset" {
-            let name = words.next()?;
+        if verb.eq_ignore_ascii_case("reset") {
+            let Some(Token::Word(name)) = lexer.next() else {
+                return None;
+            };
             if name.eq_ignore_ascii_case("all") {
                 return Some(Self::ResetAll);
             }
             return Some(Self::Reset(name.to_owned()));
         }
 
-        if verb != "set" {
+        if !verb.eq_ignore_ascii_case("set") {
             return None;
         }
 
-        // Everything after `SET`, so `SET x=y` with no spaces still parses.
-        let rest = trimmed.get(verb.len()..)?.trim_start();
-        let (scope, rest) = split_word(rest);
+        // `SET LOCAL ...` is transaction-scoped and never recorded. `SET
+        // SESSION ...` is the ordinary form spelled out, and consumed so the
+        // real parameter name is read next. Any other word here is not a
+        // scope word at all, it is the parameter name, so the lexer is left
+        // where it was rather than advanced past it.
+        let mut probe = lexer.clone();
+        if let Some(Token::Word(scope)) = probe.next() {
+            if scope.eq_ignore_ascii_case("local") {
+                return Some(Self::Local);
+            }
+            if scope.eq_ignore_ascii_case("session") {
+                lexer = probe;
+            }
+        }
 
-        let rest = if scope.eq_ignore_ascii_case("local") {
-            // Transaction-scoped, and gone before the connection is released.
-            return Some(Self::Local);
-        } else if scope.eq_ignore_ascii_case("session") {
-            rest.trim_start()
-        } else {
-            trimmed.get(verb.len()..)?.trim_start()
+        let Some(Token::Word(name)) = lexer.next() else {
+            return None;
         };
-
-        let (name, rest) = split_name(rest);
-        if name.is_empty() {
-            return None;
-        }
         // `SET TRANSACTION ...` and `SET CONSTRAINTS ...` are not parameters.
         if name.eq_ignore_ascii_case("transaction") || name.eq_ignore_ascii_case("constraints") {
             return Some(Self::Local);
         }
 
-        let rest = rest.trim_start();
-        let value = if let Some(after) = rest.strip_prefix('=') {
-            after
-        } else {
-            let (word, after) = split_word(rest);
-            if !word.eq_ignore_ascii_case("to") {
-                return None;
-            }
-            after
+        let mut probe = lexer.clone();
+        let matched_operator = match probe.next() {
+            Some(Token::Punct('=')) => true,
+            Some(Token::Word(w)) => w.eq_ignore_ascii_case("to"),
+            _ => false,
         };
+        if !matched_operator {
+            return None;
+        }
+        lexer = probe;
+        lexer.skip_trivia();
 
-        let value = value.trim();
+        // The value's own quoting and case must reach `unquote` unchanged,
+        // which is why this reads the lexer's remaining raw text rather than
+        // tokenizing further.
+        let value = lexer.rest().trim();
         Some(Self::Set(name.to_owned(), unquote(value).to_owned()))
     }
-}
-
-/// Splits off the first whitespace-delimited word.
-fn split_word(input: &str) -> (&str, &str) {
-    let end = input.find(char::is_whitespace).unwrap_or(input.len());
-    (&input[..end], &input[end..])
-}
-
-/// Splits off a parameter name, which ends at whitespace or `=`.
-fn split_name(input: &str) -> (&str, &str) {
-    let end = input
-        .find(|c: char| c.is_whitespace() || c == '=')
-        .unwrap_or(input.len());
-    (&input[..end], &input[end..])
-}
-
-/// Strips leading comments and whitespace.
-///
-/// Delegates to [`pgprox_core::sql`], which owns where comments end. This
-/// module used to carry a third copy of that logic; see that module's docs for
-/// what having two of them cost.
-fn strip_leading_trivia(sql: &str) -> &str {
-    let mut lexer = pgprox_core::sql::Lexer::new(sql);
-    lexer.skip_trivia();
-    lexer.rest()
 }
 
 /// Strips one layer of quotes from a value.
@@ -438,6 +435,25 @@ mod tests {
             "SET SESSION search_path = tenant_acme",
             "  SET   search_path   =   tenant_acme  ;",
             "/* orm comment */ SET search_path = tenant_acme",
+        ] {
+            let mut params = SessionParams::new();
+            observe(&mut params, sql);
+            assert_eq!(params.get("search_path"), Some("tenant_acme"), "{sql:?}");
+        }
+    }
+
+    #[test]
+    fn a_comment_between_set_and_the_value_does_not_hide_the_parameter() {
+        // The previous scanner stripped leading trivia once and then read
+        // every later word with `split_whitespace`, which is comment-blind
+        // past that first skip. `SET /* c */ search_path = x` read `/*` as
+        // the parameter name and never reached `search_path` at all.
+        for sql in [
+            "SET /* c */ search_path = tenant_acme",
+            "SET search_path /* c */ = tenant_acme",
+            "SET search_path = /* c */ tenant_acme",
+            "SET SESSION /* c */ search_path = tenant_acme",
+            "SET /* c1 */ search_path /* c2 */ = /* c3 */ tenant_acme",
         ] {
             let mut params = SessionParams::new();
             observe(&mut params, sql);

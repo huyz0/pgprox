@@ -9662,7 +9662,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a test with a `-- BEGIN` comment or a quoted literal that would
   misparse under `split_whitespace()` and does not under `pgprox_core::sql`,
   failing before the fix.
-- [ ] `M88.4` `pgprox-pool`'s `ParsedSet::parse` is not comment-aware. A `SET`
+- [x] `M88.4` `pgprox-pool`'s `ParsedSet::parse` is not comment-aware. A `SET`
   statement preceded or followed by a SQL comment containing text that looks
   like another `SET` or a semicolon confuses the parser, the same shape `M24.1`
   fixed for statement splitting, not yet closed for `ParsedSet` itself; the

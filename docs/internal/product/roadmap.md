@@ -3378,3 +3378,15 @@ semantics. Fixed by reading both through `pgprox_core::sql::Lexer`, which
 skips comments as trivia before it hands back a token; `begins_transaction`
 stays inside its zero-allocation budget, since `Lexer::next` borrows rather
 than allocating.
+
+**`M88.4`, the same shape one crate over.** `pgprox-pool`'s `ParsedSet::parse`
+and `deallocates_everything` skipped leading trivia once, with the shared
+lexer, and then read every later word with `split_whitespace`, which is
+comment-blind past that first skip. `SET /* c */ search_path = x` read `/*` as
+the parameter name; `DISCARD /* c */ ALL` read it as the second word and never
+reached `ALL`. Both silently missed what they were looking for rather than
+erroring, on a `SET` that then pinned the session for the wrong reason and a
+`DISCARD ALL` whose statement maps went uncleared. Fixed by reading every word
+through the lexer, not only the first; a quoted parameter name is
+unaffected and still correctly falls through to pinning, which is `M24.2`'s
+answer and not this finding's to change.

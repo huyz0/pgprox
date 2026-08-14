@@ -232,11 +232,17 @@ pub struct PreparedStatement {
 /// ran or errored and an error leaves the maps clearable but correct.
 #[must_use]
 pub fn deallocates_everything(sql: &str) -> bool {
-    let mut lexer = pgprox_core::sql::Lexer::new(sql);
-    lexer.skip_trivia();
-    let mut words = lexer.rest().split_whitespace();
+    use pgprox_core::sql::{Lexer, Token};
 
-    let Some(verb) = words.next() else {
+    // Through the lexer for every word, not only the first. Trivia was
+    // previously skipped once up front and the rest read with
+    // `split_whitespace`, which is comment-blind past that point:
+    // `DISCARD /* c */ ALL` read `/*` as the second word and never reached
+    // `ALL`, so a client tagging its own `DISCARD ALL` the way this crate's
+    // own hint comments are written left both maps believing statements the
+    // server had already dropped were still there.
+    let mut lexer = Lexer::new(sql);
+    let Some(Token::Word(verb)) = lexer.next() else {
         return false;
     };
     if !verb.eq_ignore_ascii_case("discard") && !verb.eq_ignore_ascii_case("deallocate") {
@@ -245,11 +251,19 @@ pub fn deallocates_everything(sql: &str) -> bool {
 
     // `DEALLOCATE PREPARE ALL` is legal and means the same thing; the keyword
     // is noise the grammar allows.
-    let mut what = words.next().unwrap_or("");
+    let mut what = match lexer.next() {
+        Some(Token::Word(w)) => w,
+        _ => "",
+    };
     if what.eq_ignore_ascii_case("prepare") {
-        what = words.next().unwrap_or("");
+        what = match lexer.next() {
+            Some(Token::Word(w)) => w,
+            _ => "",
+        };
     }
-    what.trim_end_matches(';').eq_ignore_ascii_case("all")
+    // A trailing semicolon is its own `Token::Semicolon`, not part of the
+    // word, so nothing needs trimming off `what` the way a raw scan would.
+    what.eq_ignore_ascii_case("all")
 }
 
 impl SessionStatements {
@@ -617,6 +631,24 @@ mod tests {
             "  DISCARD   ALL  ",
             "/* pgx */ DISCARD ALL",
             "-- reset the session\nDISCARD ALL",
+        ] {
+            assert!(deallocates_everything(sql), "{sql:?} was not recognised");
+        }
+    }
+
+    #[test]
+    fn a_comment_between_the_words_does_not_hide_the_deallocation() {
+        // Trivia was previously skipped once, up front, and every later word
+        // read with `split_whitespace`, which is comment-blind past that
+        // point: `DISCARD /* c */ ALL` read `/*` as the second word and never
+        // reached `ALL`, so both maps kept believing statements the server
+        // had already dropped were still there.
+        for sql in [
+            "DISCARD /* c */ ALL",
+            "DEALLOCATE /* c */ ALL",
+            "DEALLOCATE PREPARE /* c */ ALL",
+            "DEALLOCATE /* c */ PREPARE ALL",
+            "DISCARD -- c\nALL",
         ] {
             assert!(deallocates_everything(sql), "{sql:?} was not recognised");
         }

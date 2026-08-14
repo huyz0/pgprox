@@ -109,4 +109,12 @@ run_finding pgprox-route \
   router::tests::a_hint_comment_before_begin_does_not_hide_the_transaction \
   "a leading hint comment does not hide an explicit BEGIN"
 
+# --- M88.4: pgprox-pool reads SET and DEALLOCATE through the shared lexer ---
+run_finding pgprox-pool \
+  params::tests::a_comment_between_set_and_the_value_does_not_hide_the_parameter \
+  "a comment inside a SET does not hide the parameter it names"
+run_finding pgprox-pool \
+  statements::tests::a_comment_between_the_words_does_not_hide_the_deallocation \
+  "a comment inside DISCARD/DEALLOCATE ALL does not hide it"
+
 finish
