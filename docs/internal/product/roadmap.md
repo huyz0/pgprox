@@ -72,7 +72,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M53 | The scripts read as stale, and two of them were | complete; forty-two of forty-four scripts were not stale, `cargo fmt` ran twice on every push, and `check-wired.sh`'s summary oversold what its own body already argued against |
 | M85 | Eighty-seven milestones and no way to jump to one | complete; a table of contents for `backlog.md` and a `check-drift.sh` rule that fails if a heading has no matching line |
 | M86 | The status table nobody kept adding rows to | complete; rows added for `M30` through `M53` and `M85`, and backfilling them found two milestones whose completion condition was prose with no command for `check-drift.sh` to read |
-| M87 | The mutants nobody has swept since M22 | in progress; ten of sixteen crates freshly swept, two real gaps fixed with tests, one memory-exhaustion mutant fixed with `debug_assert!` invariants after it took the machine from 30 GB free to swapping in under ten seconds, and a second gap found in `pgprox-auth` |
+| M87 | The mutants nobody has swept since M22 | in progress; eleven of sixteen crates freshly swept, two real gaps fixed with tests and one memory-exhaustion mutant fixed with `debug_assert!` invariants after it took the machine from 30 GB free to swapping in under ten seconds |
 
 `M54` through `M84` are complete — `backlog.md` has their tasks and commit
 references — but do not yet have roadmap sections of their own; this table
@@ -3216,6 +3216,10 @@ when a real clock reads the exact expiry instant, which nothing outside the
 module can manufacture without injecting the instant itself, the same
 argument already accepted for `Drain<'_>::settled` and
 `pgload::one_connection`.
+
+**`M87.7` closed `pgprox-auth` out.** `Sweeps:` marker updated now that both
+gaps are fixed. Five crates and binaries remain: `pgprox-admin`,
+`pgprox-observe`, `pgprox-load`, `pgprox` and `pgload`.
 
 Completion condition: `scripts/gates/m22-complete.sh` reporting every crate
 current, with every survivor either killed by a test or accepted in

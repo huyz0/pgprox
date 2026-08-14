@@ -9475,3 +9475,9 @@ recognised so it can be refused rather than read as a version.
   -F 'Entries::sweep'` reports one surviving mutant, matching the accepted
   entry; `cargo nextest run -p pgprox-auth` passes all 82 tests;
   `scripts/check-coverage.sh pgprox-auth` holds at 98.45%.
+
+- [x] `M87.7` `Sweeps:` marker updated for `pgprox-auth`, now fully swept
+  after `M87.5` and `M87.6`. Five crates and binaries remain unswept:
+  `pgprox-admin`, `pgprox-observe`, `pgprox-load`, `pgprox` and `pgload`.
+  Acceptance: `scripts/gates/m22-complete.sh` no longer lists `pgprox-auth`
+  as behind its sweep.
