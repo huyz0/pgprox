@@ -30,9 +30,9 @@
 # records a sweep is the one immediately after it. `scripts/gates/m22-complete.sh`
 # does not count a commit that also touched this file, because that commit is
 # the sweep rather than a change since it.
-# Sweeps: pgprox-cluster 03b48f987c7f4b7e48f04768bdb0f2e828797054
-# Sweeps: pgprox-route 03b48f987c7f4b7e48f04768bdb0f2e828797054
-# Sweeps: pgprox-cache 03b48f987c7f4b7e48f04768bdb0f2e828797054
+# Sweeps: pgprox-cluster 0bd7f8c73a6162ebb5987528d7ed551b70f97ab9
+# Sweeps: pgprox-route 0bd7f8c73a6162ebb5987528d7ed551b70f97ab9
+# Sweeps: pgprox-cache 0bd7f8c73a6162ebb5987528d7ed551b70f97ab9
 # Sweeps: pgprox-admin 03b48f987c7f4b7e48f04768bdb0f2e828797054
 # Sweeps: pgprox-auth 03b48f987c7f4b7e48f04768bdb0f2e828797054
 # Sweeps: pgprox-config 03b48f987c7f4b7e48f04768bdb0f2e828797054
@@ -41,11 +41,11 @@
 # Sweeps: pgprox-tls 03b48f987c7f4b7e48f04768bdb0f2e828797054
 # Sweeps: pgprox-testkit 03b48f987c7f4b7e48f04768bdb0f2e828797054
 # Sweeps: pgload 03b48f987c7f4b7e48f04768bdb0f2e828797054
-# Sweeps: pgprox-core 5f11957391f7a20c8c41882569181da3c5fac9f4
+# Sweeps: pgprox-core 0bd7f8c73a6162ebb5987528d7ed551b70f97ab9
 # Sweeps: pgprox b2c3709ba44635d27b9e1c3b4e4a1e50cd3f73ee
-# Sweeps: pgprox-pool 9e7e727234fb444011d8de3d8c688b935788018e
-# Sweeps: pgprox-proto 1ac037f8ae6829e1172faa52aa9c2244599a0de9
-# Sweeps: pgprox-session 4fac6873ba68131c390eebabb04c55b558ba062b
+# Sweeps: pgprox-pool 0bd7f8c73a6162ebb5987528d7ed551b70f97ab9
+# Sweeps: pgprox-proto 0bd7f8c73a6162ebb5987528d7ed551b70f97ab9
+# Sweeps: pgprox-session 0bd7f8c73a6162ebb5987528d7ed551b70f97ab9
 
 # # Where this list came from
 #

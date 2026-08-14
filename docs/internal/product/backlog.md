@@ -9388,3 +9388,19 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `cargo mutants -p pgprox-core -f crates/pgprox-core/src/sql.rs
   -F 'trim_leading_space -> &str with "xyzzy"'` reports the mutant caught,
   `cargo nextest run -p pgprox-core` passes all 241 tests unchanged.
+
+- [x] `M87.3` `Sweeps:` markers updated for the seven crates now freshly and
+  fully swept: `pgprox-proto`, `pgprox-route`, `pgprox-cache`,
+  `pgprox-session`, `pgprox-cluster`, `pgprox-pool` and `pgprox-core` (the
+  last after `M87.0` through `M87.2`). Every survivor in each is either
+  already accepted in `docs/internal/product/mutants-baseline.txt` or was
+  fixed. `pgprox-core`'s four pre-existing accepted entries were briefly
+  reported as "now caught" mid-sweep; that was the sharded comparison
+  reading absence-from-one-shard's-survivors as caught, not a real change,
+  and resolved once all eight shards had run — none are marked equivalent
+  by a test that could not exist, so none moved.
+  Nine crates remain unswept: `pgprox-admin`, `pgprox-auth`, `pgprox-config`,
+  `pgprox-observe`, `pgprox-load`, `pgprox-tls`, `pgprox-testkit`, `pgprox`
+  and `pgload`.
+  Acceptance: `scripts/gates/m22-complete.sh` reports these seven crates at
+  zero commits past their sweep.
