@@ -90,4 +90,12 @@ run_finding pgprox-auth \
   cache::tests::a_cancelled_leader_does_not_leak_its_claim \
   "a leader's inflight claim is removed on cancellation, not only on return"
 
+# --- M88.2: a live cap change moves an existing ledger's ceiling ------------
+run_finding pgprox-cluster \
+  coordinator::tests::a_live_cap_change_moves_an_existing_ledgers_ceiling \
+  "a ledger's free pool follows a cap raised after it was created"
+run_finding pgprox-cluster \
+  lease::tests::set_pool_below_what_is_already_leased_reads_as_no_headroom_rather_than_underflowing \
+  "a pool lowered below what is outstanding reads as none, not a u32 wraparound"
+
 finish

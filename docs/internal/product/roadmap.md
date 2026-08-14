@@ -3348,3 +3348,15 @@ key — waits forever on a broadcast channel nothing will ever send on again,
 until the process restarts. Fixed with an `InflightGuard` whose `Drop` removes
 the claim and wakes waiters on every exit from the leader's scope, cancellation
 included, which is the one path a line placed after the `.await` cannot cover.
+
+**`M88.2`.** `LeaseLedger`'s pool ceiling was read once, from `or_insert_with`,
+which only runs the round a server's ledger is first created. `split_for`
+recomputes the free pool from the current cap on every round after that, and
+nothing wrote the new answer into a ledger that already existed. A cap raised
+after a fleet's first gossip round left every node capped at the old, lower
+ceiling, silently under-granting; a cap lowered left the ledger free to keep
+leasing above it. Fixed with `LeaseLedger::set_pool`, called from `observe`
+every round rather than only at construction. Safe to move either direction:
+`available` and `grant` both compute headroom as `pool.saturating_sub(...)`,
+so a pool dropped below what is already outstanding reads as no headroom
+rather than underflowing, and nothing already granted is revoked.

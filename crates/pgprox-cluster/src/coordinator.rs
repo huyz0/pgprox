@@ -349,6 +349,11 @@ impl NodeCoordinator {
             let ledger = self.ledgers.entry(server).or_insert_with(|| {
                 LeaseLedger::new(split.free_pool, self.config.effective_lease())
             });
+            // Every round, not only on creation: `split_for`'s answer moves
+            // with a live cap or a membership change, and a ledger already
+            // granting against the old value would otherwise never hear about
+            // it. Safe to move either direction; see `set_pool`.
+            ledger.set_pool(split.free_pool);
             ledger.observe_leadership(leading, now);
             ledger.reap(now);
         }
@@ -1592,6 +1597,53 @@ mod tests {
             nodes[1].allowance(&server(), after).leased,
             0,
             "an expired lease still counted toward what the node may open"
+        );
+    }
+
+    #[test]
+    fn a_live_cap_change_moves_an_existing_ledgers_ceiling() {
+        // `observe` used to hand the freshly computed split to `or_insert_with`
+        // only, which runs once, on the round a server's ledger is first
+        // created. Every later round recomputed the split and never told the
+        // existing ledger, so a cap raised after the first round stayed
+        // invisible to what the ledger would actually grant.
+        let start = Instant::now();
+        let config = config_for(1);
+        let mut alone = NodeCoordinator::new(node(1), config, start);
+        alone.set_cap(server(), test_quota(100));
+
+        // 1s steps rather than one jump to `takeover_wait`, so no gap between
+        // heartbeats ever exceeds `suspect_after` and the node never goes
+        // briefly suspect to itself, which would reset `took_office` and
+        // reopen the very wait this is trying to get past.
+        let mut now = start;
+        for _ in 0..8 {
+            alone.heartbeat(now);
+            alone.observe(now);
+            now += Duration::from_secs(1);
+        }
+
+        // Free pool is `cap - floor(cap * fraction)`, independent of node
+        // count: 100 - 50 = 50. A request for more than that is capped at it.
+        let lease = alone.request(&server(), node(1), 90, now).unwrap();
+        assert_eq!(
+            lease.count(now),
+            50,
+            "the free pool did not start at the cap this ledger was built with"
+        );
+        alone.release(&server());
+
+        // The cap doubles. A ledger that only read the split once would still
+        // be capping every grant at the old free pool of 50.
+        alone.set_cap(server(), test_quota(200));
+        alone.heartbeat(now);
+        alone.observe(now);
+
+        let lease = alone.request(&server(), node(1), 90, now).unwrap();
+        assert_eq!(
+            lease.count(now),
+            90,
+            "a live cap increase never reached a ledger already granting against the old one"
         );
     }
 

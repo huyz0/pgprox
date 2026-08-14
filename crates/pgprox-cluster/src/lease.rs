@@ -92,6 +92,24 @@ impl LeaseLedger {
         }
     }
 
+    /// Moves the ceiling this ledger grants against.
+    ///
+    /// Called every `observe` round with the freshly computed split, not only
+    /// at construction: a cap change, or a membership change that moves the
+    /// free pool, must reach a ledger already handing out leases against the
+    /// old value, or a node whose cap grew stays capped below its own share
+    /// and a node whose cap shrank keeps leasing above the new one.
+    ///
+    /// Safe to move in either direction with nothing outstanding to reconcile.
+    /// [`Self::available`] and [`Self::grant`] both compute headroom as
+    /// `pool.saturating_sub(outstanding)`, so a pool lowered below what is
+    /// already leased out reads as no headroom rather than underflowing, and
+    /// nothing already granted is revoked; it simply is not renewed past the
+    /// new ceiling.
+    pub fn set_pool(&mut self, pool: u32) {
+        self.pool = pool;
+    }
+
     /// Records whether this node is currently able to lead.
     ///
     /// Takes a decision rather than a view, because being the lowest active ID
@@ -277,6 +295,50 @@ mod tests {
         assert_eq!(ledger.holders(expiry), 0);
         assert_eq!(ledger.outstanding(expiry), 0);
         assert_eq!(ledger.available(expiry), 100);
+    }
+
+    #[test]
+    fn set_pool_moves_the_ceiling_in_either_direction() {
+        let (mut ledger, now) = serving(100);
+        assert_eq!(ledger.available(now), 100);
+
+        ledger.set_pool(200);
+        assert_eq!(
+            ledger.available(now),
+            200,
+            "a raised pool did not reach a ledger already serving"
+        );
+
+        ledger.set_pool(50);
+        assert_eq!(
+            ledger.available(now),
+            50,
+            "a lowered pool did not reach a ledger already serving"
+        );
+    }
+
+    #[test]
+    fn set_pool_below_what_is_already_leased_reads_as_no_headroom_rather_than_underflowing() {
+        // `available` and `grant` both compute `pool.saturating_sub(...)`.
+        // Moving the ceiling below outstanding grants must read as zero, not
+        // wrap around a `u32` subtraction into something enormous.
+        let (mut ledger, now) = serving(100);
+        ledger.grant(&server(), node(2), 80, now).unwrap();
+
+        ledger.set_pool(50);
+        assert_eq!(
+            ledger.available(now),
+            0,
+            "a pool lowered below what is outstanding underflowed instead of reading empty"
+        );
+        assert_eq!(
+            ledger.grant(&server(), node(3), 10, now).unwrap_err(),
+            QuotaError::Exhausted { server: server() }
+        );
+
+        // The holder already granted is not revoked; it simply is not renewed
+        // past the new ceiling once it expires.
+        assert_eq!(ledger.outstanding(now), 80);
     }
 
     #[test]

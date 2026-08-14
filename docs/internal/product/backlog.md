@@ -9644,7 +9644,7 @@ recognised so it can be refused rather than read as a version.
   caller for the same key still gets an answer rather than joining the dead
   entry, failing before the fix; the cleanup runs through a drop guard rather
   than a line that cancellation can skip over.
-- [ ] `M88.2` The free-pool ceiling `LeaseLedger` hands out does not move when
+- [x] `M88.2` The free-pool ceiling `LeaseLedger` hands out does not move when
   a live cap does. `coordinator.rs::observe` computes each node's share via
   `split_for`, but an existing `LeaseLedger` only reads that value when it is
   first created; a cap change afterward recomputes `split_for`'s answer and
