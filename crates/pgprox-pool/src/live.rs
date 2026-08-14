@@ -165,6 +165,20 @@ impl<K: Connector + 'static> LivePool<K> {
         })
     }
 
+    /// This pool's own configuration, as it was built with.
+    ///
+    /// Test-only: nothing in the accept path reads a pool's configuration
+    /// back, only the values it was already given. Exists so a caller
+    /// wiring one up, such as `bin/pgprox`'s `App::build`, can be tested for
+    /// whether it actually passed a field through rather than silently
+    /// falling back to [`PoolConfig::default`]. `M87.13` found `retry` was
+    /// exactly such a field, dropped by a mutant with no test noticing.
+    #[cfg(any(test, feature = "test-fakes"))]
+    #[must_use]
+    pub fn config(&self) -> PoolConfig {
+        self.config
+    }
+
     /// Opens a connection, retrying a failed dial under `config.retry`.
     ///
     /// Every attempt calls `connector.connect` fresh: a failed dial opened

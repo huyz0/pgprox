@@ -9565,3 +9565,22 @@ recognised so it can be refused rather than read as a version.
   reports all fourteen mutants caught or unviable; `cargo mutants -p
   pgprox -f bin/pgprox/src/run.rs -F 'was_previously_open|some_were_closed'`
   reports all thirteen caught; `scripts/check-crate.sh pgprox` passes.
+
+- [x] `M87.14` Shards 5/8 through 7/8 swept clean but for one, in
+  `bin/pgprox/src/wiring.rs::App::build`: deleting `retry: config.retry,`
+  from the `PoolConfig` struct literal survived, silently falling back to
+  `PoolConfig::default()`'s `retry`, which is "off" by ADR 0029. A document
+  asking for retries would get none and nothing would say so.
+  Untestable from `bin/pgprox` alone: `LivePool`'s `config` field is
+  private, so nothing outside `pgprox-pool` could see what a pool was
+  actually built with, only what was passed to build it, which is the
+  side of this bug that already worked. Fixed by adding
+  `LivePool::config`, a `#[cfg(any(test, feature = "test-fakes"))]`
+  accessor in `pgprox-pool`, mirroring `pgprox-tls`'s `serving()` and
+  `pgprox-core`'s `FakeClock`: test-only introspection added specifically
+  because a wiring bug needs a seam a production caller has no reason to
+  want. One new test in `wiring.rs` builds an `App` with a non-default
+  `RetryConfig` and asserts `app.pool.config().retry` equals it.
+  Acceptance: `cargo mutants -p pgprox -f bin/pgprox/src/wiring.rs -F
+  'retry'` reports all three mutants caught; `scripts/check-crate.sh` and
+  `scripts/check-coverage.sh` pass for both `pgprox` and `pgprox-pool`.

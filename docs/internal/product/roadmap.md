@@ -3265,6 +3265,17 @@ further survivor, `TICKS_PER_RELOAD`'s `/` replaced with `*`, is
 equivalent while `TICK` is one second, and is accepted in the baseline
 with the arithmetic written out.
 
+**`M87.14` swept shards 5/8 through 7/8, and found one wiring bug outside
+`bin/pgprox`'s own reach to test.** `App::build` drops `retry:
+config.retry,` from the `PoolConfig` it hands `LivePool::new`, silently
+falling back to "off". Nothing in `bin/pgprox` could see that: the pool's
+own configuration was private, so a test could only see what was passed
+in, not what a pool was actually built with. Fixed by adding
+`LivePool::config`, a test-only accessor in `pgprox-pool` gated behind
+its existing `test-fakes` feature, the same shape as `pgprox-tls`'s
+`serving()` and `pgprox-core`'s `FakeClock` — introspection that exists
+only because a wiring bug needed a seam nothing in production wants.
+
 Completion condition: `scripts/gates/m22-complete.sh` reporting every crate
 current, with every survivor either killed by a test or accepted in
 `docs/internal/product/mutants-baseline.txt` with a reason.

@@ -454,6 +454,36 @@ mod tests {
         assert_eq!(allowance.guaranteed, 0);
     }
 
+    #[tokio::test]
+    async fn a_configured_retry_policy_reaches_the_pool() {
+        // `M87.13`: the struct literal wiring `PoolConfig` together drops
+        // `retry: config.retry,` and nothing noticed, because nothing read
+        // it back. Off by default (`RetryConfig::default().attempts == 0`)
+        // is also the safe direction to fall back to silently, which is
+        // exactly why silence was not enough here: a document that asks for
+        // retries and gets none fails quietly rather than loudly.
+        let retry = pgprox_core::retry::RetryConfig {
+            attempts: 3,
+            base: std::time::Duration::from_millis(20),
+            max: std::time::Duration::from_secs(1),
+        };
+        assert_ne!(
+            retry,
+            pgprox_core::retry::RetryConfig::default(),
+            "the test's retry policy is not distinguishable from the default"
+        );
+
+        let app = App::build(deps(Config { retry, ..config() }))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.pool.config().retry,
+            retry,
+            "the configured retry policy did not reach the pool"
+        );
+    }
+
     /// A source that cannot produce a configuration.
     ///
     /// The fake in `pgprox-core` validates what it is given, so it cannot
