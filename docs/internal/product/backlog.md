@@ -9584,3 +9584,32 @@ recognised so it can be refused rather than read as a version.
   Acceptance: `cargo mutants -p pgprox -f bin/pgprox/src/wiring.rs -F
   'retry'` reports all three mutants caught; `scripts/check-crate.sh` and
   `scripts/check-coverage.sh` pass for both `pgprox` and `pgprox-pool`.
+
+- [x] `M87.15` Shard 0/8 was missed entirely by the first pass through this
+  milestone: `cargo mutants`' `--shard` is zero-indexed (`k` must be less
+  than `n`), so `MUTANTS_SHARD=1/8` through `8/8` covered the second
+  through eighth eighths and `8/8` itself was rejected outright, caught
+  only when it errored rather than reported a survivor. Re-run as `0/8`.
+  Nine of its ten survivors already matched accepted or fixed baseline
+  keys. The tenth was real: `bin/pgprox/src/entropy.rs`'s `SystemJitter`,
+  drawing retry backoff jitter through the same system RNG
+  `SystemEntropy` already does, had no tests at all, where its sibling in
+  the same file has three. Seven mutants survived: three constant returns
+  (`0.0`, `1.0`, `-1.0`) and four that swap the shift direction or `/` for
+  `%` or `*` in scaling a 53-bit draw into `[0, 1)`.
+  Fixed with two tests in the same style as `SystemEntropy`'s: a range
+  check (`0.0..1.0`, which alone catches every mutant but the constant
+  `0.0`, since the arithmetic ones land many orders of magnitude outside
+  it) and a distinctness check over 64 draws (which catches `0.0`, the one
+  the range check cannot).
+  Acceptance: `cargo mutants -p pgprox -f bin/pgprox/src/entropy.rs -F
+  'roll'` reports all seven mutants caught; `scripts/check-crate.sh
+  pgprox` and `scripts/check-coverage.sh pgprox` pass.
+  Also re-swept `pgprox-pool`, stale by the one line `M87.14` added to it:
+  `LivePool::config` itself had no test in the crate that owns it, only an
+  indirect one through `bin/pgprox`'s wiring test, and `cargo mutants -p
+  pgprox-pool` found the accessor's body replaceable with
+  `PoolConfig::default()` undetected. Fixed with a direct test using the
+  crate's own `pool_with_retry` fixture. `pgprox-pool` is otherwise
+  unchanged since its `M22`-era sweep: 218 mutants, 171 caught, 47
+  unviable, 0 surviving.

@@ -118,4 +118,40 @@ mod tests {
             "some bit was never set in 64 draws: {seen:#x}"
         );
     }
+
+    #[test]
+    fn a_roll_stays_inside_the_half_open_range_it_promises() {
+        // `M87.14`: every mutant that swaps the shift direction, or `/` for
+        // `%` or `*`, produces a value orders of magnitude outside `[0, 1)`
+        // rather than a slightly wrong one, because the two operands differ
+        // in scale by `2^53`. A range check catches all of them at once,
+        // where a specific-value assertion could not, since `roll` is not
+        // supposed to be deterministic.
+        let jitter = SystemJitter;
+        for _ in 0..64 {
+            let rolled = pgprox_pool::jitter::Jitter::roll(&jitter);
+            assert!(
+                (0.0..1.0).contains(&rolled),
+                "a roll of {rolled} left the promised range"
+            );
+        }
+    }
+
+    #[test]
+    fn rolls_differ() {
+        // The constant-return mutants (`0.0`, `1.0`, `-1.0`) all pass the
+        // range test above except `-1.0`, and a jitter that always drew the
+        // same in-range number would still be a jitter that jittered
+        // nothing.
+        let jitter = SystemJitter;
+        let drawn: HashSet<u64> = (0..64)
+            .map(|_| pgprox_pool::jitter::Jitter::roll(&jitter).to_bits())
+            .collect();
+
+        assert!(
+            drawn.len() > 60,
+            "the jitter source repeated itself {} times in 64 draws",
+            64 - drawn.len()
+        );
+    }
 }

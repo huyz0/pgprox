@@ -648,6 +648,24 @@ mod tests {
         assert_ne!(empty, one, "the rendering did not change with the contents");
     }
 
+    #[test]
+    fn config_reports_what_the_pool_was_built_with() {
+        // `M87.15`: this accessor exists only so a caller wiring a pool
+        // together, such as `bin/pgprox`'s `App::build`, can be tested for
+        // whether it actually passed a field through. That property is
+        // useless if `config` itself is untested: it could be replaced with
+        // `PoolConfig::default()` and nothing in this crate would know.
+        let retry = pgprox_core::retry::RetryConfig {
+            attempts: 3,
+            base: Duration::from_millis(20),
+            max: Duration::from_secs(1),
+        };
+        let pool = pool_with_retry(retry, 0.0);
+
+        assert_eq!(pool.config().retry, retry);
+        assert_eq!(pool.config().max_size, 4);
+    }
+
     #[tokio::test]
     async fn a_waiter_woken_with_nothing_to_take_is_counted() {
         // `futile_wakeups` could return `0` unconditionally, and the existing

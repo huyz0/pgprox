@@ -42,8 +42,8 @@
 # Sweeps: pgprox-testkit 0bd7f8c73a6162ebb5987528d7ed551b70f97ab9
 # Sweeps: pgload 491cb0e87663914ae53b9ee4504378941d8cabb7
 # Sweeps: pgprox-core 0bd7f8c73a6162ebb5987528d7ed551b70f97ab9
-# Sweeps: pgprox b2c3709ba44635d27b9e1c3b4e4a1e50cd3f73ee
-# Sweeps: pgprox-pool 0bd7f8c73a6162ebb5987528d7ed551b70f97ab9
+# Sweeps: pgprox 061e692340e37c584eaf5cf6534324f9ea511aac
+# Sweeps: pgprox-pool 061e692340e37c584eaf5cf6534324f9ea511aac
 # Sweeps: pgprox-proto 0bd7f8c73a6162ebb5987528d7ed551b70f97ab9
 # Sweeps: pgprox-session 0bd7f8c73a6162ebb5987528d7ed551b70f97ab9
 

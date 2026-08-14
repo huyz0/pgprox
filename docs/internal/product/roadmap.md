@@ -72,7 +72,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M53 | The scripts read as stale, and two of them were | complete; forty-two of forty-four scripts were not stale, `cargo fmt` ran twice on every push, and `check-wired.sh`'s summary oversold what its own body already argued against |
 | M85 | Eighty-seven milestones and no way to jump to one | complete; a table of contents for `backlog.md` and a `check-drift.sh` rule that fails if a heading has no matching line |
 | M86 | The status table nobody kept adding rows to | complete; rows added for `M30` through `M53` and `M85`, and backfilling them found two milestones whose completion condition was prose with no command for `check-drift.sh` to read |
-| M87 | The mutants nobody has swept since M22 | in progress; fifteen of sixteen crates freshly swept, two real gaps fixed with tests and one memory-exhaustion mutant fixed with `debug_assert!` invariants after it took the machine from 30 GB free to swapping in under ten seconds; only `pgprox` itself, the largest, remains |
+| M87 | The mutants nobody has swept since M22 | complete; all sixteen crates and binaries freshly swept, real testing gaps found and fixed across `pgprox-tls`, `pgprox-auth`, `pgprox` and `pgprox-pool` (the last reachable only through a new test-only accessor), two memory-exhaustion mutants fixed with `debug_assert!` invariants after one took the machine from 30 GB free to swapping in under ten seconds, and every remaining survivor accepted in the baseline with a written reason |
 
 `M54` through `M84` are complete — `backlog.md` has their tasks and commit
 references — but do not yet have roadmap sections of their own; this table
@@ -3121,13 +3121,11 @@ script is deliberate: the check this milestone needs already exists, and
 writing a second one that reads the same `Sweeps:` markers would be the
 two-implementations mistake this project argues against everywhere else.
 
-**Where it stands.** `pgprox-proto`, `pgprox-route`, `pgprox-cache`,
-`pgprox-session`, `pgprox-cluster`, `pgprox-pool`, `pgprox-core`,
-`pgprox-testkit`, `pgprox-config`, `pgprox-observe`, `pgprox-admin`,
-`pgprox-load` and `pgload` are freshly swept with every survivor checked
-against the baseline. `pgprox-tls` and `pgprox-auth` each found a real gap
-of the same shape, below. `pgprox`, the largest crate at 685 mutants, has
-not run yet.
+**Where it stands.** All sixteen crates and binaries are freshly swept,
+with every survivor either killed by a new test or accepted in
+`docs/internal/product/mutants-baseline.txt` with a written reason.
+`pgprox-tls`, `pgprox-auth`, `pgprox` and `pgprox-pool` each found a real
+gap; the rest were clean against the baseline outright. Detail below.
 
 **`M87.0`, found by the sweep rather than by reading.** A mutant of
 `Lexer::advance` in `pgprox-core` does not fail a test; it takes down the
@@ -3275,6 +3273,35 @@ in, not what a pool was actually built with. Fixed by adding
 its existing `test-fakes` feature, the same shape as `pgprox-tls`'s
 `serving()` and `pgprox-core`'s `FakeClock` — introspection that exists
 only because a wiring bug needed a seam nothing in production wants.
+
+**`M87.15` found the sweep had missed a whole eighth of `pgprox`,
+including its one remaining real gap.** `cargo mutants`'s `--shard` is
+zero-indexed, so `1/8` through `8/8` covered the second through eighth
+slices and `8/8` itself was rejected outright — an error this session read
+as "nothing here" rather than "this shard never ran". Re-run as `0/8`.
+Nine of ten survivors matched the baseline already; the tenth was
+`SystemJitter`, drawing retry backoff jitter through the same system RNG
+`SystemEntropy` already does two functions up, with none of `SystemEntropy`'s
+three tests. Fixed the same way: a range check and a distinctness check
+over sixty-four draws, the shapes that catch a non-deterministic source
+mutated into a constant or scaled by orders of magnitude, which a
+specific-value assertion cannot.
+
+`pgprox` is now fully swept: all eight shards, every survivor either
+fixed or already accounted for.
+
+Fixing `SystemJitter` touched `pgprox-pool` only through a new test-only
+accessor (`M87.14`), which left that crate one line ahead of its own
+sweep. Re-swept rather than left stale: `LivePool::config` itself had no
+test in the crate that owns it, only an indirect one through
+`bin/pgprox`'s wiring test, and was replaceable with
+`PoolConfig::default()` undetected. Fixed with a direct test using the
+crate's own `pool_with_retry` fixture; the other 218 mutants were
+unchanged since `M22`.
+
+Every crate and binary in `scripts/mutants.sh`'s list has now been swept
+at least once since `M22`, and every sweep's findings are either a real
+fix or a written reason in the baseline.
 
 Completion condition: `scripts/gates/m22-complete.sh` reporting every crate
 current, with every survivor either killed by a test or accepted in
