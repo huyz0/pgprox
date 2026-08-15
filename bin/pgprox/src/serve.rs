@@ -712,7 +712,17 @@ where
                 let reason = shed_reason(context, conn, &grant.tenant);
                 return Err(wire.refuse(reason).await);
             }
-            () = context.closing.waited() => return Ok(()),
+            // `M90.13`. `wire.refuse` here, not a bare `Ok(())`: the two arms
+            // above both tell the client why before closing, and this one
+            // fires for every session still connected, mid-transaction or
+            // not — the one case an operator most needs the client to be
+            // able to tell from a crash. `run.rs`'s own comment on the
+            // signal that fires this says clients "are told rather than
+            // cut", and `bin/pgload`'s model of a drain's force-close
+            // (`Failed::work_lost`) assumes the same `57P01` a graceful
+            // drain sends still arrives here, just after work had already
+            // started — an assumption this arm did not meet before.
+            () = context.closing.waited() => return Err(wire.refuse(ClientError::Draining).await),
         };
         let tag = header.tag;
         let tail = read_client_body(wire, header, &mut body, context.cache.is_some()).await?;
@@ -6880,6 +6890,21 @@ mod tests {
         );
 
         context.closing.fire();
+
+        // `M90.13`. The grace timer's own force-close used to drop the
+        // socket with no `ErrorResponse` queued, so a client caught by it
+        // saw a bare disconnect indistinguishable from a crash. `bin/pgload`
+        // models this force-close as the *same* `57P01` a graceful drain
+        // sends, arriving after work had already started
+        // (`Failed::work_lost`) — this is what proves that assumption holds.
+        let (tag, body) = expect(&mut client).await;
+        assert_eq!(tag, Tag::ERROR_RESPONSE);
+        assert!(
+            String::from_utf8_lossy(&body).contains("57P01"),
+            "a mid-transaction client force-closed by the grace timer got no error: {}",
+            String::from_utf8_lossy(&body)
+        );
+
         let ended = tokio::time::timeout(Duration::from_secs(5), served)
             .await
             .expect("the grace timer did not close a session that would not leave");

@@ -10273,7 +10273,26 @@ scalable real production machine, which stays `M16`'s open item.
   exempting an expired connection, and the full `LivePool` pipeline for
   both a continuously-busy connection and a young one — each verified
   against a reverted piece of the fix before landing.
-- [ ] `M90.13` Close M90 once a full review cycle across the angles above
+- [x] `M90.13` The drain sequence's last resort — `Context::closing`, fired
+  once `drain_grace` expires with a client still connected, or directly on
+  ordinary process shutdown — closed the socket with no `ErrorResponse`
+  queued, unlike the two sibling `select!` arms for `draining` and `shed`,
+  which both call `wire.refuse` before returning. A client force-closed
+  this way saw a bare disconnect indistinguishable from a crash rather than
+  a decodable reason. `run.rs`'s own comment on the signal that fires this
+  says clients "are told rather than cut", and `bin/pgload`'s model of a
+  drain's force-close (`Failed::work_lost`) assumes the very same `57P01`
+  a graceful drain sends still arrives here, just after a statement had
+  already run — an assumption this arm did not meet. The existing test for
+  this path asserted only that the session ended, never that a message
+  reached the client first.
+  Acceptance: the `closing` arm now calls `wire.refuse(ClientError::
+  Draining)` before returning, matching its siblings. The existing
+  `a_client_holding_a_connection_is_not_closed_by_the_drain_alone` test now
+  also reads the client's socket and asserts a `57P01` `ErrorResponse`
+  arrives before the session ends, failing before the fix with an
+  unexpected-EOF rather than a decoded frame.
+- [ ] `M90.14` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if

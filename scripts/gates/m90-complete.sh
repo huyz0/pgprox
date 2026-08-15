@@ -157,4 +157,8 @@ run_finding pgprox-pool reap::tests::keep_warm_does_not_exempt_a_connection_past
 run_finding pgprox-pool live::tests::a_connection_kept_busy_past_its_lifetime_is_discarded_at_its_next_release \
   "M90.12: a connection kept busy past its lifetime is discarded at its next release"
 
+# --- M90.13: the drain's force-close sent no ErrorResponse -------------------
+run_finding pgprox serve::tests::a_client_holding_a_connection_is_not_closed_by_the_drain_alone \
+  "M90.13: a client holding a connection is not closed by the drain alone, and is told why"
+
 finish
