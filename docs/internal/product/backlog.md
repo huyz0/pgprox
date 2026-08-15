@@ -10228,7 +10228,25 @@ scalable real production machine, which stays `M16`'s open item.
   `router.rs` for the reset case, the set case, a lone trailing `;` (still
   matched), and a `;` inside a quoted value (not mistaken for the
   boundary), each failing before the fix.
-- [ ] `M90.11` Close M90 once a full review cycle across the angles above
+- [x] `M90.11` `pgprox-cache`'s `normalize` folded unquoted words with
+  `char::to_lowercase`, which implements Unicode's full case-folding table
+  rather than the codepoint-for-codepoint transform this module's own doc
+  comment claims ("the rule, which is Postgres's own"). Unicode's
+  unconditional special-casing table has exactly one lower-casing
+  expansion: `İ` (U+0130, one codepoint) folds to `i` + COMBINING DOT ABOVE
+  (U+0307, two codepoints). `pgprox_core::sql::is_word_char` treats every
+  non-ASCII character, combining marks included, as a word character by
+  design, so `İ` and a source that already spells `i` followed by U+0307
+  lex as two different, independently typeable single-token identifiers
+  that folded to the identical output — one cache key for two different
+  questions, which is exactly the failure mode this module's own comments
+  elsewhere name as the unsafe direction.
+  Acceptance: word-folding is ASCII-only, matching the convention
+  `pgprox_core::sql::statement_words` already uses, which guarantees the
+  transform can never change a word's codepoint count and so can never
+  conflate two distinct source identifiers. A test folds `İ` and `i` +
+  U+0307 and asserts they produce different keys, failing before the fix.
+- [ ] `M90.12` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if

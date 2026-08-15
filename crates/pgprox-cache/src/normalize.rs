@@ -92,7 +92,33 @@ pub fn normalize(sql: &str) -> String {
         match token {
             // Unquoted words are folded, because the server folds them: a
             // table written `MyTable` and one written `mytable` are one table.
-            Token::Word(_) => out.extend(text.chars().flat_map(char::to_lowercase)),
+            //
+            // ASCII-only, matching `pgprox_core::sql::statement_words`'s own
+            // convention, and not `char::to_lowercase`. `M90.11`. Unicode's
+            // *unconditional* special-casing table has one lower-casing
+            // expansion: `İ` (U+0130) folds to the two codepoints `i` +
+            // COMBINING DOT ABOVE (U+0307). `pgprox_core::sql::is_word_char`
+            // treats every non-ASCII character, combining marks included, as
+            // a word character by design, so `İ` and `i` + U+0307 lex as two
+            // different single-token words that folded to the same output
+            // here — one table's name and a different, independently
+            // typeable spelling, colliding on one cache key. Postgres's own
+            // identifier downcasing is a codepoint-for-codepoint transform
+            // and never performs this expansion, so this was a deviation
+            // from "the rule, which is Postgres's own" this module's own
+            // module doc claims, not a matter of taste. Folding only ASCII
+            // guarantees the transform can never change a word's codepoint
+            // count, so two distinct source identifiers can never be
+            // conflated by it — the same safe-direction trade the string
+            // introducer's case already makes: one extra cache entry costs
+            // memory, one cache entry for two questions serves wrong data.
+            Token::Word(_) => out.extend(text.chars().map(|c| {
+                if c.is_ascii() {
+                    c.to_ascii_lowercase()
+                } else {
+                    c
+                }
+            })),
             // Everything else goes through untouched. For `Quoted` that is the
             // point; for punctuation there is no case to fold.
             _ => out.push_str(text),
@@ -166,6 +192,27 @@ mod tests {
         assert_eq!(
             normalize("SELECT * FROM MyTable"),
             normalize("select * from mytable")
+        );
+    }
+
+    #[test]
+    fn folding_never_changes_a_words_codepoint_count() {
+        // `M90.11`. Unicode's unconditional special-casing table has exactly
+        // one lower-casing expansion: `İ` (U+0130, one codepoint) folds to
+        // `i` + COMBINING DOT ABOVE (U+0307, two codepoints). Both `İ` and a
+        // source that already spells `i` followed by U+0307 lex as one
+        // `Token::Word` each — every non-ASCII character is a word character
+        // by `pgprox_core::sql::is_word_char`'s own design — so `char::
+        // to_lowercase` folded two different, independently typeable
+        // identifiers onto the same cache key. Postgres's own identifier
+        // downcasing never expands a codepoint into two, so an ASCII-only
+        // fold is what stays faithful to it, and it is what this asserts:
+        // two distinct source spellings must stay distinct keys.
+        let a = normalize("SELECT * FROM \u{130}");
+        let b = normalize("SELECT * FROM i\u{307}");
+        assert_ne!(
+            a, b,
+            "two different identifiers collapsed onto one cache key: {a:?} vs {b:?}"
         );
     }
 

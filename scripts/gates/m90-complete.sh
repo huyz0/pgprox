@@ -143,4 +143,8 @@ run_finding pgprox-route hints::tests::a_set_followed_by_a_real_statement_is_not
 run_finding pgprox-route router::tests::a_hint_followed_by_a_real_statement_forwards_both_rather_than_dropping_one \
   "M90.10: a hint followed by a real statement forwards both rather than dropping one"
 
+# --- M90.11: normalize's word-folding could expand a codepoint into two -----
+run_finding pgprox-cache normalize::tests::folding_never_changes_a_words_codepoint_count \
+  "M90.11: folding never changes a word's codepoint count"
+
 finish
