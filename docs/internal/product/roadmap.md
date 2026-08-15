@@ -3532,6 +3532,25 @@ certificate with the previous one left serving (the literal acceptance text),
 and the not-yet-valid direction the finding's own summary names but the
 acceptance sentence does not spell out separately.
 
+**`M88.12`.** `cacheable()`'s denylist of non-deterministic built-ins is
+matched against `statement_words`, which drops every quoted token entirely —
+`Token::Quoted` carries no text by design, so a caller can never make a
+tenant's own data decide how their statement is scanned. `"pg_advisory_lock"(1)`
+therefore reduced to the single word `select` and reached the pool cacheable,
+the same shape `M24.2` found in `pgprox-pool::pin` for `SET`'s quoted
+parameter name. The fix takes the same trade rather than the same code: it
+cannot compare a quoted name against the denylist, since the text is never
+exposed, but it can tell whether a quoted token is immediately followed by
+`(` — a call, under SQL's own grammar, regardless of what the name is — and
+refuses conservatively rather than guess whether that name happens to be
+denylisted. `NotCacheable::QuotedFunctionCall` carries no name for the same
+reason `PinReason::UnreplayableSet` does not: there is nothing here to name.
+A single-quoted string that merely contains what looks like a call —
+`SELECT * FROM t WHERE note = 'random()'` — is unaffected, because the
+lexer's quote consumption swallows the parentheses with the rest of the
+literal; only a token stream that reads `Quoted` then `(` as two separate
+tokens trips the new check.
+
 ## M89: the review from outside this repo, and the four gaps it found (complete)
 
 ```bash

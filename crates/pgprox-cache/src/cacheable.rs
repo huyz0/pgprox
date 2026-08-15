@@ -32,7 +32,7 @@
 //! on the strength of the denylist being complete, because it is not.
 
 use pgprox_core::route::StmtClass;
-use pgprox_core::sql::statement_words;
+use pgprox_core::sql::{Lexer, Token, statement_words};
 
 /// Why a statement's answer may not be cached.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +87,15 @@ pub enum NotCacheable {
         /// Which call, so a log line says why rather than that.
         name: &'static str,
     },
+    /// Something is called through a quoted name.
+    ///
+    /// `M88.12`. `"pg_advisory_lock"(1)` calls the same function
+    /// `pg_advisory_lock(1)` does, and `Token::Quoted` deliberately carries no
+    /// text — see its own doc — so this cannot compare the name against the
+    /// denylist the way a bare one is compared. No name to report, for the
+    /// same reason: refused rather than guessed at, the same trade `M24.2`
+    /// made for `SET`'s parameter name.
+    QuotedFunctionCall,
 }
 
 /// What the session looks like at the moment the statement arrives.
@@ -206,6 +215,28 @@ const NOT_A_FUNCTION_OF_THE_KEY: &[&str] = &[
     "pg_sleep_until",
 ];
 
+/// Whether the statement calls anything through a quoted name.
+///
+/// `M88.12`. `statement_words` drops quoted tokens entirely, so
+/// `"pg_advisory_lock"(1)` reduces to `select` and a word scan never sees it —
+/// the same gap `M24.2` found in `pgprox-pool::pin::quoted_parameter_name` for
+/// `SET`'s parameter name. Reads tokens directly rather than words, for the
+/// same reason that fix did: a quoted name followed immediately by `(` is a
+/// call under SQL's own grammar regardless of what the name is, and that is
+/// the one thing this can tell without reading quoted text — which the lexer
+/// declines to hand out on purpose, so a tenant's own data can never change
+/// how their statement is scanned.
+fn has_quoted_call(sql: &str) -> bool {
+    let mut previous: Option<Token<'_>> = None;
+    for token in Lexer::new(sql) {
+        if matches!(previous, Some(Token::Quoted)) && token == Token::Punct('(') {
+            return true;
+        }
+        previous = Some(token);
+    }
+    false
+}
+
 /// Whether this statement's answer may be cached.
 ///
 /// The class comes from `pgprox-route`, the facts from the session. Everything
@@ -249,6 +280,12 @@ pub fn cacheable(sql: &str, class: StmtClass, session: SessionFacts) -> Result<(
     let statements = statement_words(sql, false);
     if statements.len() > 1 {
         return Err(NotCacheable::MultipleStatements);
+    }
+
+    // The one thing the word scan below cannot see: a denylisted name spelled
+    // in quotes and called. `M88.12`.
+    if has_quoted_call(sql) {
+        return Err(NotCacheable::QuotedFunctionCall);
     }
 
     for words in &statements {
@@ -397,6 +434,36 @@ mod tests {
         // exists to keep out of every caller.
         assert!(verdict("SELECT * FROM t WHERE note = 'random()'").is_ok());
         assert!(verdict("SELECT 'now()' FROM t").is_ok());
+    }
+
+    #[test]
+    fn a_denylisted_name_in_quotes_is_still_refused() {
+        // `M88.12`. `statement_words` drops quoted tokens entirely, so
+        // `"pg_advisory_lock"(1)` used to reduce to the single word `select`
+        // and reach the pool cacheable — the same gap `M24.2` found for
+        // `SET`'s parameter name in a different crate. Every one of these
+        // calls something, spelled in quotes.
+        for sql in [
+            r#"SELECT "random"()"#,
+            r#"SELECT "now"()"#,
+            r#"SELECT "pg_catalog"."now"()"#,
+            r#"select "RANDOM"()"#,
+        ] {
+            assert_eq!(
+                verdict(sql),
+                Err(NotCacheable::QuotedFunctionCall),
+                "{sql:?} was called cacheable"
+            );
+        }
+    }
+
+    #[test]
+    fn a_quoted_name_that_is_not_called_does_not_refuse() {
+        // The check is specifically about a call — a quoted identifier used as
+        // a column or table name is not a function, denylisted or otherwise,
+        // and refusing every quoted identifier would make this cache useless
+        // against any schema that quotes its names.
+        assert!(verdict(r#"SELECT * FROM "orders" WHERE "id" = $1"#).is_ok());
     }
 
     #[test]

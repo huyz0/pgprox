@@ -9794,7 +9794,7 @@ recognised so it can be refused rather than read as a version.
   refusal at construction, refusal by `reload` with the previous certificate
   left serving, and the not-yet-valid direction the acceptance text does not
   name but the finding's own summary does.
-- [ ] `M88.12` The query cache denylist misses a quoted built-in function name.
+- [x] `M88.12` The query cache denylist misses a quoted built-in function name.
   `cacheable()` and `statement_words` fail to catch a denylisted function name
   when it is written quoted (`"pg_advisory_lock"(1)` or similarly), the same
   quoting gap `M24.2` found and fixed for `SET`'s parameter name, not yet
@@ -9802,6 +9802,13 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a test with a quoted denylisted function name that a
   quote-blind check would cache and a quote-aware one refuses, failing before
   the fix.
+  Same trade `M24.2` took, not the same fix: `Token::Quoted` carries no text
+  by design, so a quoted name can never be compared against the denylist by
+  what it says. What can be told is whether a quoted token is immediately
+  called — `has_quoted_call` reads tokens rather than words for exactly that —
+  and any quoted call is refused conservatively, whether or not the name
+  behind the quotes is actually denylisted. `NotCacheable::QuotedFunctionCall`
+  carries no name, same reasoning as `PinReason::UnreplayableSet`.
 - [ ] `M88.13` `PoolConfig.min_size` is a dead field. It is read from config,
   stored, and never consulted by anything that opens or reaps a connection —
   `min_pool` is documented elsewhere in this crate as always 0, which is a

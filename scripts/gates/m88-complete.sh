@@ -173,4 +173,9 @@ run_finding pgprox-tls \
   tests::reload_refuses_a_certificate_dated_in_the_future \
   "reload refuses a certificate not yet valid"
 
+# --- M88.12: the query cache denylist catches a quoted builtin name --
+run_finding pgprox-cache \
+  cacheable::tests::a_denylisted_name_in_quotes_is_still_refused \
+  "a denylisted function name spelled in quotes is still refused"
+
 finish
