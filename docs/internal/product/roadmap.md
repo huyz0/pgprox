@@ -3551,6 +3551,23 @@ lexer's quote consumption swallows the parentheses with the rest of the
 literal; only a token stream that reads `Quoted` then `(` as two separate
 tokens trips the new check.
 
+**`M88.13`.** `PoolConfig.min_size` was read from config, stored, and
+consulted by nothing that opens or reaps a connection. It was never actually
+reachable from the operator-facing document either — `wiring.rs` builds every
+`PoolConfig` with `..PoolConfig::default()`, which is always zero — so the
+gap was narrower than "a setting silently does nothing" and closer to "a
+field exists that nothing anywhere sets to anything but its own default."
+`ReapConfig::keep_warm`, in `crate::reap`, turned out to be the field this
+crate already uses correctly for a floor, wired into `reap()` and always zero
+by design. Removed as a plain removal — `PoolConfig` is a `pgprox-pool` type,
+not `pgprox-core`, so `non-negotiable 6`'s contract-change ceremony does not
+apply, and there was exactly one construction site to touch. The test is an
+exhaustive `PoolConfig` literal naming every remaining field with no `..`
+update syntax, which does not compile if a field exists that the literal does
+not name — the closest thing to "fails before, passes after" a field removal
+can have, since removing something truly unconsulted changes no runtime
+behaviour to assert against.
+
 ## M89: the review from outside this repo, and the four gaps it found (complete)
 
 ```bash

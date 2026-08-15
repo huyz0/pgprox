@@ -9809,7 +9809,7 @@ recognised so it can be refused rather than read as a version.
   and any quoted call is refused conservatively, whether or not the name
   behind the quotes is actually denylisted. `NotCacheable::QuotedFunctionCall`
   carries no name, same reasoning as `PinReason::UnreplayableSet`.
-- [ ] `M88.13` `PoolConfig.min_size` is a dead field. It is read from config,
+- [x] `M88.13` `PoolConfig.min_size` is a dead field. It is read from config,
   stored, and never consulted by anything that opens or reaps a connection —
   `min_pool` is documented elsewhere in this crate as always 0, which is a
   design decision this field contradicts by existing and accepting a different
@@ -9819,6 +9819,15 @@ recognised so it can be refused rather than read as a version.
   type, or a plain removal otherwise) or it is wired to something a test
   observes; whichever, a test proves the field's value now has an effect or
   the field no longer exists to have none.
+  Removed, a plain removal: `PoolConfig` is a `pgprox-pool` type, not
+  `pgprox-core`, so non-negotiable 6 does not apply, and it was never set from
+  the operator-facing config document in the first place — `wiring.rs` builds
+  it with `..PoolConfig::default()`. `ReapConfig::keep_warm` turned out to be
+  the field this crate actually uses for a floor, already wired and always
+  zero by design; `min_size` was a second, unwired name for the same idea.
+  The test proving the field is gone is an exhaustive `PoolConfig` literal
+  that does not compile if `min_size` — or anything else unnamed — exists to
+  be missing from it.
 - [ ] `M88.14` `Lsn`'s `Display` impl does not zero-pad its low half. The type's
   own doc comment says the textual form is the standard `XXXXXXXX/XXXXXXXX`
   Postgres LSN format, which zero-pads each half to eight hex digits; the

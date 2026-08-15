@@ -178,4 +178,9 @@ run_finding pgprox-cache \
   cacheable::tests::a_denylisted_name_in_quotes_is_still_refused \
   "a denylisted function name spelled in quotes is still refused"
 
+# --- M88.13: PoolConfig.min_size, an unwired duplicate of keep_warm, is gone --
+run_finding pgprox-pool \
+  pool::tests::pool_config_has_no_floor_field \
+  "PoolConfig no longer has a dead min_size field"
+
 finish

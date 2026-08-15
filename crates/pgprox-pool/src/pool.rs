@@ -38,17 +38,22 @@ use pgprox_core::pool::{PoolError, PoolStats, ReleaseOutcome, UpstreamId};
 use crate::statements::{ConnectionStatements, StatementConfig};
 
 /// How a pool is tuned.
+///
+/// # No floor here
+///
+/// `M88.13`. This once also had `min_size`, read from config, stored, and
+/// consulted by nothing that opens or reaps a connection — a second,
+/// unwired place an operator could set a number that silently had no
+/// effect. `ReapConfig::keep_warm`, in `crate::reap`, is the field this
+/// crate actually uses for a floor, always zero by design: idle upstream
+/// connections are what stops a tenant's fan-out across nodes from
+/// collapsing on its own, and a node holding a floor for every tenant it
+/// ever saw would hold the whole fleet's worth. See the crate's
+/// `AGENTS.md` and ADR 0005.
 #[derive(Clone, Copy, Debug)]
 pub struct PoolConfig {
     /// Connections this pool may hold at once.
     pub max_size: u32,
-    /// Connections kept open when idle.
-    ///
-    /// Zero, and deliberately so. Idle upstream connections are what stops a
-    /// tenant's fan-out across nodes from collapsing on its own: a node that
-    /// held a floor of connections for every tenant it ever saw would hold the
-    /// whole fleet's worth. See the crate's `AGENTS.md`.
-    pub min_size: u32,
     /// Statement map tuning for connections this pool opens.
     pub statements: StatementConfig,
     /// How a failed attempt to open a new connection is retried.
@@ -64,7 +69,6 @@ impl Default for PoolConfig {
     fn default() -> Self {
         Self {
             max_size: 20,
-            min_size: 0,
             statements: StatementConfig::default(),
             retry: pgprox_core::retry::RetryConfig::default(),
         }
@@ -773,11 +777,27 @@ mod tests {
     }
 
     #[test]
-    fn the_minimum_pool_size_is_zero() {
-        // Idle upstream connections are what stops a tenant's fan-out across
-        // nodes collapsing on its own. A node holding a floor for every tenant
-        // it ever saw would hold the whole fleet's worth.
-        assert_eq!(PoolConfig::default().min_size, 0);
+    fn pool_config_has_no_floor_field() {
+        // `M88.13`. `min_size` was read from config, stored, and consulted by
+        // nothing that opens or reaps a connection: `ReapConfig::keep_warm`
+        // is the field this crate actually uses for a floor, and it is
+        // always zero by design (see the module docs and the crate's
+        // `AGENTS.md`). A field that duplicates a concept the crate already
+        // implements correctly elsewhere, under a different name, and does
+        // nothing itself is worse than no field: it is a second place an
+        // operator could set a number that silently has no effect.
+        //
+        // Named exhaustively rather than with `..PoolConfig::default()`, so
+        // a field added back here — under this name or another that meant
+        // the same unwired thing — would be a compile error in this test
+        // rather than a silent pass. That is also this test's whole proof:
+        // it does not compile against a `PoolConfig` that still requires a
+        // `min_size` to be named.
+        let _ = PoolConfig {
+            max_size: 20,
+            statements: StatementConfig::default(),
+            retry: pgprox_core::retry::RetryConfig::default(),
+        };
     }
 
     #[test]
