@@ -75,7 +75,8 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M87 | The mutants nobody has swept since M22 | complete; all sixteen crates and binaries freshly swept, real testing gaps found and fixed across `pgprox-tls`, `pgprox-auth`, `pgprox` and `pgprox-pool` (the last reachable only through a new test-only accessor), two memory-exhaustion mutants fixed with `debug_assert!` invariants after one took the machine from 30 GB free to swapping in under ten seconds, and every remaining survivor accepted in the baseline with a written reason |
 | M88 | A second reading of every crate, and the eighteen things it found | complete; three findings shared M24's quoting/raw-scanner shape, two shared M24.9's and M13's doc/code-correspondence shape, and the other thirteen were shapes M24 had no category for |
 | M89 | The review from outside this repo, and the four gaps it found | complete; four pages and a first tagged release, none of them a code change, and the two adoption-relevant findings from `M88` stayed tracked there rather than duplicated here |
-| M90 | A third reading, from several angles at once, and what each one found | open; findings tracked in `backlog.md` as they are confirmed and fixed |
+| M90 | A third reading, from several angles at once, and what each one found | complete; seven cycles, twenty-four findings, the seventh cycle came back clean |
+| M91 | Seven correctness fixes, and a baseline nobody rewrote | complete; `instruction counts` had been silently red since `M78.0`, eleven milestones after the baseline was last written, entirely from already-landed correctness fixes |
 
 `M54` through `M84` are complete — `backlog.md` has their tasks and commit
 references — but do not yet have roadmap sections of their own; this table
@@ -3912,3 +3913,34 @@ to invalidation because its payload is deliberately never parsed, which
 ADR 0013 already documents as an accepted limit on what this cache can see;
 and a cache large enough to hold `u32::MAX` live entries would alias two
 slot indices, unreachable under any realistic byte budget.
+
+## M91: seven correctness fixes, and a baseline nobody rewrote
+
+```bash
+scripts/bench.sh
+```
+
+`M90.25`'s own push turned `instruction counts` red for a reason that had
+nothing to do with that push: bisection found the job had actually been
+failing since `M78.0`, eleven milestones after `M59.1` last wrote
+`docs/internal/product/perf/baseline.json`. No `mNN-complete.sh` of its own —
+the milestone is entirely about one script, and `scripts/bench.sh` passing
+against a rewritten baseline is the completion condition itself, the same way
+`M1`'s is `scripts/conformance.sh` and `M8`'s is a list of four other
+scripts.
+
+### Where it stands
+
+Complete. One task: `docs/internal/product/perf/baseline.json` rewritten to
+match seven already-landed correctness fixes across `pgprox-route`,
+`pgprox-pool` and `pgprox-cache`, none of them new work — the full
+attribution, one commit and one instruction delta at a time, is in
+`docs/internal/product/perf/run-2026-08-15-instruction-drift.md`. Since
+`scripts/bench.sh` "runs when asked rather than per commit" by design (its
+own header), and CI's `instruction counts` job does not gate a merge, thirty
+milestones of legitimate cost went unrecorded until a session read a CI run
+through to its individual jobs rather than trusting the pre-commit-equivalent
+ones alone. What this milestone leaves open: `scripts/bench.sh` still is not
+part of the pre-commit gate, so the same drift can recur; making it one is a
+separate, larger decision — this milestone re-establishes the recorded
+baseline as accurate, it does not change when it is checked.

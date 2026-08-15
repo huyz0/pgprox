@@ -112,6 +112,7 @@ script or an unwired gate already does.
 - [M88: a second reading of every crate, and the eighteen things it found](#m88-a-second-reading-of-every-crate-and-the-eighteen-things-it-found)
 - [M89: the review from outside this repo, and the four gaps it found](#m89-the-review-from-outside-this-repo-and-the-four-gaps-it-found)
 - [M90: a third reading, from several angles at once, and what each one found](#m90-a-third-reading-from-several-angles-at-once-and-what-each-one-found)
+- [M91: seven correctness fixes, and a baseline nobody rewrote](#m91-seven-correctness-fixes-and-a-baseline-nobody-rewrote)
 <!-- toc:end -->
 
 ## M-1: AI development system
@@ -10559,3 +10560,33 @@ scalable real production machine, which stays `M16`'s open item.
   budget. Closes M90: status row marked complete, `docs/internal/product/
   roadmap.md`'s "Where it stands" section names all twenty-four findings by
   theme and what the milestone leaves open.
+
+## M91: seven correctness fixes, and a baseline nobody rewrote
+
+- [x] `M91.0` `M90.25`'s CI run turned up a red `instruction counts` job that
+  had nothing to do with that push. Bisected by unpacking `valgrind` from
+  `apt-get download` (no root needed; only `apt-get install` requires it) into
+  a scratch prefix and measuring every commit between `M59.1` — the last
+  baseline write — and `HEAD` that touched `pgprox-route/src`,
+  `pgprox-pool/src` or `pgprox-cache/src` in a separate worktree. The job has
+  actually been red since `M78.0`, eleven milestones after the baseline was
+  last written, entirely from seven already-landed, already-reviewed
+  correctness fixes: `M88.3` (the shared comment-aware lexer replacing
+  `split_whitespace` in `pgprox-route`, ~95% of that crate's move), `M90.1`
+  and `M90.14` (this milestone's own `wrote`-tracking fixes) for the rest of
+  it; `M76.1` and `M90.12` (this milestone's own pool-lifetime wiring) for
+  `pgprox-pool`; and `M78.0` (`CacheKey` gaining result-format tracking) for
+  every `pgprox-cache` figure that moved. None of the seven cost anything
+  that was not already a deliberate trade for a real bug fixed elsewhere in
+  this project's own history — see `docs/internal/product/perf/
+  run-2026-08-15-instruction-drift.md` for the full attribution, one commit
+  and one delta at a time.
+  Acceptance: `docs/internal/product/perf/baseline.json` rewritten — the ten
+  non-cache figures set to what six recent CI runs already agree on to the
+  instruction, the six `pgprox-cache` figures set to the median of the same
+  six runs, matching `M59.1`'s own method for exactly the benchmarks its own
+  comment already says are not bit-identical across machines. `scripts/
+  bench.sh` passes locally against the new baseline; `M91` has no gate script
+  of its own, its own completion condition — a fenced block in its roadmap
+  section — points straight at `scripts/bench.sh`, the same way `M1`, `M2`
+  and `M8` point at something other than an `mNN-complete.sh`.
