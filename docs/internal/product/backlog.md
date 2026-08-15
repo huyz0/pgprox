@@ -9867,7 +9867,7 @@ recognised so it can be refused rather than read as a version.
   compile time and asserting neither reads as claiming three built
   providers, each confirmed to fail against the pre-fix wording and pass
   against the fix.
-- [ ] `M88.16` `pgprox-core`'s `lib.rs` contracts table is missing four traits.
+- [x] `M88.16` `pgprox-core`'s `lib.rs` contracts table is missing four traits.
   The crate-level doc comment tables the traits non-negotiable 6 governs, and
   four defined in the crate are not rows in it, which means a future
   `check-core-contract.sh` reader or a human skimming the doc comment cannot
@@ -9877,6 +9877,21 @@ recognised so it can be refused rather than read as a version.
   governs, checked by a script or a manual cross-check recorded in the commit,
   and a test or doctest that the table's row count matches the trait count if
   one can be written cheaply.
+  Landed as filed, with the count precise rather than assumed: the crate
+  defines twelve `pub trait`s, not eight — `check-core-contract.sh` governs
+  any `pub trait` block under `src/`, with no list of its own to fall out of
+  date. The four missing were `GrantInvalidation`, `TopologyRefresh`,
+  `Observatory`, and `PeerSource`, each with a genuine public fake and a real
+  cross-crate implementor. The twelfth, `ConnectionRelease`, stays out of the
+  table on purpose: unlike the other eleven, its fake (`pool`'s `FakeRelease`)
+  is private, used only inside `FakeUpstreamPool` — it is `UpstreamGuard`'s
+  release plumbing, not a seam a downstream crate swaps, so it never had the
+  "implemented by, faked by" shape the table records. Two new tests in
+  `lib.rs` (`include_str!`-ing the crate's own source at compile time): one
+  asserting every governed trait has a row, one counting `pub trait` blocks
+  across every source file and checking that count against the table plus the
+  one deliberate exclusion, so a *future* trait added with no table update
+  fails the same way this finding did.
 - [ ] `M88.17` `pgprox-proto`'s `FrameRelay::push` has no fuzz target. It is the
   function that decides how a partially-read frame from an untrusted peer is
   buffered and re-assembled, exactly the kind of function `M15` fuzzed

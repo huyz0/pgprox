@@ -3596,6 +3596,21 @@ saying plainly that two of the three were never built, following `0012`'s
 time and assert neither overclaims, each confirmed to fail against the old
 wording restored temporarily and pass against the fix.
 
+**`M88.16`.** `pgprox-core`'s contracts table, in `lib.rs`'s crate-level doc
+comment, listed seven traits. `check-core-contract.sh` governs twelve —
+whatever `pub trait` exists under this crate's `src/`, no separate list to
+drift from the code. Four had no row: `GrantInvalidation`, `TopologyRefresh`,
+`Observatory`, `PeerSource`, each with a real public fake and a real
+cross-crate implementor. The twelfth, `ConnectionRelease`, stays out on
+purpose — its fake is private, used only inside `FakeUpstreamPool`, so it
+never had the table's "implemented by, faked by" shape; it is `UpstreamGuard`'s
+internal release plumbing, not a seam a downstream crate swaps. Checked by two
+new tests that `include_str!` the crate's own source at compile time: one that
+every governed trait has a table row, one that counts `pub trait` blocks
+across every source file and checks the total against the table plus the one
+exclusion — the second test is the one that keeps this from recurring, since
+it fails the moment a thirteenth trait arrives with no matching row.
+
 ## M89: the review from outside this repo, and the four gaps it found (complete)
 
 ```bash

@@ -196,4 +196,12 @@ run_finding pgprox-config \
   tests::the_adr_records_that_only_one_provider_is_implemented \
   "ADR 0006 says plainly that only the file provider is implemented"
 
+# --- M88.16: the contracts table lists all twelve traits check-core-contract.sh governs
+run_finding pgprox-core \
+  tests::the_contracts_table_lists_every_governed_trait \
+  "the contracts table has a row for each of the four traits it was missing"
+run_finding pgprox-core \
+  tests::the_crate_defines_exactly_the_governed_traits_plus_connection_release \
+  "a new pub trait with no table row would fail this count, not pass silently"
+
 finish
