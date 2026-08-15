@@ -130,7 +130,18 @@ pub fn parse_route_assignment(sql: &str) -> Option<RouteAssignment> {
         if is_all {
             return Some(RouteAssignment::Reset);
         }
-        return route_parameter(&mut lexer).then_some(RouteAssignment::Reset);
+        // `M90.10`. `route_parameter` only ever advances past `pgprox.route`
+        // itself; nothing here used to ask what came after it, so
+        // `"RESET pgprox.route; DELETE ..."` — one wire message, two
+        // statements, which the simple query protocol allows — matched, was
+        // consumed as the hint, and the `DELETE` was never classified, never
+        // forwarded, and never run. No error either: the client got a bare
+        // `ReadyForQuery` and every reason to believe it had succeeded.
+        // `statement_is_exhausted` is the same check `is_all` already made
+        // above, generalised to a trailing `;` rather than requiring the
+        // input to end exactly at the match.
+        return (route_parameter(&mut lexer) && statement_is_exhausted(&lexer))
+            .then_some(RouteAssignment::Reset);
     }
 
     if !verb.eq_ignore_ascii_case("set") {
@@ -162,11 +173,76 @@ pub fn parse_route_assignment(sql: &str) -> Option<RouteAssignment> {
     lexer.skip_trivia();
 
     // The value's own quoting and case must reach `parse_hint_value`
-    // unchanged, which is why this reads the lexer's remaining raw text
-    // rather than tokenizing further. A trailing semicolon is part of the
-    // statement, not of the value.
-    let value = lexer.rest().trim().trim_end_matches(';').trim();
+    // unchanged, which is why this reads raw text rather than tokenizing the
+    // value itself. But only the first statement's raw text.
+    //
+    // `M90.10`. This used to be `lexer.rest()` wholesale, trimming only a
+    // semicolon found at the very end of the *whole* remaining string —
+    // which assumed there was nothing after the value to trim from in the
+    // first place. `"SET pgprox.route = 'primary'; DELETE ..."` is one wire
+    // message with two statements, which the simple query protocol allows:
+    // the raw capture glued `'primary'; DELETE FROM orders WHERE tenant_id =
+    // 5` together, `unquote` requires matching quotes at both ends and this
+    // has none, and the whole thing became `RouteAssignment::Invalid` — a
+    // generic "invalid route hint" error for a value that was never invalid,
+    // and the `DELETE` discarded along with it rather than run.
+    //
+    // `first_statement` walks tokens rather than searching the raw text for
+    // `;`, so a semicolon inside the value itself — `SET pgprox.route =
+    // ';'`, however pointless — is never mistaken for the boundary.
+    let (value, exhausted) = first_statement(&lexer);
+    if !exhausted {
+        // Something real follows in the same message. This is not a
+        // malformed hint to reject; it is not this hint's statement to
+        // consume at all. Falling through lets the caller forward the whole
+        // message to the server, which runs both statements exactly as the
+        // client sent them, rather than this silently keeping the second one
+        // from ever reaching it.
+        return None;
+    }
+    let value = value.trim();
     Some(parse_hint_value(value).map_or(RouteAssignment::Invalid, RouteAssignment::Set))
+}
+
+/// Whether nothing but trivia — and at most one statement-separating `;` —
+/// remains in `lexer`.
+///
+/// The same shape `RESET ALL`'s own match already required by name
+/// (`probe.next().is_none()`), generalised to tolerate a single trailing
+/// `;`: a hint is often not the last thing a client writes about its own
+/// session, but nothing after it is this hint's to consume.
+fn statement_is_exhausted(lexer: &Lexer<'_>) -> bool {
+    let mut probe = lexer.clone();
+    match probe.next() {
+        None => true,
+        Some(Token::Semicolon) => probe.next().is_none(),
+        _ => false,
+    }
+}
+
+/// The raw text up to (excluding) the first statement-separating `;`, and
+/// whether nothing but trivia follows that `;` — or there was none to find,
+/// in which case the raw text is everything remaining and this is
+/// trivially `true`.
+///
+/// Token boundaries rather than a search for `;` in the raw text directly,
+/// so a `;` inside a quoted value can never be mistaken for the end of the
+/// statement — the same protection `pgprox_core::sql` exists to give every
+/// other caller that has to tell where one statement ends.
+fn first_statement<'a>(lexer: &Lexer<'a>) -> (&'a str, bool) {
+    let text = lexer.rest();
+    let mut probe = lexer.clone();
+    loop {
+        let before = probe.clone();
+        match probe.next() {
+            None => break (text, true),
+            Some(Token::Semicolon) => {
+                let consumed = text.len() - before.rest().len();
+                break (&text[..consumed], probe.next().is_none());
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Consumes `pgprox.route` from `lexer`, case-insensitively, as the three
@@ -458,6 +534,73 @@ mod tests {
             parse_route_assignment("reset ALL"),
             Some(RouteAssignment::Reset),
             "RESET ALL clears every parameter, this one included"
+        );
+    }
+
+    #[test]
+    fn a_trailing_semicolon_alone_does_not_disqualify_a_reset() {
+        // A hint is not always the last thing a client writes in a message,
+        // but a lone trailing `;` with nothing after it is still just this
+        // one statement.
+        assert_eq!(
+            parse_route_assignment("RESET pgprox.route;"),
+            Some(RouteAssignment::Reset)
+        );
+    }
+
+    #[test]
+    fn a_reset_followed_by_a_real_statement_is_not_consumed_as_the_hint() {
+        // `M90.10`. The simple query protocol allows several `;`-separated
+        // statements in one message, and `parse_route_assignment` used to
+        // match `RESET pgprox.route` regardless of what followed it,
+        // silently discarding the rest — a `DELETE` after it never ran and
+        // the client was told nothing about that. `None` here means the
+        // whole message falls through to ordinary forwarding, where the
+        // server runs both statements itself.
+        assert_eq!(
+            parse_route_assignment("RESET pgprox.route; DELETE FROM t"),
+            None,
+            "a statement after the hint was silently swallowed"
+        );
+    }
+
+    #[test]
+    fn a_set_followed_by_a_real_statement_is_not_consumed_as_the_hint() {
+        // The same hazard as the reset case, for `SET`. The old code
+        // captured everything remaining as "the value", so this became
+        // `RouteAssignment::Invalid` — an "invalid route hint" error for a
+        // value that was perfectly valid — and the `DELETE` was discarded
+        // right along with it.
+        assert_eq!(
+            parse_route_assignment("SET pgprox.route = 'primary'; DELETE FROM t"),
+            None,
+            "a statement after the hint was silently swallowed"
+        );
+        assert_eq!(
+            parse_route_assignment("SET pgprox.route = replica; SELECT 1"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_trailing_semicolon_alone_does_not_disqualify_a_set() {
+        assert_eq!(
+            parse_route_assignment("SET pgprox.route = 'replica';"),
+            Some(RouteAssignment::Set(RouteHint::Replica))
+        );
+    }
+
+    #[test]
+    fn a_semicolon_inside_the_value_is_not_mistaken_for_the_statement_boundary() {
+        // The value is quoted, so the `;` inside it is data rather than a
+        // statement separator: this is a bad value (`;` names no route), not
+        // a hint followed by something else. `first_statement` walks tokens
+        // rather than searching raw text for `;` for exactly this reason —
+        // searching the text would have cut the value off after the first
+        // character and left a stray `'` for whatever came next to trip on.
+        assert_eq!(
+            parse_route_assignment("SET pgprox.route = ';'"),
+            Some(RouteAssignment::Invalid)
         );
     }
 

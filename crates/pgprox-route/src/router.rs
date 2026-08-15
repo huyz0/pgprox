@@ -429,6 +429,39 @@ mod tests {
     }
 
     #[test]
+    fn a_hint_followed_by_a_real_statement_forwards_both_rather_than_dropping_one() {
+        // `M90.10`. The simple query protocol allows several `;`-separated
+        // statements in one message. `parse_route_assignment` used to match
+        // `RESET pgprox.route` (or a `SET` whose value happened to trail off
+        // into more SQL) regardless of what followed it in the same message,
+        // consumed the whole thing as the hint, and the statement after it
+        // was never classified, routed, or sent anywhere — silently, with
+        // the client told nothing beyond an ordinary `ReadyForQuery`.
+        //
+        // Once `parse_route_assignment` no longer matches, this reaches
+        // ordinary classification, which already combines multiple
+        // statements correctly (`classify`'s own doctest covers exactly this
+        // shape) — a write anywhere in the message makes the whole thing a
+        // write, so it reaches the primary and the server itself runs both
+        // statements, rather than this proxy running neither.
+        let mut router = SessionRouter::new();
+        assert_eq!(
+            route(&mut router, "RESET pgprox.route; DELETE FROM t", false),
+            Routed::To(RouteTarget::Primary),
+            "a statement after a RESET hint was swallowed rather than forwarded"
+        );
+        assert_eq!(
+            route(
+                &mut router,
+                "SET pgprox.route = 'primary'; DELETE FROM t",
+                false
+            ),
+            Routed::To(RouteTarget::Primary),
+            "a statement after a SET hint was swallowed rather than forwarded"
+        );
+    }
+
+    #[test]
     fn a_statement_comment_outranks_the_session_setting() {
         // The more specific of the two wins, which is what lets an ORM override
         // a connection-wide default for one query.

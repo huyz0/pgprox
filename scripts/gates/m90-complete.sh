@@ -135,4 +135,12 @@ run_finding pgprox metrics::tests::a_server_name_with_a_backslash_does_not_break
 run_finding pgload run::tests::a_target_that_only_relocates_says_so_rather_than_claiming_nothing_happened \
   "M90.9: a target that only relocates says so rather than claiming nothing happened"
 
+# --- M90.10: a route hint swallowed whatever statement followed it ----------
+run_finding pgprox-route hints::tests::a_reset_followed_by_a_real_statement_is_not_consumed_as_the_hint \
+  "M90.10: a reset followed by a real statement is not consumed as the hint"
+run_finding pgprox-route hints::tests::a_set_followed_by_a_real_statement_is_not_consumed_as_the_hint \
+  "M90.10: a set followed by a real statement is not consumed as the hint"
+run_finding pgprox-route router::tests::a_hint_followed_by_a_real_statement_forwards_both_rather_than_dropping_one \
+  "M90.10: a hint followed by a real statement forwards both rather than dropping one"
+
 finish

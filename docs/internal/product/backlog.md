@@ -10205,7 +10205,30 @@ scalable real production machine, which stays `M16`'s open item.
   used by a prior test that checked only the error variant, not its detail)
   shows the resulting message names the code actually seen, failing before
   the fix.
-- [ ] `M90.10` Close M90 once a full review cycle across the angles above
+- [x] `M90.10` `parse_route_assignment` matched a `SET`/`RESET pgprox.route`
+  regardless of what followed it in the same wire message. The simple query
+  protocol allows several `;`-separated statements in one message, and
+  nothing here checked that the hint was the *only* statement: `RESET
+  pgprox.route; DELETE FROM t` matched the reset, was consumed as the hint,
+  and the `DELETE` was never classified, forwarded, or run — no error
+  either, the client got a bare `ReadyForQuery` and every reason to believe
+  it had succeeded. `SET pgprox.route = 'primary'; DELETE FROM t` took the
+  whole remaining text as the value's raw capture, so it became
+  `RouteAssignment::Invalid` — a generic "invalid route hint" error for a
+  value that was never invalid — and discarded the `DELETE` the same way.
+  Acceptance: `route_parameter` matches are followed by a check that only
+  trivia and at most one trailing `;` remain (`statement_is_exhausted`); the
+  `SET` value is now read by walking tokens to the next statement-separating
+  `;` rather than taking the lexer's raw remainder wholesale
+  (`first_statement`), so a `;` inside a quoted value is never mistaken for
+  the boundary and real content after it disqualifies the match, falling
+  through to ordinary forwarding — where the server runs both statements
+  itself, matching `classify`'s own already-tested handling of a write
+  anywhere in a multi-statement message. Tests at both `hints.rs` and
+  `router.rs` for the reset case, the set case, a lone trailing `;` (still
+  matched), and a `;` inside a quoted value (not mistaken for the
+  boundary), each failing before the fix.
+- [ ] `M90.11` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if
