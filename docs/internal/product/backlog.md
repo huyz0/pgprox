@@ -10082,7 +10082,7 @@ scalable real production machine, which stays `M16`'s open item.
   exists to provide.
   Acceptance: a test with `BEGIN; UPDATE ...; COMMIT` showing `wrote` true at
   commit, failing before the fix.
-- [ ] `M90.2` `NodeMode`'s two wire-conversion sites in `bin/pgprox/src/gossip.rs`
+- [x] `M90.2` `NodeMode`'s two wire-conversion sites in `bin/pgprox/src/gossip.rs`
   (`ClientWire::from`, `DigestWire::from`) and its numeric hash in
   `pgprox-cluster`'s `digest.rs::view_hash` each hand-rolled their own match
   against a `#[non_exhaustive]` enum, with a wildcard arm that silently

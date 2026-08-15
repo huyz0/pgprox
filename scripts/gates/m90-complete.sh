@@ -91,4 +91,12 @@ run_finding pgprox-route router::tests::a_write_after_begin_is_still_reported \
 run_finding pgprox-route router::tests::a_read_only_transaction_never_bothers_classifying_for_wrote \
   "M90.1: a read-only transaction does not bother classifying for wrote"
 
+# --- M90.2: NodeMode wildcard wire conversions --------------------------------
+run_finding pgprox-core cluster::tests::as_str_names_every_mode \
+  "M90.2: NodeMode::as_str names every current variant"
+run_finding pgprox-cluster digest::tests::view_hash_asserts_against_an_unrecognised_mode \
+  "M90.2: view_hash's wildcard arm still asserts against an unrecognised mode"
+run_finding pgprox gossip::tests::wire_conversions_use_the_exhaustive_as_str \
+  "M90.2: gossip.rs's wire conversions use the exhaustive as_str()"
+
 finish

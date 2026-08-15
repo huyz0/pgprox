@@ -164,11 +164,14 @@ impl From<&ClientView> for ClientWire {
             node: view.node.get(),
             conn: view.conn.secret(),
             tenant: view.tenant.as_str().to_owned(),
-            state: match view.state {
-                ClientState::Active => "active".to_owned(),
-                ClientState::Waiting => "waiting".to_owned(),
-                _ => "idle".to_owned(),
-            },
+            // `M90`. Was a hand-rolled match with a wildcard folding anything
+            // unrecognised into `"idle"` - silently wrong for a future
+            // `ClientState` variant, since it would gossip a client that is
+            // actually busy or waiting as one that is not. `as_str()` is
+            // exhaustive in the crate that defines the enum, so a variant
+            // added there without updating this string is a compile error,
+            // not a silent downgrade three crates away.
+            state: view.state.as_str().to_owned(),
             since_ms: u64::try_from(view.since.as_millis()).unwrap_or(u64::MAX),
             pinned: view.pinned.clone(),
         }
@@ -215,10 +218,12 @@ impl From<&VersionedDigest> for DigestWire {
     fn from(versioned: &VersionedDigest) -> Self {
         Self {
             node: versioned.digest.node.get(),
-            mode: match versioned.digest.mode {
-                NodeMode::Draining => "draining".to_owned(),
-                _ => "active".to_owned(),
-            },
+            // `M90`. Was a hand-rolled match whose wildcard gossiped anything
+            // that was not `Draining` as `"active"` - silently wrong for a
+            // future third `NodeMode`, and `coordinator.rs` reads exactly
+            // this field to decide whether to keep routing tenants onto a
+            // peer. `as_str()` is exhaustive where the enum is defined.
+            mode: versioned.digest.mode.as_str().to_owned(),
             version: versioned.version,
             client_conns: versioned.digest.client_conns,
             upstream_conns: versioned
@@ -710,6 +715,33 @@ mod tests {
             CoordinatorConfig::default(),
             Arc::new(FakeClock::new()),
         )
+    }
+
+    #[test]
+    fn wire_conversions_use_the_exhaustive_as_str() {
+        // `M90`. `ClientWire::from` and `DigestWire::from` used to hand-roll
+        // their own match against `ClientState`/`NodeMode`, each with a
+        // wildcard arm that silently downgraded an unrecognised variant
+        // instead of reporting it: `ClientWire::from` folded anything but
+        // `Active`/`Waiting` into `"idle"`, and `DigestWire::from` folded
+        // anything but `Draining` into `"active"` - the exact field
+        // `coordinator.rs` reads to decide whether to keep routing tenants
+        // onto a peer. This checks both call the exhaustive `.as_str()`
+        // defined alongside the enums rather than a local wildcard that
+        // neither crate here can turn into a compile error.
+        let production = include_str!("gossip.rs")
+            .split_once("#[cfg(test)]")
+            .expect("this module's own test marker")
+            .0;
+        assert!(
+            production.contains("tenant: view.tenant.as_str().to_owned(),")
+                && production.contains("state: view.state.as_str().to_owned(),"),
+            "ClientWire::from stopped using the exhaustive as_str()"
+        );
+        assert!(
+            production.contains("mode: versioned.digest.mode.as_str().to_owned(),"),
+            "DigestWire::from stopped using the exhaustive as_str()"
+        );
     }
 
     #[test]

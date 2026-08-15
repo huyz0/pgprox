@@ -30,6 +30,26 @@ pub enum NodeMode {
     Draining,
 }
 
+impl NodeMode {
+    /// The word gossip puts on the wire and a metric puts in a label.
+    ///
+    /// `M90`. Exhaustive here rather than at either call site: this is the one
+    /// crate `#[non_exhaustive]` does not bind, so a variant added later is a
+    /// compile error here and nowhere downstream has to remember to ask this
+    /// question again. `gossip.rs`'s `DigestWire::from` used to hand-roll this
+    /// match itself, with a wildcard arm that would have gossiped a future
+    /// third mode to the rest of the fleet as `"active"` — silently wrong on
+    /// the exact signal `coordinator.rs` reads to decide whether to keep
+    /// routing tenants onto a node.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Draining => "draining",
+        }
+    }
+}
+
 /// A stable 64-bit hash.
 ///
 /// [`std::collections::hash_map::DefaultHasher`] is explicitly not stable
@@ -744,6 +764,16 @@ mod tests {
         // Gossip delivers members in arbitrary order. Two nodes must not reach
         // different conclusions about who leads.
         assert_eq!(view(1, &[3, 1, 2]).leader(), view(1, &[2, 3, 1]).leader());
+    }
+
+    #[test]
+    fn as_str_names_every_mode() {
+        // `M90`. Direct coverage of the exhaustive method itself, not just of
+        // the two call sites that use it — a match with a variant missing
+        // fails to compile, but nothing stops the two arms present from
+        // returning the wrong word for their variant.
+        assert_eq!(NodeMode::Active.as_str(), "active");
+        assert_eq!(NodeMode::Draining.as_str(), "draining");
     }
 
     #[test]

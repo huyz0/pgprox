@@ -157,10 +157,26 @@ impl DigestStore {
         self.latest
             .values()
             .map(|v| {
+                // `M90`. `NodeMode` is `#[non_exhaustive]`, so a variant added
+                // later still has to land somewhere here - the wildcard
+                // cannot become a compile error, that is what the attribute
+                // is for. What it must not do is land on the same number a
+                // *known* mode already uses: two pods disagreeing between a
+                // future mode and `Draining` would then hash identically and
+                // this detector would call that agreement. `3` is reserved
+                // for exactly this arm and asserted against in debug builds,
+                // so an unrecognised mode is loud during development even
+                // though it must stay silent in production.
                 let mode = match v.digest.mode {
                     NodeMode::Active => 1_u64,
                     NodeMode::Draining => 2,
-                    _ => 3,
+                    _ => {
+                        debug_assert!(
+                            false,
+                            "NodeMode gained a variant view_hash does not know about"
+                        );
+                        3
+                    }
                 };
                 u64::from(v.digest.node.get())
                     .wrapping_mul(0x9E37_79B9_7F4A_7C15)
@@ -171,7 +187,7 @@ impl DigestStore {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -371,6 +387,25 @@ mod tests {
         store.merge(draining);
 
         assert_ne!(before, store.view_hash(), "a drain did not change the view");
+    }
+
+    #[test]
+    fn view_hash_asserts_against_an_unrecognised_mode() {
+        // `M90`. `NodeMode` is `#[non_exhaustive]`, so the wildcard here
+        // cannot become a compile error - that is what the attribute is
+        // for - and nothing outside `pgprox-core` can construct a variant
+        // this crate does not know about to exercise the arm directly. This
+        // checks the source for the `debug_assert!` that makes an
+        // unrecognised mode loud in a debug build instead of silently
+        // sharing `Draining`'s or a *different* unrecognised mode's number.
+        let production = include_str!("digest.rs")
+            .split_once("#[cfg(test)]")
+            .expect("this module's own test marker")
+            .0;
+        assert!(
+            production.contains("debug_assert!"),
+            "view_hash's wildcard arm lost its debug_assert!"
+        );
     }
 
     #[test]
