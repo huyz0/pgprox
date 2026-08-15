@@ -364,17 +364,27 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     /// The other half of [`Wire::read_tagged`], split out so a caller that does
     /// not need the body never holds one. See [`Wire::take_body`].
     ///
-    /// # Not cancellation-safe, unlike `read_tagged`
+    /// # Safe to race on its own; the body read after it is not
     ///
-    /// This consumes the header before the body has arrived, so a future
-    /// dropped between the two leaves the wire inside a message with no way to
-    /// say so. `read_tagged` is atomic and stays that way for exactly this
-    /// reason: it is called from a `select!` in the relay loop, where the
-    /// drain branch can drop it mid-frame.
+    /// This call by itself is cancellation-safe: its only await is inside the
+    /// buffer fill it shares with every other read here, which never consumes
+    /// a byte before a complete header is available, so a future dropped here
+    /// picks up exactly where it left off next time. That is what lets the
+    /// client's read loop call it as a `select!` arm the drain and shed
+    /// branches can win.
     ///
-    /// Use this only where the read is not a cancellation point. The
-    /// server-to-client pump is one such place: it awaits in a plain loop with
-    /// nothing racing it.
+    /// What is *not* safe is racing anything on the read that has to follow
+    /// it. The moment this returns `Ok`, the header is consumed and the wire
+    /// is inside a message with a body still to come; a future dropped before
+    /// that body is read leaves no way to say so. The client's read loop
+    /// keeps that read (`read_client_body`, over [`Wire::read_body_into`]) on
+    /// a plain unraced `.await` right after, outside the `select!`, which is
+    /// what makes the pair as a whole safe there. Corrected `M90`, cycle 6: an
+    /// earlier version of this doc said the header read itself was unsafe and
+    /// pointed at the server-to-client pump as the one place that could use
+    /// it, when the client's read loop had already been calling it from
+    /// inside a `select!` since `M16.12` — correctly, but in a way this doc
+    /// then contradicted.
     ///
     /// # Errors
     ///
@@ -391,9 +401,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
 
     /// Reads exactly `n` body bytes into `body`, replacing what was there.
     ///
-    /// The buffering half of the pair, for a message something has to read. See
-    /// [`Wire::read_header`] for why the split is safe only where the read is
-    /// not a cancellation point.
+    /// The buffering half of the pair, for a message something has to read.
+    /// See [`Wire::read_header`] for the safety split between the two: that
+    /// call is fine to race, this one is not — call it on a plain unraced
+    /// `.await` once the header it belongs to has already been read.
     ///
     /// # Errors
     ///

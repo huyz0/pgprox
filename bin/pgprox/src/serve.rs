@@ -2337,11 +2337,20 @@ where
         // DataRow was held in full, twice, once in `body` and once again in the
         // write buffer that `forward` copies it into.
         //
-        // Splitting the read is safe here and would not be in the relay loop
-        // above. `read_header` consumes five bytes before the body arrives, so
-        // a future dropped between the two leaves the wire inside a message.
-        // This loop has no `select!` and nothing races it; the relay loop does,
-        // which is why `read_tagged` stays atomic and is still what it calls.
+        // Splitting the read is safe here for the simplest possible reason:
+        // this loop has no `select!` and nothing races it, so the header and
+        // body reads always run back to back regardless. `read_header` alone
+        // is also safe to race — see its doc — which is what lets the relay
+        // loop above call it from inside a `select!` the drain and shed
+        // branches can win. What neither loop ever does is race the body read
+        // that follows a header: dropped there, the wire is left inside a
+        // message with no way to say so, which is why both loops keep it on a
+        // plain unraced `.await` once the header has already been consumed.
+        // `M90`, cycle 6: this comment previously said the relay loop calls
+        // `read_tagged` to stay atomic. It does not, and has called
+        // `read_header` from inside its own `select!` since `M16.12` —
+        // correctly, but this comment described a different function than
+        // the one actually there.
         let header = match upstream
             .wire
             .read_header(pgprox_proto::frame::DEFAULT_MAX_FRAME)
