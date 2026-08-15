@@ -9747,13 +9747,19 @@ recognised so it can be refused rather than read as a version.
   construction in `wiring.rs`'s `App::build`, before any connection exists for
   that task to be serving. `Options::tls()`'s certificate loading is the same
   shape and was already accepted.
-- [ ] `M88.9` `pgprox-session`'s `ParameterCache::ensure` drops its probe
+- [x] `M88.9` `pgprox-session`'s `ParameterCache::ensure` drops its probe
   connection without saying goodbye. It opens a connection to discover a
   backend's server parameters and drops it when done, skipping the `.goodbye()`
   call every other exit path uses, which under load leaves the backend holding
   a connection slot until its own TCP timeout notices the client vanished.
   Acceptance: a test that `ensure`'s probe connection sends the goodbye message
   before it is dropped, failing before the fix.
+  Fixing it moved a downstream assumption: `bin/pgprox`'s
+  `a_reaped_connection_says_goodbye_rather_than_vanishing` treated any
+  `Terminate` reaching its fake server before the reap call as proof
+  something closed early, and a login's own probe now legitimately sends one
+  earlier than that. Rewritten to count occurrences and compare before and
+  after reaping rather than asserting none at all before it.
 - [ ] `M88.10` `pgload`'s `NoConnection` error swallows the reason. It reports
   that no connection could be obtained without carrying the per-attempt failure
   that caused it, so a load test failing to connect gives no signal about

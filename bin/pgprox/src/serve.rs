@@ -6100,6 +6100,27 @@ mod tests {
             expect(&mut client).await;
         }
 
+        // `M88.9`. Login already opened and said goodbye to one connection:
+        // the cache was empty, so answering the client's `ParameterStatus`
+        // needed a probe, and a probe leaves the same way any other
+        // cleanly-closing connection does. That is not what this test is
+        // guarding against, so it is the baseline rather than an
+        // unaccounted-for failure. Polled for the same reason the goodbye
+        // below is: the bytes already left the probe's side, but the fake's
+        // own task needs the runtime to park before it reads them.
+        let mut before_reap = 0;
+        for _ in 0..100 {
+            before_reap = crate::fakepg::statements_seen(addr)
+                .iter()
+                .filter(|entry| *entry == crate::fakepg::TERMINATED)
+                .count();
+            if before_reap > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        assert_eq!(before_reap, 1, "the login probe did not say goodbye");
+
         // One statement, so a connection exists and goes back to the pool.
         let mut query = Vec::new();
         pgprox_proto::encode_frontend::query(&mut query, "SELECT 1");
@@ -6110,8 +6131,12 @@ mod tests {
         drop(client);
         let _ = served.await;
 
-        assert!(
-            !crate::fakepg::statements_seen(addr).contains(&crate::fakepg::TERMINATED.to_owned()),
+        assert_eq!(
+            crate::fakepg::statements_seen(addr)
+                .iter()
+                .filter(|entry| *entry == crate::fakepg::TERMINATED)
+                .count(),
+            before_reap,
             "the connection was said goodbye to before anything reaped it"
         );
 
@@ -6134,17 +6159,21 @@ mod tests {
         // not park, which is why it is not what is here. The loop stops on the
         // first sight of the goodbye, so the interval is what a *failure* costs
         // rather than what a pass does, and widening it would fix nothing.
+        let mut after_reap = before_reap;
         for _ in 0..100 {
-            if crate::fakepg::statements_seen(addr).contains(&crate::fakepg::TERMINATED.to_owned())
-            {
+            after_reap = crate::fakepg::statements_seen(addr)
+                .iter()
+                .filter(|entry| *entry == crate::fakepg::TERMINATED)
+                .count();
+            if after_reap > before_reap {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
-        let seen = crate::fakepg::statements_seen(addr);
         assert!(
-            seen.contains(&crate::fakepg::TERMINATED.to_owned()),
-            "the socket was dropped without a Terminate: {seen:?}"
+            after_reap > before_reap,
+            "the socket was dropped without a Terminate: {:?}",
+            crate::fakepg::statements_seen(addr)
         );
     }
 

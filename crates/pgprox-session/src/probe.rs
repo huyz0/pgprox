@@ -123,14 +123,24 @@ impl ParameterCache {
         }
 
         self.probes.fetch_add(1, Ordering::Relaxed);
-        let opened = connector.open(&backend.pool_key()).await?;
+        let mut opened = connector.open(&backend.pool_key()).await?;
         self.record(&backend.server, &backend.database, &opened.parameters);
 
         // The connection is dropped here rather than kept. It was opened to
         // ask one question, and holding it would mean the first client of a
         // database costs an upstream connection it never uses, which is what
         // this whole module exists to avoid.
-        drop(opened);
+        //
+        // `M88.9`. It leaves the same way `bin/pgprox/src/dial.rs`'s `retire`
+        // leaves a connection the pool is done with: a `goodbye()` first. This
+        // connection is fresh off `connector.open`, past authentication and at
+        // `ReadyForQuery` with no query ever sent on it, which is exactly the
+        // clean-close state `goodbye`'s own doc requires — not a connection
+        // discarded mid-transaction or mid-COPY. Without it the backend has no
+        // `Terminate` to notice and holds the slot until its own TCP timeout
+        // fires, which under load is a real connection leak for a socket that
+        // asked one question.
+        opened.goodbye().await;
 
         self.get(&backend.server, &backend.database)
             .ok_or_else(|| PoolError::ConnectFailed {
@@ -617,6 +627,101 @@ mod tests {
 
         assert!(cache.ensure(&connector, &backend("acme")).await.is_err());
         assert!(cache.is_empty(), "a failed probe left an entry behind");
+    }
+
+    /// A dialer whose fake server records every byte it reads after the
+    /// startup handshake, then reports it once the connection closes.
+    ///
+    /// A one-shot rather than a shared buffer plus a sleep: the spawned
+    /// server task's `read_to_end` and the test's assertion are two separate
+    /// tasks, and a fixed sleep between "the probe returned" and "the fake
+    /// server noticed the close and recorded what it read" would be exactly
+    /// the wall-clock-timing bug `docs/internal/standards/testing.md` rules
+    /// out. The channel makes the test wait for the actual event instead.
+    #[derive(Debug)]
+    struct RecordingScripted {
+        version: &'static str,
+        report: Mutex<Option<tokio::sync::oneshot::Sender<Vec<u8>>>>,
+    }
+
+    impl RecordingScripted {
+        fn new(version: &'static str) -> (Self, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            (
+                Self {
+                    version,
+                    report: Mutex::new(Some(tx)),
+                },
+                rx,
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Upstream for RecordingScripted {
+        type Stream = DuplexStream;
+
+        async fn dial(&self, _backend: &Backend) -> Result<Self::Stream, PoolError> {
+            let (ours, mut theirs) = duplex(4096);
+            let version = self.version.to_owned();
+            let report = self
+                .report
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .expect("this fake is dialed at most once per test");
+
+            tokio::spawn(async move {
+                let mut len = [0_u8; 4];
+                theirs.read_exact(&mut len).await.unwrap();
+                let mut body = vec![0; u32::from_be_bytes(len) as usize - 4];
+                theirs.read_exact(&mut body).await.unwrap();
+
+                let mut out = Vec::new();
+                encode::authentication_ok(&mut out);
+                encode::parameter_status(&mut out, "server_version", &version);
+                encode::ready_for_query(&mut out, pgprox_proto::backend::TxStatus::Idle);
+                theirs.write_all(&out).await.unwrap();
+
+                let mut sink = Vec::new();
+                let _ = theirs.read_to_end(&mut sink).await;
+                let _ = report.send(sink);
+            });
+
+            Ok(ours)
+        }
+
+        fn scram(&self) -> Box<dyn UpstreamScram> {
+            unreachable!("this server never asks for SASL")
+        }
+    }
+
+    /// `M88.9`. The probe connection is a connection like any other retired
+    /// cleanly: `bin/pgprox/src/dial.rs`'s `retire` says goodbye to a pool
+    /// connection the reaper is done with, and this is the same shape — open,
+    /// ask one question, leave. Without a `Terminate` the backend has nothing
+    /// to notice the client is gone and holds the slot until its own TCP
+    /// timeout fires instead, which under load is a real connection leak for
+    /// a socket that asked one question.
+    #[tokio::test]
+    async fn ensure_says_goodbye_to_its_probe_connection() {
+        let (dialer, closed) = RecordingScripted::new("17.2");
+        let connector = PgConnector::new(dialer, test_slab());
+        connector.learn(&backend("acme"));
+        let cache = ParameterCache::new();
+
+        cache.ensure(&connector, &backend("acme")).await.unwrap();
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), closed)
+            .await
+            .expect("the fake server never saw the probe connection close")
+            .unwrap();
+
+        assert_eq!(
+            received.first().copied(),
+            Some(Tag::TERMINATE.get()),
+            "the probe connection closed without sending Terminate: {received:?}"
+        );
     }
 
     #[test]

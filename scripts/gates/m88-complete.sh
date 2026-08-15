@@ -152,4 +152,9 @@ run_finding pgprox-config \
   provider::tests::poll_yields_to_the_runtime_instead_of_blocking_it \
   "poll() hands the read to spawn_blocking rather than blocking the runtime"
 
+# --- M88.9: ParameterCache::ensure says goodbye to its probe connection --
+run_finding pgprox-session \
+  probe::tests::ensure_says_goodbye_to_its_probe_connection \
+  "the probe connection sends Terminate before it is dropped"
+
 finish

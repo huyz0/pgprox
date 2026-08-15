@@ -3472,6 +3472,30 @@ of a suspension point rather than a timing measurement. Confirmed failing
 against a `poll` that keeps its `async` signature but reads inline instead of
 through `spawn_blocking` — the counter never moves, and the assertion says so.
 
+**`M88.9`.** `ParameterCache::ensure` opens a probe connection to learn a
+database's `ParameterStatus` set the first time anything asks about it, then
+dropped the connection rather than retiring it the way every other clean exit
+does: `bin/pgprox/src/dial.rs`'s `retire` sends `Terminate` before closing a
+pool connection specifically because Postgres logs a client that vanishes
+without one, and a probe leaving without saying so was the same fault on a
+connection nothing else was watching. Fixed with the same call, `goodbye()`,
+right after the probe has read what it came for — a state `goodbye`'s own doc
+requires (past authentication, no query ever sent, not mid-transaction or
+mid-COPY), which a probe connection always is. The new test races a fake
+server's recorded bytes against the probe closing, over a one-shot channel
+rather than a sleep, and checks the first byte it reads is `Terminate`'s tag.
+
+Fixing this moved a downstream assumption that had gone unnoticed for want of
+anything to trip it: `bin/pgprox`'s
+`a_reaped_connection_says_goodbye_rather_than_vanishing` asserted that no
+`Terminate` had reached its fake server before its own explicit reap call, as
+a proxy for "nothing closed the pooled connection early." A login's probe now
+reaches that fake server first and legitimately sends one, which made the
+assertion fire for a reason that has nothing to do with what the test is
+for. Rewritten to count `Terminate`s before and after the reap call and
+compare the two rather than asserting none arrived beforehand; confirmed
+stable across repeated runs.
+
 ## M89: the review from outside this repo, and the four gaps it found (complete)
 
 ```bash
