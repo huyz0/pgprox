@@ -85,4 +85,10 @@ fi
 
 # --- the findings that have landed -------------------------------------------
 
+# --- M90.1: SessionRouter::route stops tracking wrote once fixed -------------
+run_finding pgprox-route router::tests::a_write_after_begin_is_still_reported \
+  "M90.1: a write as a transaction's second statement is still reported"
+run_finding pgprox-route router::tests::a_read_only_transaction_never_bothers_classifying_for_wrote \
+  "M90.1: a read-only transaction does not bother classifying for wrote"
+
 finish

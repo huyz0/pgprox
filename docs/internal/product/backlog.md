@@ -10070,7 +10070,7 @@ scalable real production machine, which stays `M16`'s open item.
   written, and `scripts/gates/m90-complete.sh` exists, is named in CI, and
   passes on this commit by checking what has landed rather than what is
   planned.
-- [ ] `M90.1` `SessionRouter::route` stops tracking whether a transaction
+- [x] `M90.1` `SessionRouter::route` stops tracking whether a transaction
   wrote anything once its routing target is fixed. The target a transaction's
   first statement chose is correctly held for the rest of the transaction,
   but the code held `wrote` to that same first answer instead of continuing

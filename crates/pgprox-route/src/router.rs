@@ -183,7 +183,23 @@ impl SessionRouter {
 
         // An open transaction goes where its first statement went, whatever
         // this statement is.
+        //
+        // The target is fixed, but `wrote` is not: it is not fixed to the
+        // first statement's answer, and it must not be. `wrote()`'s own doc
+        // says it is true "from the moment a write is classified", not "from
+        // the moment the transaction's first statement is classified", and
+        // `BEGIN; UPDATE t SET ...; COMMIT` is the ordinary shape of a write
+        // transaction — its write is the *second* statement, never the one
+        // that fixed the target. Skipping classification here left `wrote`
+        // false for exactly that pattern, so the caller never fetched the
+        // commit LSN and a read right after commit could land on a replica
+        // that had not replayed it yet. Skipped only for a transaction
+        // already known read-only, where the server refuses a write outright
+        // and classifying one is pointless.
         if let Some(target) = self.fixed {
+            if !self.read_only_transaction {
+                self.wrote |= classify(sql) == StmtClass::Write;
+            }
             return Routed::To(target);
         }
 
@@ -490,6 +506,54 @@ mod tests {
         assert!(
             !router.wrote(),
             "the write was still outstanding after it was recorded"
+        );
+    }
+
+    #[test]
+    fn a_write_after_begin_is_still_reported() {
+        // The ordinary shape of a write transaction: `BEGIN` fixes the target
+        // and is not itself a write, so the write is the *second* statement.
+        // The short-circuit that keeps the target fixed must not also freeze
+        // `wrote` at whatever the first statement was, or this, the most
+        // common transaction pattern there is, never reports its write and
+        // the caller never records where it landed.
+        let mut router = SessionRouter::new();
+        let replicas = Replicas::new(1, ReplicaConfig::default());
+        let now = Instant::now();
+
+        assert_eq!(
+            router.route("BEGIN", false, &replicas, now),
+            Routed::To(RouteTarget::Primary)
+        );
+        assert!(!router.wrote(), "BEGIN alone was reported as a write");
+
+        assert_eq!(
+            router.route("UPDATE t SET a = 1", true, &replicas, now),
+            Routed::To(RouteTarget::Primary),
+            "the target should stay fixed to what BEGIN chose"
+        );
+        assert!(
+            router.wrote(),
+            "a write as the transaction's second statement went unreported"
+        );
+
+        router.record_write(Lsn::new(500));
+        assert!(!router.wrote());
+    }
+
+    #[test]
+    fn a_read_only_transaction_never_bothers_classifying_for_wrote() {
+        // The server itself refuses a write here, so there is nothing to
+        // classify and no reason to pay for it.
+        let mut router = SessionRouter::new();
+        let replicas = Replicas::new(1, ReplicaConfig::default());
+        let now = Instant::now();
+
+        router.route("BEGIN READ ONLY", false, &replicas, now);
+        router.route("SELECT * FROM t", true, &replicas, now);
+        assert!(
+            !router.wrote(),
+            "a read-only transaction's statement was reported as a write"
         );
     }
 
