@@ -10541,8 +10541,21 @@ scalable real production machine, which stays `M16`'s open item.
   which gives the genuinely newer failure an earlier slot in the slice and
   the genuinely older one a later slot so Vec order and wall-clock order
   disagree, verified against a revert of the fix before landing.
-- [ ] `M90.25` Close M90 once a full review cycle across the angles above
-  finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
-  and `M89.5` were: closing a milestone is a claim about the whole of it.
-  Acceptance: the status row says complete and the section names what, if
-  anything, this milestone left open.
+- [x] `M90.25` Cycle 7 — a deep dive on `pgprox-cache` (byte-budget
+  accounting, TTL/expiry arithmetic, cache key construction, invalidation
+  completeness, lock ordering) and a pass on `pgprox-proto`'s real hot-path
+  parsing (`pgprox_session::shell::Wire`'s length-prefix framing, extended-
+  query decoding, startup/SSL negotiation) plus all of `pgprox-tls` (cert
+  reload race, upstream verification, secret-in-log) — came back with no
+  confirmed findings, the first clean cycle of the seven this milestone ran.
+  `pgprox-cache`'s agent flagged three candidates, each independently traced
+  and judged not a fresh finding: `ttl_cap` lowered by a reconfigure is not
+  retroactive on already-cached entries (the ordinary per-entry TTL
+  contract, distinct from the byte budget's shared-resource eviction, which
+  is eager); a `FunctionCall` fast-path write is invisible to invalidation
+  because its payload is deliberately never parsed, already documented as an
+  accepted limit by ADR 0013; and a cache holding `u32::MAX` live entries
+  would alias two slot indices, unreachable under any realistic byte
+  budget. Closes M90: status row marked complete, `docs/internal/product/
+  roadmap.md`'s "Where it stands" section names all twenty-four findings by
+  theme and what the milestone leaves open.

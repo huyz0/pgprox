@@ -3800,7 +3800,7 @@ claims this project has not yet been able to measure; what changed is that
 they now know, before committing to anything, what to build and what to
 check first.
 
-## M90: a third reading, from several angles at once, and what each one found
+## M90: a third reading, from several angles at once, and what each one found (complete)
 
 ```bash
 scripts/gates/m90-complete.sh
@@ -3820,5 +3820,95 @@ opened: this milestone fixes what a reader can verify without that hardware.
 
 ### Where it stands
 
-Open. See `docs/internal/product/backlog.md`'s M90 section for the findings
-as they are confirmed and fixed.
+Complete. Seven cycles, fourteen fresh-angle background review agents run in
+pairs, each finding read and re-verified against the actual code before it
+was filed — twenty-four findings landed as their own commit, each with a
+test that failed before the fix and passed after. The seventh cycle's pair
+(a deep dive on `pgprox-cache`, and a pass over `pgprox-proto`'s real
+hot-path parsing plus all of `pgprox-tls`) came back with nothing new, which
+is this milestone's stop condition. Full technical detail for every finding
+is in `docs/internal/product/backlog.md`'s M90 section; this is the shape of
+what the seven cycles found, in the rough order of what a finding cost
+rather than the order it was found.
+
+**Data correctness on the request path, the costliest shape.** `M90.20`: a
+pipelined statement that changed routing target — most notably a `LISTEN`
+pinning to the primary — could be sent to the connection a *previous*
+pipelined statement already held, because `Relay::on_client` decided whether
+to acquire from "is anything held" rather than "is the right thing held";
+every write after the point of confusion would silently hit a read-only
+replica. `M90.14`: a failed post-commit LSN probe left an unconfirmed write
+looking identical to a session that never wrote anything, waving a healthy
+replica through to read a write it should not yet see. `M90.1` (cycle 1) and
+`M90.10` (cycle 3) are the same family: a transaction's second write going
+unclassified, and a route hint silently swallowing the real statement that
+followed it in the same wire message.
+
+**State that outlives what should have reset it.** `M90.17`: a gossip
+version counter reseeded at zero on every restart, so a node restarting
+inside its own dead-after window lost the comparison against its prior
+incarnation and stuck as stale, sometimes permanently draining. `M90.7`
+(cycle 2): the drain and gossip tick loops ran against a peer table frozen
+at loop start rather than read fresh, so a peer added after startup never
+heard a drain announcement. `M88.1`'s sibling in this milestone, `M90.5`: a
+mid-transaction disconnect leaked its cancel-registry entry.
+
+**Reported numbers that were not measuring what they claimed to.**
+`M90.22`: `TenantView.upstream_conns` counted every registered client
+regardless of whether it held an upstream connection, and reported every
+tenant with a client on a node rather than only the tenants that node
+homes — inflating exactly the number a shed decision weighs against a
+tenant's grant, in the ordinary direction that defeats the opportunistic
+shed mechanism. `M90.23`: `SHOW CONFIG`/`GET /v1/config` marked
+`drain_grace` and `grant_ttl_cap` live-changeable while both are read once
+at startup, so an operator changing either during an incident would see the
+new value reported immediately while enforcement kept the old one. `M90.24`:
+`pgload`'s report picked its "most recent failure" message by which
+connection's task happened to finish last, not by which failure actually
+happened last. `M90.8` (cycle 2): unescaped tenant/server label values could
+break a Prometheus scrape of the whole node, not just one series.
+
+**Cache correctness.** `M90.21`: a write sent purely as `Bind` of an
+already-`Parse`d statement — the ordinary prepare-once-execute-many
+pattern — never invalidated the query cache, serving stale reads for up to
+a tenant's whole TTL. `M90.11` (cycle 3): Unicode's one unconditional
+lower-casing expansion let two different identifiers collide on one cache
+key.
+
+**Resource lifecycle.** `M90.12` (cycle 4): a pool connection's
+configured maximum lifetime had no caller anywhere outside its own unit
+tests, so the documented bound did nothing for a connection released and
+immediately reused. `M90.18` (cycle 6): a refused replica probe dropped its
+connection with no `Terminate`, PostgreSQL's own convention on cycle 6's
+`pgprox-session` pass. `M90.13` (cycle 4): a force-close on drain or
+shutdown closed the client socket with no `ErrorResponse`, indistinguishable
+from a crash to both a human and `pgload`'s own relocation-vs-loss metric.
+
+**Everything else**, each its own commit and test: `M90.2`'s three
+non-exhaustive `NodeMode` wildcard sites (cycle 1); `M90.3`'s grant-cache key
+missing `startup_user` (cycle 1); `M90.4`'s rejected route hint never
+reaching the client (cycle 1); `M90.9`'s `pgload` error claiming nothing was
+attempted over a run that was continuously refused (cycle 3); `M90.16`'s
+tenant allowlist accepting a tenant literally named `other`, colliding with
+the aggregate bucket's own label (cycle 5); `M90.15` and `M90.19`, doc drift
+against the code that actually runs (ADR 0009's watermark query, cycle 5;
+`Wire::read_header`'s cancel-safety claim, cycle 6); and three items already
+found and decided before this milestone, correctly re-confirmed rather than
+re-filed: `pgprox-proto`'s `FrameRelay` has no production caller by design
+(`M16.9`/`M16.10`), `POLL_INTERVAL`'s appearance in two files is deliberate
+cross-referencing (cycle 1), and this milestone's own excluded scope below.
+
+**What this milestone leaves open.** `M16`'s multi-machine,
+100,000-connection run that also serves load stays the roadmap's own open
+item, exactly as `M89` also left it — this milestone fixes what a reader can
+verify without that hardware, and no amount of single-process review changes
+that. Cycle 7's `pgprox-cache` pass surfaced three low-confidence
+candidates, each traced and judged not a fresh finding rather than left
+unresolved: `ttl_cap` lowered by a reconfigure does not retroactively
+shorten an already-cached entry's expiry, which reads as the ordinary
+per-entry TTL contract rather than the byte budget's shared-resource
+eviction; a write sent via the legacy `FunctionCall` fast path is invisible
+to invalidation because its payload is deliberately never parsed, which
+ADR 0013 already documents as an accepted limit on what this cache can see;
+and a cache large enough to hold `u32::MAX` live entries would alias two
+slot indices, unreachable under any realistic byte budget.
