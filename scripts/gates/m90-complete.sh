@@ -125,4 +125,10 @@ run_finding pgprox replicas::tests::adr_0009_records_that_bounded_staleness_rout
 run_finding pgprox run::tests::a_peer_published_after_the_tick_loop_started_is_gossiped_with \
   "M90.7: a peer published after the tick loop started is gossiped with"
 
+# --- M90.8: unescaped tenant/server label values in the Prometheus exporter --
+run_finding pgprox metrics::tests::a_tenant_name_with_a_quote_does_not_break_the_scrape \
+  "M90.8: a tenant name with a quote does not break the scrape"
+run_finding pgprox metrics::tests::a_server_name_with_a_backslash_does_not_break_the_scrape \
+  "M90.8: a server name with a backslash does not break the scrape"
+
 finish

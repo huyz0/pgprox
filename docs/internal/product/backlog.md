@@ -10174,7 +10174,22 @@ scalable real production machine, which stays `M16`'s open item.
   publishes a peer to a `FakePeerSource` after the tick loop has already
   started and shows the next gossip round reaches it, failing before the
   fix.
-- [ ] `M90.8` Close M90 once a full review cycle across the angles above
+- [x] `M90.8` `bin/pgprox/src/metrics.rs`'s Prometheus exporter wrote the
+  `tenant` and `server` label values with no escaping. `TenantId::new` and
+  `ServerId::new` accept any string, so `TenantAllowlist::label_for`'s output
+  for an allowlisted tenant reaches the `tenant` label verbatim; Prometheus's
+  text exposition format requires a label value to escape backslash, double
+  quote and newline, and an unescaped one does not corrupt only its own
+  sample — it breaks the parse of every line the scraper reads after it, so
+  one tenant with a quote in its name could blind monitoring for the whole
+  node. `server` is lower risk, since an operator configures it rather than
+  a tenant, but was exported the same unescaped way.
+  Acceptance: a new `escape_label_value` helper applied to both labels, unit
+  tests for the three characters the format requires escaped, and two
+  scrape-level tests — one tenant name and one server name, each containing
+  a character that would otherwise break the format — showing the emitted
+  line is escaped and the raw value never appears, failing before the fix.
+- [ ] `M90.9` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if

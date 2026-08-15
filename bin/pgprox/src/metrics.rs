@@ -121,6 +121,35 @@ fn count_by_state_and_tenant<'a>(
     counts
 }
 
+/// Escapes a label value for Prometheus's text exposition format.
+///
+/// `M90.8`. `tenant` reaches this module as `TenantAllowlist::label_for`'s
+/// output, which for an allowlisted tenant is the tenant's own name verbatim
+/// — `TenantId::new` accepts any string, so nothing upstream of here has
+/// ever rejected a `"` or a newline. The exposition format has exactly three
+/// characters a label value must escape (backslash, double quote, newline);
+/// an unescaped one does not corrupt only its own sample, it breaks the
+/// parse of every line after it, so one tenant with a quote in its name can
+/// blind a scrape of the whole node. `server` is lower risk — an operator
+/// configures it, not a tenant — but it is exported the same way and gets
+/// the same treatment rather than a documented exception to remember.
+fn escape_label_value(value: &str) -> std::borrow::Cow<'_, str> {
+    if value.contains(['\\', '"', '\n']) {
+        let mut escaped = String::with_capacity(value.len());
+        for ch in value.chars() {
+            match ch {
+                '\\' => escaped.push_str("\\\\"),
+                '"' => escaped.push_str("\\\""),
+                '\n' => escaped.push_str("\\n"),
+                other => escaped.push(other),
+            }
+        }
+        std::borrow::Cow::Owned(escaped)
+    } else {
+        std::borrow::Cow::Borrowed(value)
+    }
+}
+
 fn client_samples(
     out: &mut String,
     metric: &Metric,
@@ -129,6 +158,7 @@ fn client_samples(
     tenants: &TenantAllowlist,
 ) {
     for ((state, tenant), count) in count_by_state_and_tenant(clients, tenants) {
+        let tenant = escape_label_value(tenant);
         let _ = writeln!(
             out,
             "{}{{node=\"{node}\",state=\"{state}\",tenant=\"{tenant}\"}} {count}",
@@ -161,6 +191,7 @@ fn upstream_samples(out: &mut String, metric: &Metric, observatory: &dyn Observa
         entry.1 += pool.stats.idle;
     }
     for (server, (active, idle)) in totals {
+        let server = escape_label_value(&server);
         for (state, count) in [("active", active), ("idle", idle)] {
             let _ = writeln!(
                 out,
@@ -684,6 +715,117 @@ mod tests {
         let out = rendered_allowing("acme").await;
 
         assert!(out.contains("tenant=\"acme\""), "{out}");
+    }
+
+    #[test]
+    fn escape_label_value_passes_ordinary_text_through_unchanged() {
+        // The common case allocates nothing: `Cow::Borrowed` for anything with
+        // none of the three characters the format requires escaped.
+        assert!(matches!(
+            escape_label_value("acme"),
+            std::borrow::Cow::Borrowed("acme")
+        ));
+    }
+
+    #[test]
+    fn escape_label_value_escapes_the_three_characters_the_format_requires() {
+        // Prometheus's text exposition format: a label value escapes
+        // backslash, double quote and newline, and nothing else.
+        assert_eq!(escape_label_value("a\\b"), "a\\\\b");
+        assert_eq!(escape_label_value("a\"b"), "a\\\"b");
+        assert_eq!(escape_label_value("a\nb"), "a\\nb");
+        // All three together, in one value, escaped independently rather
+        // than only the first match found.
+        assert_eq!(escape_label_value("\\\"\n"), "\\\\\\\"\\n");
+    }
+
+    #[tokio::test]
+    async fn a_tenant_name_with_a_quote_does_not_break_the_scrape() {
+        // `M90.8`. `TenantId::new` accepts any string and an allowlisted
+        // tenant's name reaches the `tenant` label verbatim. Before this fix,
+        // a tenant named `acme"} extra_label{x="y` would close the label set
+        // early and inject text Prometheus would parse as if this exporter
+        // had written it — at minimum corrupting the rest of the scrape, and
+        // depending on what followed, forging label values that never came
+        // from this node.
+        use pgprox_core::admin::{ClientState, ClientView, FakeObservatory};
+
+        let tenant = "acme\"; DROP\\nseries";
+        let observatory = FakeObservatory::new(NodeId::new(1));
+        observatory.set_clients(vec![ClientView {
+            conn: pgprox_core::ids::ConnId::new(NodeId::new(1), 7),
+            tenant: TenantId::new(tenant),
+            node: NodeId::new(1),
+            state: ClientState::Active,
+            since: std::time::Duration::from_secs(1),
+            pinned: None,
+        }]);
+        let mut allowlist = TenantAllowlist::new();
+        allowlist.add(TenantId::new(tenant)).unwrap();
+
+        let out = render(
+            observatory.as_ref(),
+            NodeId::new(1),
+            &allowlist,
+            &test_slab(),
+            &crate::routes::RouteCounts::new(),
+        )
+        .await;
+
+        let expected = format!("tenant=\"{}\"", escape_label_value(tenant));
+        assert!(
+            out.contains(&expected),
+            "escaped tenant label not found: wanted {expected} in {out}"
+        );
+        // The raw, unescaped name must never appear: every quote in the
+        // output is either the label delimiter or an escaped one, never one
+        // that came straight from the tenant name.
+        assert!(
+            !out.contains(&format!("tenant=\"{tenant}\"")),
+            "the tenant name reached the output unescaped: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_name_with_a_backslash_does_not_break_the_scrape() {
+        // The same hazard as the tenant label, for `server`: lower risk since
+        // an operator configures it rather than a tenant, but exported the
+        // same way and so escaped the same way.
+        use pgprox_core::admin::{FakeObservatory, PoolView};
+        use pgprox_core::ids::{PoolKey, ServerId};
+        use pgprox_core::pool::PoolStats;
+
+        let observatory = FakeObservatory::new(NodeId::new(1));
+        let server = ServerId::new("db\\1\"", 5432);
+        let raw = server.to_string();
+        observatory.set_pools(vec![PoolView {
+            node: NodeId::new(1),
+            key: PoolKey::new(server, "acme", "acme_app"),
+            stats: PoolStats {
+                active: 1,
+                idle: 0,
+                ..PoolStats::default()
+            },
+        }]);
+
+        let out = render(
+            observatory.as_ref(),
+            NodeId::new(1),
+            &TenantAllowlist::new(),
+            &test_slab(),
+            &crate::routes::RouteCounts::new(),
+        )
+        .await;
+
+        let expected = format!("server=\"{}\"", escape_label_value(&raw));
+        assert!(
+            out.contains(&expected),
+            "escaped server label not found: wanted {expected} in {out}"
+        );
+        assert!(
+            !out.contains(&format!("server=\"{raw}\"")),
+            "the server name reached the output unescaped: {out}"
+        );
     }
 
     #[tokio::test]
