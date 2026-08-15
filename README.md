@@ -5,7 +5,7 @@ an external service resolves which database and credentials that token maps to,
 and the proxy multiplexes a very large number of client connections onto a small
 capped pool of upstream ones across several nodes.
 
-Current release: **v0.1.0**. See [CHANGELOG.md](CHANGELOG.md) for what it
+Current release: **v0.1.1**. See [CHANGELOG.md](CHANGELOG.md) for what it
 contains, and [Going to production](docs/going-to-production.md) for what
 changes between the stack `scripts/e2e.sh` brings up and a real deployment.
 

@@ -10,8 +10,8 @@ kubeVersion: ">=1.29.0-0"
 # The chart version and the proxy version move together. There is one artifact
 # here, not a chart with a life of its own, and a chart version that drifted
 # from the binary it deploys is a support question nobody can answer.
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.1.1
+appVersion: "0.1.1"
 
 home: https://github.com/huyz0/pgprox
 sources:

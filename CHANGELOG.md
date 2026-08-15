@@ -11,6 +11,65 @@ limits](docs/features.md) is the source of truth for what is and is not
 supported at any given commit; this file is a record of what changed, not a
 substitute for it.
 
+## [0.1.1] - 2026-08-15
+
+Forty-three commits since `v0.1.0` was tagged, none of them a new feature and
+none of them a wire-visible surface change beyond correcting what the surface
+already claimed. `v0.1.0`'s tag stays where it is rather than moving; this is
+what actually shipped on top of it.
+
+### Fixed
+
+- A pipelined statement that changed which connection it needed — most
+  commonly a `LISTEN` pinning to the primary — could reuse a stale connection
+  a prior statement in the same pipeline still held, sending every write
+  after that point to a read-only replica.
+- A write whose post-commit position could not be confirmed (a primary
+  failover or reset in that window) could be followed by a read served from
+  a replica behind it.
+- A write sent as `Bind` of an already-prepared statement — the ordinary
+  prepare-once, execute-many pattern most drivers use — did not invalidate
+  the query cache, serving stale reads for up to the tenant's configured TTL.
+- A node restarting inside the cluster's dead-node window could be marked
+  stale by its peers and stay excluded from gossip, sometimes stuck
+  draining, until it restarted again.
+- `SHOW TENANTS` and `GET /v1/tenants` reported client connection counts
+  rather than upstream connections held, and included tenants a node does
+  not home, understating headroom and weakening the cluster's opportunistic
+  shed.
+- `SHOW CONFIG` and `GET /v1/config` reported `drain_grace` and
+  `grant_ttl_cap` as changeable on reload; both are read once at startup.
+- A force-close during a drain or shutdown closed a client's socket without
+  telling it why, indistinguishable from a crash.
+- A connection's configured maximum lifetime had no enforcement path, so a
+  connection released and immediately reused never aged out.
+- A route hint (`SET pgprox.route = ...`) silently absorbed whatever
+  statement followed it in the same wire message instead of forwarding it.
+- A tenant or server name containing a quote or backslash could break a
+  node's whole Prometheus scrape, not just its own series.
+- A tenant could be allowlisted under the name the aggregate bucket itself
+  uses, colliding with it.
+- The grant cache did not distinguish `startup_user`, letting two different
+  startup users on the same token share a cached grant.
+- A rejected route hint was silently dropped instead of reported to the
+  client as an error.
+- A client that disconnected mid-transaction leaked its cancel-key
+  registration.
+- A refused replica health probe dropped its connection without sending
+  `Terminate`.
+- `pgload`'s "no connection" error reported nothing was attempted on a run
+  that was continuously refused; its "most recent failure" message could
+  report an older failure over a newer one.
+- The query cache's case-insensitive word matching used full Unicode
+  case-folding, which for one character (`İ`) expands to two codepoints and
+  could collide two different identifiers onto one cache key.
+
+### Status at this tag
+
+94 of 95 roadmap milestones are complete. The one still open:
+[`M16`](docs/internal/product/roadmap.md), a 100,000-connection run serving
+large result sets, blocked on the multi-machine setup the measurement needs.
+
 ## [0.1.0] - 2026-08-15
 
 First tagged release.

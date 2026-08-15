@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/pgprox-core", "crates/pgprox-proto", "crates/pgprox-tls", "crates/pgprox-auth", "crates/pgprox-testkit", "crates/pgprox-cluster", "crates/pgprox-route", "crates/pgprox-pool", "crates/pgprox-config", "crates/pgprox-cache", "crates/pgprox-load", "crates/pgprox-observe", "crates/pgprox-admin", "crates/pgprox-session", "bin/pgprox", "bin/pgload"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.94"
 license = "Apache-2.0"

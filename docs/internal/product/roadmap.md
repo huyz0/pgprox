@@ -77,6 +77,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M89 | The review from outside this repo, and the four gaps it found | complete; four pages and a first tagged release, none of them a code change, and the two adoption-relevant findings from `M88` stayed tracked there rather than duplicated here |
 | M90 | A third reading, from several angles at once, and what each one found | complete; seven cycles, twenty-four findings, the seventh cycle came back clean |
 | M91 | Seven correctness fixes, and a baseline nobody rewrote | complete; `instruction counts` had been silently red since `M78.0`, eleven milestones after the baseline was last written, entirely from already-landed correctness fixes |
+| M92 | The second release, and what changed since the first | complete; `v0.1.1` tagged and published forty-three commits after `v0.1.0`, none of them a new feature, `v0.1.0`'s own tag and changelog entry left exactly as they were |
 
 `M54` through `M84` are complete — `backlog.md` has their tasks and commit
 references — but do not yet have roadmap sections of their own; this table
@@ -3962,3 +3963,30 @@ accurate, it does not change when it is checked. Nor does it audit every
 gate in `scripts/gates/` for a baseline-shaped assumption beyond the five
 `M91.1` found already failing — a broader sweep, if one is wanted, is its own
 task.
+
+## M92: the second release, and what changed since the first
+
+```bash
+scripts/check-links.sh
+scripts/check-drift.sh
+```
+
+`M89.2` tagged `v0.1.0` and never published a GitHub Release against it.
+Forty-three commits landed on `main` since — `M90`'s twenty-four correctness
+findings and `M91`'s baseline/gate bookkeeping among them — with nothing
+published that reflects any of it. This milestone is that publication, not a
+new tag moved onto old work: `v0.1.0` stays exactly where `M89.2` put it.
+
+### Where it stands
+
+Complete. One task, `M92.0`: `Cargo.toml`'s workspace version and the Helm
+chart's `version`/`appVersion` bumped to `0.1.1`, `Cargo.lock` re-resolved for
+all sixteen workspace members. `CHANGELOG.md` gains a `[0.1.1]` entry naming
+every user-visible fix `M90` landed, grouped by what an operator would
+recognize rather than one bullet per commit, and an updated milestone count
+(94 of 95 complete, only `M16` still open — `M88` closed since `[0.1.0]` was
+written). `M91`'s baseline/gate work is deliberately not in it: internal CI
+bookkeeping is not "what shipped", the changelog's own stated scope.
+`README.md`'s release line updated to match. `v0.1.1` tagged on this commit
+and published as this repository's first actual GitHub Release — `v0.1.0`
+was a tag with no Release object behind it.

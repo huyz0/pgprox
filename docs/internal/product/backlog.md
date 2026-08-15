@@ -113,6 +113,7 @@ script or an unwired gate already does.
 - [M89: the review from outside this repo, and the four gaps it found](#m89-the-review-from-outside-this-repo-and-the-four-gaps-it-found)
 - [M90: a third reading, from several angles at once, and what each one found](#m90-a-third-reading-from-several-angles-at-once-and-what-each-one-found)
 - [M91: seven correctness fixes, and a baseline nobody rewrote](#m91-seven-correctness-fixes-and-a-baseline-nobody-rewrote)
+- [M92: the second release, and what changed since the first](#m92-the-second-release-and-what-changed-since-the-first)
 <!-- toc:end -->
 
 ## M-1: AI development system
@@ -10615,3 +10616,27 @@ scalable real production machine, which stays `M16`'s open item.
   original same-machine cut, and they are explicitly not the same claim.
   Acceptance: `scripts/gates/m28-complete.sh` through `m31-complete.sh` and
   `m44-complete.sh` all pass locally against the `M91.0` baseline.
+
+## M92: the second release, and what changed since the first
+
+- [x] `M92.0` `v0.1.0` (`M89.2`) tagged a commit and never moved; forty-three
+  commits landed on `main` since, `M90`'s twenty-four correctness findings
+  and `M91`'s baseline/gate bookkeeping among them, with no GitHub Release
+  ever published against either tag. An operator reading `README.md`'s
+  "Current release" line or pinning a Helm chart version had nothing that
+  matched what `main` actually contained.
+  Acceptance: `Cargo.toml`'s workspace version and `deploy/helm/pgprox/
+  Chart.yaml`'s `version`/`appVersion` bumped to `0.1.1` (`Cargo.lock`
+  re-resolved for all sixteen workspace members); `CHANGELOG.md` gains a
+  `[0.1.1]` section listing every user-visible fix `M90` landed, grouped the
+  way `[0.1.0]`'s `Added` section already is rather than one bullet per
+  commit, and an updated "status at this tag" (94 of 95 milestones
+  complete, only `M16` still open — `M88` closed since `[0.1.0]` was
+  written). `M91`'s baseline/gate work is deliberately not listed: internal
+  CI bookkeeping is not "what shipped", per this file's own stated scope.
+  `README.md`'s release line updated to match. `v0.1.0`'s tag and its
+  `CHANGELOG.md` section are untouched — a tag already pushed does not move,
+  the same convention `M89.2` itself followed for every fact before it.
+  `v0.1.1` tagged on this commit and published as this repository's first
+  actual GitHub Release (`v0.1.0` was a tag with no Release object).
+  `scripts/check-links.sh` and `scripts/check-drift.sh` both pass.

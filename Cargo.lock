@@ -987,7 +987,7 @@ dependencies = [
 
 [[package]]
 name = "pgload"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "md-5",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "pgprox"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "allocation-counter",
  "async-trait",
@@ -1042,7 +1042,7 @@ dependencies = [
 
 [[package]]
 name = "pgprox-admin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "http-body-util",
@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "pgprox-auth"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "allocation-counter",
  "async-trait",
@@ -1082,7 +1082,7 @@ dependencies = [
 
 [[package]]
 name = "pgprox-cache"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "allocation-counter",
  "pgprox-core",
@@ -1091,7 +1091,7 @@ dependencies = [
 
 [[package]]
 name = "pgprox-cluster"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "pgprox-core",
@@ -1102,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "pgprox-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "pgprox-core",
@@ -1114,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "pgprox-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -1124,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "pgprox-load"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1134,7 +1134,7 @@ dependencies = [
 
 [[package]]
 name = "pgprox-observe"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pgprox-core",
  "thiserror",
@@ -1143,7 +1143,7 @@ dependencies = [
 
 [[package]]
 name = "pgprox-pool"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "allocation-counter",
  "async-trait",
@@ -1154,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "pgprox-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "allocation-counter",
  "memchr",
@@ -1167,7 +1167,7 @@ dependencies = [
 
 [[package]]
 name = "pgprox-route"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "allocation-counter",
  "async-trait",
@@ -1178,7 +1178,7 @@ dependencies = [
 
 [[package]]
 name = "pgprox-session"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "pgprox-core",
@@ -1192,11 +1192,11 @@ dependencies = [
 
 [[package]]
 name = "pgprox-testkit"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "pgprox-tls"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aws-lc-rs",
  "pgprox-core",
