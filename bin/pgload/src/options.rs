@@ -36,7 +36,11 @@ pub enum LoadError {
     /// load client has to make impossible.
     #[error("no connection succeeded: {detail}")]
     NoConnection {
-        /// What the first failure said.
+        /// What the most recent failure said.
+        ///
+        /// `M88.10`. Not the first: a connection retries for the life of the
+        /// run, and a target can change why it refuses partway through, so
+        /// the first reason seen can describe a moment already gone.
         detail: String,
     },
 }

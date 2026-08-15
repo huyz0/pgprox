@@ -179,8 +179,16 @@ struct Tally {
     /// `57P01` on a connection that is between transactions, and reconnecting
     /// is the answer the code exists to ask for.
     relocations: u64,
-    /// The first failure, kept for the message when nothing connected at all.
-    first_failure: Option<String>,
+    /// The most recent failure, kept for the message when nothing connected
+    /// at all.
+    ///
+    /// `M88.10`. The most recent rather than the first: this connection
+    /// retries for as long as the run does, and a target can change why it
+    /// refuses partway through — up but full, then unreachable once
+    /// overwhelmed, or the reverse. Keeping the first reason forever would
+    /// describe a moment already gone by the time an operator reads the
+    /// report.
+    last_failure: Option<String>,
     /// What this connection was told, by SQLSTATE.
     ///
     /// Per connection and merged at the end, rather than one shared map behind
@@ -269,9 +277,7 @@ async fn one_connection(
                     tally.relocations += 1;
                 } else {
                     tally.errors += 1;
-                    tally
-                        .first_failure
-                        .get_or_insert_with(|| refused.to_string());
+                    tally.last_failure = Some(refused.to_string());
                 }
                 // Backing off rather than spinning: a target that is refusing
                 // connections should be measured, not flooded.
@@ -317,9 +323,7 @@ async fn one_connection(
                         tally.relocations += 1;
                     } else {
                         tally.errors += 1;
-                        tally
-                            .first_failure
-                            .get_or_insert_with(|| failed.error.to_string());
+                        tally.last_failure = Some(failed.error.to_string());
                     }
                     // The session may be inside a transaction the client did
                     // not open, so it is replaced rather than reused.
@@ -436,7 +440,7 @@ fn summarise(
     let mut transactions = 0;
     let mut errors = 0;
     let mut relocations = 0;
-    let mut first_failure = None;
+    let mut last_failure = None;
     let mut outcomes = Outcomes::default();
 
     for tally in tallies {
@@ -447,19 +451,22 @@ fn summarise(
         for micros in &tally.latencies {
             histogram.record(*micros);
         }
-        if first_failure.is_none() {
-            first_failure.clone_from(&tally.first_failure);
+        // `M88.10`. Overwritten by every tally that saw a failure rather than
+        // kept from the first one, so the report favours whichever connection
+        // is later in this slice over whichever happened to finish first.
+        if tally.last_failure.is_some() {
+            last_failure.clone_from(&tally.last_failure);
         }
     }
 
     if transactions == 0 {
         return Err(LoadError::NoConnection {
-            detail: first_failure.unwrap_or_else(|| "nothing was attempted".to_owned()),
+            detail: last_failure.unwrap_or_else(|| "nothing was attempted".to_owned()),
         });
     }
 
     Ok(Report {
-        first_error: first_failure,
+        first_error: last_failure,
         target: options.target.clone(),
         workload_version: workload.version,
         seed: options.seed,
@@ -661,6 +668,17 @@ mod tests {
         /// which is the right answer to a target that is entirely broken and
         /// the wrong shape for a test about how failures are counted.
         FullEveryOtherStatement,
+        /// Refuses every connection, but not for the same reason throughout:
+        /// unreachable-shaped for the first, at-cap-shaped for every one
+        /// after.
+        ///
+        /// `M88.10`. A client this fake targets never gets to run once, so it
+        /// spends the whole run retrying against a target whose refusal
+        /// reason changes partway through — the shape of a backend that comes
+        /// up mid-run already full, or one that fills up while a client is
+        /// still trying it. What the resulting `NoConnection` says is the
+        /// point of the test this exists for.
+        RefusesDifferently,
     }
 
     /// A server that answers every query the same way, as fast as it can.
@@ -736,13 +754,28 @@ mod tests {
                 // `RefusingOnce` turns itself off after the first connection,
                 // which is what makes a run contain both a refusal and a
                 // report.
-                let refuse = match mode {
-                    Fake::Refusing => Some(true),
+                let refuse: Option<pgprox_core::error::ClientError> = match mode {
+                    Fake::Refusing => Some(refusal(true)),
                     Fake::RefusingOnce { draining }
                         if served.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 =>
                     {
-                        Some(draining)
+                        Some(refusal(draining))
                     }
+                    // Different on the first connection than on every one
+                    // after, which is what `M88.10`'s test needs: a run whose
+                    // refusal reason changes partway through.
+                    Fake::RefusesDifferently => Some(
+                        if served.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                            pgprox_core::error::ClientError::UpstreamUnreachable {
+                                server: pgprox_core::ids::ServerId::new("primary", 5432),
+                            }
+                        } else {
+                            pgprox_core::error::ClientError::UpstreamAtCap {
+                                server: pgprox_core::ids::ServerId::new("primary", 5432),
+                                cap: 60,
+                            }
+                        },
+                    ),
                     _ => None,
                 };
                 let served = Arc::clone(&served);
@@ -759,8 +792,8 @@ mod tests {
                     }
 
                     let mut out = Vec::new();
-                    if let Some(draining) = refuse {
-                        encode::error_response(&mut out, &refusal(draining));
+                    if let Some(error) = refuse {
+                        encode::error_response(&mut out, &error);
                         let _ = socket.write_all(&out).await;
                         return;
                     }
@@ -867,6 +900,33 @@ mod tests {
         let addr = fake_server(Fake::Refusing).await;
         let error = run(&options(addr)).await.unwrap_err();
         assert!(matches!(error, LoadError::NoConnection { .. }), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_run_that_never_connects_reports_the_most_recent_refusal() {
+        // `M88.10`. A connection that never succeeds retries for the whole
+        // run, and a target can change why it refuses partway through: the
+        // fake here answers the very first attempt "unreachable"-shaped and
+        // every attempt after that "at cap"-shaped. `NoConnection`'s one
+        // string has to be what the target is telling this client *now*, not
+        // whatever it said once at the start of a run that kept going for a
+        // full second afterward.
+        let addr = fake_server(Fake::RefusesDifferently).await;
+        let mut options = options(addr);
+        options.connections = 1;
+        let error = run(&options).await.unwrap_err();
+
+        let LoadError::NoConnection { detail } = error else {
+            panic!("expected NoConnection, got {error}");
+        };
+        assert!(
+            detail.contains("too many connections"),
+            "the report kept the first refusal instead of the most recent one: {detail}"
+        );
+        assert!(
+            !detail.contains("could not connect"),
+            "the first, by-then-stale refusal reason leaked into the report: {detail}"
+        );
     }
 
     #[tokio::test]

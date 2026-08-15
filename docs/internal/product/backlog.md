@@ -9760,12 +9760,21 @@ recognised so it can be refused rather than read as a version.
   something closed early, and a login's own probe now legitimately sends one
   earlier than that. Rewritten to count occurrences and compare before and
   after reaping rather than asserting none at all before it.
-- [ ] `M88.10` `pgload`'s `NoConnection` error swallows the reason. It reports
+- [x] `M88.10` `pgload`'s `NoConnection` error swallows the reason. It reports
   that no connection could be obtained without carrying the per-attempt failure
   that caused it, so a load test failing to connect gives no signal about
   whether the backend refused, timed out, or the pool was exhausted.
   Acceptance: a test that `NoConnection`'s message or fields carry the real
   underlying error from the last attempt, failing before the fix.
+  What was actually found differed from how this was filed: `NoConnection` and
+  `Report::first_error` already carried a real, specific underlying error —
+  what they carried was the *first* one a retrying connection ever saw, kept
+  for the life of the run by `get_or_insert_with`, rather than its most recent
+  one. A target that came up refusing for one reason and stayed up refusing for
+  a different one reported the reason that stopped being true first. Fixed by
+  overwriting rather than inserting-once, both where a connection attempt fails
+  and where a transaction does; `Report::first_error`'s field name and JSON key
+  are unchanged (`scripts/scale.sh` reads it by name), its doc comment is not.
 - [ ] `M88.11` `pgprox-tls`'s `CertReloader` never checks a certificate's
   validity window. `read`/`reload` parse and swap in a new certificate without
   checking `notBefore`/`notAfter`, so a certificate that has already expired,

@@ -157,4 +157,9 @@ run_finding pgprox-session \
   probe::tests::ensure_says_goodbye_to_its_probe_connection \
   "the probe connection sends Terminate before it is dropped"
 
+# --- M88.10: NoConnection carries the most recent refusal, not the first --
+run_finding pgload \
+  run::tests::a_run_that_never_connects_reports_the_most_recent_refusal \
+  "NoConnection reports the target's current refusal, not a stale first one"
+
 finish

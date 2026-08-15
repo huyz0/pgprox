@@ -383,11 +383,20 @@ pub struct Report {
     /// a statement in the transaction has succeeded it is the force-close
     /// after `drain_grace`, which lost something, and that is an error.
     pub relocations: u64,
-    /// What the first failure said, when there was one.
+    /// What the most recent failure said, when there was one.
     ///
     /// A count on its own is not diagnosable: three errors in a run of sixteen
     /// thousand is either a proxy refusing connections or a client giving up
-    /// on its own timeout, and those want opposite responses.
+    /// on its own timeout, and those want opposite responses. The most recent
+    /// rather than the first: a connection retries for as long as the run
+    /// does, and a target can change why it refuses partway through, so the
+    /// first reason seen can describe a moment already gone by the time this
+    /// is read.
+    ///
+    /// The field is still named for the first failure `M7.5` reported, which
+    /// is why it does not match what it now holds; renaming it would change
+    /// the JSON key `scripts/scale.sh` and any stored report already read by
+    /// hand.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_error: Option<String>,
     /// What the clients that did not get what they asked for were told.

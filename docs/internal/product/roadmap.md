@@ -3496,6 +3496,24 @@ for. Rewritten to count `Terminate`s before and after the reap call and
 compare the two rather than asserting none arrived beforehand; confirmed
 stable across repeated runs.
 
+**`M88.10`.** What this turned out to be differed from how it was filed.
+`NoConnection` and `Report::first_error` already carried a real, specific
+underlying error — reading `pgload`'s code end to end found no point where the
+reason was dropped. What they carried was the *first* one a retrying
+connection ever saw: `Tally::first_failure` (now `last_failure`) used
+`get_or_insert_with`, which fills an empty slot once and then refuses every
+later write for the rest of that connection's life, which is the whole run.
+Against a target whose refusal reason changes partway through — up but full at
+first, then unreachable once overwhelmed, or the reverse — the report kept
+describing a moment already gone. Fixed by overwriting on every failure
+instead, at both call sites: a failed connection attempt and a failed
+transaction. `Report::first_error`'s field name and JSON key are unchanged,
+since `scripts/scale.sh` reads it by that name and changing it would be a
+second, unrelated migration; its doc comment now says what it actually holds.
+The new test drives a fake target that answers the first connection attempt
+"unreachable"-shaped and every attempt after "at cap"-shaped, and asserts the
+final report carries the second, not the first.
+
 ## M89: the review from outside this repo, and the four gaps it found (complete)
 
 ```bash
