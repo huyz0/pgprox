@@ -782,7 +782,7 @@ where
                     let taken =
                         take_connection(wire, context, grant, live.serving, conn, &live.session);
                     live.upstream = Some(taken.await?);
-                    live.relay.acquired();
+                    live.relay.acquired(live.serving);
                 }
             }
         }
@@ -1397,7 +1397,7 @@ where
             let taken =
                 take_connection(wire, context, grant, live.serving, conn, &live.session).await?;
             live.upstream = Some(taken);
-            live.relay.acquired();
+            live.relay.acquired(live.serving);
         }
 
         let Some((_guard, upstream)) = live.upstream.as_mut() else {
@@ -3769,6 +3769,17 @@ mod tests {
         // 5,224. Both would have failed this. What is here instead is a
         // lookup through state the loop already carries; see
         // `Sessions::was_idle_timeout` and ADR 0030.
+        //
+        // 5,128 as `M90` cycle 6 leaves it, and the ceiling moves to 5.25 KiB
+        // to hold it: `Relay` traded an 8-bit `holding` flag for a 16-byte
+        // `Option<RouteTarget>`, because "is anything held" was not enough to
+        // tell a pipelined statement that changed target from one that
+        // didn't — the fix that closed the bug needs to know *what* is held,
+        // not just whether. `RouteTarget` costs 16 bytes fully niched (an
+        // `Option` of it costs no more, measured directly), which is not
+        // reducible without a smaller hand-rolled encoding, and the modest,
+        // deliberate bump here is preferred to complicating a type this
+        // crate does not own for eight bytes of headroom.
         let context = Arc::new(context_for("127.0.0.1:1".parse().unwrap()));
         let gate = Arc::new(Gate::new(1));
         let admitted = gate.admit().unwrap();
@@ -3777,7 +3788,7 @@ mod tests {
         let future = session(ours, context.as_ref(), admitted);
         let bytes = std::mem::size_of_val(&future);
         assert!(
-            bytes < 5 * 1024,
+            bytes < 5 * 1024 + 256,
             "the session future is {bytes} bytes, so a hundred thousand of them is {} MB \
              before a single buffer, socket or registry entry",
             bytes * 100_000 / 1024 / 1024

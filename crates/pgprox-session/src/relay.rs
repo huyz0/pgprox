@@ -81,7 +81,18 @@ pub struct Relay {
     session: SessionState,
     pin: PinState,
     router: SessionRouter,
-    holding: bool,
+    /// What the held connection is *for*, so the next statement can tell
+    /// whether it still belongs there — not just whether something is held.
+    ///
+    /// Outside an explicit transaction the router decides fresh per
+    /// statement (`pgprox-route`'s own rule: one decision per transaction,
+    /// and an autocommit statement is its own). Extended-query pipelining
+    /// can send a second statement before the first one's `Sync`, so the
+    /// connection from the first statement is still held when the second is
+    /// classified — and if that one pins, or otherwise routes somewhere
+    /// else, a shell that only asked "is anything held" would send it to the
+    /// wrong connection instead of acquiring the right one. `M90`, cycle 6.
+    held: Option<RouteTarget>,
 }
 
 impl Relay {
@@ -94,7 +105,7 @@ impl Relay {
     /// Whether the session holds an upstream connection.
     #[must_use]
     pub const fn is_holding(&self) -> bool {
-        self.holding
+        self.held.is_some()
     }
 
     /// Whether the session is pinned, and why.
@@ -125,14 +136,15 @@ impl Relay {
         self.router.record_write(lsn);
     }
 
-    /// Records that the shell acquired the connection it was told to.
-    pub const fn acquired(&mut self) {
-        self.holding = true;
+    /// Records that the shell acquired the connection it was told to, for
+    /// `target`.
+    pub const fn acquired(&mut self, target: RouteTarget) {
+        self.held = Some(target);
     }
 
     /// Records that the shell returned the connection to the pool.
     pub const fn released(&mut self) {
-        self.holding = false;
+        self.held = None;
     }
 
     /// Records the runtime settings the client packed into `options`.
@@ -219,7 +231,15 @@ impl Relay {
             Routed::To(target) => ClientOutcome {
                 action: ClientAction::Send {
                     target,
-                    acquire: !self.holding,
+                    // Not just "is nothing held": a pipelined statement can
+                    // route somewhere the *held* connection is not, before
+                    // the first statement's `Sync` ever gives the shell a
+                    // chance to release it. Comparing against what is
+                    // actually held, rather than only whether anything is,
+                    // is what makes the shell reacquire there instead of
+                    // sending a pinned or rerouted statement to a connection
+                    // for a different target.
+                    acquire: self.held != Some(target),
                 },
                 pinned,
             },
@@ -239,7 +259,7 @@ impl Relay {
                 // frame arriving here with nothing held is a driver doing
                 // something unusual rather than a case worth guessing at.
                 target: RouteTarget::Primary,
-                acquire: !self.holding,
+                acquire: self.held != Some(RouteTarget::Primary),
             },
             pinned: None,
         }
@@ -270,7 +290,7 @@ impl Relay {
             // is_releasable answers the "is this moment safe" half. The pin
             // answers the "is any moment safe" half. Both, or the connection
             // stays where it is.
-            release: self.holding && self.session.is_releasable() && !self.pin.is_pinned(),
+            release: self.held.is_some() && self.session.is_releasable() && !self.pin.is_pinned(),
             pinned,
         }
     }
@@ -306,8 +326,12 @@ mod tests {
     /// Runs a statement to its `ReadyForQuery`, returning whether it released.
     fn round_trip(relay: &mut Relay, sql: &str, ends_at: TxStatus) -> bool {
         let outcome = relay.on_client(&query(sql), &replicas(), Instant::now());
-        if let ClientAction::Send { acquire: true, .. } = outcome.action {
-            relay.acquired();
+        if let ClientAction::Send {
+            acquire: true,
+            target,
+        } = outcome.action
+        {
+            relay.acquired(target);
         }
         let released = relay.on_server(&ready(ends_at)).release;
         if released {
@@ -328,7 +352,7 @@ mod tests {
                 acquire: true,
             }
         );
-        relay.acquired();
+        relay.acquired(RouteTarget::Primary);
         assert!(relay.on_server(&ready(TxStatus::Idle)).release);
     }
 
@@ -390,7 +414,7 @@ mod tests {
             }
         );
 
-        relay.acquired();
+        relay.acquired(RouteTarget::Primary);
         let outcome = relay.on_client(&sync(), &replicas(), Instant::now());
         assert_eq!(
             outcome.action,
@@ -457,7 +481,7 @@ mod tests {
             outcome.action,
             ClientAction::Send { acquire: true, .. }
         ));
-        relay.acquired();
+        relay.acquired(RouteTarget::Primary);
 
         for message in [
             FrontendMessage::Bind {
@@ -487,7 +511,7 @@ mod tests {
         let outcome = relay.on_client(&query("LISTEN channel"), &replicas(), Instant::now());
 
         assert_eq!(outcome.pinned, Some(PinReason::Listen));
-        relay.acquired();
+        relay.acquired(RouteTarget::Primary);
         assert!(!relay.on_server(&ready(TxStatus::Idle)).release);
         assert!(!round_trip(&mut relay, "SELECT 1", TxStatus::Idle));
         assert!(relay.is_holding());
@@ -499,7 +523,7 @@ mod tests {
         // backend that delivered it whether or not it issued LISTEN.
         let mut relay = Relay::new();
         relay.on_client(&query("SELECT 1"), &replicas(), Instant::now());
-        relay.acquired();
+        relay.acquired(RouteTarget::Primary);
 
         let outcome = relay.on_server(&BackendMessage::NotificationResponse {
             process_id: 42,
@@ -530,7 +554,7 @@ mod tests {
         // the session's life.
         let mut relay = Relay::new();
         relay.on_client(&query("COPY t FROM STDIN"), &replicas(), Instant::now());
-        relay.acquired();
+        relay.acquired(RouteTarget::Primary);
 
         assert!(!relay.on_server(&BackendMessage::CopyInResponse).release);
         assert_eq!(relay.pin_reason(), None, "a COPY pinned the session");
@@ -580,6 +604,55 @@ mod tests {
                 target: RouteTarget::Primary,
                 acquire: false,
             }
+        );
+    }
+
+    /// A replica, healthy and caught up, so a plain read outside a
+    /// transaction actually has somewhere else to go.
+    fn replicas_with_one_healthy() -> Replicas {
+        let mut replicas = Replicas::new(1, ReplicaConfig::default());
+        replicas.observe(0, pgprox_core::ids::Lsn::new(100), true, Instant::now());
+        replicas
+    }
+
+    #[test]
+    fn a_pipelined_statement_that_pins_reacquires_off_the_held_replica() {
+        // `M90`, cycle 6. Extended-query pipelining sends a second statement
+        // before the first one's `Sync`, so the connection the first
+        // statement acquired is still held when the second is classified.
+        // Outside an explicit transaction the router decides fresh per
+        // statement, so the second one can legitimately route somewhere the
+        // held connection is not — here, `LISTEN` pins to the primary while
+        // a replica is still held from the read before it. Only comparing
+        // "is anything held" said no acquire was needed and sent `LISTEN` to
+        // the replica it happened to be holding, silently defeating the pin
+        // this session's own router had just decided on.
+        let mut relay = Relay::new();
+        let replicas = replicas_with_one_healthy();
+
+        let first = relay.on_client(&query("SELECT 1"), &replicas, Instant::now());
+        assert_eq!(
+            first.action,
+            ClientAction::Send {
+                target: RouteTarget::Replica(0),
+                acquire: true,
+            },
+            "a plain read outside a transaction should have reached the replica"
+        );
+        // The shell takes the replica connection but never releases it: no
+        // `Sync` arrives before the next statement, which is exactly what
+        // pipelining means.
+        relay.acquired(RouteTarget::Replica(0));
+
+        let second = relay.on_client(&query("LISTEN channel"), &replicas, Instant::now());
+        assert_eq!(second.pinned, Some(PinReason::Listen));
+        assert_eq!(
+            second.action,
+            ClientAction::Send {
+                target: RouteTarget::Primary,
+                acquire: true,
+            },
+            "a pinned statement was sent to the replica already held rather than reacquiring the primary"
         );
     }
 
@@ -643,7 +716,7 @@ mod tests {
         assert_eq!(params.get("work_mem"), Some("64MB"));
 
         // And the connection stays where it is, however idle the session looks.
-        relay.acquired();
+        relay.acquired(RouteTarget::Primary);
         assert!(!relay.on_server(&ready(TxStatus::Idle)).release);
     }
 

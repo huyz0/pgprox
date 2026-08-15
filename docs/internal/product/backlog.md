@@ -10421,7 +10421,45 @@ scalable real production machine, which stays `M16`'s open item.
   does not follow. No behavior change; verified by the full existing test
   suite for both crates still passing and `cargo doc` finding no broken
   intra-doc link.
-- [ ] `M90.20` Close M90 once a full review cycle across the angles above
+- [x] `M90.20` A pipelined statement that changed routing target — most
+  notably one that pinned — could be sent to the connection a *previous*
+  pipelined statement was already holding, silently ignoring the new
+  decision. `Relay::on_client` decided whether to acquire from `!self.
+  holding` alone: whether *anything* was held, never whether it was held
+  *for the target this statement needs*. Outside an explicit SQL transaction
+  `pgprox-route` decides fresh per statement (its own rule: one decision per
+  transaction, and an autocommit statement is its own), so two statements
+  pipelined before either's `Sync` — an ordinary shape for a driver using
+  libpq/asyncpg pipeline mode, not an edge case — can legitimately route
+  differently: a plain read to a replica, then `LISTEN` pinning the session
+  to the primary. `awaits_more` is exactly why the shell never gets a chance
+  to release between them. With only "is anything held" to go on, the second
+  statement's own routing decision (primary, because it just pinned) was
+  computed correctly and then ignored: `acquire` stayed false, the stale
+  replica connection from the first statement was reused, and the pin this
+  session's own state now records was never reflected in what connection
+  bytes actually reached. Every write after that point in the session — the
+  ordinary continuation once something has pinned — would hit a read-only
+  replica.
+  Acceptance: `Relay` now tracks `held: Option<RouteTarget>`, what the held
+  connection is *for*, not only whether one is held; `acquired()` takes the
+  target it was given; `on_client`'s `acquire` compares against it
+  (`self.held != Some(target)`) instead of testing only `is_none()`. Both
+  shell call sites (`relay()`'s main loop and `replay_held`'s query-cache
+  replay, which share `Relay::on_client` through `decide()`) are fixed by
+  the one change, since both already thread `acquire`/`target` through
+  unmodified. New test
+  `a_pipelined_statement_that_pins_reacquires_off_the_held_replica`,
+  verified against a revert of the fix before landing.
+  `Option<RouteTarget>` costs 16 bytes fully niched (measured directly, an
+  `Option` of it costs no more than the type itself) against the 1 byte
+  `holding: bool` it replaced, which pushed
+  `one_session_costs_less_than_the_slab_buffer_it_no_longer_holds`'s future
+  past its 5 KiB ceiling; the ceiling moves to 5.25 KiB to hold the 5,128
+  bytes this leaves it, the same kind of deliberate, documented bump `M74.0`
+  made for the idle timeout, preferred here to a smaller hand-rolled
+  encoding for a type this crate does not own.
+- [ ] `M90.21` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if

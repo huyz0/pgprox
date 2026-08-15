@@ -192,4 +192,10 @@ run_finding pgprox-session probe::tests::a_refused_probe_says_goodbye_before_dro
 # and nothing to run a test against. Checked by the full existing suite for
 # both crates staying green and `cargo doc` finding no broken link.
 
+# --- M90.20: a pipelined statement that pinned reused the wrong connection --
+run_finding pgprox-session relay::tests::a_pipelined_statement_that_pins_reacquires_off_the_held_replica \
+  "M90.20: a pipelined statement that pins reacquires off the held replica"
+run_finding pgprox serve::tests::one_session_costs_less_than_the_slab_buffer_it_no_longer_holds \
+  "M90.20: one session still costs less than the slab buffer it no longer holds, at the new ceiling"
+
 finish
