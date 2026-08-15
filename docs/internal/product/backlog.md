@@ -9828,7 +9828,7 @@ recognised so it can be refused rather than read as a version.
   The test proving the field is gone is an exhaustive `PoolConfig` literal
   that does not compile if `min_size` — or anything else unnamed — exists to
   be missing from it.
-- [ ] `M88.14` `Lsn`'s `Display` impl does not zero-pad its low half. The type's
+- [x] `M88.14` `Lsn`'s `Display` impl does not zero-pad its low half. The type's
   own doc comment says the textual form is the standard `XXXXXXXX/XXXXXXXX`
   Postgres LSN format, which zero-pads each half to eight hex digits; the
   actual impl formats the low half without padding, so an LSN like
@@ -9836,6 +9836,12 @@ recognised so it can be refused rather than read as a version.
   Postgres tool that reads or greps for this format.
   Acceptance: a test that a low half needing padding prints as
   `XXXXXXXX/0000000A` rather than `XXXXXXXX/A`, failing before the fix.
+  Landed as filed: `write!(f, "{:X}/{:X}", ...)` became
+  `write!(f, "{:X}/{:08X}", ...)`, padding only the low half — the high half
+  stays unpadded, matching real `pg_current_wal_lsn()` output like
+  `16/B374D848`. The existing `lsn_zero_is_the_default` test was itself
+  asserting the buggy output (`"0/0"`) and had to be corrected to
+  `"0/00000000"` alongside the two new tests.
 - [ ] `M88.15` `pgprox-config`'s `AGENTS.md` and ADR 0006 claim three config
   providers; the crate implements one. Whichever is true, the other is a
   reader-facing claim that does not match the workspace, the same shape

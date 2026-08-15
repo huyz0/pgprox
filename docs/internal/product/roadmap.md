@@ -3568,6 +3568,17 @@ not name — the closest thing to "fails before, passes after" a field removal
 can have, since removing something truly unconsulted changes no runtime
 behaviour to assert against.
 
+**`M88.14`.** `Lsn`'s `Display` impl formatted its low 32-bit half as bare hex,
+so a small offset into a WAL segment printed as `0/A` instead of the
+`0/0000000A` every real Postgres tool expects — `pg_lsn_out`'s convention pads
+the low half to eight hex digits and leaves the high half unpadded, and this
+type's own doc comment already claimed that format without the code
+delivering it. The fix is the one-character format-string change the finding
+named: `{:X}` became `{:08X}` on the low half only. The existing
+`lsn_zero_is_the_default` test was itself a witness to the bug — it asserted
+`Lsn::ZERO.to_string() == "0/0"` — and had to be corrected alongside the two
+new tests the finding's acceptance criterion asked for.
+
 ## M89: the review from outside this repo, and the four gaps it found (complete)
 
 ```bash

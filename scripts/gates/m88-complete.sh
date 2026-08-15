@@ -183,4 +183,9 @@ run_finding pgprox-pool \
   pool::tests::pool_config_has_no_floor_field \
   "PoolConfig no longer has a dead min_size field"
 
+# --- M88.14: Lsn's Display zero-pads its low half like real Postgres does ---
+run_finding pgprox-core \
+  ids::tests::a_low_half_needing_padding_is_zero_padded \
+  "an Lsn's low half prints zero-padded to eight hex digits"
+
 finish

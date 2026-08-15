@@ -264,7 +264,11 @@ impl Lsn {
 
 impl fmt::Display for Lsn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:X}/{:X}", self.0 >> 32, self.0 & 0xFFFF_FFFF)
+        // `M88.14`. The low half is zero-padded to eight hex digits, matching
+        // every real Postgres LSN: a small offset into a segment prints as
+        // `0/0000000A`, not `0/A`. The high half is not padded, because
+        // Postgres does not pad it either.
+        write!(f, "{:X}/{:08X}", self.0 >> 32, self.0 & 0xFFFF_FFFF)
     }
 }
 
@@ -529,7 +533,28 @@ mod tests {
     #[test]
     fn lsn_zero_is_the_default() {
         assert_eq!(Lsn::default(), Lsn::ZERO);
-        assert_eq!(Lsn::ZERO.to_string(), "0/0");
+        // `M88.14`. Not `"0/0"`: the low half is always eight hex digits,
+        // zero included, the same as every real Postgres LSN.
+        assert_eq!(Lsn::ZERO.to_string(), "0/00000000");
+    }
+
+    #[test]
+    fn a_low_half_needing_padding_is_zero_padded() {
+        // `M88.14`. `Lsn`'s own doc says the textual form is the standard
+        // `XXXXXXXX/XXXXXXXX` Postgres format, and every real tool that reads
+        // or greps for it expects the low half at a fixed eight digits.
+        // Unpadded, `0/A` reads as a different, much larger value truncated,
+        // not as ten.
+        let lsn = Lsn::new(0x0000_0000_0000_000A);
+        assert_eq!(lsn.to_string(), "0/0000000A");
+    }
+
+    #[test]
+    fn the_high_half_is_not_padded() {
+        // Postgres does not pad it either: a real `pg_current_wal_lsn()`
+        // reads `16/B374D848`, not `00000016/B374D848`.
+        let lsn = Lsn::new(0x0000_0016_B374_D848);
+        assert_eq!(lsn.to_string(), "16/B374D848");
     }
 
     #[test]
