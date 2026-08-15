@@ -10496,7 +10496,33 @@ scalable real production machine, which stays `M16`'s open item.
   `only_connection_holding_clients_count_toward_upstream_usage` and
   `only_the_tenants_this_node_homes_are_reported`, each verified against a
   revert of its half of the fix before landing.
-- [ ] `M90.23` Close M90 once a full review cycle across the angles above
+- [x] `M90.23` `SHOW CONFIG`/`GET /v1/config` marked `drain_grace` and
+  `grant_ttl_cap` `changeable: yes`, and both read from the live document
+  watch for the `value` column shown beside that claim. Neither is actually
+  live: `Drainer.grace` is copied from `App.config` — a snapshot the type's
+  own doc calls out as "Not the live one" — once when `run()` builds it, and
+  `grant_ttl_cap` is baked into the `CachingResolver`'s `CacheConfig::max_ttl`
+  once when `entry.rs` builds the resolver. An operator raising either during
+  an incident, expecting the next reload to pick it up the way `max_client_
+  conns` and `servers.*.max_connections` genuinely do, would see the new
+  value reflected immediately in `SHOW CONFIG` while enforcement kept the
+  old one — the worst version of this shape, since the surface actively
+  claims a reload took effect. `retry` and `client_idle_timeout` have the
+  identical startup-only shape and are already correctly marked `"no"` and
+  documented as such; these two were the ones left inconsistent with that
+  precedent, most likely simply missed rather than a considered choice, since
+  nothing in either field's own code or comments promises live reload.
+  Decided against wiring live reload for either (a materially larger change
+  touching `Drainer`'s six test call sites and `pgprox-auth`'s cache
+  internals, closer to a new feature than a fix, and not what either field's
+  existing code commits to) in favor of making the claim match the code, the
+  same direction already taken for `retry`/`client_idle_timeout`.
+  Acceptance: both rows now report `changeable: "no"`; `docs/configuration.md`
+  documents both as read once at startup, alongside the existing `retry`/
+  `client_idle_timeout` explanation. New test
+  `drain_grace_and_grant_ttl_cap_are_reported_not_changeable`, verified
+  against a revert of the fix before landing.
+- [ ] `M90.24` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if

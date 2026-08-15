@@ -41,8 +41,16 @@ query_cache:
 | Field | Default | What it does |
 | --- | --- | --- |
 | `max_client_conns` | `10000` | Client connections one node accepts. The 10,001st is refused with a message rather than dropped. |
-| `drain_grace` | `60s` | How long a draining node waits for transactions to end before force-closing what is left. |
-| `grant_ttl_cap` | `300s` | Upper bound on how long a resolved token may be cached, whatever TTL the token service returns. |
+| `drain_grace` | `60s` | How long a draining node waits for transactions to end before force-closing what is left. Read once at startup; see below. |
+| `grant_ttl_cap` | `300s` | Upper bound on how long a resolved token may be cached, whatever TTL the token service returns. Read once at startup; see below. |
+
+`drain_grace` and `grant_ttl_cap` do not reload, the same as `retry` and
+`client_idle_timeout` below: `drain_grace` is copied into the drain sequence
+once when the node starts, and `grant_ttl_cap` is baked into the resolver's
+cache once when it is built. `SHOW CONFIG` and `GET /v1/config` report both as
+`changeable: no` for this reason — the `value` column comes from the live
+document, but changing either there takes effect the next time the node
+starts, not on the next reload.
 
 ### `servers`
 

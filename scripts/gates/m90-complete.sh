@@ -208,4 +208,8 @@ run_finding pgprox sessions::tests::only_connection_holding_clients_count_toward
 run_finding pgprox run::tests::only_the_tenants_this_node_homes_are_reported \
   "M90.22: only the tenants this node homes are reported"
 
+# --- M90.23: drain_grace and grant_ttl_cap claimed to be live-changeable ----
+run_finding pgprox-admin rows::tests::drain_grace_and_grant_ttl_cap_are_reported_not_changeable \
+  "M90.23: drain_grace and grant_ttl_cap are reported not changeable"
+
 finish

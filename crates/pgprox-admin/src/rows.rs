@@ -434,12 +434,22 @@ fn config_rows(observatory: &dyn Observatory) -> Vec<Vec<String>> {
         vec![
             "drain_grace".to_owned(),
             format!("{}s", config.drain_grace.as_secs()),
-            "yes".to_owned(),
+            // Not "yes": `Drainer.grace` is copied from `app.config` once at
+            // `run()`'s own construction, a snapshot per `App`'s own doc
+            // ("Not the live one"), and never re-read. `config` here is the
+            // live watch (`NodeObservatory::config()`), so a reload changes
+            // what this row *shows* without changing what a drain actually
+            // waits — the same startup-only shape `client_idle_timeout` and
+            // `retry` are already correctly marked for, below.
+            "no".to_owned(),
         ],
         vec![
             "grant_ttl_cap".to_owned(),
             format!("{}s", config.grant_ttl_cap.as_secs()),
-            "yes".to_owned(),
+            // Not "yes", for the same reason: baked into the `CachingResolver`
+            // this node built once at startup (`CacheConfig::max_ttl`), which
+            // has no reload wiring of its own.
+            "no".to_owned(),
         ],
     ];
     for server in &config.servers {
@@ -910,6 +920,25 @@ mod tests {
             keys.iter().any(|key| key.contains("db-1:5432")),
             "the configured server limits are not reported: {keys:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn drain_grace_and_grant_ttl_cap_are_reported_not_changeable() {
+        // `M90.23`. Both are read once at startup — `Drainer.grace` from a
+        // config snapshot `App` took at construction, `grant_ttl_cap` baked
+        // into the `CachingResolver` this node built once — and this row's
+        // `value` column already comes from the live watch, unlike either
+        // enforcement path. Reporting "yes" here told an operator a reload
+        // took effect when it had not.
+        let rows = show(ShowTarget::Config, Scope::Cluster).await;
+
+        let changeable = |key: &str| {
+            (0..rows.len())
+                .find(|&i| rows.get(i, "key") == Some(key))
+                .and_then(|i| rows.get(i, "changeable"))
+        };
+        assert_eq!(changeable("drain_grace"), Some("no"));
+        assert_eq!(changeable("grant_ttl_cap"), Some("no"));
     }
 
     #[tokio::test]
