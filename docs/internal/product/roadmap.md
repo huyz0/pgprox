@@ -73,7 +73,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M85 | Eighty-seven milestones and no way to jump to one | complete; a table of contents for `backlog.md` and a `check-drift.sh` rule that fails if a heading has no matching line |
 | M86 | The status table nobody kept adding rows to | complete; rows added for `M30` through `M53` and `M85`, and backfilling them found two milestones whose completion condition was prose with no command for `check-drift.sh` to read |
 | M87 | The mutants nobody has swept since M22 | complete; all sixteen crates and binaries freshly swept, real testing gaps found and fixed across `pgprox-tls`, `pgprox-auth`, `pgprox` and `pgprox-pool` (the last reachable only through a new test-only accessor), two memory-exhaustion mutants fixed with `debug_assert!` invariants after one took the machine from 30 GB free to swapping in under ten seconds, and every remaining survivor accepted in the baseline with a written reason |
-| M88 | A second reading of every crate, and the eighteen things it found | open |
+| M88 | A second reading of every crate, and the eighteen things it found | complete; three findings shared M24's quoting/raw-scanner shape, two shared M24.9's and M13's doc/code-correspondence shape, and the other thirteen were shapes M24 had no category for |
 | M89 | The review from outside this repo, and the four gaps it found | complete; four pages and a first tagged release, none of them a code change, and the two adoption-relevant findings from `M88` stayed tracked there rather than duplicated here |
 
 `M54` through `M84` are complete — `backlog.md` has their tasks and commit
@@ -3309,7 +3309,7 @@ Completion condition: `scripts/gates/m22-complete.sh` reporting every crate
 current, with every survivor either killed by a test or accepted in
 `docs/internal/product/mutants-baseline.txt` with a reason.
 
-## M88: a second reading of every crate, and the eighteen things it found
+## M88: a second reading of every crate, and the eighteen things it found (complete)
 
 ```bash
 scripts/gates/m88-complete.sh
@@ -3335,8 +3335,8 @@ template.
 
 ### Where it stands
 
-Open. Findings land one per commit, each with a test that fails before the fix
-and passes after.
+Complete. Eighteen findings, each landed as its own commit with a test that
+failed before the fix and passed after.
 
 **`M88.1`, the costliest.** `CachingResolver::resolve`'s singleflight claim was
 released by a line at the end of the leader's turn and by a line inside
@@ -3656,6 +3656,58 @@ would have said the same thing. `fakepg.rs` now answers `CopyFail` with an
 `ErrorResponse` carrying `57014` instead of the same `CommandComplete`
 `CopyDone` gets, so a test that aborts a copy is no longer indistinguishable,
 through the fake, from one that let it finish.
+
+**Which of the eighteen shared a cause with `M24`, and which did not.**
+`M24` found four findings that were one shape — a decision that reads SQL
+taken by a scanner that is not the shared one, or the shared one asked the
+wrong way — and one, `M24.9`, that was a document asserting a capability with
+no code behind it. Both shapes recurred here.
+
+Three carried `M24`'s quoting/raw-scanner shape into new places: `M88.3`
+(`pgprox-route` reading with `split_whitespace()`), `M88.4` (`pgprox-pool`'s
+`ParsedSet::parse` comment-blind past its first token), and `M88.12` (the
+query cache's denylist matching a quoted builtin's name as if it were code).
+The rule the first reading wrote — read SQL through `pgprox_core::sql`,
+never a second scanner — was right; nothing before `M88` had gone looking
+for a fourth place it had not yet been applied.
+
+Two carried `M24.9`'s shape, in both directions it can point. `M88.15`
+(`pgprox-config`'s `AGENTS.md` and ADR claiming three providers where one is
+built) is `M24.9` exactly: a document asserting more than the code delivers.
+`M88.16` (`pgprox-core`'s contracts table missing four of twelve governed
+traits) is the same family from the other side: a document asserting *less*
+than the code actually does, which under-advertises a rule rather than
+over-claiming a capability, but is the identical failure of a document and
+the code it describes drifting apart unwatched.
+
+The other thirteen were shapes `M24` had no category for, which is worth
+naming as a result in itself rather than as an absence. `M88.1`'s leak was
+cancellation, not admission capacity — a dropped future, not a slow leak
+under load, which is what made it invisible until this reading, the same way
+`M24.5` and `M24.8`'s leaks were invisible until `M24`'s. `M88.2` was a value
+computed once at construction and never revisited when its input changed
+live — a frozen snapshot, not a second scanner or an uncleared leak, and a
+shape `M24` did not have a finding for at all. `M88.5` and `M88.6` were
+surfaces reporting wrong data outright — `SHOW` columns holding the wrong
+field, a metric rendered twice under one name — where `M24`'s test-quality
+question came back empty rather than
+finding wrong output at all. `M88.7` and `M88.11` were both a safety
+property nothing enforced: TLS-required-with-JWT resting on operator
+discipline, a certificate's validity window never checked before it was
+served — closer to `M13`'s rule-with-no-script than to `M24.9`'s
+capability-with-no-code, but for an invariant rather than a written rule.
+`M88.8` and `M88.9` were async-discipline gaps against standards `M24`
+predates in their current form: a blocking read reaching the runtime, a
+probe connection with no goodbye. `M88.10` and `M88.14` both under-reported
+what actually happened — the most recent failure discarded for the first,
+an LSN's low half printed without the padding every real Postgres tool
+expects. `M88.13` was a config field kept a promise nothing had made, dead
+and unwired beside a mechanism that already did its job under a different
+name. `M88.17` extended `M15`'s fuzz coverage to a reassembly path handling
+untrusted input rather than repeating a shape `M24` had already found.
+`M88.18`'s five are the sharpest contrast with `M24`: the first reading's
+test-quality question came back empty, and this one's came back with five
+real, if small, gaps.
 
 ## M89: the review from outside this repo, and the four gaps it found (complete)
 

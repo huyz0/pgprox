@@ -9951,7 +9951,7 @@ recognised so it can be refused rather than read as a version.
   would be - confirmed by reading it rather than adding a redundant test.
   `fakepg.rs` now answers `CopyFail` with an `ErrorResponse` (`57014`, the code
   real Postgres uses) instead of the same `CommandComplete` `CopyDone` gets.
-- [ ] `M88.19` Close M88. Filed as its own task for the reason `M24.10` was:
+- [x] `M88.19` Close M88. Filed as its own task for the reason `M24.10` was:
   closing a milestone is a claim about the whole of it, and bundling that
   claim into the last piece of work makes it look like a side effect of that
   piece rather than a judgement about all of them.
@@ -9959,6 +9959,15 @@ recognised so it can be refused rather than read as a version.
   records which findings shared a cause with `M24`'s (the quoting and
   raw-scanner shape recurring in `M88.3`, `M88.4` and `M88.12`) and which were
   new shapes `M24` did not have a category for.
+  `scripts/gates/m88-complete.sh` passes; the status table's `M88` row now
+  reads complete. The section title gained its own `(complete)`, matching
+  `M24` and `M89`'s. Two shapes recurred, not one: the quoting/raw-scanner
+  shape in `M88.3`, `M88.4` and `M88.12` as named above, and `M24.9`'s
+  document-asserting-more-than-the-code-delivers shape in `M88.15`, plus its
+  mirror image in `M88.16` — a document asserting *less* than the code
+  actually does. The other thirteen findings were shapes `M24` had no
+  category for, each named in the roadmap's closing paragraph rather than
+  repeated here.
 
 ## M89: the review from outside this repo, and the four gaps it found
 
