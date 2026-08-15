@@ -10292,7 +10292,33 @@ scalable real production machine, which stays `M16`'s open item.
   also reads the client's socket and asserts a `57P01` `ErrorResponse`
   arrives before the session ends, failing before the fix with an
   unexpected-EOF rather than a decoded frame.
-- [ ] `M90.14` Close M90 once a full review cycle across the angles above
+- [x] `M90.14` A failed post-commit LSN probe left a session free to read its
+  own unconfirmed write from a replica. `serve.rs`'s `release()` and
+  `probe.rs` both document the safety claim in prose — "a failure leaves the
+  watermark where it was, so the session keeps reading from the primary" —
+  but nothing in `SessionRouter`/`decide()` enforced it. `wrote()` tracked
+  exactly the right fact (a write classified but not yet confirmed) and was
+  read by the cache-eligibility gate, but `route()` never consulted it: the
+  target came from `watermark` alone, and `RouteCtx` had no field for
+  "unconfirmed" at all. For a session's first-ever write, a failed probe
+  left `watermark` at `None` — indistinguishable from a session that never
+  wrote anything — so `ReplicaState::can_serve`'s `watermark.is_none_or(...)`
+  waved any healthy replica through. Reachable without a scalable production
+  setup: the probe runs on the same connection immediately after commit's
+  `ReadyForQuery`, so a primary failover, `pg_terminate_backend`, or a reset
+  landing in that window (the exact scenario ADR 0027/0028 exist for) is
+  enough, and no test anywhere exercised "probe fails after a write, then a
+  read happens."
+  Acceptance: `pgprox_core::route::RouteCtx` gains a `wrote` field, additive
+  like every other field here (`..RouteCtx::default()` at every call site);
+  `decide()` forces `RouteTarget::Primary` when it is set, the same as
+  `pinned` and `in_transaction`; `SessionRouter::route` passes `self.wrote`
+  at the point a new transaction's target is decided. New tests:
+  `pgprox-core`'s `an_unconfirmed_write_stays_on_the_primary_even_with_no_
+  watermark` and `pgprox-route`'s
+  `a_write_whose_position_probe_failed_keeps_the_next_read_on_the_primary`,
+  both verified against a revert of the fix before landing.
+- [ ] `M90.15` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if

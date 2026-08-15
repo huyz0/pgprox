@@ -94,6 +94,15 @@ pub struct RouteCtx {
     pub in_transaction: bool,
     /// Whether the session is pinned to an upstream connection.
     pub pinned: bool,
+    /// Whether an earlier write in this session committed but its LSN is not
+    /// yet known.
+    ///
+    /// True between a write committing and the caller learning where it
+    /// landed (a probe that can itself fail). `watermark` cannot be trusted
+    /// to reflect that write until then, so this must fix the primary the
+    /// same way `pinned` does rather than let a stale or absent watermark
+    /// wave a replica through.
+    pub wrote: bool,
     /// An explicit instruction from the client.
     pub hint: RouteHint,
 }
@@ -120,9 +129,10 @@ impl<T: Router + ?Sized> Router for Arc<T> {
 /// chances to get it wrong.
 #[must_use]
 pub fn decide(ctx: &RouteCtx, replicas: &[ReplicaState]) -> RouteTarget {
-    // A pinned session, an open transaction, or an explicit Primary hint all
-    // fix the answer regardless of what the statement does.
-    if ctx.pinned || ctx.in_transaction || ctx.hint == RouteHint::Primary {
+    // A pinned session, an open transaction, an unconfirmed earlier write, or
+    // an explicit Primary hint all fix the answer regardless of what the
+    // statement does.
+    if ctx.pinned || ctx.in_transaction || ctx.wrote || ctx.hint == RouteHint::Primary {
         return RouteTarget::Primary;
     }
 
@@ -279,6 +289,21 @@ mod tests {
     fn a_pinned_session_stays_on_the_primary() {
         let ctx = RouteCtx {
             pinned: true,
+            ..read_only()
+        };
+        assert_eq!(decide(&ctx, &[replica(100)]), RouteTarget::Primary);
+    }
+
+    #[test]
+    fn an_unconfirmed_write_stays_on_the_primary_even_with_no_watermark() {
+        // `wrote` is exactly the case a watermark cannot express: the write
+        // committed but the caller never learned its LSN (the probe that
+        // would have set it failed), so `watermark` is still `None` — the
+        // same value a session that never wrote anything has. Without this
+        // flag the two are indistinguishable and the first one reads its own
+        // write off a replica that never saw it.
+        let ctx = RouteCtx {
+            wrote: true,
             ..read_only()
         };
         assert_eq!(decide(&ctx, &[replica(100)]), RouteTarget::Primary);

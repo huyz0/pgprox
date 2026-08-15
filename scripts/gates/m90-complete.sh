@@ -161,4 +161,10 @@ run_finding pgprox-pool live::tests::a_connection_kept_busy_past_its_lifetime_is
 run_finding pgprox serve::tests::a_client_holding_a_connection_is_not_closed_by_the_drain_alone \
   "M90.13: a client holding a connection is not closed by the drain alone, and is told why"
 
+# --- M90.14: a failed post-commit LSN probe never forced the primary --------
+run_finding pgprox-core route::tests::an_unconfirmed_write_stays_on_the_primary_even_with_no_watermark \
+  "M90.14: an unconfirmed write stays on the primary even with no watermark"
+run_finding pgprox-route router::tests::a_write_whose_position_probe_failed_keeps_the_next_read_on_the_primary \
+  "M90.14: a write whose position probe failed keeps the next read on the primary"
+
 finish

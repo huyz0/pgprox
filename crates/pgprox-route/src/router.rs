@@ -224,6 +224,14 @@ impl SessionRouter {
             // happens below.
             in_transaction: false,
             pinned: self.pinned,
+            // The value from before this statement's own write (if any) is
+            // classified below: a write still awaiting its LSN from an
+            // earlier transaction must fix the primary here, at the moment
+            // the new transaction's target is decided, or a failed post-commit
+            // probe leaves the watermark exactly where a session that never
+            // wrote anything would also leave it — indistinguishable, and
+            // wrong in the same direction `wrote()`'s own doc warns about.
+            wrote: self.wrote,
             // A per-statement comment outranks the session setting, since it is
             // the more specific of the two.
             hint: statement_hint(sql).unwrap_or(self.hint),
@@ -572,6 +580,36 @@ mod tests {
 
         router.record_write(Lsn::new(500));
         assert!(!router.wrote());
+    }
+
+    #[test]
+    fn a_write_whose_position_probe_failed_keeps_the_next_read_on_the_primary() {
+        // The probe that turns `wrote` off runs on the same connection right
+        // after commit, and it can fail there — a primary failover or a reset
+        // landing in that exact window. When it does, `record_write` is never
+        // called: `wrote` stays true and the watermark stays exactly where it
+        // was, which for a session's first-ever write is `None`, the same
+        // value a session that never wrote anything at all would show. Without
+        // `wrote` in the decision, that makes the two indistinguishable and
+        // this session reads its own uncommitted-as-far-as-anyone-knows write
+        // off a replica that never got it, straight past the classifier
+        // outright refusing to serve one that just wrote.
+        let mut router = SessionRouter::new();
+
+        route(&mut router, "BEGIN", false);
+        route(&mut router, "UPDATE t SET a = 1", true);
+        router.end_transaction();
+        assert!(
+            router.wrote(),
+            "the write's position was never recorded, so it must still be pending"
+        );
+        assert_eq!(router.watermark().get(), None, "no probe ever succeeded");
+
+        assert_eq!(
+            route(&mut router, "SELECT * FROM t", false),
+            Routed::To(RouteTarget::Primary),
+            "an unconfirmed write let the next read reach a replica"
+        );
     }
 
     #[test]
