@@ -111,6 +111,7 @@ script or an unwired gate already does.
 - [M87: the mutants nobody has swept since M22](#m87-the-mutants-nobody-has-swept-since-m22)
 - [M88: a second reading of every crate, and the eighteen things it found](#m88-a-second-reading-of-every-crate-and-the-eighteen-things-it-found)
 - [M89: the review from outside this repo, and the four gaps it found](#m89-the-review-from-outside-this-repo-and-the-four-gaps-it-found)
+- [M90: a third reading, from several angles at once, and what each one found](#m90-a-third-reading-from-several-angles-at-once-and-what-each-one-found)
 <!-- toc:end -->
 
 ## M-1: AI development system
@@ -10048,3 +10049,88 @@ near it. This milestone is that question, asked once, from outside.
   cannot verify the scale claims `docs/performance.md` already marks as
   unmeasured, because verifying them needs hardware this repository's own CI
   does not have, not more documentation.
+
+## M90: a third reading, from several angles at once, and what each one found
+
+`M24` read every crate once; `M88` read every crate a second time. Both were
+one reviewer reading sequentially. This milestone instead points several
+readers at the same tree at once, each with a different question —
+concurrency and cancellation, security-sensitive data flow, error handling
+and panics, non-exhaustive-enum wire encoding, documentation drift — on the
+theory that a single reader's blind spots are consistent across a pass and a
+second pass by the same method finds mostly what the first pass already
+would have. Findings are filed below as they are confirmed by reading the
+actual code, not by trusting an angle's report unread, and each lands as its
+own commit with a test that fails before the fix. Excluded by the standing
+direction that opened this milestone: anything whose verification needs a
+scalable real production machine, which stays `M16`'s open item.
+
+- [x] `M90.0` Plan M90, and give it a gate that passes from this commit.
+  Acceptance: the roadmap has an M90 section and a status row, this list is
+  written, and `scripts/gates/m90-complete.sh` exists, is named in CI, and
+  passes on this commit by checking what has landed rather than what is
+  planned.
+- [ ] `M90.1` `SessionRouter::route` stops tracking whether a transaction
+  wrote anything once its routing target is fixed. The target a transaction's
+  first statement chose is correctly held for the rest of the transaction,
+  but the code held `wrote` to that same first answer instead of continuing
+  to classify each later statement — the ordinary `BEGIN; UPDATE ...; COMMIT`
+  shape has its write as the *second* statement, never the one that fixed the
+  target, so `wrote` stayed `false` and the caller never fetched the commit
+  LSN. A read right after such a commit could land on a replica that had not
+  replayed it, silently violating the read-your-writes guarantee ADR 0009
+  exists to provide.
+  Acceptance: a test with `BEGIN; UPDATE ...; COMMIT` showing `wrote` true at
+  commit, failing before the fix.
+- [ ] `M90.2` `NodeMode`'s two wire-conversion sites in `bin/pgprox/src/gossip.rs`
+  (`ClientWire::from`, `DigestWire::from`) and its numeric hash in
+  `pgprox-cluster`'s `digest.rs::view_hash` each hand-rolled their own match
+  against a `#[non_exhaustive]` enum, with a wildcard arm that silently
+  downgraded any variant it did not recognise — `ClientWire::from` folded
+  anything but `Active`/`Waiting` into `"idle"`, `DigestWire::from` folded
+  anything but `Draining` into `"active"`, and `view_hash` could hash an
+  unrecognised mode onto the same number a known one already used. The
+  `DigestWire` field is exactly what `coordinator.rs` reads to decide whether
+  to keep routing tenants onto a peer.
+  Acceptance: `pgprox-core::cluster::NodeMode` grows an exhaustive `as_str()`
+  method, the two `gossip.rs` sites and `digest.rs`'s hash use it or assert
+  loudly on an unrecognised variant, and a test per site shows the fix,
+  failing before it.
+- [ ] `M90.3` `CachingResolver`'s grant cache key hashes only the auth token
+  and `startup_database`, omitting `startup_user`. The sidecar's own proto
+  sends `startup_user` as a first-class resolution input "for policy", and
+  the bundled `mock_sidecar.rs` demonstrably varies the resolved backend
+  `user` by it; two different users on the same token and database can
+  collide on the same cache entry and one gets served the other's grant.
+  Acceptance: a test with two `AuthRequest`s differing only in
+  `startup_user` showing they resolve to distinct cache entries, failing
+  before the fix.
+- [ ] `M90.4` A rejected `SET pgprox.route` hint is never actually reported
+  to the client. `router.rs`'s own doc comment for `Routed::HintRejected`
+  says the caller reports this "so a typo does not leave them believing
+  their reads are on replicas", but `bin/pgprox/src/serve.rs` is the only
+  place that turns a `ClientAction::Answer` into wire bytes and it matches
+  on `Answer(_)`, sending the same bare `ReadyForQuery` whether the hint was
+  accepted or rejected. A client that mistypes `pgprox.route` gets no signal
+  that its session hint did not change.
+  Acceptance: a test showing a rejected hint's `ReadyForQuery` differs
+  observably from an accepted one's, failing before the fix.
+- [ ] `M90.5` Investigate whether `pgprox-session::cancel::Registry` and
+  `PgConnector::backends`/`ParameterCache::entries` grow without bound
+  against a real workload, and fix what is confirmed.
+  Acceptance: either a test demonstrating unbounded growth and a fix that
+  bounds it, or this task's text records what was checked and why it is not
+  a real gap.
+- [ ] `M90.6` Correct documentation drift found alongside the code findings
+  above: `plan.md`'s dependency-exception count is stale against
+  `bin/pgload`, and ADR 0009/`plan.md` describe `replica_poll_interval` as
+  tunable when it is a hardcoded constant duplicated in
+  `primary_watch.rs` and `replicas.rs`, and describe a bounded-staleness
+  `max_replica_lag` mode that is not implemented.
+  Acceptance: the docs match the code, following `M88.15`'s precedent of an
+  "Outstanding" ADR section where the gap is real rather than a wording fix.
+- [ ] `M90.7` Close M90 once a full review cycle across the angles above
+  finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
+  and `M89.5` were: closing a milestone is a claim about the whole of it.
+  Acceptance: the status row says complete and the section names what, if
+  anything, this milestone left open.

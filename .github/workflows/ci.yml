@@ -498,3 +498,8 @@ jobs:
       # check that does that, so it gets its own gate, on M24's terms.
       - name: M88
         run: scripts/gates/m88-complete.sh
+      # M89 had no code findings, so its completion condition is the same
+      # checks M89.1 and M89.3 already run and gets no step of its own.
+      # M90 is `M24`/`M88`-shaped again: a named test per finding.
+      - name: M90
+        run: scripts/gates/m90-complete.sh

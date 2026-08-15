@@ -86,6 +86,7 @@ between `m19` and `m20`, and `m3` after `m29`.
 | `m43-complete.sh` | M43 | what it does, and what one request touches |
 | `m44-complete.sh` | M44 | the pages a review asks for |
 | `m88-complete.sh` | M88 | a second reading of every crate, and the eighteen things it found |
+| `m90-complete.sh` | M90 | a third reading, from several angles at once, and what each one found |
 
 ## release-check.sh
 

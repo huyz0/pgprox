@@ -75,6 +75,7 @@ The full design is in [plan.md](plan.md). This file is the execution view.
 | M87 | The mutants nobody has swept since M22 | complete; all sixteen crates and binaries freshly swept, real testing gaps found and fixed across `pgprox-tls`, `pgprox-auth`, `pgprox` and `pgprox-pool` (the last reachable only through a new test-only accessor), two memory-exhaustion mutants fixed with `debug_assert!` invariants after one took the machine from 30 GB free to swapping in under ten seconds, and every remaining survivor accepted in the baseline with a written reason |
 | M88 | A second reading of every crate, and the eighteen things it found | complete; three findings shared M24's quoting/raw-scanner shape, two shared M24.9's and M13's doc/code-correspondence shape, and the other thirteen were shapes M24 had no category for |
 | M89 | The review from outside this repo, and the four gaps it found | complete; four pages and a first tagged release, none of them a code change, and the two adoption-relevant findings from `M88` stayed tracked there rather than duplicated here |
+| M90 | A third reading, from several angles at once, and what each one found | open; findings tracked in `backlog.md` as they are confirmed and fixed |
 
 `M54` through `M84` are complete — `backlog.md` has their tasks and commit
 references — but do not yet have roadmap sections of their own; this table
@@ -3798,3 +3799,26 @@ through all four pages this milestone added still cannot verify the scale
 claims this project has not yet been able to measure; what changed is that
 they now know, before committing to anything, what to build and what to
 check first.
+
+## M90: a third reading, from several angles at once, and what each one found
+
+```bash
+scripts/gates/m90-complete.sh
+```
+
+`M24` and `M88` were one reviewer reading every crate in sequence, once each.
+This milestone instead points several readers at the same tree at once, each
+with a different question — concurrency and cancellation, security-sensitive
+data flow, error handling and panics, non-exhaustive-enum wire encoding,
+documentation drift — since a single sequential reader's blind spots repeat
+across a second pass by the same method more than they do across a change of
+method. Every finding is verified by reading the actual code before it is
+filed, not by trusting an angle's report unread, and lands as its own commit
+with a test that fails before the fix. `M16`'s multi-machine
+100,000-connection run stays out of scope here, as it has since it was
+opened: this milestone fixes what a reader can verify without that hardware.
+
+### Where it stands
+
+Open. See `docs/internal/product/backlog.md`'s M90 section for the findings
+as they are confirmed and fixed.
