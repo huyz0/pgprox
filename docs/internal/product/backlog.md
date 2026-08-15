@@ -10246,7 +10246,34 @@ scalable real production machine, which stays `M16`'s open item.
   transform can never change a word's codepoint count and so can never
   conflate two distinct source identifiers. A test folds `İ` and `i` +
   U+0307 and asserts they produce different keys, failing before the fix.
-- [ ] `M90.12` Close M90 once a full review cycle across the angles above
+- [x] `M90.12` `ReapConfig::max_lifetime` and `pgprox_pool::reap::is_expired`
+  had no caller anywhere in the workspace outside `is_expired`'s own unit
+  tests. `Connection` carried no field recording when it was opened,
+  `Pool::release` never consulted age, and `reap()` filtered purely on
+  `idle_since`/`idle_timeout`. A connection released and immediately
+  reused, over and over — the ordinary shape transaction pooling makes —
+  never sits idle long enough for the reaper to reach it, so exactly the
+  traffic pattern `max_lifetime` exists for (bounding "a connection that
+  has accumulated state nobody noticed", and giving a rolling restart of
+  the database a way to actually finish) was the one where the documented
+  default of one hour silently did nothing. The same shape `M88.13` found
+  and removed for `min_size`, except `is_expired` had direct unit test
+  coverage as a pure function, which is what let it satisfy the coverage
+  gate while never being called from acquire, release or reap.
+  Acceptance: `Connection` gains `opened_at`; `reap()` closes an idle
+  connection past `max_lifetime` even before `idle_timeout`, and
+  `keep_warm` does not exempt it (a kept-warm connection this old is
+  exactly the case `max_lifetime` bounds); `Pool` gains `expire_in_use`,
+  called from `LivePool::reap_idle`'s existing periodic cadence, which
+  marks a checked-out connection past its lifetime so `Pool::release`
+  discards it at its next clean release rather than closing a socket out
+  from under a running transaction. Eight new tests across `pool.rs`,
+  `reap.rs` and `live.rs` — marking and release, the zero-means-no-limit
+  case, an idle connection reaped before its idle timeout, `keep_warm` not
+  exempting an expired connection, and the full `LivePool` pipeline for
+  both a continuously-busy connection and a young one — each verified
+  against a reverted piece of the fix before landing.
+- [ ] `M90.13` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if

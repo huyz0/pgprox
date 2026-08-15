@@ -29,7 +29,7 @@
 //! adds the waiting, in [`crate::live`].
 
 use std::collections::{HashMap, VecDeque};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use pgprox_core::hash::IssuedIds;
 use pgprox_core::ids::{PoolKey, ServerId};
@@ -83,6 +83,17 @@ pub struct Connection {
     pub statements: ConnectionStatements,
     /// When it last went idle, for the reaper.
     idle_since: Option<Instant>,
+    /// When this connection was opened, for `ReapConfig::max_lifetime`.
+    opened_at: Instant,
+    /// Set once this connection has outlived `max_lifetime` while checked
+    /// out, so [`Pool::release`] discards it instead of returning it.
+    ///
+    /// A flag read at release rather than `max_lifetime` itself being passed
+    /// to `release`: marking happens on `LivePool::reap_idle`'s own cadence,
+    /// against whatever `ReapConfig` a caller supplies that tick, and the
+    /// mark is the only fact `release` — called from every guard drop, on
+    /// the hot path — needs to carry forward.
+    expired: bool,
 }
 
 impl Connection {
@@ -96,6 +107,12 @@ impl Connection {
     #[must_use]
     pub const fn idle_since(&self) -> Option<Instant> {
         self.idle_since
+    }
+
+    /// When this connection was opened.
+    #[must_use]
+    pub const fn opened_at(&self) -> Instant {
+        self.opened_at
     }
 }
 
@@ -251,7 +268,7 @@ impl Pool {
     /// Records that a connection the caller was told to open is now open.
     ///
     /// Returns its id, already checked out to the caller that opened it.
-    pub fn opened(&mut self) -> UpstreamId {
+    pub fn opened(&mut self, now: Instant) -> UpstreamId {
         self.opening = self.opening.saturating_sub(1);
         let id = UpstreamId(self.next_id);
         self.next_id += 1;
@@ -261,6 +278,8 @@ impl Pool {
                 id,
                 statements: ConnectionStatements::new(self.config.statements),
                 idle_since: None,
+                opened_at: now,
+                expired: false,
             },
         );
         id
@@ -300,13 +319,21 @@ impl Pool {
             // opened above the limit, and every connection in use eventually
             // comes back through here, so the steady state is at most `limit`
             // whatever the transient was.
-            ReleaseOutcome::Reusable if self.retained() < self.limit => {
+            //
+            // `!connection.expired` is `M90.12`: a connection marked by
+            // `LivePool::reap_idle` for having outlived `max_lifetime` while
+            // it was checked out is exactly as clean a release as any other,
+            // but returning it to the pool anyway is the bug `max_lifetime`
+            // exists to prevent — a rolling restart of the database waiting
+            // on a connection that never goes idle long enough for the
+            // reaper's `idle_timeout` to reach it.
+            ReleaseOutcome::Reusable if self.retained() < self.limit && !connection.expired => {
                 connection.idle_since = Some(now);
                 self.idle.push_back(connection);
                 true
             }
             // Everything else is dropped, and the socket is the caller's to
-            // close. Three cases arrive here and all three want the same
+            // close. Four cases arrive here and all four want the same
             // answer.
             //
             // A clean release the guard above refused, which is a pool over its
@@ -319,6 +346,8 @@ impl Pool {
             // was right and the sockets were the problem. A connection this
             // pool is not allowed to have is one the server is still counting.
             //
+            // A clean release of a connection marked expired.
+            //
             // A `Discard`, which is the release rule at the top of this file.
             //
             // And anything else: `ReleaseOutcome` is `#[non_exhaustive]`, so a
@@ -326,6 +355,33 @@ impl Pool {
             // outcome nobody has taught this pool about must not recycle a
             // connection.
             _ => false,
+        }
+    }
+
+    /// Marks every checked-out connection that has outlived `max_lifetime`,
+    /// so [`Pool::release`] discards it at its next clean release instead of
+    /// returning it to the pool.
+    ///
+    /// Marks rather than closes: a checked-out connection is mid-transaction
+    /// as far as this crate can tell, and closing its socket out from under
+    /// a running one is the exact failure this crate exists to prevent (see
+    /// this module's own doc comment). The release rule already in force —
+    /// `ReadyForQuery('I')`, no extended query outstanding, unpinned — is
+    /// what makes the *next* release the first point closing it is safe.
+    ///
+    /// Idempotent: a connection already marked, or one `max_lifetime` has not
+    /// yet reached, is left alone. Zero effect when `max_lifetime` is zero,
+    /// matching [`crate::reap::is_expired`]'s own "zero means no limit".
+    pub fn expire_in_use(&mut self, max_lifetime: Duration, now: Instant) {
+        if max_lifetime.is_zero() {
+            return;
+        }
+        for connection in self.checked_out.values_mut() {
+            if !connection.expired
+                && crate::reap::is_expired(connection.opened_at, max_lifetime, now)
+            {
+                connection.expired = true;
+            }
         }
     }
 
@@ -426,14 +482,14 @@ mod tests {
     /// Acquires and completes an open, as a caller would.
     fn open(pool: &mut Pool) -> UpstreamId {
         assert_eq!(pool.acquire(), Acquired::OpenNew);
-        pool.opened()
+        pool.opened(Instant::now())
     }
 
     #[test]
     fn an_empty_pool_opens_rather_than_waiting() {
         let mut pool = pool(4);
         assert_eq!(pool.acquire(), Acquired::OpenNew);
-        let id = pool.opened();
+        let id = pool.opened(Instant::now());
         assert_eq!(pool.stats().active, 1);
         assert_eq!(pool.stats().idle, 0);
         assert_eq!(pool.checked_out(id).unwrap().id(), id);
@@ -463,6 +519,78 @@ mod tests {
         let id = open(&mut pool);
         assert!(pool.release(id, ReleaseOutcome::Reusable, now));
         assert_eq!(pool.stats().idle, 1);
+    }
+
+    #[test]
+    fn a_connection_marked_expired_is_discarded_rather_than_reused() {
+        // `M90.12`. `expire_in_use` marks; `release` is what actually acts
+        // on the mark, at the first clean release after it, which is the
+        // point `Pool`'s own doc says closing a connection is safe.
+        let start = Instant::now();
+        let mut pool = pool(4);
+        let id = pool.opened(start);
+
+        pool.expire_in_use(Duration::from_secs(60), start + Duration::from_secs(60));
+        assert!(
+            !pool.release(
+                id,
+                ReleaseOutcome::Reusable,
+                start + Duration::from_secs(60)
+            ),
+            "a connection marked expired went back into the pool"
+        );
+        assert_eq!(pool.stats().idle, 0);
+        assert_eq!(pool.total(), 0);
+    }
+
+    #[test]
+    fn expire_in_use_leaves_a_young_connection_alone() {
+        let start = Instant::now();
+        let mut pool = pool(4);
+        let id = pool.opened(start);
+
+        pool.expire_in_use(Duration::from_secs(60), start + Duration::from_secs(1));
+        assert!(
+            pool.release(id, ReleaseOutcome::Reusable, start + Duration::from_secs(1)),
+            "a connection well within its lifetime was discarded"
+        );
+        assert_eq!(pool.stats().idle, 1);
+    }
+
+    #[test]
+    fn a_zero_max_lifetime_marks_nothing() {
+        // Zero means no limit, matching `is_expired`'s own rule -- the
+        // disabling value must not be the most destructive one.
+        let start = Instant::now();
+        let mut pool = pool(4);
+        let id = pool.opened(start);
+
+        pool.expire_in_use(Duration::ZERO, start + Duration::from_secs(86_400));
+        assert!(pool.release(
+            id,
+            ReleaseOutcome::Reusable,
+            start + Duration::from_secs(86_400)
+        ));
+        assert_eq!(pool.stats().idle, 1);
+    }
+
+    #[test]
+    fn expire_in_use_never_touches_an_idle_connection() {
+        // The reaper's own job, not this method's: an idle connection is not
+        // in `checked_out` at all, so marking it here would be a no-op that
+        // could only ever be confused for coverage of the wrong path.
+        let start = Instant::now();
+        let mut pool = pool(4);
+        let id = open(&mut pool);
+        pool.release(id, ReleaseOutcome::Reusable, start);
+        assert_eq!(pool.stats().idle, 1);
+
+        pool.expire_in_use(Duration::from_secs(1), start + Duration::from_secs(60));
+        assert_eq!(
+            pool.stats().idle,
+            1,
+            "an idle connection was closed by expire_in_use rather than left to the reaper"
+        );
     }
 
     #[test]

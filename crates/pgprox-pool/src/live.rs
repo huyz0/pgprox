@@ -307,6 +307,16 @@ impl<K: Connector + 'static> LivePool<K> {
                     closed.push(payload);
                 }
             }
+            // `M90.12`. Marks connections still checked out once they have
+            // outlived `max_lifetime`, so the next clean release discards
+            // them instead of returning them to the pool. Not closed here,
+            // same reason `reap` above only ever sees idle ones: one is
+            // mid-transaction, and closing its socket out from under a
+            // running one is the failure this crate exists to prevent. This
+            // is what makes `max_lifetime` apply to a connection that never
+            // goes idle long enough for `idle_timeout` to reach it, riding
+            // the same tick this method already runs on.
+            entry.pool.expire_in_use(config.max_lifetime, now);
         }
 
         // And the pools themselves. A `Keyed` was created by the first client
@@ -473,12 +483,13 @@ impl<K: Connector + 'static> LivePool<K> {
         let connection = self.connect_with_retry(key).await?;
 
         slot.consume();
+        let now = self.clock.now();
         let mut keyed = self.lock();
         let entry = keyed.entry(key.clone()).or_insert_with(|| Keyed {
             pool: Pool::new(key.clone(), self.config),
             connections: HashMap::default(),
         });
-        let id = entry.pool.opened();
+        let id = entry.pool.opened(now);
         entry.connections.insert(id, connection);
         drop(keyed);
 
@@ -1386,6 +1397,75 @@ mod tests {
         );
         assert_eq!(pool.stats(&key()).active, 1);
         drop(guard);
+    }
+
+    #[tokio::test]
+    async fn a_connection_kept_busy_past_its_lifetime_is_discarded_at_its_next_release() {
+        // `M90.12`. A connection released and immediately reused, over and
+        // over, never sits idle long enough for `idle_timeout` to reach it --
+        // exactly the shape transaction pooling makes ordinary, and exactly
+        // the shape `max_lifetime` exists to bound ("gives a rolling restart
+        // of the database a way to actually finish"). Before this fix
+        // nothing ever marked such a connection, and it lived forever.
+        let (pool, clock) = pool(4);
+        let reaping = ReapConfig::default();
+
+        let mut guard = pool.acquire(&key(), never(&clock)).await.unwrap();
+        let id = guard.id();
+
+        // Aged past `max_lifetime` while still checked out. `reap_idle` is
+        // what a background tick calls; it must not close the socket out
+        // from under a running transaction, only mark it.
+        clock.advance(reaping.max_lifetime);
+        assert_eq!(
+            pool.reap_idle(&reaping).len(),
+            0,
+            "a connection in use was closed underneath its transaction"
+        );
+        assert_eq!(pool.stats(&key()).active, 1, "the mark closed it early");
+        assert_eq!(
+            pool.with_connection(&key(), id, |c| *c),
+            Some(1),
+            "the socket was closed before the caller released it"
+        );
+
+        // The caller's own boundary rule says this release is clean and safe
+        // to reuse -- and would be, if not for the mark reap_idle left.
+        guard.release_clean();
+        drop(guard);
+
+        assert_eq!(
+            pool.stats(&key()).idle,
+            0,
+            "a connection past its lifetime was returned to the pool anyway"
+        );
+        assert_eq!(pool.stats(&key()).total(), 0);
+        assert_eq!(
+            pool.with_connection(&key(), id, |c| *c),
+            None,
+            "an expired connection's socket was kept open"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_well_within_its_lifetime_is_reused_normally() {
+        // The other half: `expire_in_use` must not mark everything, only what
+        // has actually outlived `max_lifetime`.
+        let (pool, clock) = pool(4);
+        let reaping = ReapConfig::default();
+
+        let mut guard = pool.acquire(&key(), never(&clock)).await.unwrap();
+        clock.advance(Duration::from_secs(1));
+        assert_eq!(pool.reap_idle(&reaping).len(), 0);
+
+        guard.release_clean();
+        drop(guard);
+
+        assert_eq!(
+            pool.stats(&key()).idle,
+            1,
+            "a fresh connection was discarded as though it were expired"
+        );
     }
 
     #[tokio::test]

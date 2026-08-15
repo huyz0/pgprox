@@ -25,7 +25,7 @@ fn warm_pool(now: Instant) -> Pool {
     let mut open = Vec::new();
     for _ in 0..8 {
         assert!(matches!(pool.acquire(), Acquired::OpenNew));
-        open.push(pool.opened());
+        open.push(pool.opened(now));
     }
     for id in open {
         pool.release(id, ReleaseOutcome::Reusable, now);

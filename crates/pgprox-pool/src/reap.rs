@@ -89,18 +89,18 @@ impl Reaping {
 /// would hold connections that have already proven nobody wants them.
 #[must_use]
 pub fn reap(pool: &Pool, config: &ReapConfig, now: Instant) -> Reaping {
-    let mut idle: Vec<(Instant, UpstreamId)> = pool
+    let mut idle: Vec<(Instant, Instant, UpstreamId)> = pool
         .idle()
         .filter_map(|connection| {
             connection
                 .idle_since()
-                .map(|since| (since, connection.id()))
+                .map(|since| (since, connection.opened_at(), connection.id()))
         })
         .collect();
 
     // Oldest first, ties broken by id so two nodes reaping the same pool state
     // choose the same connections.
-    idle.sort_by(|(a_since, a_id), (b_since, b_id)| {
+    idle.sort_by(|(a_since, _, a_id), (b_since, _, b_id)| {
         a_since.cmp(b_since).then_with(|| a_id.cmp(b_id))
     });
 
@@ -109,13 +109,25 @@ pub fn reap(pool: &Pool, config: &ReapConfig, now: Instant) -> Reaping {
 
     let close = idle
         .into_iter()
-        .take(candidates)
+        .enumerate()
         // `saturating_duration_since` because a connection released by a clock
         // that has since jumped backwards reads as fresh, not as impossibly
         // old. Reaping the whole pool on a clock adjustment would be a
         // self-inflicted outage.
-        .filter(|(since, _)| now.saturating_duration_since(*since) >= config.idle_timeout)
-        .map(|(_, id)| id)
+        //
+        // Two independent reasons to close, not one gated by the other.
+        // `keep_warm` protects a connection from `idle_timeout` — that is
+        // its whole point, holding a few connections warm regardless of idle
+        // time — but never from `max_lifetime`: a kept-warm connection that
+        // has outlived it is exactly "a connection that has accumulated
+        // state nobody noticed", the case `max_lifetime` exists to bound,
+        // and a rolling restart waiting on it would never finish if
+        // `keep_warm` could excuse it forever.
+        .filter(|(index, (since, opened_at, _))| {
+            (*index < candidates && now.saturating_duration_since(*since) >= config.idle_timeout)
+                || is_expired(*opened_at, config.max_lifetime, now)
+        })
+        .map(|(_, (_, _, id))| id)
         .collect();
 
     Reaping { close }
@@ -123,13 +135,13 @@ pub fn reap(pool: &Pool, config: &ReapConfig, now: Instant) -> Reaping {
 
 /// Whether a connection has outlived `max_lifetime`.
 ///
-/// Separate from [`reap`] because it applies to connections in use as well, and
-/// a connection in use must be retired at its next release rather than closed
-/// underneath a running transaction.
+/// Separate from [`reap`] because it applies to connections in use as well —
+/// see [`crate::pool::Pool::expire_in_use`] — and a connection in use must be
+/// retired at its next release rather than closed underneath a running
+/// transaction.
 #[must_use]
-pub fn is_expired(opened_at: Instant, config: &ReapConfig, now: Instant) -> bool {
-    !config.max_lifetime.is_zero()
-        && now.saturating_duration_since(opened_at) >= config.max_lifetime
+pub fn is_expired(opened_at: Instant, max_lifetime: Duration, now: Instant) -> bool {
+    !max_lifetime.is_zero() && now.saturating_duration_since(opened_at) >= max_lifetime
 }
 
 #[cfg(test)]
@@ -162,7 +174,7 @@ mod tests {
         (0..n)
             .map(|_| {
                 assert_eq!(pool.acquire(), Acquired::OpenNew);
-                pool.opened()
+                pool.opened(Instant::now())
             })
             .collect()
     }
@@ -227,7 +239,7 @@ mod tests {
         let start = Instant::now();
         let mut pool = pool();
         assert_eq!(pool.acquire(), Acquired::OpenNew);
-        let held = pool.opened();
+        let held = pool.opened(start);
 
         let far_future = start + config.idle_timeout * 100;
         assert!(
@@ -387,26 +399,26 @@ mod tests {
         let config = config();
         let start = Instant::now();
 
-        assert!(!is_expired(start, &config, start));
+        assert!(!is_expired(start, config.max_lifetime, start));
         let just_short = config
             .max_lifetime
             .checked_sub(Duration::from_secs(1))
             .unwrap();
-        assert!(!is_expired(start, &config, start + just_short));
-        assert!(is_expired(start, &config, start + config.max_lifetime));
+        assert!(!is_expired(start, config.max_lifetime, start + just_short));
+        assert!(is_expired(
+            start,
+            config.max_lifetime,
+            start + config.max_lifetime
+        ));
     }
 
     #[test]
     fn a_zero_lifetime_means_no_limit_rather_than_immediate_expiry() {
         // Otherwise the disabling value would be the most destructive one.
         let start = Instant::now();
-        let config = ReapConfig {
-            max_lifetime: Duration::ZERO,
-            ..config()
-        };
         assert!(!is_expired(
             start,
-            &config,
+            Duration::ZERO,
             start + Duration::from_secs(86_400)
         ));
     }
@@ -420,12 +432,67 @@ mod tests {
         let start = Instant::now();
         let mut pool = pool();
         assert_eq!(pool.acquire(), Acquired::OpenNew);
-        pool.opened();
+        pool.opened(start);
 
-        assert!(is_expired(start, &config, start + config.max_lifetime));
+        assert!(is_expired(
+            start,
+            config.max_lifetime,
+            start + config.max_lifetime
+        ));
         assert!(
             reap(&pool, &config, start + config.max_lifetime).is_empty(),
             "an in-use connection was closed underneath its transaction"
+        );
+    }
+
+    #[test]
+    fn an_idle_connection_past_its_lifetime_is_reaped_before_its_idle_timeout() {
+        // `M90.12`. `reap` used to close an idle connection only for sitting
+        // idle past `idle_timeout`; `max_lifetime` had no effect on an idle
+        // connection any more than on a busy one. A connection idle for one
+        // second but opened `max_lifetime` ago must still go.
+        let config = config();
+        let start = Instant::now();
+        let mut pool = pool();
+        let id = pool.opened(start);
+        pool.release(
+            id,
+            ReleaseOutcome::Reusable,
+            start
+                + config
+                    .max_lifetime
+                    .checked_sub(Duration::from_secs(1))
+                    .unwrap(),
+        );
+
+        assert_eq!(
+            reap(&pool, &config, start + config.max_lifetime).close,
+            vec![id],
+            "an idle connection past its lifetime was kept because it was not idle long enough"
+        );
+    }
+
+    #[test]
+    fn keep_warm_does_not_exempt_a_connection_past_its_lifetime() {
+        // `keep_warm`'s own doc says it keeps connections "whatever their
+        // idle time" -- but a kept-warm connection that has outlived
+        // `max_lifetime` is exactly "a connection that has accumulated state
+        // nobody noticed", the case `max_lifetime` exists to bound. If
+        // `keep_warm` could excuse it forever, a rolling restart waiting on
+        // the fleet's warmest connections would never finish.
+        let config = ReapConfig {
+            keep_warm: 10,
+            ..config()
+        };
+        let start = Instant::now();
+        let mut pool = pool();
+        let id = pool.opened(start);
+        pool.release(id, ReleaseOutcome::Reusable, start);
+
+        assert_eq!(
+            reap(&pool, &config, start + config.max_lifetime).close,
+            vec![id],
+            "keep_warm excused a connection past its lifetime"
         );
     }
 

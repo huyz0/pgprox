@@ -147,4 +147,14 @@ run_finding pgprox-route router::tests::a_hint_followed_by_a_real_statement_forw
 run_finding pgprox-cache normalize::tests::folding_never_changes_a_words_codepoint_count \
   "M90.11: folding never changes a word's codepoint count"
 
+# --- M90.12: ReapConfig::max_lifetime and is_expired had no caller ----------
+run_finding pgprox-pool pool::tests::a_connection_marked_expired_is_discarded_rather_than_reused \
+  "M90.12: a connection marked expired is discarded rather than reused"
+run_finding pgprox-pool reap::tests::an_idle_connection_past_its_lifetime_is_reaped_before_its_idle_timeout \
+  "M90.12: an idle connection past its lifetime is reaped before its idle timeout"
+run_finding pgprox-pool reap::tests::keep_warm_does_not_exempt_a_connection_past_its_lifetime \
+  "M90.12: keep_warm does not exempt a connection past its lifetime"
+run_finding pgprox-pool live::tests::a_connection_kept_busy_past_its_lifetime_is_discarded_at_its_next_release \
+  "M90.12: a connection kept busy past its lifetime is discarded at its next release"
+
 finish

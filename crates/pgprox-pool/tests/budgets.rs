@@ -48,7 +48,7 @@ fn the_hot_paths_this_crate_owns_stay_inside_their_budgets() {
     let mut open = Vec::new();
     for _ in 0..8 {
         assert_eq!(pool.acquire(), Acquired::OpenNew);
-        open.push(pool.opened());
+        open.push(pool.opened(now));
     }
     for id in open.drain(..) {
         assert!(pool.release(id, ReleaseOutcome::Reusable, now));
