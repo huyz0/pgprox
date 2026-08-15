@@ -273,9 +273,17 @@ makes the blast radius explicit rather than leaving it for integration day.
 
 ### Crate layout
 
-Every crate depends on `pgprox-core` and, with two exceptions, on nothing else
-in the workspace. That is what makes parallel development work: a module owner
-codes against traits and fakes, not against another team's half-finished crate.
+Every crate depends on `pgprox-core` and, with three exceptions, on nothing
+else in the workspace: `pgprox-session` composes `pgprox-proto`, `pgprox-pool`
+and `pgprox-route`; `bin/pgprox` composes everything; `bin/pgload`, the load
+client, composes `pgprox-proto`, `pgprox-load`, `pgprox-auth` and `pgprox-tls`
+to speak the real wire protocol against a real client TLS configuration
+without ever being a dependency of the proxy itself. See
+[architecture.md](architecture.md) for the current, kept-in-sync statement of
+this rule; what follows here is the shape it had at MVP, kept for the crates
+it still describes correctly. That is what makes parallel development work: a
+module owner codes against traits and fakes, not against another team's
+half-finished crate.
 
 ```
 pgprox/
@@ -516,13 +524,16 @@ records an LSN floor. We obtain it by appending `SELECT pg_current_wal_lsn()` to
 the commit round trip for sessions in replica-eligible mode, which costs one
 extra statement per write transaction and no extra round trip. A background
 poller queries `pg_last_wal_replay_lsn()` and `pg_is_in_recovery()` on each
-replica every `replica_poll_interval` (default 250ms) into a lock-free cell the
-router reads with no await. A replica is eligible for a given session only if its
-replayed LSN is at or past that session's watermark.
+replica every 250ms (`POLL_INTERVAL`, a constant, not a configured value) into
+a lock-free cell the router reads with no await. A replica is eligible for a
+given session only if its replayed LSN is at or past that session's watermark.
 
-Tenants that prefer throughput over strict read-your-writes can opt into a
-bounded-staleness mode instead, where eligibility is `lag < max_replica_lag` and
-no watermark is tracked.
+ADR 0009 also describes a bounded-staleness opt-in for tenants preferring
+throughput over strict read-your-writes, where eligibility would be
+`lag < max_replica_lag` and no watermark tracked. See that ADR's Outstanding
+section: it is not implemented. Every replica-eligible session today routes
+under the strict watermark rule above; there is no time-based alternative to
+opt into.
 
 **Classification.** A fast token-prefix classifier, not a full SQL parser. It
 must get these right, and the default for anything it is not confident about is

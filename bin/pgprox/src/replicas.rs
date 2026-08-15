@@ -319,6 +319,39 @@ fn primary_or_override(grant: &Grant, primaries: &crate::primary_watch::PrimaryW
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    //! `M90.6`. ADR 0009 and `plan.md` both described `replica_poll_interval`
+    //! as a configured setting with a stated default, and both described a
+    //! `max_replica_lag` bounded-staleness opt-in for replica routing.
+    //! Neither is true: the interval is `POLL_INTERVAL`, a constant with no
+    //! config field behind it, and the opt-in mode does not exist anywhere in
+    //! `pgprox-route`. These `include_str!` the two documents so the
+    //! overclaim cannot come back silently, the same mechanism `M88.15` used
+    //! for `pgprox-config`'s "three providers" claim.
+
+    const ADR_0009: &str = include_str!(
+        "../../../docs/internal/product/decisions/0009-replica-routing-with-lsn-watermarks.md"
+    );
+    const PLAN_MD: &str = include_str!("../../../docs/internal/product/plan.md");
+
+    #[test]
+    fn neither_document_calls_the_poll_interval_configured() {
+        for (name, doc) in [("ADR 0009", ADR_0009), ("plan.md", PLAN_MD)] {
+            assert!(
+                !doc.contains("replica_poll_interval` (default"),
+                "{name} still describes replica_poll_interval as a configured \
+                 setting with a default; it is POLL_INTERVAL, a constant"
+            );
+        }
+    }
+
+    #[test]
+    fn adr_0009_records_that_bounded_staleness_routing_is_not_built() {
+        assert!(
+            ADR_0009.contains("## Outstanding"),
+            "ADR 0009 should record that its max_replica_lag opt-in was never \
+             implemented"
+        );
+    }
 
     /// A slab for a test wire. Small on purpose: the bound is what makes an
     /// exhausted slab reachable in a test at all.

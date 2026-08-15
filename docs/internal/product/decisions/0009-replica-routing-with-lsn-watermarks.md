@@ -19,13 +19,14 @@ Route targets are decided once per transaction, at the first statement.
 **Watermarks.** After a write transaction commits on the primary, the session
 records an LSN floor obtained by appending `SELECT pg_current_wal_lsn()` to the
 commit round trip. A background poller reads `pg_last_wal_replay_lsn()` and
-`pg_is_in_recovery()` from each replica every `replica_poll_interval` (default
-250ms) into a lock-free cell. A replica is eligible for a session only if its
-replayed LSN is at or past that session's watermark.
+`pg_is_in_recovery()` from each replica every 250ms (`POLL_INTERVAL`, a
+constant rather than a configured value — see Outstanding) into a lock-free
+cell. A replica is eligible for a session only if its replayed LSN is at or
+past that session's watermark.
 
-Tenants preferring throughput over strict read-your-writes can opt into bounded
-staleness, where eligibility is `lag < max_replica_lag` and no watermark is
-tracked.
+Tenants preferring throughput over strict read-your-writes could opt into
+bounded staleness instead, where eligibility is `lag < max_replica_lag` and no
+watermark is tracked — see Outstanding, this mode is not built.
 
 **Classification.** A fast token-prefix classifier, not a full SQL parser.
 Anything it cannot classify confidently goes to the primary. It must correctly
@@ -67,3 +68,24 @@ Rejected because a transaction spanning two servers has no coherent semantics.
 that the session and pool layers would need reworking to add watermarks
 afterward, and that rework touches the most correctness-critical code in the
 project.
+
+## Outstanding
+
+`M90.6`. Two claims above describe more than the code delivers.
+
+`replica_poll_interval` reads as a configured setting with a stated default.
+It is `POLL_INTERVAL`, a compile-time constant in `bin/pgprox/src/replicas.rs`
+(and, deliberately at the same value and cross-referenced in its own doc
+comment, in `primary_watch.rs`) — there is no `config.yaml` field or
+command-line flag for it, and changing the cadence means changing the
+constant and rebuilding.
+
+The bounded-staleness opt-in this ADR describes as an alternative to strict
+watermark gating — `lag < max_replica_lag`, no watermark tracked — is not
+implemented. `pgprox-route` has no `max_replica_lag`-driven eligibility check
+and no per-tenant mode to opt into one; every session that routes to a
+replica at all does so under the strict watermark rule this ADR's "Decision"
+section describes, with no time-based alternative. "Bounded staleness"
+appears elsewhere in this codebase for a different mechanism entirely — the
+query cache's TTL, per ADR 0021 — which resembles this one in vocabulary but
+not in code; neither implements the other.

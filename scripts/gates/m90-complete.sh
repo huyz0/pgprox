@@ -115,4 +115,10 @@ run_finding pgprox-core error::tests::mapping_matches_the_documented_table \
 run_finding pgprox serve::tests::a_client_that_disconnects_mid_transaction_frees_its_cancel_key \
   "M90.5: a mid-transaction disconnect frees its cancel key"
 
+# --- M90.6: doc drift in the dependency count and ADR 0009 --------------------
+run_finding pgprox replicas::tests::neither_document_calls_the_poll_interval_configured \
+  "M90.6: neither document calls the poll interval configured"
+run_finding pgprox replicas::tests::adr_0009_records_that_bounded_staleness_routing_is_not_built \
+  "M90.6: ADR 0009 records that bounded-staleness routing is not built"
+
 finish

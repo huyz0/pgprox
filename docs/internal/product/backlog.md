@@ -10138,14 +10138,28 @@ scalable real production machine, which stays `M16`'s open item.
   per-session guard, which was tried first and cost 16 bytes against a
   budget that had 8 to spare. A test that disconnects mid-transaction and
   shows the cancel registry empties anyway, failing before the fix.
-- [ ] `M90.6` Correct documentation drift found alongside the code findings
-  above: `plan.md`'s dependency-exception count is stale against
-  `bin/pgload`, and ADR 0009/`plan.md` describe `replica_poll_interval` as
-  tunable when it is a hardcoded constant duplicated in
-  `primary_watch.rs` and `replicas.rs`, and describe a bounded-staleness
-  `max_replica_lag` mode that is not implemented.
-  Acceptance: the docs match the code, following `M88.15`'s precedent of an
-  "Outstanding" ADR section where the gap is real rather than a wording fix.
+- [x] `M90.6` Three documentation-drift findings, one narrower than filed.
+  `plan.md` said "with two exceptions" for the workspace's dependency rule;
+  `architecture.md`, the section's own kept-in-sync source, has said three
+  since `bin/pgload` was added, and `plan.md` never mentioned it at all.
+  ADR 0009 and `plan.md` both described `replica_poll_interval` as a
+  configured setting with a stated default; it is `POLL_INTERVAL`, a
+  compile-time constant. Both also described a `max_replica_lag`
+  bounded-staleness opt-in for replica routing that does not exist anywhere
+  in `pgprox-route` — every replica-eligible session routes under the strict
+  watermark rule, with no time-based alternative to opt into.
+  Narrower than filed: `POLL_INTERVAL`'s appearance in both
+  `primary_watch.rs` and `replicas.rs` looked like undocumented duplication
+  from the outside, but `primary_watch.rs`'s own doc comment already names
+  `replicas.rs`'s constant and explains why the two are kept equal
+  deliberately. Not a finding — reading the code before writing up what
+  looked like one is what caught it before it became a bogus fix.
+  Acceptance: `plan.md` points to `architecture.md` for the current exception
+  count rather than repeating a number that can drift again; ADR 0009 gets
+  an `## Outstanding` section, `M88.15`'s precedent, naming both real gaps;
+  `plan.md`'s own copy of the same two claims is corrected to match. Two new
+  tests in `bin/pgprox/src/replicas.rs` `include_str!` both documents and
+  check the overclaim cannot come back silently, failing before the fix.
 - [ ] `M90.7` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
