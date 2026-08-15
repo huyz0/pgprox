@@ -353,6 +353,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn adr_0009_names_the_watermark_query_the_code_actually_runs() {
+        // `M90.15`. The Decision section named `pg_current_wal_lsn()`, the
+        // function the code deliberately did not choose — `probe.rs`'s own
+        // comment explains why the insert position is the conservative one.
+        // Tied to the real constant, not a second copy of the string, so the
+        // two cannot drift apart again without one of them turning red.
+        assert!(
+            ADR_0009.contains(pgprox_session::probe::PRIMARY_LSN_QUERY),
+            "ADR 0009 should name the exact query {} runs, not a different one",
+            pgprox_session::probe::PRIMARY_LSN_QUERY
+        );
+    }
+
     /// A slab for a test wire. Small on purpose: the bound is what makes an
     /// exhausted slab reachable in a test at all.
     fn test_slab() -> std::sync::Arc<pgprox_core::buf::BufferSlab> {

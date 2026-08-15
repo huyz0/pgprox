@@ -10318,7 +10318,20 @@ scalable real production machine, which stays `M16`'s open item.
   watermark` and `pgprox-route`'s
   `a_write_whose_position_probe_failed_keeps_the_next_read_on_the_primary`,
   both verified against a revert of the fix before landing.
-- [ ] `M90.15` Close M90 once a full review cycle across the angles above
+- [x] `M90.15` ADR 0009's Decision section named the wrong function for the
+  write watermark probe: "appending `SELECT pg_current_wal_lsn()` to the
+  commit round trip." The code (`probe.rs`) deliberately queries
+  `pg_current_wal_insert_lsn()` instead, with its own comment explaining why
+  the more conservative function was chosen over the one the ADR names. This
+  survived `M90.6`'s pass over the same document, which fixed two other
+  overclaims but not this sentence.
+  Acceptance: the ADR names `pg_current_wal_insert_lsn()`, carrying the same
+  conservatism rationale the code comment already gives. New test
+  `adr_0009_names_the_watermark_query_the_code_actually_runs` asserts the
+  ADR's text contains `probe::PRIMARY_LSN_QUERY` itself rather than a second
+  copy of the string, so the two cannot drift apart silently again; verified
+  against a revert of the fix before landing.
+- [ ] `M90.16` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if

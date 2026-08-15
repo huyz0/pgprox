@@ -167,4 +167,8 @@ run_finding pgprox-core route::tests::an_unconfirmed_write_stays_on_the_primary_
 run_finding pgprox-route router::tests::a_write_whose_position_probe_failed_keeps_the_next_read_on_the_primary \
   "M90.14: a write whose position probe failed keeps the next read on the primary"
 
+# --- M90.15: ADR 0009 named the wrong watermark query ------------------------
+run_finding pgprox replicas::tests::adr_0009_names_the_watermark_query_the_code_actually_runs \
+  "M90.15: ADR 0009 names the watermark query the code actually runs"
+
 finish

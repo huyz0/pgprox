@@ -17,8 +17,11 @@ than the slowness it was meant to fix.
 Route targets are decided once per transaction, at the first statement.
 
 **Watermarks.** After a write transaction commits on the primary, the session
-records an LSN floor obtained by appending `SELECT pg_current_wal_lsn()` to the
-commit round trip. A background poller reads `pg_last_wal_replay_lsn()` and
+records an LSN floor obtained by appending `SELECT pg_current_wal_insert_lsn()`
+to the commit round trip — the insert position rather than the flush position,
+so a watermark taken from it can only be conservative: a replica is held
+ineligible slightly too long rather than serving a read that predates the
+write. A background poller reads `pg_last_wal_replay_lsn()` and
 `pg_is_in_recovery()` from each replica every 250ms (`POLL_INTERVAL`, a
 constant rather than a configured value — see Outstanding) into a lock-free
 cell. A replica is eligible for a session only if its replayed LSN is at or
