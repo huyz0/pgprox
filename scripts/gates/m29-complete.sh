@@ -37,7 +37,15 @@ fi
 # And the numbers the document rests on are still the shipped ones, so a later
 # change that moved them silently would show up here rather than in a reader's
 # confusion. Read from the baseline rather than restated.
-for pair in "pgprox-cache::cache_hit 1600" "pgprox-cache::cache_hit_rotating 1950"; do
+#
+# `M91.1`. Both ceilings moved once, from 1,600/1,950 to 1,650/1,970: `M91.0`
+# rebaselined `cache_hit`/`cache_hit_rotating` to 1,617/1,932 after bisecting the
+# drift to `M78.0`, which added result-format tracking to `CacheKey` — landed the
+# day after this document's own measurement, and unrelated to the arm-vs-arm
+# comparison this document draws. That comparison, and its conclusion, do not
+# change: both arms would have absorbed `M78.0`'s cost identically, since it sits
+# above the slab access this document is about, not inside it.
+for pair in "pgprox-cache::cache_hit 1650" "pgprox-cache::cache_hit_rotating 1970"; do
   set -- $pair
   measured="$(python3 -c "import json; print(json.load(open('docs/internal/product/perf/baseline.json')).get('$1', 999999))")"
   if (( measured < $2 )); then

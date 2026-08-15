@@ -101,7 +101,16 @@ fi
 # And the numbers it bought, pinned so a later profile change that quietly
 # gives them back is caught. Thin put route_begin at 1,536 and decode_query at
 # 460; these are the fat figures with room for a toolchain bump.
-for pair in "pgprox-route::route_begin 1400" "pgprox-proto::decode_query 420"; do
+#
+# `M91.1`. `route_begin`'s ceiling moved from 1,400 to 1,450: `M91.0` rebaselined
+# it to 1,411 after bisecting seven already-landed correctness fixes (`M88.3`'s
+# comment-aware lexer is nearly all of it), none of them this check's concern, and
+# 1,400 no longer left room for a real one. `lto = "fat"` above already proved the
+# profile itself did not move; this is only widened to stop that proof from being
+# outvoted by unrelated, legitimate growth elsewhere in the same number. Still 86
+# short of thin's 1,536, the same kind of margin the original 1,400 kept against
+# fat's original 1,165.
+for pair in "pgprox-route::route_begin 1450" "pgprox-proto::decode_query 420"; do
   set -- $pair
   measured="$(python3 -c "import json,sys; print(json.load(open('docs/internal/product/perf/baseline.json'))['$1'])" 2>/dev/null || echo 999999)"
   if (( measured < $2 )); then

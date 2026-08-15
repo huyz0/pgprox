@@ -63,28 +63,44 @@ A sweep across every crate, starting from a profile rather than from a reading.
 
 | Path | Before | After | |
 | --- | --- | --- | --- |
-| `route_point_select` | 6,444 | 3,716 | **-42%** |
-| `route_update` | 6,717 | 3,969 | **-41%** |
+| `route_point_select` | 6,444 | 4,093 | -42% (see below) |
+| `route_update` | 6,717 | 4,418 | -41% (see below) |
 | `held_read` | 18,669 | 2,263 | **-88%** |
-| `acquire_and_release` | 443 | 278 | **-37%** |
-| `route_begin` | 1,294 | 1,165 | -10% |
-| `cache_put` | 3,770 | 3,695 | -6% (see below) |
-| `invalidate_a_tenants_entries` | 86,088 | 85,633 | -3% (see below) |
+| `acquire_and_release` | 443 | 325 | -37% (see below) |
+| `route_begin` | 1,294 | 1,411 | -10% (see below) |
+| `cache_put` | 3,770 | 3,948 | -6% (see below) |
+| `invalidate_a_tenants_entries` | 86,088 | 94,576 | -3% (see below) |
 
 The "after" column is the committed baseline, so a rebaselined hot path that
 leaves this table alone fails a check rather than leaving the page quietly
 stale.
 
-The last two rows do not subtract, and the reason is worth more than a tidier
-table. Their before and after were measured on the same machine and the cuts
-were real, -6% and -3%. The after column then moved when the six `pgprox-cache`
-benchmarks were rebaselined onto CI, which reads that crate 3 to 4% higher than
-a developer machine does while agreeing to the instruction on every other hot
-path here. Subtracting the two columns now compares two machines and understates
-what changed; the percentages are the same-machine figures, which are the ones
-that describe the work. `cache_put` also benchmarks slightly different code than
-it did then. See
+Six of the seven rows do not subtract, and the reason is worth more than a
+tidier table. Every "before" and this optimization's own "after" were measured
+on the same machine, and the cuts named in the last column are real and
+unchanged: -42%, -41%, -37%, -10%, -6%, -3%. The "after" column has since moved
+twice for reasons that have nothing to do with any of these six cuts being
+undone.
+
+The first move was `cache_put` and `invalidate_a_tenants_entries` rebaselined
+onto CI, which reads `pgprox-cache` 3 to 4% higher than a developer machine
+does. See
 [`run-2026-08-06-ci-baseline.md`](internal/product/perf/run-2026-08-06-ci-baseline.md).
+
+The second move reaches five more rows: `M91.0` bisected thirty milestones of
+drift in `docs/internal/product/perf/baseline.json` to seven already-landed
+correctness fixes in `pgprox-route`, `pgprox-pool` and `pgprox-cache`, landed
+long after this page's own measurements and unrelated to any of them — a
+comment-aware lexer replacing a raw scanner that missed a leading comment, a
+pool limit that now reaches connections already checked out, a connection-
+lifetime bound that finally has a caller, and a cache key that now tracks
+result format. See
+[`run-2026-08-15-instruction-drift.md`](internal/product/perf/run-2026-08-15-instruction-drift.md).
+`route_begin` is the one row where this is easy to misread: its "after" (1,411)
+now sits *above* its "before" (1,294), which looks like a regression on later
+work this optimization never touched, rather than what it is — this
+optimization's own -10% cut, plus 246 instructions of unrelated correctness
+work landed afterward, both real, neither undoing the other.
 
 Not one line of unsafe was written, and not one of those four costs was a bounds
 check. Three were work that did not need doing at all.

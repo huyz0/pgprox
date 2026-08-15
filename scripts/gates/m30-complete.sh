@@ -125,8 +125,15 @@ run_finding pgprox-route \
   "the filter and the scan agree on words generated next to the lists"
 
 # The route decision after both findings. It was 6,444 and 6,717.
-under pgprox-route::route_point_select 4000
-under pgprox-route::route_update 4200
+#
+# `M91.1`. Both ceilings moved once, from 4,000/4,200 to 4,150/4,470: `M91.0`
+# rebaselined these to 4,093/4,418 after bisecting the move to `M88.3`'s
+# comment-aware lexer in `pgprox-route`, a correctness fix landed fifty-eight
+# milestones after this one and unrelated to M30.1/M30.2's own optimisations.
+# Both ceilings stay well under M30.1's own 5,200/4,800 further up, which is
+# what would actually fire if either of *this* milestone's findings regressed.
+under pgprox-route::route_point_select 4150
+under pgprox-route::route_update 4470
 
 # --- M30.3: a cryptographic hash over an integer this process issued ----------
 #

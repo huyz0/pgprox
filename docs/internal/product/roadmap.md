@@ -3931,16 +3931,34 @@ scripts.
 
 ### Where it stands
 
-Complete. One task: `docs/internal/product/perf/baseline.json` rewritten to
-match seven already-landed correctness fixes across `pgprox-route`,
-`pgprox-pool` and `pgprox-cache`, none of them new work — the full
-attribution, one commit and one instruction delta at a time, is in
+Complete. Two tasks. `M91.0`: `docs/internal/product/perf/baseline.json`
+rewritten to match seven already-landed correctness fixes across
+`pgprox-route`, `pgprox-pool` and `pgprox-cache`, none of them new work — the
+full attribution, one commit and one instruction delta at a time, is in
 `docs/internal/product/perf/run-2026-08-15-instruction-drift.md`. Since
 `scripts/bench.sh` "runs when asked rather than per commit" by design (its
 own header), and CI's `instruction counts` job does not gate a merge, thirty
 milestones of legitimate cost went unrecorded until a session read a CI run
 through to its individual jobs rather than trusting the pre-commit-equivalent
-ones alone. What this milestone leaves open: `scripts/bench.sh` still is not
-part of the pre-commit gate, so the same drift can recur; making it one is a
-separate, larger decision — this milestone re-establishes the recorded
-baseline as accurate, it does not change when it is checked.
+ones alone.
+
+`M91.1`: the rewritten baseline itself broke four older gates that had
+pinned specific figures from it — `M28`'s guard against `lto` reverting from
+`fat` to `thin`, `M29`'s and `M30`'s ceilings on since-optimized route and
+cache paths, and `M31`'s exact-equality proof that its own commit added zero
+cost — plus `docs/optimizations.md`'s "The four that mattered" table, gated
+by `M44`. Each was read on its own terms rather than mechanically bumped:
+three widened with margin against what they actually guard, `M31`'s two
+now-unanswerable checks retired with the reasoning written down rather than
+silently dropped, and the doc table now carries the same "current baseline
+vs. this row's own same-machine cut" split its `cache_put`/
+`invalidate_a_tenants_entries` rows already used for an earlier, unrelated
+rebaseline.
+
+What this milestone leaves open: `scripts/bench.sh` still is not part of the
+pre-commit gate, so the same drift can recur; making it one is a separate,
+larger decision — this milestone re-establishes the recorded baseline as
+accurate, it does not change when it is checked. Nor does it audit every
+gate in `scripts/gates/` for a baseline-shaped assumption beyond the five
+`M91.1` found already failing — a broader sweep, if one is wanted, is its own
+task.

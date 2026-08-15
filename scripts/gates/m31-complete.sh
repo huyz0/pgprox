@@ -97,8 +97,19 @@ run_finding pgprox-session \
   "a reserve leaves room for a whole read"
 
 # And the figures M30 left, unchanged, which is what "comments only" means.
-unmoved pgprox-route::route_point_select 3716
-unmoved pgprox-pool::acquire_and_release 278
+#
+# `M91.1`. Two of the three retired rather than moved: `unmoved`'s whole premise
+# is that nothing else will ever touch these benchmarks, which held for fifty-
+# eight milestones and then stopped being true the ordinary way — real,
+# unrelated, later correctness work landed in the same crates. `route_point_
+# select` carries `M88.3`'s comment-aware lexer now; `acquire_and_release`
+# carries `M76.1`'s lowered-limit enforcement and `M90.12`'s connection-lifetime
+# wiring. Widening either ceiling the way `M28`/`M29`/`M30` were widened would
+# claim this milestone still added zero cost to a number that is no longer only
+# this milestone's to answer for, which is a claim `unmoved`'s own name makes
+# and this can no longer keep. `held_read` is untouched by anything in `M91.0`'s
+# bisection — no commit since `M30` reaches `pgprox-session` on this path — so
+# it stays, still proving what it always proved.
 unmoved pgprox-session::held_read 2263
 
 finish
