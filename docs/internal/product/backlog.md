@@ -10331,7 +10331,24 @@ scalable real production machine, which stays `M16`'s open item.
   ADR's text contains `probe::PRIMARY_LSN_QUERY` itself rather than a second
   copy of the string, so the two cannot drift apart silently again; verified
   against a revert of the fix before landing.
-- [ ] `M90.16` Close M90 once a full review cycle across the angles above
+- [x] `M90.16` `TenantAllowlist::add` had no check preventing a tenant named
+  exactly `OTHER` (`"other"`) from being allowlisted. `label_for` returns the
+  tenant's own name if allowlisted and [`OTHER`] otherwise — for a tenant
+  actually named `"other"`, both branches produce the identical string, so
+  its series becomes indistinguishable from the aggregate bucket every
+  unlisted tenant already shares, breaking the module's own documented
+  promise ("Everything else is aggregated, not dropped... The totals stay
+  correct"). Not reachable in the shipped proxy today — `wiring.rs`
+  constructs `TenantAllowlist::new()` empty and nothing populates it from
+  config yet — but latent in the crate's own public contract, which
+  `bin/pgprox` will trust the moment that wiring lands.
+  Acceptance: `add` refuses a tenant named `OTHER` with a new
+  `AllowlistError::ReservedName` variant (the enum is already
+  `#[non_exhaustive]`, so this is additive), reachable through
+  `from_configured` as well since it calls `add` internally. New test
+  `a_tenant_named_other_is_refused_rather_than_swallowing_the_aggregate`,
+  verified against a revert of the fix before landing.
+- [ ] `M90.17` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if

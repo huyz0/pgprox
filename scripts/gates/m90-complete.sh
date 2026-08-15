@@ -171,4 +171,8 @@ run_finding pgprox-route router::tests::a_write_whose_position_probe_failed_keep
 run_finding pgprox replicas::tests::adr_0009_names_the_watermark_query_the_code_actually_runs \
   "M90.15: ADR 0009 names the watermark query the code actually runs"
 
+# --- M90.16: TenantAllowlist could allowlist a tenant named "other" ---------
+run_finding pgprox-observe tenants::tests::a_tenant_named_other_is_refused_rather_than_swallowing_the_aggregate \
+  "M90.16: a tenant named other is refused rather than swallowing the aggregate"
+
 finish

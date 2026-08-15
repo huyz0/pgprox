@@ -67,6 +67,15 @@ pub enum AllowlistError {
         /// Who is on the list, so the choice can be made without another call.
         current: String,
     },
+    /// The tenant's name is [`OTHER`] itself.
+    ///
+    /// `label_for` returns [`OTHER`] for both an allowlisted tenant named
+    /// `"other"` and every tenant that is not on the list at all — the two
+    /// would share one series, silently merging one tenant's numbers into the
+    /// aggregate bucket this module's whole design exists to keep separate
+    /// from a named tenant's own.
+    #[error("\"{OTHER}\" is reserved for the aggregate bucket and cannot be allowlisted")]
+    ReservedName,
 }
 
 /// Tenants that may appear as a metric label.
@@ -111,7 +120,14 @@ impl TenantAllowlist {
     ///
     /// [`AllowlistError::Full`] past [`MAX_ALLOWLISTED`], naming who is already
     /// on the list so the caller can decide what to remove.
+    ///
+    /// [`AllowlistError::ReservedName`] if the tenant's name is [`OTHER`]
+    /// itself, which would make its series indistinguishable from the
+    /// aggregate bucket every unlisted tenant already shares.
     pub fn add(&mut self, tenant: TenantId) -> Result<(), AllowlistError> {
+        if tenant.as_str() == OTHER {
+            return Err(AllowlistError::ReservedName);
+        }
         // Re-adding an existing entry is not growth, so it never fails. An
         // idempotent config reload must not start erroring at the ceiling.
         if self.allowed.contains(&tenant) {
@@ -288,6 +304,25 @@ mod tests {
         assert!(message.contains("acme"), "got {message}");
         assert!(message.contains("tenant-0"), "got {message}");
         assert!(message.contains("remove"), "got {message}");
+    }
+
+    #[test]
+    fn a_tenant_named_other_is_refused_rather_than_swallowing_the_aggregate() {
+        // `label_for` returns OTHER both for an allowlisted tenant named
+        // "other" and for every tenant not on the list at all. Allow the
+        // first and the two become one series: this tenant's numbers vanish
+        // into the aggregate bucket, and the aggregate stops meaning "the
+        // rest" the moment it also means "this one tenant".
+        let mut allowlist = TenantAllowlist::new();
+        let err = allowlist.add(tenant(OTHER)).unwrap_err();
+        assert!(matches!(err, AllowlistError::ReservedName), "got {err}");
+        assert!(!allowlist.is_allowed(&tenant(OTHER)));
+        assert_eq!(allowlist.len(), 0);
+
+        // Reachable through the configured-list constructor too, not only
+        // through `add` called directly.
+        let err = TenantAllowlist::from_configured([tenant(OTHER)]).unwrap_err();
+        assert!(matches!(err, AllowlistError::ReservedName), "got {err}");
     }
 
     #[test]
