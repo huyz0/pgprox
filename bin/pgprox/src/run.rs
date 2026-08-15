@@ -892,6 +892,25 @@ fn tenants_to_forget(
         .collect()
 }
 
+/// What this node may gossip in `ClusterDigest::tenant_usage`.
+///
+/// `upstream` is already restricted to connections actually held, by
+/// [`Sessions::per_tenant_upstream`]; this is the other half of the same
+/// doc's restriction, to tenants this node homes. A tenant this node serves
+/// clients for without being its home still needs its usage reported by
+/// *its* home node, not by every node a client happened to land on — that
+/// is the whole reason `home_node` exists rather than every node reporting
+/// everything it sees. `M90`, cycle 6.
+fn tenants_to_report(
+    upstream: Vec<(pgprox_core::ids::TenantId, u32)>,
+    membership: &pgprox_core::cluster::MembershipView,
+) -> Vec<(pgprox_core::ids::TenantId, u32)> {
+    upstream
+        .into_iter()
+        .filter(|(tenant, _)| membership.is_home_for(tenant))
+        .collect()
+}
+
 /// Whether a gossip round left a peer unanswered.
 ///
 /// A predicate rather than the comparison inline, for the reason
@@ -1118,7 +1137,18 @@ async fn ticker(
                 .collect(),
         );
         let per_tenant = app.sessions.per_tenant();
-        app.cluster.report_tenants(per_tenant.clone());
+
+        // `ClusterDigest::tenant_usage` is documented as upstream connections
+        // per tenant this node homes, not client connections per tenant with
+        // any client here — the first is what a peer compares against the
+        // upstream budget it reserved for this node, and the second is
+        // dominated by whatever this node happens to be multiplexing.
+        // `M90`, cycle 6.
+        let membership = pgprox_core::cluster::ClusterCoordinator::membership(&app.cluster);
+        app.cluster.report_tenants(tenants_to_report(
+            app.sessions.per_tenant_upstream(),
+            &membership,
+        ));
 
         // A tenant this node no longer serves is one it should stop reserving
         // for. Without this the tracked set only ever grows, which in a proxy
@@ -1552,6 +1582,48 @@ mod tests {
         // And a node still serving all of them forgets none.
         let all_served: Vec<_> = tracked.iter().cloned().map(|t| (t, 1)).collect();
         assert!(tenants_to_forget(&tracked, &all_served).is_empty());
+    }
+
+    #[test]
+    fn only_the_tenants_this_node_homes_are_reported() {
+        // `M90`, cycle 6. `ClusterDigest::tenant_usage`'s other documented
+        // restriction: gossiping every tenant this node has any client for,
+        // rather than only the ones it homes, is exactly what the doc says
+        // the restriction exists to avoid — a fleet's whole tenant count on
+        // the wire instead of roughly `tenants / nodes`.
+        let members = vec![
+            pgprox_core::cluster::Member {
+                id: pgprox_core::ids::NodeId::new(1),
+                mode: pgprox_core::cluster::NodeMode::Active,
+            },
+            pgprox_core::cluster::Member {
+                id: pgprox_core::ids::NodeId::new(2),
+                mode: pgprox_core::cluster::NodeMode::Active,
+            },
+        ];
+        let view =
+            pgprox_core::cluster::MembershipView::new(pgprox_core::ids::NodeId::new(1), members);
+
+        // Found rather than guessed: `home_node` is a hash, so which of two
+        // fixed names lands on which node is not something to hardcode.
+        let mut homed = None;
+        let mut not_homed = None;
+        for name in ["acme", "globex", "initech", "umbrella", "wayne", "stark"] {
+            let tenant = pgprox_core::ids::TenantId::new(name);
+            if view.is_home_for(&tenant) {
+                homed.get_or_insert(tenant);
+            } else {
+                not_homed.get_or_insert(tenant);
+            }
+            if homed.is_some() && not_homed.is_some() {
+                break;
+            }
+        }
+        let homed = homed.expect("no candidate name landed on node 1 in a two-node fleet");
+        let not_homed = not_homed.expect("every candidate name landed on node 1");
+
+        let upstream = vec![(homed.clone(), 3), (not_homed, 1)];
+        assert_eq!(tenants_to_report(upstream, &view), vec![(homed, 3)]);
     }
 
     #[test]

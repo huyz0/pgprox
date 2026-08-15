@@ -202,4 +202,10 @@ run_finding pgprox serve::tests::one_session_costs_less_than_the_slab_buffer_it_
 run_finding pgprox serve::tests::a_write_sent_only_as_bind_still_invalidates \
   "M90.21: a write sent only as Bind still invalidates"
 
+# --- M90.22: upstream_conns counted every client and every tenant -----------
+run_finding pgprox sessions::tests::only_connection_holding_clients_count_toward_upstream_usage \
+  "M90.22: only connection-holding clients count toward upstream usage"
+run_finding pgprox run::tests::only_the_tenants_this_node_homes_are_reported \
+  "M90.22: only the tenants this node homes are reported"
+
 finish

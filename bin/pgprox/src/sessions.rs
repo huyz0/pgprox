@@ -371,6 +371,35 @@ impl Sessions {
         counts.into_iter().collect()
     }
 
+    /// Upstream connections held per tenant, not client connections.
+    ///
+    /// `ClientState::Active` is documented as "holding an upstream
+    /// connection" and nothing else is, so counting only that state gives
+    /// exactly one per connection actually held rather than one per client
+    /// waiting on or multiplexed behind it. `M90`, cycle 6: `report_tenants`
+    /// was fed [`Self::per_tenant`] instead, which in a proxy built to
+    /// multiplex many clients onto few connections reported a number
+    /// dominated by idle clients rather than by the upstream budget it was
+    /// compared against — `ClusterDigest::tenant_usage`'s own doc says
+    /// "upstream connections it holds per tenant".
+    ///
+    /// Callers still need to restrict this to tenants the node homes before
+    /// gossiping it, which is `tenant_usage`'s other documented restriction;
+    /// this crate does not know about cluster membership, so that filter
+    /// stays at the call site, the same as `per_tenant`'s callers already
+    /// filter for their own purposes.
+    #[must_use]
+    pub fn per_tenant_upstream(&self) -> Vec<(TenantId, u32)> {
+        let mut counts: std::collections::BTreeMap<TenantId, u32> =
+            std::collections::BTreeMap::new();
+        for entry in self.lock().values() {
+            if entry.state == ClientState::Active {
+                *counts.entry(entry.tenant.clone()).or_default() += 1;
+            }
+        }
+        counts.into_iter().collect()
+    }
+
     /// Every client, as `SHOW CLIENTS` and `GET /v1/clients` render them.
     #[must_use]
     pub fn views(&self, now: Instant) -> Vec<ClientView> {
@@ -569,6 +598,61 @@ mod tests {
             sessions.per_tenant(),
             vec![(TenantId::new("acme"), 2), (TenantId::new("globex"), 1)]
         );
+    }
+
+    #[test]
+    fn only_connection_holding_clients_count_toward_upstream_usage() {
+        // `M90`, cycle 6. `ClusterDigest::tenant_usage` is documented as
+        // upstream connections, and `ClientState::Active` is the one state
+        // documented as holding one. Idle and waiting clients are the
+        // multiplexing this proxy exists for and must not inflate a number a
+        // peer compares against an upstream budget.
+        let sessions = Sessions::new();
+        let now = Instant::now();
+        let signal = crate::run::Shutdown::new;
+        let acme = TenantId::new("acme");
+        let globex = TenantId::new("globex");
+
+        let _active = sessions.register(
+            conn(1),
+            acme.clone(),
+            NodeId::new(1),
+            now,
+            16,
+            signal(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        sessions.set_state(conn(1), ClientState::Active, now);
+
+        let _idle = sessions.register(
+            conn(2),
+            acme.clone(),
+            NodeId::new(1),
+            now,
+            16,
+            signal(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        sessions.set_state(conn(2), ClientState::Idle, now);
+
+        let _waiting = sessions.register(
+            conn(3),
+            globex.clone(),
+            NodeId::new(1),
+            now,
+            16,
+            signal(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        sessions.set_state(conn(3), ClientState::Waiting, now);
+
+        // Every client counts here, which is `per_tenant`'s own contract and
+        // is unaffected by this fix.
+        assert_eq!(sessions.per_tenant(), vec![(acme.clone(), 2), (globex, 1)]);
+
+        // Only the one actually holding a connection counts here: globex's
+        // waiting client has none yet, and acme's idle one gave hers back.
+        assert_eq!(sessions.per_tenant_upstream(), vec![(acme, 1)]);
     }
 
     #[test]

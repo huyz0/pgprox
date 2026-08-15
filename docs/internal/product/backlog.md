@@ -10477,7 +10477,26 @@ scalable real production machine, which stays `M16`'s open item.
   fresh entry and runs the same statement again via `Bind`/`Execute`/`Sync`
   alone — the round trip this fix is actually about. Verified against a
   revert of the fix before landing.
-- [ ] `M90.22` Close M90 once a full review cycle across the angles above
+- [x] `M90.22` `TenantView.upstream_conns`, gossiped in `report_tenants` and
+  read as a tenant's live upstream usage by every shed and quota decision on
+  the cluster, was neither of those things on two counts. `Sessions::
+  per_tenant` counted every registered client regardless of `ClientState`, so
+  a tenant with connections `Idle` or `Waiting` — holding no upstream
+  connection at all — inflated the number a shed decision weighs against the
+  tenant's grant. Separately, `run.rs`'s `ticker()` reported every tenant
+  with a client on this node, not only the tenants
+  `MembershipView::is_home_for` says this node homes; `ClusterDigest.
+  tenant_usage`'s own doc requires the latter, to bound message size at
+  roughly `tenants/nodes` rather than every tenant touching every node.
+  Acceptance: new `Sessions::per_tenant_upstream()` counts only
+  `ClientState::Active` entries per tenant, fixing the metric itself; new
+  `tenants_to_report()` in `run.rs`, a pure function filtering a tenant-usage
+  list to `membership.is_home_for(tenant)`, fixing the scope, wired into
+  `ticker()`'s call to `report_tenants`. New tests
+  `only_connection_holding_clients_count_toward_upstream_usage` and
+  `only_the_tenants_this_node_homes_are_reported`, each verified against a
+  revert of its half of the fix before landing.
+- [ ] `M90.23` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if
