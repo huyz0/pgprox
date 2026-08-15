@@ -204,4 +204,9 @@ run_finding pgprox-core \
   tests::the_crate_defines_exactly_the_governed_traits_plus_connection_release \
   "a new pub trait with no table row would fail this count, not pass silently"
 
+# --- M88.17: FrameRelay::push has a real fuzz target, not just a PRNG loop --
+run_finding pgprox-proto \
+  relay::tests::push_has_a_real_fuzz_target \
+  "fuzz/fuzz_targets/frame_relay.rs exists and scripts/fuzz.sh runs it"
+
 finish

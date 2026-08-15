@@ -3611,6 +3611,23 @@ across every source file and checks the total against the table plus the one
 exclusion — the second test is the one that keeps this from recurring, since
 it fails the moment a thirteenth trait arrives with no matching row.
 
+**`M88.17`.** `FrameRelay::push` reassembles a partially-read frame from an
+untrusted peer — the header or the body split across two or more calls,
+because a socket read returns whatever the kernel had, not a message
+boundary — and had no fuzz target, unlike the whole-message decoders `M15`
+already fuzzed in this crate. The one thing this crate already had,
+`relaying_never_panics_on_arbitrary_input`, is a fixed-seed PRNG loop: the
+same 20,000 inputs every run, no coverage guidance, no corpus, no crash
+minimization. The new target, `fuzz/fuzz_targets/frame_relay.rs`, chunks its
+input at a size drawn from the input itself, so the same corpus discovers
+both a single large read and a byte-at-a-time one without needing two
+targets. Actually run, not just wired: `cargo +nightly fuzz run frame_relay
+-- -max_total_time=45` completed roughly 14 million executions with no
+crash, and `scripts/fuzz.sh` passed end to end with it included. Checked by
+a new `pgprox-proto` test whose `include_str!` on the target file makes its
+absence a compile failure rather than a missing assertion — confirmed by
+moving the file aside and back.
+
 ## M89: the review from outside this repo, and the four gaps it found (complete)
 
 ```bash

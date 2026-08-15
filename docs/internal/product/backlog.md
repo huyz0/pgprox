@@ -9892,7 +9892,7 @@ recognised so it can be refused rather than read as a version.
   across every source file and checking that count against the table plus the
   one deliberate exclusion, so a *future* trait added with no table update
   fails the same way this finding did.
-- [ ] `M88.17` `pgprox-proto`'s `FrameRelay::push` has no fuzz target. It is the
+- [x] `M88.17` `pgprox-proto`'s `FrameRelay::push` has no fuzz target. It is the
   function that decides how a partially-read frame from an untrusted peer is
   buffered and re-assembled, exactly the kind of function `M15` fuzzed
   elsewhere in this crate for the same reason, and it has none.
@@ -9900,6 +9900,21 @@ recognised so it can be refused rather than read as a version.
   crate's fuzz directory, and `scripts/fuzz.sh` (or the equivalent invocation
   named in `pgprox-proto`'s `AGENTS.md`) runs it for a bounded duration without
   finding a crash.
+  Landed as filed: `fuzz/fuzz_targets/frame_relay.rs`, registered as a
+  `[[bin]]` in `fuzz/Cargo.toml` and added to `scripts/fuzz.sh`'s target list.
+  Unlike `frame_decode` and `message_decode`, which hand a whole message to a
+  decoder in one call, this target drives `FrameRelay::push` in chunks whose
+  size comes from the fuzz input itself, so the same corpus discovers both a
+  single large read and a byte-at-a-time one — the reassembly path a real
+  socket read actually exercises and the one `relaying_never_panics_on_arbitrary_input`
+  (a pre-existing fixed-seed PRNG loop, not corpus-driven or crash-minimizing)
+  did not reach the same way. Actually run, not just wired: `cargo +nightly
+  fuzz run frame_relay -- -max_total_time=45` completed ~14 million
+  executions with no crash, and `scripts/fuzz.sh 20` passed end to end with
+  the new target included. Checked mechanically by a new test,
+  `push_has_a_real_fuzz_target`, whose `include_str!` on the target file
+  itself makes the target's absence a compile failure, confirmed by
+  temporarily moving the file aside and back.
 - [ ] `M88.18` Five smaller test-quality gaps, grouped because none is worth
   its own task on its own: `pgprox-cache`'s `result_formats` field has no test
   touching it; `pgprox-testkit`'s truncated-body test is weak enough to pass

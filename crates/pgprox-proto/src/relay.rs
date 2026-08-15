@@ -947,4 +947,28 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn push_has_a_real_fuzz_target() {
+        // `M88.17`. `relaying_never_panics_on_arbitrary_input` above is a
+        // fixed-seed PRNG loop: the same 20,000 inputs every run, no coverage
+        // guidance, no corpus, no crash minimization. `FrameRelay::push`
+        // reassembles a partially-read frame from an untrusted peer, exactly
+        // what `M15` fuzzed elsewhere in this crate with `cargo-fuzz` for the
+        // same reason, and had none of that. `include_str!` on the target
+        // itself makes its absence a compile failure, not just a missing
+        // row — which is what "before this fix" actually was.
+        const _TARGET: &str = include_str!("../../../fuzz/fuzz_targets/frame_relay.rs");
+        const FUZZ_CARGO_TOML: &str = include_str!("../../../fuzz/Cargo.toml");
+        const FUZZ_SH: &str = include_str!("../../../scripts/fuzz.sh");
+
+        assert!(
+            FUZZ_CARGO_TOML.contains("name = \"frame_relay\""),
+            "fuzz/Cargo.toml does not register a frame_relay fuzz target"
+        );
+        assert!(
+            FUZZ_SH.contains("frame_relay"),
+            "scripts/fuzz.sh does not run the frame_relay target"
+        );
+    }
 }

@@ -18,7 +18,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$REPO_ROOT"
 
 SECONDS_PER_TARGET="${1:-60}"
-TARGETS=(frame_decode message_decode classify)
+TARGETS=(frame_decode message_decode classify frame_relay)
 
 echo "fuzzing, ${SECONDS_PER_TARGET}s per target"
 echo
