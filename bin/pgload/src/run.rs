@@ -189,6 +189,16 @@ struct Tally {
     /// describe a moment already gone by the time an operator reads the
     /// report.
     last_failure: Option<String>,
+    /// When `last_failure` happened, so `summarise` can compare it against
+    /// every other connection's and keep the one that is actually most
+    /// recent.
+    ///
+    /// `M90.24`. Without this, `summarise` had only Vec order — which
+    /// connection's task happened to finish and get pushed last — to go by,
+    /// which is task-scheduling order, not wall-clock order. A connection
+    /// whose last failure was seconds ago but whose task finished last could
+    /// overwrite a connection whose failure was genuinely the newest.
+    last_failure_at: Option<Instant>,
     /// What this connection was told, by SQLSTATE.
     ///
     /// Per connection and merged at the end, rather than one shared map behind
@@ -278,6 +288,7 @@ async fn one_connection(
                 } else {
                     tally.errors += 1;
                     tally.last_failure = Some(refused.to_string());
+                    tally.last_failure_at = Some(Instant::now());
                 }
                 // Backing off rather than spinning: a target that is refusing
                 // connections should be measured, not flooded.
@@ -324,6 +335,7 @@ async fn one_connection(
                     } else {
                         tally.errors += 1;
                         tally.last_failure = Some(failed.error.to_string());
+                        tally.last_failure_at = Some(Instant::now());
                     }
                     // The session may be inside a transaction the client did
                     // not open, so it is replaced rather than reused.
@@ -469,6 +481,7 @@ fn summarise(
     let mut errors = 0;
     let mut relocations = 0;
     let mut last_failure = None;
+    let mut last_failure_at = None;
     let mut outcomes = Outcomes::default();
 
     for tally in tallies {
@@ -479,10 +492,17 @@ fn summarise(
         for micros in &tally.latencies {
             histogram.record(*micros);
         }
-        // `M88.10`. Overwritten by every tally that saw a failure rather than
-        // kept from the first one, so the report favours whichever connection
-        // is later in this slice over whichever happened to finish first.
-        if tally.last_failure.is_some() {
+        // `M88.10`, corrected by `M90.24`. Compared by `last_failure_at`
+        // rather than kept from whichever tally this loop reaches last: the
+        // tallies are in the order each connection's task finished and got
+        // pushed, which is scheduling order, not the wall-clock order the
+        // failures themselves happened in. A connection whose last failure
+        // was seconds ago but whose task finished last must not overwrite one
+        // whose failure was genuinely the newest.
+        if let Some(at) = tally.last_failure_at
+            && last_failure_at.is_none_or(|current| at > current)
+        {
+            last_failure_at = Some(at);
             last_failure.clone_from(&tally.last_failure);
         }
     }
@@ -573,6 +593,53 @@ mod tests {
         assert_eq!(report.transactions, 18);
         assert_eq!(report.errors, 5);
         assert_eq!(report.relocations, 6);
+    }
+
+    #[test]
+    fn the_report_keeps_the_actually_most_recent_failure_across_connections() {
+        // `M90.24`. `last_failure` used to come from whichever tally this
+        // loop reached last — Vec order, which is the order each
+        // connection's task finished and got pushed, not the order the
+        // failures themselves happened in. Put the genuinely newer failure
+        // *first* in the slice and the genuinely older one *last*, so Vec
+        // order and wall-clock order disagree; only comparing
+        // `last_failure_at` gets this right.
+        let now = std::time::Instant::now();
+        let tallies = vec![
+            Tally {
+                transactions: 1,
+                errors: 1,
+                last_failure: Some("newer, but earlier in the slice".to_owned()),
+                last_failure_at: Some(now),
+                ..Tally::default()
+            },
+            Tally {
+                errors: 1,
+                last_failure: Some("older, but later in the slice".to_owned()),
+                last_failure_at: Some(now.checked_sub(Duration::from_secs(5)).unwrap()),
+                ..Tally::default()
+            },
+        ];
+
+        let Ok(workload) = Workload::parse(include_str!(
+            "../../../docs/internal/product/perf/workload.yaml"
+        )) else {
+            unreachable!("the shipped workload parses")
+        };
+
+        let report = summarise(
+            &Options::default(),
+            &workload,
+            &tallies,
+            Duration::from_secs(1),
+        )
+        .unwrap_or_else(|error| unreachable!("a summary of two tallies: {error}"));
+
+        assert_eq!(
+            report.first_error.as_deref(),
+            Some("newer, but earlier in the slice"),
+            "the stale failure from later in the slice won instead: {report:?}"
+        );
     }
 
     #[test]

@@ -212,4 +212,8 @@ run_finding pgprox run::tests::only_the_tenants_this_node_homes_are_reported \
 run_finding pgprox-admin rows::tests::drain_grace_and_grant_ttl_cap_are_reported_not_changeable \
   "M90.23: drain_grace and grant_ttl_cap are reported not changeable"
 
+# --- M90.24: pgload's first_error picked by task-finish order, not recency --
+run_finding pgload run::tests::the_report_keeps_the_actually_most_recent_failure_across_connections \
+  "M90.24: the report keeps the actually most recent failure across connections"
+
 finish

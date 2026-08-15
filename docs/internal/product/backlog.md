@@ -10522,7 +10522,26 @@ scalable real production machine, which stays `M16`'s open item.
   `client_idle_timeout` explanation. New test
   `drain_grace_and_grant_ttl_cap_are_reported_not_changeable`, verified
   against a revert of the fix before landing.
-- [ ] `M90.24` Close M90 once a full review cycle across the angles above
+- [x] `M90.24` `pgload`'s `summarise` picked the report's `first_error` (in
+  fact documented as "the most recent failure") from whichever `Tally` this
+  loop's iteration order reached last — the order each connection's task
+  finished and got pushed into the shared `Vec` behind a `Mutex`, which is
+  scheduling order, not the wall-clock order the failures themselves
+  happened in. A connection whose last failure was seconds ago but whose
+  task happened to finish last could overwrite a connection whose failure
+  was genuinely the newest, describing a moment already gone by the time the
+  report is read — exactly the failure mode the field's own doc explains
+  `first_error` exists to avoid, just reintroduced across connections
+  instead of within one.
+  Acceptance: `Tally` gains `last_failure_at: Option<Instant>`, stamped
+  alongside `last_failure` at both failure sites; `summarise` keeps the
+  failure with the later `last_failure_at` instead of the one this loop
+  reaches last. New test
+  `the_report_keeps_the_actually_most_recent_failure_across_connections`,
+  which gives the genuinely newer failure an earlier slot in the slice and
+  the genuinely older one a later slot so Vec order and wall-clock order
+  disagree, verified against a revert of the fix before landing.
+- [ ] `M90.25` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if
