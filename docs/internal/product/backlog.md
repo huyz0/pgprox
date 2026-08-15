@@ -10105,7 +10105,7 @@ scalable real production machine, which stays `M16`'s open item.
   Acceptance: a test with two `AuthRequest`s differing only in
   `startup_user` showing they resolve to distinct cache entries, failing
   before the fix.
-- [ ] `M90.4` A rejected `SET pgprox.route` hint is never actually reported
+- [x] `M90.4` A rejected `SET pgprox.route` hint is never actually reported
   to the client. `router.rs`'s own doc comment for `Routed::HintRejected`
   says the caller reports this "so a typo does not leave them believing
   their reads are on replicas", but `bin/pgprox/src/serve.rs` is the only

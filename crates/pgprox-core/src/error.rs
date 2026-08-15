@@ -54,6 +54,9 @@ impl SqlState {
     /// `feature_not_supported`. Something the client asked for that this proxy
     /// does not do, as opposed to something it got wrong.
     pub const FEATURE_NOT_SUPPORTED: Self = Self("0A000");
+    /// `22023`, `invalid_parameter_value`. The code real Postgres answers with
+    /// for a `SET` naming a value its target does not recognise.
+    pub const INVALID_PARAMETER_VALUE: Self = Self("22023");
 
     /// The code as it appears in the `ErrorResponse` message.
     #[must_use]
@@ -218,6 +221,19 @@ pub enum ClientError {
     /// guessable cancel key.
     #[error("internal error: {0}")]
     Internal(&'static str),
+
+    /// A `SET pgprox.route` named a value the router does not recognise.
+    ///
+    /// `M90.4`. Session-local and never fatal: the client sent one bad
+    /// statement, not a reason to close the connection, so this is reported
+    /// through the same `ErrorResponse`-then-`ReadyForQuery` shape real
+    /// Postgres uses for a bad `SET`, never through [`ClientError`]'s
+    /// connection-closing path. Distinct from [`Self::ProtocolViolation`],
+    /// which is malformed wire framing; this is a syntactically valid
+    /// statement whose value is wrong, same distinction Postgres itself
+    /// draws between `08P01` and `22023`.
+    #[error("invalid value for pgprox.route")]
+    InvalidRouteHint,
 }
 
 impl ClientError {
@@ -239,6 +255,7 @@ impl ClientError {
             Self::ProtocolViolation(_) => SqlState::PROTOCOL_VIOLATION,
             Self::Unsupported(_) => SqlState::FEATURE_NOT_SUPPORTED,
             Self::Internal(_) => SqlState::INTERNAL_ERROR,
+            Self::InvalidRouteHint => SqlState::INVALID_PARAMETER_VALUE,
         }
     }
 
@@ -276,6 +293,11 @@ impl ClientError {
             // Vague on purpose, like the rest: which internal condition failed
             // is an operator's business and a prober's gift.
             Self::Internal(_) => "internal error",
+            // Specific on purpose, unlike the rest: this is the client's own
+            // statement echoed back, the same as Postgres's own message for a
+            // bad `SET`, and there is nothing in it that was not already in
+            // what the client sent.
+            Self::InvalidRouteHint => "invalid value for parameter \"pgprox.route\"",
         }
     }
 
@@ -370,6 +392,7 @@ mod tests {
             ClientError::ProtocolViolation("unexpected message after Sync"),
             ClientError::Unsupported("replication connections are not proxied"),
             ClientError::Internal("the system entropy source failed"),
+            ClientError::InvalidRouteHint,
         ]
     }
 
@@ -415,6 +438,7 @@ mod tests {
             (ClientError::SidecarUnavailable, "08006"),
             (ClientError::ProtocolViolation("x"), "08P01"),
             (ClientError::Internal("x"), "XX000"),
+            (ClientError::InvalidRouteHint, "22023"),
         ];
         for (err, expected) in cases {
             assert_eq!(err.sqlstate().as_str(), *expected, "wrong code for {err}");

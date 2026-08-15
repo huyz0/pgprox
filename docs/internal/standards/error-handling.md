@@ -60,6 +60,7 @@ real SQLSTATE, never a generic internal error. The mapping is one function in
 | Acquire timeout | `57014` | `query_canceled` |
 | A failure that is the proxy's own, such as no system entropy | `XX000` | `internal_error` |
 | Something the client asked for that this proxy does not do | `0A000` | `feature_not_supported` |
+| `SET pgprox.route` named a value the router does not recognise | `22023` | `invalid_parameter_value` |
 
 `0A000` is the client being right and the proxy being unable, which is a
 different thing from `08P01`, where the client is wrong. A client told the

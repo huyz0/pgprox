@@ -32,6 +32,7 @@ use pgprox_proto::backend::{self, BackendMessage, TxStatus};
 use pgprox_proto::encode;
 use pgprox_proto::frame::Frame;
 use pgprox_route::replica::Replicas;
+use pgprox_route::router::Routed;
 use pgprox_session::cancel::Registry;
 use pgprox_session::connect::Upstreamed;
 use pgprox_session::probe::ParameterCache;
@@ -657,6 +658,21 @@ fn shed_reason(
     }
 }
 
+/// Queues a `ClientAction::Answer`'s reply.
+///
+/// A rejected hint gets an `ErrorResponse` naming the bad value first, in the
+/// same shape real Postgres uses for a bad `SET`; every other answer,
+/// accepted hint included, is unchanged. `M90.4`: `Routed::HintRejected`'s
+/// own doc says the caller reports this to the client "so a typo does not
+/// leave them believing their reads are on replicas", and until this, the
+/// caller sent the identical bare `ReadyForQuery` an accepted hint gets.
+fn queue_answer(out: &mut Vec<u8>, routed: Routed) {
+    if routed == Routed::HintRejected {
+        encode::error_response(out, &ClientError::InvalidRouteHint);
+    }
+    encode::ready_for_query(out, TxStatus::Idle);
+}
+
 /// Moves frames between a client and the upstream connections it borrows.
 async fn relay<S>(
     wire: &mut Wire<S>,
@@ -735,10 +751,9 @@ where
 
         match outcome.action {
             ClientAction::Close => return Ok(()),
-            ClientAction::Answer(_) => {
-                // A SET pgprox.route the server never sees. The client still
-                // needs a ReadyForQuery, or it waits forever for one.
-                wire.queue(|out| encode::ready_for_query(out, TxStatus::Idle));
+            // `M90.4`: a rejected hint gets an error first, not a bare ready.
+            ClientAction::Answer(routed) => {
+                wire.queue(|out| queue_answer(out, routed));
                 wire.flush().await?;
                 continue;
             }
@@ -6933,6 +6948,56 @@ mod tests {
             0,
             "a statement the server never sees opened a connection"
         );
+
+        drop(client);
+        let _ = served.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_rejected_route_hint_is_reported_as_an_error_not_a_bare_ready() {
+        // `M90.4`. `Routed::HintRejected`'s own doc says the caller reports
+        // this to the client so a typo does not leave it believing its reads
+        // are pinned somewhere they are not — this used to send the exact
+        // same bare `ReadyForQuery` an accepted hint gets, indistinguishable
+        // to a driver watching the wire. Contrast with
+        // `a_route_hint_is_answered_without_touching_the_database` above,
+        // which is the accepted case and asserts `ReadyForQuery` is the only
+        // message.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut hint = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut hint, "SET pgprox.route = 'sideways'");
+        client.write_all(&hint).await.unwrap();
+
+        let (tag, body) = expect(&mut client).await;
+        assert_eq!(
+            tag,
+            Tag::ERROR_RESPONSE,
+            "a rejected hint got the same bare ReadyForQuery an accepted one does"
+        );
+        assert!(
+            body.windows(5).any(|w| w == b"22023"),
+            "wrong SQLSTATE for a rejected route hint: {body:?}"
+        );
+
+        let (tag, body) = expect(&mut client).await;
+        assert_eq!(tag, Tag::READY_FOR_QUERY);
+        assert_eq!(body, b"I");
 
         drop(client);
         let _ = served.await.unwrap();

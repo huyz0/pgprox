@@ -105,4 +105,10 @@ run_finding pgprox-auth cache::tests::two_startup_users_on_the_same_token_get_th
 run_finding pgprox-auth cache::tests::the_key_is_a_hash_rather_than_the_token \
   "M90.3: the cache key differs across token, database and user"
 
+# --- M90.4: a rejected route hint is never reported ---------------------------
+run_finding pgprox serve::tests::a_rejected_route_hint_is_reported_as_an_error_not_a_bare_ready \
+  "M90.4: a rejected route hint is reported as an error, not a bare ready"
+run_finding pgprox-core error::tests::mapping_matches_the_documented_table \
+  "M90.4: InvalidRouteHint maps to the documented SQLSTATE"
+
 finish
