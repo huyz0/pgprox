@@ -198,4 +198,8 @@ run_finding pgprox-session relay::tests::a_pipelined_statement_that_pins_reacqui
 run_finding pgprox serve::tests::one_session_costs_less_than_the_slab_buffer_it_no_longer_holds \
   "M90.20: one session still costs less than the slab buffer it no longer holds, at the new ceiling"
 
+# --- M90.21: a write sent only as Bind never invalidated the cache ----------
+run_finding pgprox serve::tests::a_write_sent_only_as_bind_still_invalidates \
+  "M90.21: a write sent only as Bind still invalidates"
+
 finish

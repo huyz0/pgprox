@@ -924,6 +924,7 @@ async fn cache_before_sending<S>(
     grant: &Grant,
     message: &pgprox_proto::frontend::FrontendMessage<'_>,
     pumping: &mut Pumping,
+    session: &pgprox_session::resume::SessionMemory,
 ) -> Result<bool, ShellError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -945,7 +946,7 @@ where
         return Ok(false);
     }
 
-    invalidate_on_write(context, message, &grant.tenant);
+    invalidate_on_write(context, message, &grant.tenant, session);
 
     let (Some(cache), Some(recording)) = (context.cache.as_ref(), pumping.recording.as_ref())
     else {
@@ -1156,7 +1157,15 @@ where
     let message = incoming.message;
     live.pumping.recording = cache_key(context, grant, message, &live.session, &live.relay);
 
-    let mut hit = cache_before_sending(wire, context, grant, message, &mut live.pumping).await?;
+    let mut hit = cache_before_sending(
+        wire,
+        context,
+        grant,
+        message,
+        &mut live.pumping,
+        &live.session,
+    )
+    .await?;
     if !hit {
         match withhold(context, grant, live, incoming) {
             Held::Withheld => return Ok(true),
@@ -1517,6 +1526,7 @@ fn invalidate_on_write(
     context: &Context,
     message: &pgprox_proto::frontend::FrontendMessage<'_>,
     tenant: &pgprox_core::ids::TenantId,
+    session: &pgprox_session::resume::SessionMemory,
 ) {
     use pgprox_proto::frontend::FrontendMessage;
 
@@ -1528,9 +1538,24 @@ fn invalidate_on_write(
         return;
     };
 
+    // A `Parse` carries its own SQL. A `Bind` names a statement this session
+    // prepared, possibly long before this write and possibly on another
+    // connection this one borrowed. `facts_for` already resolves a `Bind`
+    // this way for the serving side of the cache; invalidation needs the
+    // same resolution or it never sees the ordinary "prepare once, execute
+    // many" pattern at all — a write sent as `Bind`/`Execute` with no fresh
+    // `Parse` invalidated nothing, and a later read within the TTL was
+    // served an answer that predated it. `M90`, cycle 6.
     let sql = match message {
-        FrontendMessage::Query { sql } | FrontendMessage::Parse { sql, .. } => *sql,
-        _ => return,
+        FrontendMessage::Query { sql } | FrontendMessage::Parse { sql, .. } => Some(*sql),
+        FrontendMessage::Bind { statement, .. } => session
+            .statements
+            .get(statement)
+            .map(|held| held.sql.as_str()),
+        _ => None,
+    };
+    let Some(sql) = sql else {
+        return;
     };
 
     if pgprox_route::classify(sql) != pgprox_core::route::StmtClass::ReadOnly {
@@ -4566,6 +4591,66 @@ mod tests {
             (cache.get(&key)).is_none(),
             "a write left the tenant's entries in place"
         );
+    }
+
+    #[tokio::test]
+    async fn a_write_sent_only_as_bind_still_invalidates() {
+        // `M90`, cycle 6. The "prepare once, execute many" pattern: a
+        // statement `Parse`d once and run again later via `Bind`/`Execute`/
+        // `Sync` alone, which is how a driver with its own statement cache
+        // sends every repeat execution. The first round trip below carries
+        // the `Parse` and already invalidated correctly before this fix; the
+        // second is the one this test is about, and is the ordinary shape a
+        // session doing this pattern uses for every write after its first.
+        let addr = fake_postgres().await;
+        let (context, cache) = context_with_cache(addr);
+        let context = Arc::new(context);
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(16384);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        // Prepares the write once and runs it, which already invalidates
+        // via the `Parse` this message carries.
+        let mut first = Vec::new();
+        pgprox_proto::encode_frontend::parse(&mut first, "s1", "UPDATE t SET x = 1");
+        pgprox_proto::encode_frontend::bind(&mut first, "", "s1");
+        pgprox_proto::encode_frontend::execute(&mut first, "");
+        pgprox_proto::encode_frontend::sync(&mut first);
+        client.write_all(&first).await.unwrap();
+        expect_answer(&mut client).await;
+
+        // Seeded after that round trip rather than before, so this entry's
+        // disappearance can only be explained by the second round below.
+        let key = seed(&cache);
+        assert_eq!(cache.len(), 1);
+
+        // The same write again, with no `Parse` this time — the statement
+        // is already prepared on this connection.
+        let mut again = Vec::new();
+        pgprox_proto::encode_frontend::bind(&mut again, "", "s1");
+        pgprox_proto::encode_frontend::execute(&mut again, "");
+        pgprox_proto::encode_frontend::sync(&mut again);
+        client.write_all(&again).await.unwrap();
+        expect_answer(&mut client).await;
+
+        assert!(
+            cache.get(&key).is_none(),
+            "a write sent only as Bind, with no fresh Parse, left the tenant's entries in place"
+        );
+
+        drop(client);
+        let _ = served.await;
     }
 
     #[tokio::test]

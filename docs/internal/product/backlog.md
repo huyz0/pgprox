@@ -10459,7 +10459,25 @@ scalable real production machine, which stays `M16`'s open item.
   bytes this leaves it, the same kind of deliberate, documented bump `M74.0`
   made for the idle timeout, preferred here to a smaller hand-rolled
   encoding for a type this crate does not own.
-- [ ] `M90.21` Close M90 once a full review cycle across the angles above
+- [x] `M90.21` `invalidate_on_write` only recognized `Query` and `Parse`, so
+  a write sent as `Bind`/`Execute` of an already-`Parse`d statement — the
+  ordinary "prepare once, execute many" pattern most drivers with their own
+  statement cache use for every repeat execution — never invalidated the
+  tenant's cached entries. `facts_for` already resolves a `Bind`'s SQL via
+  `session.statements.get(statement)` for the *serving* side of the same
+  feature; invalidation had no equivalent resolution, so a session using
+  this pattern invalidated correctly on its write's first execution (which
+  carries the `Parse`) and never again, serving reads that predated later
+  writes for up to the tenant's whole configured TTL.
+  Acceptance: `invalidate_on_write` gains the same `Bind`-resolves-through-
+  `session.statements` logic `facts_for` already has, threaded through
+  `cache_before_sending`'s new `session` parameter. New test
+  `a_write_sent_only_as_bind_still_invalidates`, which prepares a write once
+  (invalidating correctly, before this fix, on that round trip) then seeds a
+  fresh entry and runs the same statement again via `Bind`/`Execute`/`Sync`
+  alone — the round trip this fix is actually about. Verified against a
+  revert of the fix before landing.
+- [ ] `M90.22` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if
