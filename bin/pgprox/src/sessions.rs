@@ -20,6 +20,7 @@ use std::time::Instant;
 
 use pgprox_core::admin::{ClientState, ClientView};
 use pgprox_core::ids::{ConnId, NodeId, TenantId};
+use pgprox_session::cancel::Registry;
 
 /// One client, as a report sees it.
 #[derive(Debug, Clone)]
@@ -78,6 +79,19 @@ pub struct Sessions {
     /// because this is where a shed happens, and a limit counted anywhere else
     /// would be counting something other than what it limits.
     recent: Mutex<HashMap<TenantId, VecDeque<Instant>>>,
+    /// The cancel-key registry, wired in once by [`Sessions::wire_cancels`].
+    ///
+    /// `M90.5`. `Registration` already deregisters its client on drop so a
+    /// session that panicked mid-query is not listed forever — see the
+    /// module doc. A cancel key wants the identical guarantee and gets it for
+    /// free by reusing this same drop: one `Arc` on this shared, once-per-node
+    /// registry costs nothing on the per-connection future `Registration`
+    /// lives inside, where a field of its own would have. `Option` rather
+    /// than required at construction because `Sessions::new()` has no
+    /// argument list to keep test code — the great majority of the crate's
+    /// own tests — from having to build a `Registry` it does not otherwise
+    /// need.
+    cancels: Mutex<Option<Arc<Registry>>>,
 }
 
 /// How far back the shed rate limit looks.
@@ -102,6 +116,20 @@ impl Drop for Registration {
     fn drop(&mut self) {
         if let Some(sessions) = self.sessions.upgrade() {
             sessions.lock().remove(&self.conn);
+            // `M90.5`. The connection this client held, if any, may still be
+            // in the cancel registry: the clean transaction-boundary release
+            // in `serve.rs` only reaches it between transactions, and a
+            // session that disconnects mid-transaction never gets there. This
+            // is the same guard this drop already is for the row above,
+            // applied to the second registry a session can go stale in.
+            if let Some(cancels) = sessions
+                .cancels
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+            {
+                cancels.release(self.conn);
+            }
         }
     }
 }
@@ -113,6 +141,18 @@ impl Sessions {
         let sessions = Arc::new(Self::default());
         *sessions.me.lock().unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(&sessions);
         sessions
+    }
+
+    /// Wires the cancel-key registry a [`Registration`] releases from on
+    /// drop.
+    ///
+    /// `M90.5`. Separate from [`Sessions::new`] rather than a constructor
+    /// argument so the many tests that need a `Sessions` but never touch a
+    /// cancel key do not also need a `Registry`. Not wiring it is safe:
+    /// [`Registration::drop`] simply finds nothing to release, the same as
+    /// before this existed.
+    pub fn wire_cancels(&self, cancels: Arc<Registry>) {
+        *self.cancels.lock().unwrap_or_else(PoisonError::into_inner) = Some(cancels);
     }
 
     /// Registers a client, until the returned value is dropped.

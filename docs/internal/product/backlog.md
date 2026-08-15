@@ -10115,12 +10115,29 @@ scalable real production machine, which stays `M16`'s open item.
   that its session hint did not change.
   Acceptance: a test showing a rejected hint's `ReadyForQuery` differs
   observably from an accepted one's, failing before the fix.
-- [ ] `M90.5` Investigate whether `pgprox-session::cancel::Registry` and
-  `PgConnector::backends`/`ParameterCache::entries` grow without bound
-  against a real workload, and fix what is confirmed.
-  Acceptance: either a test demonstrating unbounded growth and a fix that
-  bounds it, or this task's text records what was checked and why it is not
-  a real gap.
+- [x] `M90.5` `pgprox-session::cancel::Registry` leaked one entry per session
+  that ended while holding an upstream connection outside the clean
+  transaction boundary — a mid-transaction client disconnect, chiefly.
+  `Registry::release` had exactly one call site, the clean-boundary
+  `release()` in `serve.rs`; `context.sessions`'s entry gets an RAII guard
+  (`Registration`) that runs on every exit, clean or not, and the cancel
+  registry's entry, inserted on every acquire, got no such guard. The entry
+  then outlived the session that made it, forever, since a cancel key is
+  random and never reused.
+  Also investigated: `PgConnector::backends` and `ParameterCache::entries`.
+  Not a real gap — both are keyed by `PoolKey`/`(ServerId, database)`, whose
+  cardinality is the deployment's own server/database/role topology as
+  resolved by the trusted sidecar, not by client-controlled input or by
+  connection count; the same bounded-by-topology shape `pgprox-cluster`'s
+  `ClusterDigest::tenant_usage` already documents as the reason it needs no
+  eviction.
+  Acceptance: `Sessions` gets a `wire_cancels` method reusing `Registration`'s
+  existing drop-on-any-exit guarantee for the cancel registry too, at zero
+  cost to the per-connection future — `Sessions` is a shared, once-per-node
+  `Arc`, not local state a session's future carries — rather than a new
+  per-session guard, which was tried first and cost 16 bytes against a
+  budget that had 8 to spare. A test that disconnects mid-transaction and
+  shows the cancel registry empties anyway, failing before the fix.
 - [ ] `M90.6` Correct documentation drift found alongside the code findings
   above: `plan.md`'s dependency-exception count is stale against
   `bin/pgload`, and ADR 0009/`plan.md` describe `replica_poll_interval` as

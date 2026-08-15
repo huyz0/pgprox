@@ -111,4 +111,8 @@ run_finding pgprox serve::tests::a_rejected_route_hint_is_reported_as_an_error_n
 run_finding pgprox-core error::tests::mapping_matches_the_documented_table \
   "M90.4: InvalidRouteHint maps to the documented SQLSTATE"
 
+# --- M90.5: the cancel registry leaked on a mid-transaction disconnect -------
+run_finding pgprox serve::tests::a_client_that_disconnects_mid_transaction_frees_its_cancel_key \
+  "M90.5: a mid-transaction disconnect frees its cancel key"
+
 finish

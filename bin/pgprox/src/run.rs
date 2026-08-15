@@ -478,6 +478,13 @@ fn bind_client(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
 /// and a session's needs meet, and two places building it would be two nodes.
 #[must_use]
 pub fn context(app: &App, shutdown: &Shutdown) -> Context {
+    // Built here rather than inline in the struct literal below so
+    // `Sessions` can be wired to it: `M90.5`, a `Registration` dropped on an
+    // unclean exit releases this session's cancel key the same way it
+    // already deregisters the client, and it needs a handle to do that with.
+    let cancels = Arc::new(Registry::new(app.deps.node, Box::new(SystemEntropy)));
+    app.sessions.wire_cancels(Arc::clone(&cancels));
+
     Context {
         // Present on every node and serving nobody until a document names a
         // tenant. ADR 0021 makes off the default; what makes it off is an
@@ -515,7 +522,7 @@ pub fn context(app: &App, shutdown: &Shutdown) -> Context {
         pool: Arc::clone(&app.pool),
         parameters: Arc::new(ParameterCache::new()),
         sessions: Arc::clone(&app.sessions),
-        cancels: Arc::new(Registry::new(app.deps.node, Box::new(SystemEntropy))),
+        cancels,
         acquire_timeout: ACQUIRE_TIMEOUT,
         login_timeout: LOGIN_TIMEOUT,
         client_idle_timeout: app.config.client_idle_timeout,

@@ -3845,6 +3845,13 @@ mod tests {
         let clock: Arc<dyn Clock> = Arc::new(FakeClock::new());
         let tls = pgprox_tls::client_config(tokio_rustls::rustls::RootCertStore::empty()).unwrap();
         let connector = Arc::new(PgConnector::new(TcpUpstream::new(tls), test_slab()));
+        let cancels = Arc::new(Registry::new(NodeId::new(1), Box::new(Fixed)));
+        // `M90.5`. `context_for` built `sessions` and `cancels` as two
+        // independent registries, same as production did before this: a
+        // `Registration` dropped mid-transaction had no way to reach the
+        // cancel registry it should also clean up.
+        let sessions = Sessions::new();
+        sessions.wire_cancels(Arc::clone(&cancels));
 
         Context {
             cache: None,
@@ -3871,8 +3878,8 @@ mod tests {
             ),
             connector,
             parameters: Arc::new(ParameterCache::new()),
-            sessions: Sessions::new(),
-            cancels: Arc::new(Registry::new(NodeId::new(1), Box::new(Fixed))),
+            sessions,
+            cancels,
             acquire_timeout: Duration::from_secs(5),
             login_timeout: Duration::from_secs(30),
             client_idle_timeout: None,
@@ -6877,6 +6884,59 @@ mod tests {
             .await
             .expect("the grace timer did not close a session that would not leave");
         assert!(ended.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_client_that_disconnects_mid_transaction_frees_its_cancel_key() {
+        // `M90.5`. `context.cancels.release(conn)` has exactly one call
+        // site: the free `release()` function's clean transaction-boundary
+        // path. `context.sessions` gets an RAII guard (`_registered` above)
+        // that runs on every exit, clean or not; `context.cancels`'s entry,
+        // inserted by `borrow()` on every acquire, gets no such guard. A
+        // client that disconnects mid-transaction never reaches the clean
+        // boundary, so the entry survives the session that made it —
+        // forever, since a cancel key is random and reused by nobody.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut out = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut out, "BEGIN");
+        client.write_all(&out).await.unwrap();
+        expect(&mut client).await;
+        assert_eq!(
+            expect(&mut client).await.1,
+            vec![b'T'],
+            "the fake did not open a transaction, so this connection was never held"
+        );
+        assert_eq!(
+            context.cancels.len(),
+            1,
+            "the connection was not registered"
+        );
+
+        // Gone without a COMMIT or ROLLBACK: the clean boundary release()
+        // guards is never reached.
+        drop(client);
+        let _ = served.await;
+
+        assert!(
+            context.cancels.is_empty(),
+            "a cancel key for a connection nobody holds any more was still live"
+        );
     }
 
     #[tokio::test]
