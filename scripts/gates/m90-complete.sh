@@ -175,4 +175,12 @@ run_finding pgprox replicas::tests::adr_0009_names_the_watermark_query_the_code_
 run_finding pgprox-observe tenants::tests::a_tenant_named_other_is_refused_rather_than_swallowing_the_aggregate \
   "M90.16: a tenant named other is refused rather than swallowing the aggregate"
 
+# --- M90.17: the gossip version counter reset to 0 on every restart ---------
+run_finding pgprox-cluster service::tests::version_floor_reads_milliseconds_since_the_epoch \
+  "M90.17: version_floor reads milliseconds since the epoch"
+run_finding pgprox-cluster service::tests::version_floor_does_not_panic_before_the_epoch \
+  "M90.17: version_floor does not panic before the epoch"
+run_finding pgprox-cluster service::tests::a_process_that_restarts_inside_dead_after_is_not_rejected_as_stale \
+  "M90.17: a process that restarts inside dead_after is not rejected as stale"
+
 finish

@@ -10348,7 +10348,44 @@ scalable real production machine, which stays `M16`'s open item.
   `from_configured` as well since it calls `add` internally. New test
   `a_tenant_named_other_is_refused_rather_than_swallowing_the_aggregate`,
   verified against a revert of the fix before landing.
-- [ ] `M90.17` Close M90 once a full review cycle across the angles above
+- [x] `M90.17` `GossipCoordinator`'s outgoing digest version — the `u64` a
+  peer's `DigestStore` uses to tell a newer report from a reordered old one,
+  with no shared clock — was an `AtomicU64` seeded at 0 on every
+  construction. A node killed and restarted inside `dead_after` (10s by
+  default) is not reaped from a peer's store first, per `observe()`'s own
+  comment on why `DigestStore` is not liveness-filtered: nothing tells a
+  peer the node is gone except an explicit leave announcement, which a kill
+  never sends. So the restarted node's first digest is compared against
+  whatever version its previous incarnation reached, and a counter that
+  always starts at zero loses that comparison on exactly the schedule a
+  crash loop produces — `merge` treats a lower version as permanently stale,
+  with no notion that a lower version could mean a fresher process rather
+  than a reordered message. The peer keeps whatever it held before the
+  restart (stale counts, and via `heard_without_mode`'s deliberate
+  mode-preservation on a stale merge — a real fix for a different scenario,
+  `M14.16`, message reordering while still running — a `Draining` mode that
+  never clears). `NodeCoordinator::self_version`, the counter for a node's
+  own entry in its own store, is a different thing entirely and was not at
+  risk: that store is always empty at construction, so there is nothing
+  stale to lose a comparison against.
+  Acceptance: the counter is now seeded from `Clock::wall()` — already
+  injected, so no call site changes anywhere in the workspace — as
+  milliseconds since the Unix epoch rather than 0. Real time only moves
+  forward across a restart, and even a node gossiping once a second for a
+  full year only reaches the high tens of millions, four orders of magnitude
+  below where the next boot's floor begins, so no coordination between
+  incarnations is needed for the new one to win the comparison. New tests
+  `version_floor_reads_milliseconds_since_the_epoch`,
+  `version_floor_does_not_panic_before_the_epoch`, and
+  `a_process_that_restarts_inside_dead_after_is_not_rejected_as_stale` (an
+  end-to-end reproduction through the real `gossip`/merge path, using a
+  `Clock` fake with an explicit wall time rather than the real one so the
+  test does not depend on how fast it happens to run); the workspace-wide
+  `guaranteed_plus_leased_never_exceeds_the_cap` property test still holds,
+  since this changes nothing about quota accounting. Verified against a
+  revert of the fix before landing. ADR 0004 records the reasoning
+  alongside the version field it already documents.
+- [ ] `M90.18` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if

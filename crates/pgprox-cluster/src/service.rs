@@ -90,6 +90,20 @@ pub struct GossipCoordinator {
     /// Per node rather than shared, which is what lets a fleet gossip with no
     /// common clock: a peer compares versions only against the ones it already
     /// holds from the same node.
+    ///
+    /// Seeded from wall time at construction rather than from zero. A process
+    /// restarting inside `dead_after` (10s by default) is not reaped from a
+    /// peer's `DigestStore` first, so its first post-restart digest is
+    /// compared against the version its previous incarnation left behind
+    /// there — and `merge` treats a lower version as stale, permanently,
+    /// with no notion that a lower version could mean a fresher process
+    /// rather than a reordered message. Two counters starting at zero every
+    /// time collide on exactly the schedule a crash loop produces. Seeding
+    /// from milliseconds since the epoch instead makes each restart's first
+    /// version larger than any version the same counter could have reached
+    /// by counting rounds alone: even a node gossiping once a second for a
+    /// full year reaches barely thirty million, four orders of magnitude
+    /// below where the next millisecond-based boot begins. `M90`, cycle 5.
     version: AtomicU64,
 }
 
@@ -97,12 +111,13 @@ impl GossipCoordinator {
     /// Wraps a coordinator for `local`.
     #[must_use]
     pub fn new(local: NodeId, config: CoordinatorConfig, clock: Arc<dyn Clock>) -> Arc<Self> {
+        let version = version_floor(clock.wall());
         Arc::new(Self {
             inner: Mutex::new(NodeCoordinator::new(local, config, clock.now())),
             clock,
             local,
             transport: OnceLock::new(),
-            version: AtomicU64::new(0),
+            version: AtomicU64::new(version),
         })
     }
 
@@ -282,6 +297,21 @@ impl GossipCoordinator {
         let now = self.clock.now();
         self.with(|c| c.allowance(server, now))
     }
+}
+
+/// The first value the outgoing digest counter takes.
+///
+/// Milliseconds since the epoch, so a restarted process starts ahead of
+/// anything its previous incarnation could have reached by counting gossip
+/// rounds — see the doc comment on `version` for why that has to hold.
+/// `wall` comes from the injected [`Clock`], never read directly, so this
+/// stays deterministic under the simulation: a fixed clock reproduces a
+/// fixed floor, the same as every other value this crate derives from time.
+fn version_floor(wall: std::time::SystemTime) -> u64 {
+    wall.duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since_epoch| {
+            u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 #[async_trait::async_trait]
@@ -477,6 +507,88 @@ mod tests {
         let first = coordinator.outgoing().version;
         let second = coordinator.outgoing().version;
         assert!(second > first, "{second} did not follow {first}");
+    }
+
+    /// A [`Clock`] whose wall time is fixed by the test rather than read from
+    /// the real one, so `version_floor` can be exercised at chosen instants
+    /// without depending on how fast the test happens to run. `now()` still
+    /// needs an answer — `NodeCoordinator::new` calls it — but nothing this
+    /// clock is used for reads it, so any monotonic instant will do.
+    #[derive(Debug, Clone, Copy)]
+    struct WallOnly(std::time::SystemTime);
+
+    impl Clock for WallOnly {
+        fn now(&self) -> std::time::Instant {
+            std::time::Instant::now()
+        }
+
+        fn wall(&self) -> std::time::SystemTime {
+            self.0
+        }
+    }
+
+    #[test]
+    fn version_floor_reads_milliseconds_since_the_epoch() {
+        let at = std::time::UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
+        assert_eq!(version_floor(at), 1_700_000_000_123);
+    }
+
+    #[test]
+    fn version_floor_does_not_panic_before_the_epoch() {
+        // `duration_since` errs rather than going negative. The fallback of 0
+        // is exactly today's unseeded behaviour, so a clock this wrong is no
+        // worse off than before this fix.
+        let before = std::time::UNIX_EPOCH - Duration::from_secs(1);
+        assert_eq!(version_floor(before), 0);
+    }
+
+    #[test]
+    fn a_process_that_restarts_inside_dead_after_is_not_rejected_as_stale() {
+        // The M90 cycle-5 finding: a node killed and restarted faster than
+        // `dead_after` (10s by default) is never reaped from a peer's
+        // `DigestStore`, so its first digest after restart is compared
+        // against whatever version its previous incarnation reached. A
+        // counter that always starts at zero loses that comparison every
+        // time and is rejected as `Stale` forever — the peer keeps whatever
+        // stale state (client counts, a stuck `Draining` mode) it held
+        // before the restart.
+        let old_wall = std::time::UNIX_EPOCH + Duration::from_millis(1_000_000);
+        let old = GossipCoordinator::new(
+            node(1),
+            CoordinatorConfig::default(),
+            Arc::new(WallOnly(old_wall)),
+        );
+
+        // The old incarnation ran a few rounds, so the peer's held version is
+        // ahead of a freshly-seeded 0 or 1 by more than one.
+        let mut last = old.outgoing();
+        for _ in 0..4 {
+            last = old.outgoing();
+        }
+
+        let peer = GossipCoordinator::new(
+            node(2),
+            CoordinatorConfig::default(),
+            Arc::new(FakeClock::new()),
+        );
+        assert_eq!(peer.gossip(last.clone()), MergeOutcome::Added);
+
+        // The process restarts one second later — comfortably inside
+        // `dead_after`'s default ten, so the peer never reaped node 1's
+        // entry and this is exactly the comparison that has to still work.
+        let new_wall = old_wall + Duration::from_secs(1);
+        let restarted = GossipCoordinator::new(
+            node(1),
+            CoordinatorConfig::default(),
+            Arc::new(WallOnly(new_wall)),
+        );
+
+        let outcome = peer.gossip(restarted.outgoing());
+        assert_ne!(
+            outcome,
+            MergeOutcome::Stale,
+            "the peer rejected the restarted node's first digest as stale"
+        );
     }
 
     #[test]

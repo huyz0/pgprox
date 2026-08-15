@@ -25,6 +25,21 @@ upstream counts per server, client counts, per-tenant usage for homed tenants,
 and drain mode. Liveness is derived from when digests arrive rather than from a
 separate heartbeat, so the message that carries load is the failure detector.
 
+Each digest carries a version, a `u64` local to the sending node, so a peer can
+tell a newer report from a reordered old one with no shared clock: it accepts a
+version only if it is greater than the one it already holds for that node.
+That counter is seeded from milliseconds since the Unix epoch at construction,
+not from zero. A node killed and restarted inside `dead_after` (ten seconds by
+default) is not reaped from a peer's store first, so its first digest after
+restart is compared against whatever version its previous incarnation reached
+— and a counter reset to zero every time loses that comparison on precisely the
+schedule a crash loop produces, wedging the peer's view of it stale
+indefinitely. Milliseconds-since-epoch as the floor is enough on its own: even
+a node gossiping once a second for a full year only reaches the high tens of
+millions, four orders of magnitude below where the next boot's floor begins,
+so no coordination between incarnations is needed for the new one to win the
+comparison. `M90`, cycle 5.
+
 The transport is TCP carrying one newline-delimited JSON object per message.
 Each tick, a node opens a connection to every peer in parallel, sends its own
 digest and reads the peer's back, with a two-second timeout per peer and a 1 MiB
