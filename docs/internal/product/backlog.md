@@ -10160,7 +10160,21 @@ scalable real production machine, which stays `M16`'s open item.
   `plan.md`'s own copy of the same two claims is corrected to match. Two new
   tests in `bin/pgprox/src/replicas.rs` `include_str!` both documents and
   check the overclaim cannot come back silently, failing before the fix.
-- [ ] `M90.7` Close M90 once a full review cycle across the angles above
+- [x] `M90.7` `run_with_peers` read the peer table once, before its tick loop
+  started, and handed that frozen snapshot to both the periodic gossip round
+  and the drain announcement — despite an adjacent comment claiming both
+  read "the current one... per tick", left over from `M19.3`, which fixed
+  exactly `GossipTransport`, `NodeObservatory` and `Context`'s cancel
+  forwarding to read live and did not touch these two. A peer that joined
+  after the tick loop started was never gossiped with, and a node draining
+  after that point never announced itself to that peer either, for the
+  loop's entire remaining lifetime.
+  Acceptance: `Drainer` and `ticker` take the `PeerSource` itself rather than
+  a `Vec<String>` snapshot, and read `.peers()` fresh on each use. A test
+  publishes a peer to a `FakePeerSource` after the tick loop has already
+  started and shows the next gossip round reaches it, failing before the
+  fix.
+- [ ] `M90.8` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if

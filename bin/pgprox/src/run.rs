@@ -584,27 +584,18 @@ pub async fn run_with_peers(
     // Set here rather than at build time: the peer table is a deployment fact
     // and `App::build` opens no sockets. A node with no peers keeps the
     // fallback it had, which is its guaranteed share.
-    // Read once here, which is deliberate and temporary. `M19.2` changes the
-    // signature and nothing else, so the three consumers below still receive a
-    // table taken at startup; `M19.3` is the task that makes them read the
-    // current one. Splitting it that way keeps the widest diff away from the
-    // semantic change.
     app.cluster
         .set_transport(Arc::new(crate::gossip::GossipTransport::new(Arc::clone(
             &source,
         ))));
     // The same source, to the one read that fans out.
     app.observatory.set_peers(Arc::clone(&source));
-    // The gossip round and the drain announcement still take a list, and they
-    // take the current one: read here, per tick, rather than once at startup.
-    let addresses: Vec<String> = source.peers().values().cloned().collect();
     warn_about_descriptors(app.config.max_client_conns);
     let gate = Arc::new(Gate::new(app.config.max_client_conns));
     let context = Arc::new(Context {
         peers: Arc::clone(&source),
         ..context(&app, &shutdown)
     });
-    let addresses_for_drain = addresses.clone();
     let probes = probes(&app);
 
     let admin = tokio::spawn(http::serve(
@@ -669,11 +660,11 @@ pub async fn run_with_peers(
         &app,
         &context.replicas,
         &probes,
-        &addresses,
+        &source,
         &Drainer {
             context: &context,
             gate: &gate,
-            addresses: &addresses_for_drain,
+            peers: &source,
             grace: app.config.drain_grace,
         },
         &shutdown,
@@ -1000,7 +991,10 @@ struct Drainer<'a> {
     context: &'a Arc<Context>,
     /// The admission gate, so the tick can follow the document's ceiling.
     gate: &'a Arc<Gate>,
-    addresses: &'a [String],
+    /// Read at the moment a drain actually starts, not at construction: a
+    /// peer added after the node came up must still hear the announcement.
+    /// `M90.7`.
+    peers: &'a Arc<dyn pgprox_core::cluster::PeerSource>,
     grace: Duration,
 }
 
@@ -1045,10 +1039,15 @@ async fn follow_drain(app: &App, probes: &Arc<Probes>, drainer: &Drainer<'_>) {
 
     if matches!(step, DrainStep::Start) {
         tracing::warn!(node_id = app.deps.node.get(), "draining");
+        // Read now rather than once at `Drainer`'s construction: a peer added
+        // after the node came up must still hear this announcement, the same
+        // property `M19.3` gave `GossipTransport`, `NodeObservatory` and
+        // `Context`'s cancel forwarding. `M90.7`.
+        let peers: Vec<String> = drainer.peers.peers().values().cloned().collect();
         let steps = crate::drain::Drain {
             cluster: &app.cluster,
             sessions: &app.sessions,
-            peers: drainer.addresses,
+            peers: &peers,
             draining: &drainer.context.draining,
             closing: &drainer.context.closing,
             grace: drainer.grace,
@@ -1073,7 +1072,7 @@ async fn ticker(
     app: &App,
     replicas: &Arc<crate::replicas::ReplicaSets>,
     probes: &Arc<Probes>,
-    peers: &[String],
+    peer_source: &Arc<dyn pgprox_core::cluster::PeerSource>,
     drainer: &Drainer<'_>,
     shutdown: &Shutdown,
 ) -> u64 {
@@ -1150,7 +1149,13 @@ async fn ticker(
         // last one's, and awaited rather than spawned: a round that took longer
         // than a tick would otherwise pile up one task per second against a
         // peer that is already too slow to answer.
-        let reached = crate::gossip::round(peers, &app.cluster).await;
+        //
+        // Read fresh every tick rather than once at the top of `run_with_peers`:
+        // a peer added after this node came up must be gossiped with too,
+        // the same property `M19.3` gave the other three consumers of a
+        // `PeerSource`. `M90.7`.
+        let peers: Vec<String> = peer_source.peers().values().cloned().collect();
+        let reached = crate::gossip::round(&peers, &app.cluster).await;
         if peers_went_unanswered(reached, peers.len()) {
             // A node that cannot see its peers falls back to its guaranteed
             // share and stops being able to lead, which shows up as capacity
@@ -1239,6 +1244,12 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "{what}");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    /// A peer source with nobody in it, for a `Drainer`/`ticker` under test
+    /// that has no fleet to gossip with.
+    fn no_peers() -> Arc<dyn pgprox_core::cluster::PeerSource> {
+        pgprox_core::cluster::StaticPeers::new(std::collections::BTreeMap::new())
     }
 
     #[test]
@@ -1803,10 +1814,18 @@ mod tests {
                 let drainer = Drainer {
                     context: &context,
                     gate: &gate,
-                    addresses: &[],
+                    peers: &no_peers(),
                     grace: Duration::from_millis(50),
                 };
-                ticker(&app, &context.replicas, &probes, &[], &drainer, &shutdown).await
+                ticker(
+                    &app,
+                    &context.replicas,
+                    &probes,
+                    &no_peers(),
+                    &drainer,
+                    &shutdown,
+                )
+                .await
             }
         });
 
@@ -2005,7 +2024,7 @@ mod tests {
         let drainer = Drainer {
             context: &context,
             gate: &gate,
-            addresses: &[],
+            peers: &no_peers(),
             grace: Duration::from_millis(50),
         };
 
@@ -2022,7 +2041,14 @@ mod tests {
 
         let ran = tokio::time::timeout(
             Duration::from_secs(5),
-            ticker(&app, &context.replicas, &probes, &[], &drainer, &shutdown),
+            ticker(
+                &app,
+                &context.replicas,
+                &probes,
+                &no_peers(),
+                &drainer,
+                &shutdown,
+            ),
         )
         .await
         .expect("the tick stopped when the reaper was added");
@@ -2063,10 +2089,11 @@ mod tests {
         let shutdown = Shutdown::new();
         let context = Arc::new(context(&app, &shutdown));
         let gate = Arc::new(Gate::new(10));
+        let peers = no_peers();
         let drainer = Drainer {
             context: &context,
             gate: &gate,
-            addresses: &[],
+            peers: &peers,
             grace: Duration::from_millis(50),
         };
 
@@ -2092,7 +2119,7 @@ mod tests {
                         tokio::time::sleep(Duration::from_millis(20)).await;
                     }
                 } => {}
-                _ = ticker(&app, &context.replicas, &probes, &[], &drainer, &shutdown) => {}
+                _ = ticker(&app, &context.replicas, &probes, &peers, &drainer, &shutdown) => {}
             }
         })
         .await;
@@ -2139,10 +2166,11 @@ mod tests {
         let shutdown = Shutdown::new();
         let context = Arc::new(context(&app, &shutdown));
         let gate = Arc::new(Gate::new(10));
+        let peers = no_peers();
         let drainer = Drainer {
             context: &context,
             gate: &gate,
-            addresses: &[],
+            peers: &peers,
             grace: Duration::from_millis(50),
         };
 
@@ -2166,7 +2194,7 @@ mod tests {
                         tokio::time::sleep(Duration::from_millis(20)).await;
                     }
                 } => {}
-                _ = ticker(&app, &context.replicas, &probes, &[], &drainer, &shutdown) => {}
+                _ = ticker(&app, &context.replicas, &probes, &peers, &drainer, &shutdown) => {}
             }
         })
         .await;
@@ -2280,7 +2308,7 @@ mod tests {
         let drainer = Drainer {
             context: &context,
             gate: &gate,
-            addresses: &[],
+            peers: &no_peers(),
             grace: Duration::from_millis(50),
         };
 
@@ -2309,7 +2337,14 @@ mod tests {
 
         let ran = tokio::time::timeout(
             Duration::from_secs(10),
-            ticker(&app, &context.replicas, &probes, &[], &drainer, &shutdown),
+            ticker(
+                &app,
+                &context.replicas,
+                &probes,
+                &no_peers(),
+                &drainer,
+                &shutdown,
+            ),
         )
         .await
         .expect("the tick did not stop");
@@ -2323,6 +2358,73 @@ mod tests {
                 .iter()
                 .any(|(seen, _)| seen == &tenant),
             "a tenant with no sessions was still being reported"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_peer_published_after_the_tick_loop_started_is_gossiped_with() {
+        // `M90.7`. `run_with_peers` used to read the peer table once, before
+        // the tick loop even started, and hand that frozen list to the
+        // periodic gossip round and the drain announcement -- despite an
+        // adjacent comment claiming both read "the current one... per tick".
+        // A peer added after the node came up, the exact case `PeerSource`
+        // exists for, was never gossiped with until a restart. `ticker` now
+        // takes the source itself and reads it fresh every tick, the same
+        // property `M19.3` already gave `GossipTransport`, `NodeObservatory`
+        // and `Context`'s cancel forwarding.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let peer_addr = listener.local_addr().unwrap();
+        let (caught_tx, caught_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            // A byte at all is enough: it proves this node dialled the peer,
+            // whether or not a full gossip exchange follows.
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0_u8; 1];
+                let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            }
+            let _ = caught_tx.send(());
+        });
+
+        let app = App::build(deps()).await.unwrap();
+        let probes = probes(&app);
+        let shutdown = Shutdown::new();
+        let context = Arc::new(context(&app, &shutdown));
+        let gate = Arc::new(Gate::new(10));
+        let source = pgprox_core::cluster::FakePeerSource::new(std::collections::BTreeMap::new());
+        let peers: Arc<dyn pgprox_core::cluster::PeerSource> = source.clone();
+        let drainer = Drainer {
+            context: &context,
+            gate: &gate,
+            peers: &peers,
+            grace: Duration::from_millis(50),
+        };
+
+        tokio::spawn({
+            let source = Arc::clone(&source);
+            async move {
+                // After the loop has already ticked once against an empty
+                // table, so this proves a later tick re-reads it live rather
+                // than reusing whatever it saw on its first pass.
+                tokio::time::sleep(Duration::from_millis(1100)).await;
+                source.publish(std::collections::BTreeMap::from([(
+                    NodeId::new(2),
+                    peer_addr.to_string(),
+                )]));
+            }
+        });
+
+        let reached = tokio::time::timeout(PATIENCE, async {
+            tokio::select! {
+                _ = caught_rx => true,
+                _ = ticker(&app, &context.replicas, &probes, &peers, &drainer, &shutdown) => false,
+            }
+        })
+        .await
+        .expect("neither the peer was reached nor did the tick loop stop");
+
+        assert!(
+            reached,
+            "a peer published after the tick loop started was never gossiped with"
         );
     }
 

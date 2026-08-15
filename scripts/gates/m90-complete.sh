@@ -121,4 +121,8 @@ run_finding pgprox replicas::tests::neither_document_calls_the_poll_interval_con
 run_finding pgprox replicas::tests::adr_0009_records_that_bounded_staleness_routing_is_not_built \
   "M90.6: ADR 0009 records that bounded-staleness routing is not built"
 
+# --- M90.7: run_with_peers gossiped and drained against a frozen snapshot ----
+run_finding pgprox run::tests::a_peer_published_after_the_tick_loop_started_is_gossiped_with \
+  "M90.7: a peer published after the tick loop started is gossiped with"
+
 finish
