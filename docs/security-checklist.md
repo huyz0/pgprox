@@ -22,11 +22,12 @@ do](admin.md#what-the-admin-surface-does-not-do) for what happened.
   refusal was a deliberate choice. See [Configuration](configuration.md#tls).
 - [ ] `--tls-cert` and `--tls-key` point at the certificate this deployment
   actually serves, not a self-signed one left over from testing, and
-  something is watching for it to expire. Rotation is automatic once the
-  files on disk change; nothing currently checks the certificate's own
-  validity window before serving it — see [Admin and
-  management](admin.md#changing-a-nodes-state) for the rotation mechanism and
-  the roadmap for the gap.
+  something is watching for it to expire well before it does. A node refuses
+  to start with a certificate outside its validity window, and refuses a
+  rotated-in replacement the same way, leaving the previous one serving — but
+  that previous one can itself run out while nothing rewrites the files on
+  disk, and only a rewrite is checked. See [Admin and
+  management](admin.md#changing-a-nodes-state) for the rotation mechanism.
 - [ ] `--upstream-ca` is set if any backend a grant may resolve to asks for a
   verified connection. Without it the root store is empty and a verified
   backend fails to connect rather than connecting unverified — the safe

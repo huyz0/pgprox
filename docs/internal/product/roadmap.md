@@ -3514,6 +3514,24 @@ The new test drives a fake target that answers the first connection attempt
 "unreachable"-shaped and every attempt after "at cap"-shaped, and asserts the
 final report carries the second, not the first.
 
+**`M88.11`.** `CertReloader::read` — the function both `new` and `reload`
+share — parsed and swapped in a certificate without ever checking
+`notBefore`/`notAfter`. An expired certificate, or one dated in the future,
+was served without complaint until a TLS peer's own verification rejected it,
+one connection at a time, which surfaces as a support ticket rather than a log
+line. Checked now via `x509-parser`, a new dependency of this crate promoted
+from `rcgen`'s existing dev-dependency graph rather than hand-rolled ASN.1
+parsing for two fields — all of its transitive dependencies are MIT or
+Apache-2.0 and from crates.io, so `deny.toml`'s policy holds. `now` is a
+parameter rather than something this crate reads for itself, per the
+workspace's sans-I/O rule: `bin/pgprox` supplies `app.deps.clock.wall()` on
+the periodic reload path, and `SystemTime::now()` once at startup in
+`Options::tls()`, which runs before `Deps` exists to hold a `Clock` at all.
+Three tests: refusal at construction, `reload` refusing an expired
+certificate with the previous one left serving (the literal acceptance text),
+and the not-yet-valid direction the finding's own summary names but the
+acceptance sentence does not spell out separately.
+
 ## M89: the review from outside this repo, and the four gaps it found (complete)
 
 ```bash

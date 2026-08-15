@@ -162,4 +162,15 @@ run_finding pgload \
   run::tests::a_run_that_never_connects_reports_the_most_recent_refusal \
   "NoConnection reports the target's current refusal, not a stale first one"
 
+# --- M88.11: CertReloader checks a certificate's validity window --
+run_finding pgprox-tls \
+  tests::a_node_refuses_to_start_with_an_expired_certificate \
+  "a node refuses to start with an already-expired certificate"
+run_finding pgprox-tls \
+  tests::reload_refuses_an_expired_certificate_and_keeps_the_previous_one_serving \
+  "reload refuses an expired certificate, leaving the previous one serving"
+run_finding pgprox-tls \
+  tests::reload_refuses_a_certificate_dated_in_the_future \
+  "reload refuses a certificate not yet valid"
+
 finish

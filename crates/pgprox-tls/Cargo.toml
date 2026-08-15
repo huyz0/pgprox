@@ -23,10 +23,19 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", 
 rustls-pki-types = { version = "1", features = ["std"] }
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"] }
 thiserror.workspace = true
+# Only for the leaf certificate's own notBefore/notAfter, checked before a
+# read certificate is served. Already present in the lockfile via rcgen's
+# dev-dependency graph; used here as a real dependency rather than hand-rolled
+# ASN.1 parsing for two fields.
+x509-parser = "0.18"
 
 [dev-dependencies]
 rcgen = "0.14"
 tokio = { workspace = true, features = ["rt", "macros"] }
+# For building a certificate with a validity window other than rcgen's own
+# wide default, which every other test in this crate relies on staying valid
+# forever. Already in the lockfile via rcgen's own dependency.
+time = "0.3"
 
 [lints]
 workspace = true

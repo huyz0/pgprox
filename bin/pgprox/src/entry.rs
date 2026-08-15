@@ -310,7 +310,8 @@ impl Options {
         match (&self.tls_cert, &self.tls_key) {
             (None, None) => Ok(None),
             (Some(cert), Some(key)) => Ok(Some(
-                pgprox_tls::CertReloader::new(cert, key).map_err(|err| tls_error(&err))?,
+                pgprox_tls::CertReloader::new(cert, key, std::time::SystemTime::now())
+                    .map_err(|err| tls_error(&err))?,
             )),
             _ => Err(StartupError::Arguments {
                 detail: "--tls-cert and --tls-key go together".to_owned(),

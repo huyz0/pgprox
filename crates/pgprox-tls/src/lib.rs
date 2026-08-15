@@ -76,6 +76,98 @@ pub enum TlsError {
         /// Which configuration failed the check.
         which: &'static str,
     },
+    /// A certificate is dated in the future.
+    ///
+    /// `M88.11`. A clock skew between wherever the certificate was minted and
+    /// this node, or an operator who mixed up which file is which.
+    #[error("{path}: not valid until {not_before}")]
+    CertificateNotYetValid {
+        /// The file involved.
+        path: PathBuf,
+        /// What the certificate itself says, formatted by the parser that
+        /// read it.
+        not_before: String,
+    },
+    /// A certificate's validity window has already ended.
+    ///
+    /// `M88.11`. Without this check a listener kept serving an expired
+    /// certificate until a TLS peer's own verification rejected it, one
+    /// connection at a time, which is a support ticket rather than a log
+    /// line.
+    #[error("{path}: expired {not_after}")]
+    CertificateExpired {
+        /// The file involved.
+        path: PathBuf,
+        /// What the certificate itself says, formatted by the parser that
+        /// read it.
+        not_after: String,
+    },
+    /// The certificate parsed well enough for rustls to serve it, but not
+    /// well enough to check its validity window.
+    ///
+    /// `M88.11`. Refused rather than served unchecked: a certificate whose
+    /// dates cannot be determined might be validly outside them, and this
+    /// crate's stance is that no unsafe posture is the default one.
+    #[error("{path}: could not check its validity window: {reason}")]
+    CertificateValidityUnreadable {
+        /// The file involved.
+        path: PathBuf,
+        /// What the X.509 parser said.
+        reason: String,
+    },
+}
+
+/// Refuses a leaf certificate outside its validity window.
+///
+/// Checked against the leaf only — the first certificate in the chain, which
+/// is the one this proxy is claiming to be. An intermediate's own window is
+/// the issuing CA's problem, not this node's, and this crate's own PEM files
+/// carry the chain leaf-first by the same convention every TLS stack expects.
+///
+/// # Errors
+///
+/// [`TlsError::CertificateNotYetValid`] or [`TlsError::CertificateExpired`] if
+/// `now` falls outside the certificate's window, and
+/// [`TlsError::CertificateValidityUnreadable`] if the window cannot be read at
+/// all.
+fn check_validity(
+    leaf: &CertificateDer<'_>,
+    path: &Path,
+    now: std::time::SystemTime,
+) -> Result<(), TlsError> {
+    let (_, parsed) = x509_parser::parse_x509_certificate(leaf).map_err(|err| {
+        TlsError::CertificateValidityUnreadable {
+            path: path.to_owned(),
+            reason: err.to_string(),
+        }
+    })?;
+    let validity = parsed.validity();
+
+    let secs = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        });
+    let now = x509_parser::time::ASN1Time::from_timestamp(secs).map_err(|err| {
+        TlsError::CertificateValidityUnreadable {
+            path: path.to_owned(),
+            reason: err.to_string(),
+        }
+    })?;
+
+    if now < validity.not_before {
+        return Err(TlsError::CertificateNotYetValid {
+            path: path.to_owned(),
+            not_before: validity.not_before.to_string(),
+        });
+    }
+    if now > validity.not_after {
+        return Err(TlsError::CertificateExpired {
+            path: path.to_owned(),
+            not_after: validity.not_after.to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Reads a PEM certificate chain.
@@ -186,13 +278,18 @@ pub struct CertReloader {
 impl CertReloader {
     /// Reads a certificate and key, ready to be replaced later.
     ///
+    /// `now` is the caller's, not read here: nothing in this crate reads the
+    /// real clock, per this workspace's sans-I/O rule. Pass
+    /// [`pgprox_core::clock::Clock::wall`], since a certificate's validity
+    /// window is stated in wall time by whoever issued it.
+    ///
     /// # Errors
     ///
-    /// Fails when either file cannot be read, holds nothing, or the two do not
-    /// match. All three are deployment mistakes and none of them should start a
-    /// node.
-    pub fn new(cert: &Path, key: &Path) -> Result<Arc<Self>, TlsError> {
-        let certified = Self::read(cert, key)?;
+    /// Fails when either file cannot be read, holds nothing, does not match
+    /// the other, or is outside its validity window. All four are deployment
+    /// mistakes and none of them should start a node.
+    pub fn new(cert: &Path, key: &Path, now: std::time::SystemTime) -> Result<Arc<Self>, TlsError> {
+        let certified = Self::read(cert, key, now)?;
         Ok(Arc::new(Self {
             cert: cert.to_owned(),
             key: key.to_owned(),
@@ -211,12 +308,14 @@ impl CertReloader {
     ///
     /// # Errors
     ///
-    /// Fails when the files cannot be read or do not parse, leaving the
-    /// previous certificate serving. A rotation that writes half a file is a
-    /// normal thing to catch, and a listener that stopped answering because of
-    /// one would be worse than the stale certificate it replaced.
-    pub fn reload(&self) -> Result<bool, TlsError> {
-        let fresh = Self::read(&self.cert, &self.key)?;
+    /// Fails when the files cannot be read, do not parse, or the fresh
+    /// certificate is outside its validity window, leaving the previous
+    /// certificate serving. A rotation that writes half a file, or lands
+    /// before the certificate it names has started being valid, is a normal
+    /// thing to catch, and a listener that stopped answering because of one
+    /// would be worse than the stale certificate it replaced.
+    pub fn reload(&self, now: std::time::SystemTime) -> Result<bool, TlsError> {
+        let fresh = Self::read(&self.cert, &self.key, now)?;
 
         let mut current = self
             .current
@@ -243,9 +342,22 @@ impl CertReloader {
     }
 
     /// Reads and validates a pair from disk.
-    fn read(cert: &Path, key: &Path) -> Result<Arc<rustls::sign::CertifiedKey>, TlsError> {
+    ///
+    /// Validation includes the leaf's validity window against `now`, which is
+    /// what makes both callers — the initial read and every reload — refuse a
+    /// certificate outside it rather than serving one silently. `M88.11`.
+    fn read(
+        cert: &Path,
+        key: &Path,
+        now: std::time::SystemTime,
+    ) -> Result<Arc<rustls::sign::CertifiedKey>, TlsError> {
         let certs = load_certs(cert)?;
         let key = load_private_key(key)?;
+
+        // The leaf, first in the chain by the same convention every TLS stack
+        // reading this file expects.
+        check_validity(&certs[0], cert, now)?;
+
         let provider = rustls::crypto::CryptoProvider::get_default()
             .cloned()
             .unwrap_or_else(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
@@ -407,6 +519,29 @@ mod tests {
             .unwrap()
             .write_all(cert.signing_key.serialize_pem().as_bytes())
             .unwrap();
+
+        (dir, cert_path, key_path)
+    }
+
+    /// Writes a self-signed certificate with a chosen validity window, rather
+    /// than `rcgen`'s own default of nineteen seventy-five to four thousand
+    /// ninety-six, which every other test in this crate relies on staying
+    /// valid for as long as this suite exists.
+    fn test_cert_valid(
+        not_before: time::OffsetDateTime,
+        not_after: time::OffsetDateTime,
+    ) -> (PathBuf, PathBuf, PathBuf) {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "pgprox-tls-test-validity-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        rcgen_write(&cert_path, &key_path, not_before, not_after);
 
         (dir, cert_path, key_path)
     }
@@ -665,6 +800,31 @@ mod tests {
             .unwrap();
     }
 
+    /// Writes a fresh self-signed certificate with a chosen validity window
+    /// over an existing pair, the way `rewrite` does with `rcgen`'s default
+    /// one.
+    fn rcgen_write(
+        cert_path: &Path,
+        key_path: &Path,
+        not_before: time::OffsetDateTime,
+        not_after: time::OffsetDateTime,
+    ) {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+        params.not_before = not_before;
+        params.not_after = not_after;
+        let cert = params.self_signed(&key).unwrap();
+
+        std::fs::File::create(cert_path)
+            .unwrap()
+            .write_all(cert.pem().as_bytes())
+            .unwrap();
+        std::fs::File::create(key_path)
+            .unwrap()
+            .write_all(key.serialize_pem().as_bytes())
+            .unwrap();
+    }
+
     #[test]
     fn a_rewritten_certificate_reaches_the_listener_without_a_restart() {
         // `M24.9`. architecture.md has credited this crate with cert hot-reload
@@ -672,17 +832,21 @@ mod tests {
         // certificate, so a cert-manager rotation served an expired one until
         // somebody restarted the pod.
         let (_dir, cert_path, key_path) = test_cert();
-        let reloader = CertReloader::new(&cert_path, &key_path).unwrap();
+        let reloader =
+            CertReloader::new(&cert_path, &key_path, std::time::SystemTime::now()).unwrap();
         let before = reloader.serving();
 
         assert!(
-            !reloader.reload().unwrap(),
+            !reloader.reload(std::time::SystemTime::now()).unwrap(),
             "reading the same files twice reported a change"
         );
         assert_eq!(reloader.serving(), before);
 
         rewrite(&cert_path, &key_path, "rotated.example");
-        assert!(reloader.reload().unwrap(), "the rewrite was not noticed");
+        assert!(
+            reloader.reload(std::time::SystemTime::now()).unwrap(),
+            "the rewrite was not noticed"
+        );
         assert_ne!(
             reloader.serving(),
             before,
@@ -696,7 +860,8 @@ mod tests {
         // normal thing to read. The failure mode has to be a log line and a
         // stale certificate, not a listener that stops answering.
         let (_dir, cert_path, key_path) = test_cert();
-        let reloader = CertReloader::new(&cert_path, &key_path).unwrap();
+        let reloader =
+            CertReloader::new(&cert_path, &key_path, std::time::SystemTime::now()).unwrap();
         let before = reloader.serving();
 
         std::fs::File::create(&cert_path)
@@ -704,7 +869,10 @@ mod tests {
             .write_all(b"-----BEGIN CERTIFICATE-----\nhalf a fi")
             .unwrap();
 
-        assert!(reloader.reload().is_err(), "a corrupt file was accepted");
+        assert!(
+            reloader.reload(std::time::SystemTime::now()).is_err(),
+            "a corrupt file was accepted"
+        );
         assert_eq!(
             reloader.serving(),
             before,
@@ -714,8 +882,93 @@ mod tests {
         // And it recovers when the rotation finishes, rather than needing a
         // restart to forget the bad read.
         rewrite(&cert_path, &key_path, "recovered.example");
-        assert!(reloader.reload().unwrap());
+        assert!(reloader.reload(std::time::SystemTime::now()).unwrap());
         assert_ne!(reloader.serving(), before);
+    }
+
+    /// `M88.11`. `read`/`reload` parsed and swapped in a new certificate
+    /// without ever checking `notBefore`/`notAfter`, so an expired
+    /// certificate, or one dated in the future, was served without complaint
+    /// until a TLS peer's own verification rejected it, one connection at a
+    /// time.
+    #[test]
+    fn a_node_refuses_to_start_with_an_expired_certificate() {
+        let now = time::OffsetDateTime::now_utc();
+        let (_dir, cert_path, key_path) = test_cert_valid(
+            now - time::Duration::days(400),
+            now - time::Duration::days(1),
+        );
+
+        let err =
+            CertReloader::new(&cert_path, &key_path, std::time::SystemTime::now()).unwrap_err();
+        assert!(
+            matches!(err, TlsError::CertificateExpired { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn reload_refuses_an_expired_certificate_and_keeps_the_previous_one_serving() {
+        let now = time::OffsetDateTime::now_utc();
+        let (_dir, cert_path, key_path) = test_cert_valid(
+            now - time::Duration::days(400),
+            now + time::Duration::days(400),
+        );
+        let reloader =
+            CertReloader::new(&cert_path, &key_path, std::time::SystemTime::now()).unwrap();
+        let before = reloader.serving();
+
+        // Rewritten with a certificate that has already expired.
+        rcgen_write(
+            &cert_path,
+            &key_path,
+            now - time::Duration::days(400),
+            now - time::Duration::days(1),
+        );
+
+        let err = reloader.reload(std::time::SystemTime::now()).unwrap_err();
+        assert!(
+            matches!(err, TlsError::CertificateExpired { .. }),
+            "{err:?}"
+        );
+        assert_eq!(
+            reloader.serving(),
+            before,
+            "an expired certificate replaced the previous one still inside its window"
+        );
+    }
+
+    #[test]
+    fn reload_refuses_a_certificate_dated_in_the_future() {
+        let now = time::OffsetDateTime::now_utc();
+        let (_dir, cert_path, key_path) = test_cert_valid(
+            now - time::Duration::days(400),
+            now + time::Duration::days(400),
+        );
+        let reloader =
+            CertReloader::new(&cert_path, &key_path, std::time::SystemTime::now()).unwrap();
+        let before = reloader.serving();
+
+        // Rewritten with a certificate that does not start being valid until
+        // next year — a clock skew between wherever it was minted and this
+        // node, or the wrong file rotated into place.
+        rcgen_write(
+            &cert_path,
+            &key_path,
+            now + time::Duration::days(1),
+            now + time::Duration::days(400),
+        );
+
+        let err = reloader.reload(std::time::SystemTime::now()).unwrap_err();
+        assert!(
+            matches!(err, TlsError::CertificateNotYetValid { .. }),
+            "{err:?}"
+        );
+        assert_eq!(
+            reloader.serving(),
+            before,
+            "a not-yet-valid certificate replaced the previous one already valid"
+        );
     }
 
     #[test]
@@ -726,10 +979,10 @@ mod tests {
         let (_other_dir, _other_cert, other_key) = test_cert();
 
         assert!(
-            CertReloader::new(&cert_path, &other_key).is_err(),
+            CertReloader::new(&cert_path, &other_key, std::time::SystemTime::now()).is_err(),
             "a mismatched pair was accepted"
         );
-        assert!(CertReloader::new(&cert_path, &key_path).is_ok());
+        assert!(CertReloader::new(&cert_path, &key_path, std::time::SystemTime::now()).is_ok());
     }
 
     #[test]
@@ -739,7 +992,8 @@ mod tests {
         // skipped it would be a FIPS binary that never checked, which ADR 0010
         // says is worse than no FIPS binary.
         let (_dir, cert_path, key_path) = test_cert();
-        let reloader = CertReloader::new(&cert_path, &key_path).unwrap();
+        let reloader =
+            CertReloader::new(&cert_path, &key_path, std::time::SystemTime::now()).unwrap();
 
         let config = server_config_reloading(reloader).unwrap();
         assert_eq!(
@@ -773,7 +1027,8 @@ mod tests {
         // and `ClientConnection` exchange handshake bytes without a socket
         // or a runtime, pumped by hand below.
         let (_dir, cert_path, key_path) = test_cert();
-        let reloader = CertReloader::new(&cert_path, &key_path).unwrap();
+        let reloader =
+            CertReloader::new(&cert_path, &key_path, std::time::SystemTime::now()).unwrap();
         let server_config = server_config_reloading(reloader).unwrap();
 
         let mut roots = RootCertStore::empty();

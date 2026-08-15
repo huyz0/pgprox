@@ -727,12 +727,16 @@ const fn due_for_reload(ran: u64) -> bool {
 ///
 /// A failure is logged and swallowed. Certificates are rotated by machines and
 /// a half-written file is a normal thing to read: `CertReloader::reload` leaves
-/// the previous certificate serving, and the next tick tries again.
-fn reload_certificate(reloader: Option<&Arc<pgprox_tls::CertReloader>>) {
+/// the previous certificate serving, and the next tick tries again. The same
+/// is true of one outside its validity window: `M88.11`.
+fn reload_certificate(
+    reloader: Option<&Arc<pgprox_tls::CertReloader>>,
+    now: std::time::SystemTime,
+) {
     let Some(reloader) = reloader else {
         return;
     };
-    match reloader.reload() {
+    match reloader.reload(now) {
         Ok(true) => tracing::info!("the listener certificate was rotated"),
         Ok(false) => {}
         Err(err) => tracing::warn!(
@@ -1169,7 +1173,10 @@ async fn ticker(
         // two files read a second for a file that changes monthly is a thing
         // somebody eventually asks about.
         if due_for_reload(ran) {
-            reload_certificate(app.deps.listener_certificate.as_ref());
+            reload_certificate(
+                app.deps.listener_certificate.as_ref(),
+                app.deps.clock.wall(),
+            );
         }
 
         // Last, so a node that has just been told to drain has already
@@ -2780,15 +2787,17 @@ mod tests {
         let key_path = dir.join("key.pem");
         write_cert(&cert_path, &key_path, "before.example");
 
-        let reloader = pgprox_tls::CertReloader::new(&cert_path, &key_path).unwrap();
+        let reloader =
+            pgprox_tls::CertReloader::new(&cert_path, &key_path, std::time::SystemTime::now())
+                .unwrap();
         let before = reloader.serving();
 
         // What the tick does, on a tick that is due.
-        reload_certificate(Some(&reloader));
+        reload_certificate(Some(&reloader), std::time::SystemTime::now());
         assert_eq!(reloader.serving(), before, "nothing changed and it changed");
 
         write_cert(&cert_path, &key_path, "after.example");
-        reload_certificate(Some(&reloader));
+        reload_certificate(Some(&reloader), std::time::SystemTime::now());
         assert_ne!(
             reloader.serving(),
             before,
@@ -2797,13 +2806,13 @@ mod tests {
 
         // A node with no certificate has nothing to reload, and must not
         // panic on the tick that would have.
-        reload_certificate(None);
+        reload_certificate(None, std::time::SystemTime::now());
 
         // A half-written file leaves the previous certificate serving rather
         // than taking the listener down.
         let rotated = reloader.serving();
         std::fs::write(&cert_path, b"-----BEGIN CERTIFICATE-----\nhalf").unwrap();
-        reload_certificate(Some(&reloader));
+        reload_certificate(Some(&reloader), std::time::SystemTime::now());
         assert_eq!(
             reloader.serving(),
             rotated,

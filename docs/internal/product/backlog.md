@@ -9775,7 +9775,7 @@ recognised so it can be refused rather than read as a version.
   overwriting rather than inserting-once, both where a connection attempt fails
   and where a transaction does; `Report::first_error`'s field name and JSON key
   are unchanged (`scripts/scale.sh` reads it by name), its doc comment is not.
-- [ ] `M88.11` `pgprox-tls`'s `CertReloader` never checks a certificate's
+- [x] `M88.11` `pgprox-tls`'s `CertReloader` never checks a certificate's
   validity window. `read`/`reload` parse and swap in a new certificate without
   checking `notBefore`/`notAfter`, so a certificate that has already expired,
   or one dated in the future, is served without complaint until a TLS peer
@@ -9783,6 +9783,17 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a test that a certificate outside its validity window is refused
   by `reload` rather than swapped in, with the previous certificate left
   serving, failing before the fix.
+  `read` (the function both `new` and `reload` share) now checks the leaf's
+  `notBefore`/`notAfter` via `x509-parser`, a new real (not dev-only)
+  dependency of this crate — already present in the lockfile through `rcgen`'s
+  own graph, and hand-rolling ASN.1 parsing for two fields was the worse
+  trade. `now` is threaded in as a parameter rather than read inside this
+  crate, per the workspace's sans-I/O rule; `bin/pgprox` supplies
+  `app.deps.clock.wall()` on the reload path and `SystemTime::now()` once at
+  startup, before `Deps` exists to hold a `Clock`. Three tests, covering
+  refusal at construction, refusal by `reload` with the previous certificate
+  left serving, and the not-yet-valid direction the acceptance text does not
+  name but the finding's own summary does.
 - [ ] `M88.12` The query cache denylist misses a quoted built-in function name.
   `cacheable()` and `statement_words` fail to catch a denylisted function name
   when it is written quoted (`"pg_advisory_lock"(1)` or similarly), the same
