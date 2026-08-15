@@ -10189,7 +10189,23 @@ scalable real production machine, which stays `M16`'s open item.
   scrape-level tests — one tenant name and one server name, each containing
   a character that would otherwise break the format — showing the emitted
   line is escaped and the raw value never appears, failing before the fix.
-- [ ] `M90.9` Close M90 once a full review cycle across the angles above
+- [x] `M90.9` `pgload`'s `NoConnection` error said "nothing was attempted"
+  for a run that was, in fact, attempting continuously — a target that
+  refuses every connection with the draining code (`57P01`) the whole run
+  through produces zero transactions, but every attempt is a relocation, not
+  an error, so `last_failure` (set only on the error branch, since it also
+  backs `Report::first_error`'s documented "most recent failure" meaning)
+  was never set. `summarise` fell back to a hardcoded string instead of the
+  `Outcomes` map, which already records every relocation's code and message.
+  A run against a permanently draining target — the most operationally
+  realistic reason a load run sees zero transactions — got the least
+  informative message the tool can produce.
+  Acceptance: a `describe` helper reads `Outcomes` when `last_failure` is
+  unset, and a test against the existing `Fake::Refusing` fixture (already
+  used by a prior test that checked only the error variant, not its detail)
+  shows the resulting message names the code actually seen, failing before
+  the fix.
+- [ ] `M90.10` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if

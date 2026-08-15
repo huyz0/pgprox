@@ -131,4 +131,8 @@ run_finding pgprox metrics::tests::a_tenant_name_with_a_quote_does_not_break_the
 run_finding pgprox metrics::tests::a_server_name_with_a_backslash_does_not_break_the_scrape \
   "M90.8: a server name with a backslash does not break the scrape"
 
+# --- M90.9: pgload's NoConnection claimed nothing was attempted -------------
+run_finding pgload run::tests::a_target_that_only_relocates_says_so_rather_than_claiming_nothing_happened \
+  "M90.9: a target that only relocates says so rather than claiming nothing happened"
+
 finish

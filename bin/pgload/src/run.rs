@@ -430,6 +430,34 @@ async fn upgrade(
         .map_err(|error| format!("tls handshake: {error}"))
 }
 
+/// What to say about a run that produced zero transactions when nothing set
+/// `last_failure` — every attempt was a relocation.
+///
+/// `M90.9`. `last_failure` is set only on the error branch of both refusal
+/// sites, by design: it backs `Report::first_error`, which is documented as
+/// "the most recent failure" and a relocation is not one. But `summarise`
+/// reused the same field for `NoConnection`'s detail, so a run that spent its
+/// whole duration being told `57P01` by a permanently draining target —
+/// connecting continuously, refused every time, `transactions == 0`,
+/// `last_failure` never set — reported "nothing was attempted", which is
+/// false: something was attempted, continuously, and told something specific.
+/// `outcomes` already has that detail, recorded on every refusal regardless
+/// of whether it was a relocation; this reads it back rather than repeating
+/// "nothing was attempted" over a target that was never silent.
+fn describe(outcomes: &Outcomes) -> String {
+    if outcomes.is_empty() {
+        return "nothing was attempted".to_owned();
+    }
+    outcomes
+        .iter()
+        .map(|(code, outcome)| {
+            let message = outcome.messages.keys().next().map_or("", String::as_str);
+            format!("{code} x{} ({message})", outcome.count)
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn summarise(
     options: &Options,
     workload: &Workload,
@@ -461,7 +489,7 @@ fn summarise(
 
     if transactions == 0 {
         return Err(LoadError::NoConnection {
-            detail: last_failure.unwrap_or_else(|| "nothing was attempted".to_owned()),
+            detail: last_failure.unwrap_or_else(|| describe(&outcomes)),
         });
     }
 
@@ -900,6 +928,30 @@ mod tests {
         let addr = fake_server(Fake::Refusing).await;
         let error = run(&options(addr)).await.unwrap_err();
         assert!(matches!(error, LoadError::NoConnection { .. }), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_target_that_only_relocates_says_so_rather_than_claiming_nothing_happened() {
+        // `M90.9`. `Fake::Refusing` sends the draining code at every attempt,
+        // which is a relocation rather than an error, so `last_failure` is
+        // never set -- exactly the shape a permanently draining target
+        // produces, and the case a run that saw zero transactions most needs
+        // an honest message for. "nothing was attempted" would be false: this
+        // client dialled in continuously and was told `57P01` every time.
+        let addr = fake_server(Fake::Refusing).await;
+        let error = run(&options(addr)).await.unwrap_err();
+
+        let LoadError::NoConnection { detail } = error else {
+            panic!("expected NoConnection, got {error}");
+        };
+        assert!(
+            detail.contains(crate::client::ADMIN_SHUTDOWN),
+            "a run made entirely of relocations lost the one code it saw: {detail}"
+        );
+        assert!(
+            detail != "nothing was attempted",
+            "something was attempted, continuously, and told something specific: {detail}"
+        );
     }
 
     #[tokio::test]
