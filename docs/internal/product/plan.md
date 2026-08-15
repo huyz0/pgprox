@@ -396,7 +396,8 @@ testing afterthought, so it belongs here:
 4. `AuthenticationCleartextPassword`, and the client's `PasswordMessage` carries
    the JWT. If the startup user matches a configured static-credential rule, send
    `AuthenticationSASL` and run SCRAM-SHA-256 locally instead.
-5. Resolve. Check the grant cache keyed by `sha256(token) || startup_db`. On miss,
+5. Resolve. Check the grant cache keyed by `sha256(token) || startup_db ||
+   startup_user`. On miss,
    call the sidecar through a singleflight so a thundering herd of reconnects
    produces one RPC. Cache TTL is `min(grant.ttl, exp - now, configured_cap)`.
 6. `AuthenticationOk`, the harvested `ParameterStatus` set, `BackendKeyData` with

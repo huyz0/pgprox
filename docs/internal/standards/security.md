@@ -16,8 +16,9 @@ site.
 - Credentials never enter a log, a span attribute, a metric label, an error
   variant, or an admin API response. See
   [observability.md](observability.md).
-- The grant cache is keyed by `sha256(token)`, never by the token itself, so a
-  memory dump of the cache keys is not a credential dump.
+- The grant cache is keyed by `sha256(token)` plus the startup database and
+  user, never by the token itself, so a memory dump of the cache keys is not a
+  credential dump.
 - Nothing writes a credential to disk. Not to a temp file, not to a debug dump,
   not to a core file. Core dumps are disabled in the deployment.
 

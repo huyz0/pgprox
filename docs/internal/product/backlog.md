@@ -10096,7 +10096,7 @@ scalable real production machine, which stays `M16`'s open item.
   method, the two `gossip.rs` sites and `digest.rs`'s hash use it or assert
   loudly on an unrecognised variant, and a test per site shows the fix,
   failing before it.
-- [ ] `M90.3` `CachingResolver`'s grant cache key hashes only the auth token
+- [x] `M90.3` `CachingResolver`'s grant cache key hashes only the auth token
   and `startup_database`, omitting `startup_user`. The sidecar's own proto
   sends `startup_user` as a first-class resolution input "for policy", and
   the bundled `mock_sidecar.rs` demonstrably varies the resolved backend

@@ -10,9 +10,12 @@ JWT extraction, sidecar gRPC client over a Unix socket, grant cache.
 - An algorithm allowlist is still enforced on the JWT header as defence in
   depth: RS256, RS384, RS512, PS256, ES256, ES384. Reject `none` and the `HS*`
   family before calling the sidecar.
-- **Cache by `sha256(token) || startup_db`**, never by tenant claim. Keying by
-  tenant would let a revoked token keep working while another valid token for the
-  same tenant was cached.
+- **Cache by `sha256(token) || startup_db || startup_user`**, never by tenant
+  claim. Keying by tenant would let a revoked token keep working while another
+  valid token for the same tenant was cached. `startup_user` is in the key
+  because the sidecar resolves it as a first-class policy input, not just the
+  database — omitting it let two different startup users on the same token
+  collide on one cache entry.
 - Cache TTL is `min(grant.ttl, exp - now, configured_cap)`.
 - Singleflight on the resolve path. A reconnect storm must produce one RPC, not
   thousands.

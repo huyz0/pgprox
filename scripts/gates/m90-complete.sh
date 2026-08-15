@@ -99,4 +99,10 @@ run_finding pgprox-cluster digest::tests::view_hash_asserts_against_an_unrecogni
 run_finding pgprox gossip::tests::wire_conversions_use_the_exhaustive_as_str \
   "M90.2: gossip.rs's wire conversions use the exhaustive as_str()"
 
+# --- M90.3: grant cache key omits startup_user --------------------------------
+run_finding pgprox-auth cache::tests::two_startup_users_on_the_same_token_get_their_own_grant \
+  "M90.3: two startup users on the same token get their own grant"
+run_finding pgprox-auth cache::tests::the_key_is_a_hash_rather_than_the_token \
+  "M90.3: the cache key differs across token, database and user"
+
 finish

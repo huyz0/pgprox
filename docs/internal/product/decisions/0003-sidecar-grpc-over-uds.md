@@ -21,7 +21,8 @@ The sidecar owns signature and claim validation. The proxy does not implement a
 second validator. It parses claims for policy and logging, and enforces an
 algorithm allowlist on the JWT header as defence in depth.
 
-Results are cached keyed by `sha256(token) || startup_db` with a singleflight,
+Results are cached keyed by `sha256(token) || startup_db || startup_user` with
+a singleflight,
 so a reconnect storm produces one RPC rather than thousands. Cache TTL is
 `min(grant.ttl, exp - now, configured_cap)`.
 

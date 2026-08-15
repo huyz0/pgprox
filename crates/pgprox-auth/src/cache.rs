@@ -5,11 +5,19 @@
 //!
 //! # Why the key is a hash
 //!
-//! Entries are keyed by `sha256(token) || startup_database`, never by the
-//! tenant claim. Keying by tenant would let a revoked token keep working as
-//! long as some other valid token for the same tenant was cached, which is a
-//! revocation bypass rather than a cache optimisation. Hashing rather than
-//! storing the token means a memory dump of the keys is not a credential dump.
+//! Entries are keyed by `sha256(token) || startup_database || startup_user`,
+//! never by the tenant claim. Keying by tenant would let a revoked token keep
+//! working as long as some other valid token for the same tenant was cached,
+//! which is a revocation bypass rather than a cache optimisation. Hashing
+//! rather than storing the token means a memory dump of the keys is not a
+//! credential dump.
+//!
+//! `startup_user` joined the key in `M90.3`: the sidecar's proto sends it as a
+//! first-class resolution input "for policy", and the bundled mock sidecar
+//! demonstrably varies the resolved backend `user` by it, so a token used to
+//! start up as two different users is not a hypothetical. Keying on the
+//! database alone let the second user's request join the first user's cached
+//! entry and be served that grant instead of resolving its own.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -59,15 +67,17 @@ impl Default for CacheConfig {
 struct CacheKey {
     token_hash: [u8; 32],
     database: String,
+    user: String,
 }
 
 impl CacheKey {
-    fn new(token: &str, database: &str) -> Self {
+    fn new(token: &str, database: &str, user: &str) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(token.as_bytes());
         Self {
             token_hash: hasher.finalize().into(),
             database: database.to_owned(),
+            user: user.to_owned(),
         }
     }
 }
@@ -383,7 +393,11 @@ impl<R: CredentialResolver> CredentialResolver for CachingResolver<R> {
             return Err(AuthError::Refused(reason));
         }
 
-        let key = CacheKey::new(request.token.expose(), &request.startup_database);
+        let key = CacheKey::new(
+            request.token.expose(),
+            &request.startup_database,
+            &request.startup_user,
+        );
 
         loop {
             if let Some(outcome) = self.lookup(&key) {
@@ -700,7 +714,7 @@ mod tests {
         // than call out, and it must release the claim it holds.
         let f = fixture(CacheConfig::default());
         let tok = token("a");
-        let key = CacheKey::new(&tok, "db");
+        let key = CacheKey::new(&tok, "db", "acme_app");
 
         f.inner.insert(&tok, grant(Duration::from_secs(60), None));
         f.cache.resolve(request(&tok, "db")).await.unwrap();
@@ -726,7 +740,7 @@ mod tests {
         // cache means the caller keeps the claim and goes on to make the call.
         let f = fixture(CacheConfig::default());
         let tok = token("a");
-        let key = CacheKey::new(&tok, "db");
+        let key = CacheKey::new(&tok, "db", "acme_app");
 
         let (tx, _rx) = broadcast::channel(1);
         f.cache.lock_inflight().insert(key.clone(), tx);
@@ -1052,14 +1066,68 @@ mod tests {
     #[test]
     fn the_key_is_a_hash_rather_than_the_token() {
         // A memory dump of the keys must not be a credential dump.
-        let key = CacheKey::new("super-secret-token", "db");
+        let key = CacheKey::new("super-secret-token", "db", "acme_app");
         let rendered = format!("{key:?}");
         assert!(!rendered.contains("super-secret-token"), "{rendered}");
 
-        // Same inputs, same key; different token, different key.
-        assert_eq!(key, CacheKey::new("super-secret-token", "db"));
-        assert_ne!(key, CacheKey::new("another-token", "db"));
-        assert_ne!(key, CacheKey::new("super-secret-token", "other"));
+        // Same inputs, same key; different token, different database,
+        // different user, all different keys. `M90.3`: the user dimension is
+        // the one that used to be missing entirely, which let two different
+        // `startup_user`s on the same token and database collide on one
+        // entry and share a grant neither of them resolved.
+        assert_eq!(key, CacheKey::new("super-secret-token", "db", "acme_app"));
+        assert_ne!(key, CacheKey::new("another-token", "db", "acme_app"));
+        assert_ne!(
+            key,
+            CacheKey::new("super-secret-token", "other", "acme_app")
+        );
+        assert_ne!(key, CacheKey::new("super-secret-token", "db", "other_user"));
+    }
+
+    /// A resolver whose grant's `user` echoes the request's `startup_user`,
+    /// mirroring the bundled mock sidecar's pass-through behaviour: the
+    /// proto sends `startup_user` as a first-class resolution input "for
+    /// policy", and the mock varies the resolved backend by it. That makes a
+    /// token used to start up as two different users a real case rather than
+    /// a hypothetical, which is what the cache key has to survive.
+    #[derive(Debug, Default)]
+    struct PerUserResolver;
+
+    #[async_trait::async_trait]
+    impl CredentialResolver for PerUserResolver {
+        async fn resolve(&self, request: AuthRequest) -> Result<Grant, AuthError> {
+            let mut g = grant(Duration::from_secs(60), None);
+            g.primary.user = Arc::from(request.startup_user.as_str());
+            Ok(g)
+        }
+    }
+
+    #[tokio::test]
+    async fn two_startup_users_on_the_same_token_get_their_own_grant() {
+        // `M90.3`. The cache key used to be `sha256(token) || database`, with
+        // no `startup_user` in it. The same token starting up as two
+        // different users hashed to the same entry, so the second resolve
+        // joined the first's cache entry instead of resolving its own grant
+        // — served that user's backend credentials rather than its own.
+        let cache = CachingResolver::new(
+            Arc::new(PerUserResolver),
+            Arc::new(FakeClock::new()) as Arc<dyn Clock>,
+            CacheConfig::default(),
+        );
+        let tok = token("shared");
+
+        let mut readonly_request = request(&tok, "db");
+        readonly_request.startup_user = "readonly".into();
+        let readonly = cache.resolve(readonly_request).await.unwrap();
+        assert_eq!(&*readonly.primary.user, "readonly");
+
+        let mut admin_request = request(&tok, "db");
+        admin_request.startup_user = "admin".into();
+        let admin = cache.resolve(admin_request).await.unwrap();
+        assert_eq!(
+            &*admin.primary.user, "admin",
+            "the second startup_user was served the first's cached grant"
+        );
     }
 
     #[test]
@@ -1128,7 +1196,7 @@ mod tests {
             CacheConfig::default(),
         );
         let tok = token("cancelled");
-        let key = CacheKey::new(&tok, "tenant_acme");
+        let key = CacheKey::new(&tok, "tenant_acme", "acme_app");
 
         let leader_cache = Arc::clone(&cache);
         let leader_request = request(&tok, "tenant_acme");

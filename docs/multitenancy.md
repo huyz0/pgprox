@@ -39,7 +39,7 @@ one has a key, and the key is the isolation.
 | --- | --- |
 | Upstream connection pool | Keyed on server, database and role. A connection is never handed to a session that would connect as anything else |
 | One connection over time | The release rule below |
-| Grant cache | Keyed on `sha256(token)` plus the requested database, never the tenant |
+| Grant cache | Keyed on `sha256(token)` plus the requested database and startup user, never the tenant |
 | Query cache | Keyed on tenant, database, role, normalized SQL, bound parameters and `search_path` |
 | Prepared statement map | Per connection, and a connection belongs to one pool key |
 | Cancel keys | Issued from a CSPRNG, resolvable only while the connection is held |

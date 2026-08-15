@@ -29,7 +29,7 @@ the client goes away.
     │  algorithm allowlist                  pgprox-auth::jwt
     ▼
   resolve the token                         pgprox-auth::client
-    │  grant cache, keyed sha256(token)+db  pgprox-auth::cache
+    │  grant cache, keyed sha256(token)+db+user  pgprox-auth::cache
     │  miss ──▶ gRPC over a Unix socket ──▶ your token service
     ▼
   register                                  bin/pgprox::sessions, ::cancel
