@@ -209,4 +209,24 @@ run_finding pgprox-proto \
   relay::tests::push_has_a_real_fuzz_target \
   "fuzz/fuzz_targets/frame_relay.rs exists and scripts/fuzz.sh runs it"
 
+# --- M88.18: five smaller test-quality gaps -----------------------------------
+run_finding pgprox-cache \
+  store::tests::different_result_formats_are_different_entries \
+  "a text-format and a binary-format request never share a cache entry"
+run_finding pgprox-testkit \
+  tests::a_truncated_error_body_does_not_panic \
+  "the truncated-body test exercises a genuine prefix of a real message"
+run_finding pgprox \
+  serve::tests::role_and_session_authorization_stay_off_the_replay_list \
+  "role and session_authorization staying off the replay list is checked, not assumed"
+run_finding pgprox \
+  routes::tests::record_names_every_current_variant_explicitly \
+  "RouteCounts::record names every current RouteTarget variant, not a shared wildcard"
+run_finding pgprox \
+  metrics::tests::every_metric_has_samples_or_is_named_as_having_no_source \
+  "the metrics.rs half of this finding was already covered by this pre-existing test"
+run_finding pgprox \
+  serve::tests::a_copy_from_stdin_aborted_with_copy_fail_reports_an_error_not_success \
+  "fakepg answers CopyFail with an error, not the same CommandComplete as CopyDone"
+
 finish

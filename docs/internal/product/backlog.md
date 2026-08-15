@@ -9915,7 +9915,7 @@ recognised so it can be refused rather than read as a version.
   `push_has_a_real_fuzz_target`, whose `include_str!` on the target file
   itself makes the target's absence a compile failure, confirmed by
   temporarily moving the file aside and back.
-- [ ] `M88.18` Five smaller test-quality gaps, grouped because none is worth
+- [x] `M88.18` Five smaller test-quality gaps, grouped because none is worth
   its own task on its own: `pgprox-cache`'s `result_formats` field has no test
   touching it; `pgprox-testkit`'s truncated-body test is weak enough to pass
   for reasons unrelated to truncation; the agreement between the `role` and
@@ -9927,6 +9927,30 @@ recognised so it can be refused rather than read as a version.
   Acceptance: one test (or one compile-time check, for the wildcard arms)
   addressing each of the five, five failing before their fix or five
   `#[deny]`-equivalent compile failures demonstrated removed.
+  All five landed, none quite as filed:
+  `different_result_formats_are_different_entries` mirrors the existing
+  `different_parameters_are_different_entries` - `CacheKey` already derives
+  `Eq`/`Hash` over every field including `result_formats`, so this is a
+  regression guard against a future refactor rather than a fix, and there was
+  nothing to make fail first. `pgprox-testkit`'s test kept its name and grew a
+  real truncated prefix of an actual error body plus one assertion that a cut
+  right after a complete field still finds it, replacing bodies of repeated
+  `C` bytes that had no field structure to truncate. The cross-crate guard
+  lives in `bin/pgprox`, not either crate the finding named: `pgprox-cache`
+  depends on `pgprox-core` and nothing else in the workspace, the same rule a
+  test importing `pgprox-pool` from it would have broken, and `bin/pgprox` is
+  the one place both are already dependencies. `routes.rs`'s wildcard cannot
+  become a compile failure - `RouteTarget` is `#[non_exhaustive]`, which is
+  what forces the wildcard in the first place - so the fix names `Primary`
+  on its own arm and gives the trailing wildcard a `debug_assert!`, checked by
+  a test that reads the source for `Primary`'s own arm rather than by calling
+  anything nothing can construct. `metrics.rs`'s half turned out to already be
+  covered: `every_metric_has_samples_or_is_named_as_having_no_source`, which
+  predates this finding, fails for any metric in the registry that is neither
+  sampled nor excused, which is exactly what a silently-swallowed new metric
+  would be - confirmed by reading it rather than adding a redundant test.
+  `fakepg.rs` now answers `CopyFail` with an `ErrorResponse` (`57014`, the code
+  real Postgres uses) instead of the same `CommandComplete` `CopyDone` gets.
 - [ ] `M88.19` Close M88. Filed as its own task for the reason `M24.10` was:
   closing a milestone is a claim about the whole of it, and bundling that
   claim into the last piece of work makes it look like a side effect of that

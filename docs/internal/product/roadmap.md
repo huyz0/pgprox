@@ -3628,6 +3628,35 @@ a new `pgprox-proto` test whose `include_str!` on the target file makes its
 absence a compile failure rather than a missing assertion — confirmed by
 moving the file aside and back.
 
+**`M88.18`.** Five smaller test-quality gaps, and none landed quite as filed.
+`pgprox-cache`'s `result_formats` field already participated in `CacheKey`'s
+derived `Eq`/`Hash`, so its new test,
+`different_result_formats_are_different_entries`, is a regression guard with
+nothing to make fail first — there was no bug, only no test proving the
+field mattered. `pgprox-testkit`'s truncated-body test kept its name and
+gained a real prefix of an actual error body plus an assertion that a cut
+landing right after a complete field still finds it, replacing bodies of
+repeated `C` bytes that had no field structure to truncate in the first
+place. The `role`/`session_authorization` cross-crate guard could not live in
+either crate the finding named — `pgprox-cache` depends on `pgprox-core` and
+nothing else in the workspace — so it lives in `bin/pgprox`, the one place
+both `pgprox-pool` and `pgprox-cache` are already dependencies, at the same
+call site (`serve.rs`) where a session's pin decision and its cache key
+already meet. `routes.rs`'s wildcard cannot become a compile failure —
+`RouteTarget` is `#[non_exhaustive]`, which is what forces the wildcard to
+exist at all — so the fix names `Primary` on its own arm and gives the
+mandatory trailing wildcard a `debug_assert!`, checked by a test that reads
+the source for `Primary`'s own arm rather than calling anything, since
+nothing outside `pgprox-core` can construct a variant this crate does not
+know about. `metrics.rs`'s half of the finding was already covered:
+`every_metric_has_samples_or_is_named_as_having_no_source` predates this
+finding and fails for exactly the case described, a metric neither sampled
+nor excused — confirmed by reading it rather than adding a second test that
+would have said the same thing. `fakepg.rs` now answers `CopyFail` with an
+`ErrorResponse` carrying `57014` instead of the same `CommandComplete`
+`CopyDone` gets, so a test that aborts a copy is no longer indistinguishable,
+through the fake, from one that let it finish.
+
 ## M89: the review from outside this repo, and the four gaps it found (complete)
 
 ```bash

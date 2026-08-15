@@ -4379,6 +4379,46 @@ mod tests {
     }
 
     #[test]
+    fn role_and_session_authorization_stay_off_the_replay_list() {
+        // `M88.18`. `pgprox-cache`'s `settings.rs` says, in its own doc
+        // comment, that `role` and `session_authorization` are absent from
+        // `ANSWER_SHAPING` because they are absent from `pgprox-pool`'s
+        // replay allowlist: a session that sets either is pinned, and a
+        // pinned session is never cacheable, so the cache key does not need
+        // to name them. That is two lists agreeing by design, not by
+        // accident, and neither crate can check the other's list -
+        // `pgprox-cache` depends on `pgprox-core` and nothing else in the
+        // workspace, the same rule this test would otherwise violate. `bin/
+        // pgprox` is the one place both are already dependencies, since
+        // `key_for` above and `Replayable::DEFAULT` at the pin call site are
+        // the two places this session's design actually meets.
+        //
+        // If `pgprox-pool` ever put either on the replay list, this
+        // assumption would break silently: a session that set `role` would
+        // stop pinning, its cache key would still omit `role`, and a cached
+        // answer would be shared across roles - the exact hazard
+        // `the_cache_key_carries_the_database_and_the_role_the_grant_resolved_to`
+        // above exists to prevent for the grant's own role.
+        let replayable = pgprox_pool::pin::Replayable::DEFAULT;
+        for name in ["role", "session_authorization"] {
+            assert!(
+                !replayable.contains(name),
+                "{name} became replayable in pgprox-pool; pgprox-cache's \
+                 settings.rs assumes it never is and omits it from \
+                 ANSWER_SHAPING on that assumption"
+            );
+            assert!(
+                !pgprox_cache::settings::ANSWER_SHAPING.contains(&name),
+                "{name} is in ANSWER_SHAPING while still absent from the \
+                 replay allowlist - a session setting it is pinned and never \
+                 reaches the cache, so this is dead weight in the key rather \
+                 than a wrong one, but it means the two lists were edited \
+                 out of step"
+            );
+        }
+    }
+
+    #[test]
     fn the_cache_key_carries_the_settings_the_answer_was_rendered_under() {
         // `M78.0`. `TimeZone` is on the replay allowlist, so a session sets it
         // without pinning and keeps it across a connection change. It reaches
@@ -6434,6 +6474,71 @@ mod tests {
         .await
         .expect("the copy never finished: the relay is wedged");
 
+        assert_eq!(finished.last(), Some(&Tag::READY_FOR_QUERY));
+        drop(client);
+        let _ = served.await;
+    }
+
+    #[tokio::test]
+    async fn a_copy_from_stdin_aborted_with_copy_fail_reports_an_error_not_success() {
+        // `M88.18`. `fakepg` used to answer `CopyDone` and `CopyFail` the same
+        // way, so a client that aborted a copy got the same `CommandComplete`
+        // as one that finished it. This is the companion to
+        // `a_copy_from_stdin_completes_rather_than_wedging`, ending the same
+        // exchange with `CopyFail` instead of `CopyDone`.
+        let addr = fake_postgres().await;
+        let context = Arc::new(context_for(addr));
+        let gate = Arc::new(Gate::new(10));
+        let admitted = gate.admit().unwrap();
+
+        let (ours, mut client) = tokio::io::duplex(8192);
+        let held = Arc::clone(&context);
+        let served = tokio::spawn(async move { session(ours, held.as_ref(), admitted).await });
+
+        client
+            .write_all(&startup_and_password("good.token"))
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            expect(&mut client).await;
+        }
+
+        let mut copy = Vec::new();
+        pgprox_proto::encode_frontend::query(&mut copy, "COPY t FROM STDIN");
+        client.write_all(&copy).await.unwrap();
+
+        let (tag, _) = expect(&mut client).await;
+        assert_eq!(tag, Tag::COPY_IN_RESPONSE);
+
+        // One row, then the client gives up rather than finishing.
+        let mut rows = Vec::new();
+        rows.push(Tag::COPY_DATA.get());
+        let row = "1\tone\n";
+        rows.extend_from_slice(&u32::try_from(row.len() + 4).unwrap().to_be_bytes());
+        rows.extend_from_slice(row.as_bytes());
+
+        let reason = b"aborted\0";
+        rows.push(Tag::COPY_FAIL.get());
+        rows.extend_from_slice(&u32::try_from(reason.len() + 4).unwrap().to_be_bytes());
+        rows.extend_from_slice(reason);
+
+        client.write_all(&rows).await.unwrap();
+
+        let finished = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut seen = Vec::new();
+            while seen.len() < 2 {
+                seen.push(expect(&mut client).await.0);
+            }
+            seen
+        })
+        .await
+        .expect("the aborted copy never finished: the relay is wedged");
+
+        assert_eq!(
+            finished.first(),
+            Some(&Tag::ERROR_RESPONSE),
+            "a CopyFail was answered as though the copy had succeeded: {finished:?}"
+        );
         assert_eq!(finished.last(), Some(&Tag::READY_FOR_QUERY));
         drop(client);
         let _ = served.await;

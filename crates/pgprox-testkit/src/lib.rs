@@ -137,12 +137,35 @@ mod tests {
 
     #[test]
     fn a_truncated_error_body_does_not_panic() {
+        // `M88.18`. The previous version of this test built bodies out of
+        // repeated `C` bytes, which have no field structure at all:
+        // `find_error_code` reads `kind = b'C'`, then looks for `tail`'s
+        // terminating zero and finds none, and returns immediately. That
+        // proves nothing about truncation - the same "does not panic, is
+        // `Failed`" outcome falls out of *any* body with no terminator,
+        // truncated or not. A genuinely truncated body is a prefix of a real
+        // message, and it can be cut mid-field-contents, exactly at a
+        // terminator, or between fields - each a different bounds check in
+        // `find_error_code`'s loop.
+        //
         // Probe input comes off a socket mid-startup, so it is routinely
         // incomplete.
-        for len in 0..12 {
-            let body = vec![b'C'; len];
-            let _ = classify_startup_reply(b'E', &body);
+        let full = error_body(STARTING_UP);
+        for len in 0..full.len() {
+            let _ = classify_startup_reply(b'E', &full[..len]);
         }
-        assert_eq!(classify_startup_reply(b'E', b"C"), Readiness::Failed);
+
+        // And a cut that lands right after a complete code field, with
+        // nothing after it, still finds the code that was fully there -
+        // proving the loop reads what is present rather than merely failing
+        // to crash on what is missing.
+        let mut code_only = vec![b'C'];
+        code_only.extend_from_slice(STARTING_UP.as_bytes());
+        code_only.push(0);
+        assert_eq!(
+            classify_startup_reply(b'E', &code_only),
+            Readiness::NotYet,
+            "a body truncated right after a complete code field lost the code"
+        );
     }
 }

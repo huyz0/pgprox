@@ -1044,6 +1044,29 @@ mod tests {
     }
 
     #[test]
+    fn different_result_formats_are_different_entries() {
+        // `M88.18`. ADR 0031's whole point: the stored bytes are the server's
+        // reply verbatim, rendered the way a `Bind` asked for. A driver that
+        // asked for text and one that asked for binary cannot share an entry,
+        // or one of them gets rows it cannot decode - the same hazard
+        // `different_parameters_are_different_entries` proves for bound
+        // values, and this field had no test proving it for the format they
+        // are rendered in.
+        let (cache, _clock) = store(64 * 1024);
+        let mut text = key("acme", "SELECT $1");
+        text.result_formats = Arc::from(&[0_u8][..]);
+        let mut binary = key("acme", "SELECT $1");
+        binary.result_formats = Arc::from(&[1_u8][..]);
+
+        cache.put(text.clone(), result(16, 1000));
+        assert!(cache.get(&text).is_some());
+        assert!(
+            cache.get(&binary).is_none(),
+            "a text-format entry answered a binary-format request"
+        );
+    }
+
+    #[test]
     fn the_byte_total_counts_what_a_caller_controls() {
         // Whatever the accounting misses, it must not miss a field whose size
         // a caller chooses, or a caller chooses how much memory the budget

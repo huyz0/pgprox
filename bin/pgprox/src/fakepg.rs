@@ -231,6 +231,13 @@ pub async fn fake_postgres_after(delay: Duration) -> SocketAddr {
 ///
 /// Silence is the point. A server that answered a copy-in immediately would not
 /// reproduce the deadlock this fake exists to catch.
+///
+/// `M88.18`. A real server does not answer `CopyDone` and `CopyFail` the same
+/// way: `CopyDone` completes the copy, `CopyFail` aborts it with an
+/// `ErrorResponse` carrying `57014` (`query_canceled`, the code real Postgres
+/// uses here) and nothing was copied. Answering both with the same
+/// `CommandComplete` would make a test that aborts a copy with `CopyFail`
+/// indistinguishable, through this fake, from one that let it finish.
 async fn serve_copy_in(socket: &mut tokio::net::TcpStream) -> std::io::Result<()> {
     let mut invitation = vec![Tag::COPY_IN_RESPONSE.get()];
     // Length, the overall format (text), and no per-column formats.
@@ -238,21 +245,40 @@ async fn serve_copy_in(socket: &mut tokio::net::TcpStream) -> std::io::Result<()
     invitation.extend_from_slice(&[0, 0, 0]);
     socket.write_all(&invitation).await?;
 
+    let mut failed = false;
     loop {
         let mut header = [0_u8; 5];
         socket.read_exact(&mut header).await?;
         let len = u32::from_be_bytes(header[1..].try_into().unwrap_or([0; 4])) as usize;
         let mut chunk = vec![0; len.saturating_sub(4)];
         socket.read_exact(&mut chunk).await?;
+        if header[0] == Tag::COPY_FAIL.get() {
+            failed = true;
+            break;
+        }
         if header[0] != Tag::COPY_DATA.get() {
             break;
         }
     }
 
-    let mut done = vec![Tag::COMMAND_COMPLETE.get()];
-    let text = b"COPY 2\0";
-    done.extend_from_slice(&u32::try_from(text.len() + 4).unwrap().to_be_bytes());
-    done.extend_from_slice(text);
+    let mut done = Vec::new();
+    if failed {
+        done.push(Tag::ERROR_RESPONSE.get());
+        let mut body = vec![b'S'];
+        body.extend_from_slice(b"ERROR\0");
+        body.push(b'C');
+        body.extend_from_slice(b"57014\0");
+        body.push(b'M');
+        body.extend_from_slice(b"COPY from stdin failed: aborted by client\0");
+        body.push(0);
+        done.extend_from_slice(&u32::try_from(body.len() + 4).unwrap().to_be_bytes());
+        done.extend_from_slice(&body);
+    } else {
+        done.push(Tag::COMMAND_COMPLETE.get());
+        let text = b"COPY 2\0";
+        done.extend_from_slice(&u32::try_from(text.len() + 4).unwrap().to_be_bytes());
+        done.extend_from_slice(text);
+    }
     encode::ready_for_query(&mut done, TxStatus::Idle);
     socket.write_all(&done).await
 }

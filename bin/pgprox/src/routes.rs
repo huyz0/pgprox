@@ -36,13 +36,34 @@ impl RouteCounts {
 
     /// Records one statement's destination.
     pub fn record(&self, target: pgprox_core::route::RouteTarget) {
+        use pgprox_core::route::RouteTarget;
+
         // Relaxed on purpose: these are counters read by a scrape, and no
         // decision anywhere depends on their ordering against other memory.
-        match target {
-            pgprox_core::route::RouteTarget::Replica(_) => &self.replica,
-            _ => &self.primary,
-        }
-        .fetch_add(1, Ordering::Relaxed);
+        //
+        // `M88.18`. `RouteTarget` is `#[non_exhaustive]`, which forces a
+        // trailing wildcard here regardless of whether every current variant
+        // is already named - that is the whole point of the attribute, and
+        // no rewrite of this match can turn a third variant added in
+        // `pgprox-core` into a compile failure here. What this match can
+        // control is what the wildcard arm does: naming `Primary` and
+        // `Replica` explicitly, rather than folding `Primary` into the same
+        // `_` that must also catch an unknown future variant, means a
+        // variant this crate does not recognise is asserted against in debug
+        // builds instead of silently landing in `primary` with nothing to
+        // say so.
+        let counter = match target {
+            RouteTarget::Primary => &self.primary,
+            RouteTarget::Replica(_) => &self.replica,
+            _ => {
+                debug_assert!(
+                    false,
+                    "RouteTarget gained a variant this match does not know about"
+                );
+                &self.primary
+            }
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Statements sent to the primary.
@@ -74,9 +95,35 @@ impl RouteCounts {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use pgprox_core::route::RouteTarget;
+
+    #[test]
+    fn record_names_every_current_variant_explicitly() {
+        // `M88.18`. `RouteTarget` is `#[non_exhaustive]`, so no version of
+        // this match can turn a future third variant into a compile failure
+        // - the trailing wildcard is mandatory regardless of what else is
+        // named, and no runtime test can construct a variant this crate
+        // does not know about to exercise it. What changed, and what this
+        // checks by reading the source rather than by calling anything, is
+        // that `Primary` used to be folded into that same wildcard along
+        // with anything unrecognised. Named on its own arm, the wildcard's
+        // `debug_assert!` means "this crate has never seen this variant"
+        // rather than "this crate did not bother naming Primary."
+        //
+        // Only the production half: the assertion below would otherwise find
+        // its own string literal and pass regardless of what `record` does.
+        let production = include_str!("routes.rs")
+            .split_once("#[cfg(test)]")
+            .expect("this module's own test marker")
+            .0;
+        assert!(
+            production.contains("RouteTarget::Primary =>"),
+            "record() folded Primary back into the wildcard arm"
+        );
+    }
 
     #[test]
     fn each_target_lands_in_its_own_counter() {
