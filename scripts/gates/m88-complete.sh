@@ -147,4 +147,9 @@ run_finding pgprox \
   entry::tests::insecure_plaintext_auth_is_the_deliberate_way_out \
   "--insecure-plaintext-auth is the named way to start anyway"
 
+# --- M88.8: FileSource::poll goes through spawn_blocking, not an inline read --
+run_finding pgprox-config \
+  provider::tests::poll_yields_to_the_runtime_instead_of_blocking_it \
+  "poll() hands the read to spawn_blocking rather than blocking the runtime"
+
 finish

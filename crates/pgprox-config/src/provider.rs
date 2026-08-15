@@ -149,14 +149,35 @@ impl FileSource {
     /// Returns whether anything was published. This is one tick of the poll
     /// loop, exposed so the behaviour is testable without waiting for a timer.
     ///
+    /// The read runs on Tokio's blocking pool, not inline on the calling task.
+    /// `Self::run` calls this once a second for the life of the process, on
+    /// the same runtime that also serves client connections; a synchronous
+    /// `std::fs::read_to_string` here would stall every other task on that
+    /// worker thread for the duration of the read. See
+    /// `docs/internal/standards/async-concurrency.md`'s Blocking rule.
+    /// `FileSource::new` and `ConfigSource::load` do the same read inline
+    /// deliberately: both run once, before the node has bound a listener or
+    /// taken a connection, which is the accepted exception the same rule
+    /// describes.
+    ///
     /// # Errors
     ///
     /// Whatever the read or the parse produced. Watchers keep the last good
     /// configuration either way: a typo in a `ConfigMap` is routine, and taking a
     /// node with clients on it down for one would make every config edit a
     /// deploy.
-    pub fn poll(&self) -> Result<bool, ConfigError> {
-        match read(&self.config.path()) {
+    ///
+    /// # Panics
+    ///
+    /// If the blocking task panics. `read` never panics on its own, so this
+    /// would mean a bug elsewhere; propagating it is better than a poll loop
+    /// that silently stops updating.
+    pub async fn poll(&self) -> Result<bool, ConfigError> {
+        let path = self.config.path();
+        let outcome = tokio::task::spawn_blocking(move || read(&path))
+            .await
+            .unwrap_or_else(|err| std::panic::resume_unwind(err.into_panic()));
+        match outcome {
             Ok(next) => {
                 self.set_error(None);
                 Ok(self.publish_if_changed(next))
@@ -206,7 +227,7 @@ impl FileSource {
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            let _ = self.poll();
+            let _ = self.poll().await;
         }
     }
 
@@ -265,6 +286,7 @@ fn read(path: &Path) -> Result<Config, ConfigError> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     const MINIMAL: &str = "max_client_conns: 100\n";
@@ -314,8 +336,8 @@ mod tests {
         running.abort();
     }
 
-    #[test]
-    fn health_follows_the_last_poll_rather_than_a_constant() {
+    #[tokio::test]
+    async fn health_follows_the_last_poll_rather_than_a_constant() {
         let (dir, config) = mounted(MINIMAL);
         let source = FileSource::new(config).unwrap();
 
@@ -339,7 +361,7 @@ mod tests {
             "max_client_conns: not-a-number\n",
         )
         .unwrap();
-        assert!(source.poll().is_err());
+        assert!(source.poll().await.is_err());
         assert!(
             !source.is_healthy(),
             "a source that failed its last poll still reported itself healthy"
@@ -351,7 +373,7 @@ mod tests {
         // And it recovers, so health tracks the latest poll rather than
         // latching once it has been either value.
         fs::write(dir.path().join("pgprox.yaml"), MINIMAL).unwrap();
-        assert!(source.poll().is_ok());
+        assert!(source.poll().await.is_ok());
         assert!(source.is_healthy(), "a recovered source stayed unhealthy");
         assert!(FileSource::is_healthy(&source));
     }
@@ -416,7 +438,7 @@ mod tests {
         rx.borrow_and_update();
 
         fs::write(dir.path().join("pgprox.yaml"), "max_client_conns: 250\n").unwrap();
-        assert!(source.poll().unwrap(), "nothing was published");
+        assert!(source.poll().await.unwrap(), "nothing was published");
 
         rx.changed().await.unwrap();
         assert_eq!(rx.borrow().max_client_conns, 250);
@@ -442,7 +464,7 @@ mod tests {
         mounted_as_configmap(dir.path(), "2026_01_02", "max_client_conns: 999\n");
 
         assert!(
-            source.poll().unwrap(),
+            source.poll().await.unwrap(),
             "a symlink swap went unnoticed, which is the ConfigMap bug"
         );
         rx.changed().await.unwrap();
@@ -473,18 +495,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn an_unchanged_file_publishes_nothing() {
+    #[tokio::test]
+    async fn an_unchanged_file_publishes_nothing() {
         // A ConfigMap update rewrites the file even when the data is identical,
         // and republishing would wake every watcher in the process for nothing.
         let (dir, config) = mounted(MINIMAL);
         let source = FileSource::new(config).unwrap();
 
-        assert!(!source.poll().unwrap(), "an unchanged file was republished");
+        assert!(
+            !source.poll().await.unwrap(),
+            "an unchanged file was republished"
+        );
 
         // Rewritten with the same content, as kubelet does.
         fs::write(dir.path().join("pgprox.yaml"), MINIMAL).unwrap();
-        assert!(!source.poll().unwrap(), "identical content was republished");
+        assert!(
+            !source.poll().await.unwrap(),
+            "identical content was republished"
+        );
     }
 
     #[tokio::test]
@@ -506,7 +534,7 @@ mod tests {
 ",
         )
         .unwrap();
-        let err = source.poll().unwrap_err();
+        let err = source.poll().await.unwrap_err();
         assert!(matches!(err, ConfigError::Invalid { .. }), "{err:?}");
 
         assert!(
@@ -536,12 +564,12 @@ mod tests {
 ",
         )
         .unwrap();
-        assert!(source.poll().is_err());
+        assert!(source.poll().await.is_err());
         assert_eq!(rx.borrow().max_client_conns, 100);
     }
 
-    #[test]
-    fn a_failing_poll_is_reported_and_a_later_good_one_clears_it() {
+    #[tokio::test]
+    async fn a_failing_poll_is_reported_and_a_later_good_one_clears_it() {
         // A node serving a stale configuration and one serving a current
         // configuration look identical from outside, so this is how an operator
         // tells them apart.
@@ -555,7 +583,7 @@ mod tests {
 ",
         )
         .unwrap();
-        assert!(source.poll().is_err());
+        assert!(source.poll().await.is_err());
         assert!(
             source.last_error().is_some(),
             "the failure was not reported"
@@ -568,22 +596,22 @@ mod tests {
 ",
         )
         .unwrap();
-        assert!(source.poll().unwrap());
+        assert!(source.poll().await.unwrap());
         assert!(
             source.is_healthy(),
             "a good poll did not clear the previous failure"
         );
     }
 
-    #[test]
-    fn a_file_that_disappears_does_not_take_the_node_down() {
+    #[tokio::test]
+    async fn a_file_that_disappears_does_not_take_the_node_down() {
         // Mid-swap a ConfigMap directory can be momentarily inconsistent, and
         // a node that fell over for that would fall over on every update.
         let (dir, config) = mounted(MINIMAL);
         let source = FileSource::new(config).unwrap();
 
         fs::remove_file(dir.path().join("pgprox.yaml")).unwrap();
-        let err = source.poll().unwrap_err();
+        let err = source.poll().await.unwrap_err();
         assert!(matches!(err, ConfigError::Unreadable { .. }), "{err:?}");
         assert_eq!(
             source.watch().borrow().max_client_conns,
@@ -598,7 +626,7 @@ mod tests {
 ",
         )
         .unwrap();
-        assert!(source.poll().unwrap());
+        assert!(source.poll().await.unwrap());
         assert_eq!(source.watch().borrow().max_client_conns, 400);
     }
 
@@ -634,6 +662,47 @@ mod tests {
         assert!(source.is_healthy(), "the loop stopped after a failure");
         assert_eq!(rx.borrow_and_update().max_client_conns, 777);
         running.abort();
+    }
+
+    /// `M88.8`. `poll` used to call `std::fs::read_to_string` straight from
+    /// the calling task. On the single-threaded runtime this test uses, that
+    /// means no other task can run until the read returns: the executor has
+    /// exactly one worker thread, and a synchronous call never gives it back
+    /// until it is done.
+    ///
+    /// `tokio::task::spawn_blocking` moves the read to a different thread and
+    /// hands the caller a `JoinHandle`, which cannot resolve inside the same
+    /// poll of the awaiting future — the executor has to suspend and come
+    /// back for it, and in between it is free to run whatever else is ready.
+    /// So a task spawned just before `poll().await` gets to make progress
+    /// while the fix is in place, and gets none at all while it is not: this
+    /// is not a timing measurement, it is presence or absence of a
+    /// suspension point.
+    #[tokio::test]
+    async fn poll_yields_to_the_runtime_instead_of_blocking_it() {
+        let (_dir, config) = mounted(MINIMAL);
+        let source = FileSource::new(config).unwrap();
+
+        let progressed = Arc::new(AtomicUsize::new(0));
+        let counter = tokio::spawn({
+            let progressed = Arc::clone(&progressed);
+            async move {
+                loop {
+                    progressed.fetch_add(1, Ordering::Relaxed);
+                    tokio::task::yield_now().await;
+                }
+            }
+        });
+
+        source.poll().await.unwrap();
+        counter.abort();
+
+        assert!(
+            progressed.load(Ordering::Relaxed) > 0,
+            "the counter task never ran while poll() was in flight: poll() \
+             blocked the runtime's only worker thread instead of handing the \
+             read to spawn_blocking"
+        );
     }
 
     #[test]

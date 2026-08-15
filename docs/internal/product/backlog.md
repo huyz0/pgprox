@@ -9730,7 +9730,7 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a test that constructing the config with JWT auth enabled and TLS
   not required is refused at startup rather than accepted, failing before the
   fix.
-- [ ] `M88.8` `pgprox-config`'s `FileSource::read` blocks the shared async
+- [x] `M88.8` `pgprox-config`'s `FileSource::read` blocks the shared async
   runtime. It performs synchronous file I/O directly on a Tokio task rather
   than through `tokio::task::spawn_blocking`, which under the async-concurrency
   standard's rule stalls every other task on that worker thread for the
@@ -9739,6 +9739,14 @@ recognised so it can be refused rather than read as a version.
   Acceptance: a test (or a `debug_assert!`/structural check, whichever proves
   it) that the read path yields to the runtime rather than blocking it, failing
   before the fix.
+  Landed narrower than filed: only `FileSource::poll` (and the `run` loop that
+  calls it once a second for the life of the process) moved to
+  `spawn_blocking`. `FileSource::new` and `ConfigSource::load` read inline
+  deliberately left alone — the standard's rule is specifically about "a task
+  that also serves connections", and both run exactly once, during node
+  construction in `wiring.rs`'s `App::build`, before any connection exists for
+  that task to be serving. `Options::tls()`'s certificate loading is the same
+  shape and was already accepted.
 - [ ] `M88.9` `pgprox-session`'s `ParameterCache::ensure` drops its probe
   connection without saying goodbye. It opens a connection to discover a
   backend's server parameters and drops it when done, skipping the `.goodbye()`

@@ -3453,6 +3453,25 @@ came up and silently accepted tokens in the clear, despite `values.yaml`'s own
 comment already claiming otherwise — now refuses to start, which is what that
 comment described all along.
 
+**`M88.8`.** `FileSource::poll` called `std::fs::read_to_string` straight from
+the task that also runs the rest of the async work on that worker thread —
+exactly what the async-concurrency standard's Blocking rule forbids, and
+`Self::run` calls it once a second for the life of the process, on the same
+runtime a node is using to serve tens of thousands of client connections.
+Fixed by moving the read behind `tokio::task::spawn_blocking`, `poll` now
+`async` and `run`'s loop awaiting it. `FileSource::new` and
+`ConfigSource::load` keep their inline reads: the rule is about a task that
+also serves connections, and both of those run exactly once, during node
+construction, before any connection exists for the task to be serving —
+the same shape `Options::tls()`'s certificate loading already relies on. The
+new test spawns a task that increments a counter and yields in a loop
+alongside `poll().await`; on the single-threaded runtime the test uses, that
+counter can only advance if `poll` actually suspends the caller rather than
+running to completion in one uninterrupted step, which is presence or absence
+of a suspension point rather than a timing measurement. Confirmed failing
+against a `poll` that keeps its `async` signature but reads inline instead of
+through `spawn_blocking` — the counter never moves, and the assertion says so.
+
 ## M89: the review from outside this repo, and the four gaps it found (complete)
 
 ```bash
