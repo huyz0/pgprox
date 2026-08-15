@@ -10385,7 +10385,43 @@ scalable real production machine, which stays `M16`'s open item.
   since this changes nothing about quota accounting. Verified against a
   revert of the fix before landing. ADR 0004 records the reasoning
   alongside the version field it already documents.
-- [ ] `M90.18` Close M90 once a full review cycle across the angles above
+- [x] `M90.18` `SqlReplicaProbe::ask`'s failure branch dropped its held
+  connection outright with no `Terminate`, the same shape `M88.9` fixed for
+  `ParameterCache::ensure`. This connection never enters COPY, so
+  `Upstreamed::goodbye`'s "only on a clean close" restriction does not
+  apply — the failure state left after an `ErrorResponse` to a plain query
+  is exactly the state `goodbye` is safe in. A replica refusing every poll
+  (the "database system is starting up" case `probe.rs`'s own test already
+  scripts, ordinary during a failover) abandoned one un-terminated backend
+  connection per quarter-second poll, each reclaimed only by the replica's
+  own timeout rather than promptly.
+  Acceptance: the error branch calls `connection.goodbye()` before dropping
+  it. New test `a_refused_probe_says_goodbye_before_dropping_the_connection`,
+  recording bytes the fake replica reads after close the same way
+  `ensure_says_goodbye_to_its_probe_connection` already does for the sibling
+  bug; verified against a revert of the fix before landing.
+- [x] `M90.19` `Wire::read_header`'s doc claimed it was unsafe to call from
+  inside a `select!` a drain branch could win, naming the server-to-client
+  pump as the one place that could use the split read/body pattern safely
+  because "the relay loop" instead calls `read_tagged` to stay atomic. Both
+  claims were wrong: the client-read loop (`bin/pgprox/src/serve.rs`'s
+  `relay()`) has called `read_header` from inside exactly such a `select!`
+  since `M16.12`, correctly — `read_header` alone never partially consumes a
+  message when cancelled, and `relay()` keeps the body read that must follow
+  it on a plain unraced `.await` right after, which is what actually makes
+  the pair safe there. The doc was internally contradicted by the very code
+  it was describing, which is the shape of doc drift most likely to mislead
+  the next change: a future `select!` branch added around `relay()`'s body
+  read would look like it was following documented practice.
+  Acceptance: `read_header`'s and `read_body_into`'s doc comments in
+  `crates/pgprox-session/src/shell.rs`, and the matching comment in
+  `bin/pgprox/src/serve.rs`'s server-to-client pump, now state the actual
+  safety split — the header read is fine to race, the body read after it
+  never is — rather than a blanket "not cancellation-safe" that the code
+  does not follow. No behavior change; verified by the full existing test
+  suite for both crates still passing and `cargo doc` finding no broken
+  intra-doc link.
+- [ ] `M90.20` Close M90 once a full review cycle across the angles above
   finds nothing new. Filed as its own task for the reason `M24.10`, `M88.19`
   and `M89.5` were: closing a milestone is a claim about the whole of it.
   Acceptance: the status row says complete and the section names what, if

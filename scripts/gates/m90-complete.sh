@@ -183,4 +183,13 @@ run_finding pgprox-cluster service::tests::version_floor_does_not_panic_before_t
 run_finding pgprox-cluster service::tests::a_process_that_restarts_inside_dead_after_is_not_rejected_as_stale \
   "M90.17: a process that restarts inside dead_after is not rejected as stale"
 
+# --- M90.18: a refused probe query dropped its connection with no Terminate -
+run_finding pgprox-session probe::tests::a_refused_probe_says_goodbye_before_dropping_the_connection \
+  "M90.18: a refused probe says goodbye before dropping the connection"
+
+# --- M90.19: read_header's doc contradicted the code that calls it ----------
+# Doc-only: corrected comments in shell.rs and serve.rs, no behavior change
+# and nothing to run a test against. Checked by the full existing suite for
+# both crates staying green and `cargo doc` finding no broken link.
+
 finish

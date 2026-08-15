@@ -248,9 +248,20 @@ impl<U: Upstream + 'static> SqlReplicaProbe<U> {
         // A failure drops the connection rather than keeping it, because the
         // most likely reason a query failed is that the connection is no
         // longer usable, and reusing it would fail every poll from here on.
+        //
+        // `goodbye` first, same as `ParameterCache::ensure` (`M88.9`): this
+        // connection only ever runs one simple query and never enters COPY,
+        // so a `Terminate` here is always the safe kind `goodbye`'s own doc
+        // requires, never the protocol error a mid-COPY one would be. A
+        // flapping replica polled every quarter second (`M88.9`'s writeup on
+        // why a per-poll dial would be a login storm is exactly why this
+        // connection is held rather than reopened) abandoned one un-terminated
+        // backend connection per failed poll otherwise, each reclaimed only by
+        // the replica's own timeout rather than promptly.
         match run_replica_query(&mut connection.wire).await {
             Ok(probe) => Ok(probe),
             Err(reason) => {
+                connection.goodbye().await;
                 *held = None;
                 Err(reason)
             }
@@ -745,6 +756,78 @@ mod tests {
         assert_eq!(parameters[0].1, "18.0");
     }
 
+    /// A replica that refuses the probe query, then records whatever the
+    /// prober sends afterward — the same recording shape as
+    /// [`RecordingScripted`], for the replica handshake instead of
+    /// `ParameterCache`'s.
+    #[derive(Debug)]
+    struct RefusingRecorded {
+        report: Mutex<Option<tokio::sync::oneshot::Sender<Vec<u8>>>>,
+    }
+
+    impl RefusingRecorded {
+        fn new() -> (Self, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            (
+                Self {
+                    report: Mutex::new(Some(tx)),
+                },
+                rx,
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Upstream for RefusingRecorded {
+        type Stream = DuplexStream;
+
+        async fn dial(&self, _backend: &Backend) -> Result<Self::Stream, PoolError> {
+            let (ours, mut theirs) = duplex(4096);
+            let report = self
+                .report
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .expect("this fake is dialed at most once per test");
+
+            tokio::spawn(async move {
+                let mut len = [0_u8; 4];
+                theirs.read_exact(&mut len).await.unwrap();
+                let mut body = vec![0; u32::from_be_bytes(len) as usize - 4];
+                theirs.read_exact(&mut body).await.unwrap();
+
+                let mut out = Vec::new();
+                encode::authentication_ok(&mut out);
+                encode::ready_for_query(&mut out, pgprox_proto::backend::TxStatus::Idle);
+                theirs.write_all(&out).await.unwrap();
+
+                // The probe query, refused every time.
+                let mut header = [0_u8; 5];
+                theirs.read_exact(&mut header).await.unwrap();
+                let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+                let mut body = vec![0; len - 4];
+                theirs.read_exact(&mut body).await.unwrap();
+
+                let mut out = Vec::new();
+                out.push(Tag::ERROR_RESPONSE.get());
+                let fields = b"SERROR\0C57P03\0Mthe database system is starting up\0\0";
+                out.extend_from_slice(&u32::try_from(fields.len() + 4).unwrap().to_be_bytes());
+                out.extend_from_slice(fields);
+                theirs.write_all(&out).await.unwrap();
+
+                let mut sink = Vec::new();
+                let _ = theirs.read_to_end(&mut sink).await;
+                let _ = report.send(sink);
+            });
+
+            Ok(ours)
+        }
+
+        fn scram(&self) -> Box<dyn UpstreamScram> {
+            unreachable!("this replica never asks for SASL")
+        }
+    }
+
     /// A replica that answers the probe query with a scripted row.
     #[derive(Debug)]
     struct Replica {
@@ -924,6 +1007,34 @@ mod tests {
 
         let err = prober.probe(0).await.unwrap_err();
         assert!(err.contains("57P03"), "{err}");
+    }
+
+    /// `M90`, cycle 6, sibling to `M88.9`. The failure branch dropped the
+    /// held connection outright, with no `Terminate`: a flapping replica —
+    /// refused every quarter-second poll rather than every startup, which is
+    /// the ordinary shape of "the database system is starting up" during a
+    /// failover — abandoned one un-terminated backend connection per failed
+    /// poll, each reclaimed only by the replica's own timeout rather than
+    /// promptly. This connection never enters COPY, so `goodbye`'s own "only
+    /// on a clean close" restriction does not apply here.
+    #[tokio::test]
+    async fn a_refused_probe_says_goodbye_before_dropping_the_connection() {
+        let (fake, closed) = RefusingRecorded::new();
+        let prober = SqlReplicaProbe::new(fake, vec![backend("r0")], test_slab());
+
+        let err = prober.probe(0).await.unwrap_err();
+        assert!(err.contains("57P03"), "{err}");
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), closed)
+            .await
+            .expect("the fake server never saw the probe connection close")
+            .unwrap();
+
+        assert_eq!(
+            received.first().copied(),
+            Some(Tag::TERMINATE.get()),
+            "the probe connection closed without sending Terminate: {received:?}"
+        );
     }
 
     #[tokio::test]
