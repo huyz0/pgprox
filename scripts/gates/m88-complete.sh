@@ -188,4 +188,12 @@ run_finding pgprox-core \
   ids::tests::a_low_half_needing_padding_is_zero_padded \
   "an Lsn's low half prints zero-padded to eight hex digits"
 
+# --- M88.15: AGENTS.md and ADR 0006 describe the one provider that exists --
+run_finding pgprox-config \
+  tests::agents_md_names_the_one_provider_that_exists_rather_than_three \
+  "AGENTS.md names FileSource rather than claiming three built providers"
+run_finding pgprox-config \
+  tests::the_adr_records_that_only_one_provider_is_implemented \
+  "ADR 0006 says plainly that only the file provider is implemented"
+
 finish

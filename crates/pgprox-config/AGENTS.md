@@ -12,10 +12,11 @@
 - The imperative `POST /v1/drain` path writes the same state with a TTL. Without
   the TTL, a node drained at 2am stays drained forever and nobody can tell
   whether that was intentional.
-- Validation happens once, in the shared path, so all three providers behave
-  identically. It is `Config::validate` from `pgprox-core`, the same function
-  the fake calls, so a document this crate accepts and one the fake accepts
-  cannot diverge.
+- Validation happens once, in the shared path, so every `ConfigSource` — today
+  just `FileSource`, with the trait shaped to add another without a rewrite —
+  behaves identically. It is `Config::validate` from `pgprox-core`, the same
+  function the fake calls, so a document this crate accepts and one the fake
+  accepts cannot diverge.
 - **`deny_unknown_fields` on every document type.** A misspelled key that is
   silently ignored is the worst configuration bug there is: the operator sees
   their edit in git, the node reports nothing, and the setting never took

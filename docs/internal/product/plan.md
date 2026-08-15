@@ -555,11 +555,14 @@ connections per upstream host, since the limit applies per destination tuple.
 
 ### Config and drain
 
-`ConfigSource` has three implementations: a file provider watching the mount
-directory (ConfigMap updates swap a symlink, so watching the file itself misses
-changes), an etcd-watch provider, and an HTTP-poll provider, the latter two
-behind features. Config is declarative and versioned; drain is desired state, not
-an imperative RPC, so it survives a pod restart and shows up in git.
+`ConfigSource` is a trait, shaped to add a provider without a rewrite; today it
+has one implementation, `FileSource`, which watches the mount directory
+(ConfigMap updates swap a symlink, so watching the file itself misses changes).
+An etcd-watch provider and an HTTP-poll provider were the design's intended
+reach for a non-k8s deployment, feature-gated so the default build carries
+neither; neither is built. Config is declarative and versioned; drain is
+desired state, not an imperative RPC, so it survives a pod restart and shows up
+in git.
 
 ```yaml
 nodes:

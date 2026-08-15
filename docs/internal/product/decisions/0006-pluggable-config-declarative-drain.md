@@ -1,6 +1,6 @@
 # 0006. Pluggable config sources, drain as desired state
 
-Status: accepted
+Status: accepted, one of three providers implemented
 
 ## Context
 
@@ -65,3 +65,19 @@ reintroduces the problem.
 **etcd as source of truth.** Strong consistency and instant propagation.
 Rejected because it puts a hard external dependency in the control path for a
 benefit that ConfigMap propagation delay does not actually cost us.
+
+## Outstanding
+
+**Only the file provider is built.** `pgprox-config` has one `ConfigSource`
+implementation, `FileSource`. The etcd-watch and HTTP-poll providers described
+above under "Decision" were the intended shape of the trait, not a record of
+what exists — no `EtcdSource` or `HttpSource` type, feature-gated or otherwise,
+is in the crate. `M88.15` found this: this record and the crate's own
+`AGENTS.md` both said "three providers" long enough that it read as current
+state rather than as design headroom.
+
+This is deliberately left as a documentation fix rather than a reason to build
+the other two now. Nothing in the roadmap has asked for a non-k8s deployment
+target yet, which is the only thing either provider would be for. The trait is
+still shaped to add one without a rewrite when that day comes; until then, "the
+default" and "the only one" are the same provider.

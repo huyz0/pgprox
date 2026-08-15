@@ -9842,7 +9842,7 @@ recognised so it can be refused rather than read as a version.
   `16/B374D848`. The existing `lsn_zero_is_the_default` test was itself
   asserting the buggy output (`"0/0"`) and had to be corrected to
   `"0/00000000"` alongside the two new tests.
-- [ ] `M88.15` `pgprox-config`'s `AGENTS.md` and ADR 0006 claim three config
+- [x] `M88.15` `pgprox-config`'s `AGENTS.md` and ADR 0006 claim three config
   providers; the crate implements one. Whichever is true, the other is a
   reader-facing claim that does not match the workspace, the same shape
   `M24.9` found for certificate hot reload and `M13` found for the
@@ -9852,6 +9852,21 @@ recognised so it can be refused rather than read as a version.
   or the crate is extended to match and a test proves the added provider
   works; whichever, checked by `scripts/check-drift.sh` finding no remaining
   mismatch it can detect and by a reading of both documents against the code.
+  Landed as the documentation side, not the extension side: `docs/internal/product/plan.md`
+  also overclaimed the same "three providers" and was corrected alongside
+  `AGENTS.md` and the ADR. The ADR's `Status` line now reads "accepted, one of
+  three providers implemented" with a new `## Outstanding` section naming
+  what was never built and why building it now is not warranted — nothing in
+  the roadmap has asked for a non-k8s deployment, the only reason either
+  missing provider would exist. Unlike `M24.9`'s cert hot reload, which was a
+  small, self-contained, security-relevant gap worth building outright, an
+  etcd-watch and an HTTP-poll provider are two new network-facing subsystems
+  each needing their own dependency, feature gate, and test suite — not a
+  single-commit fix. Checked mechanically: two new tests in
+  `pgprox-config`'s `lib.rs`, `include_str!`-ing `AGENTS.md` and the ADR at
+  compile time and asserting neither reads as claiming three built
+  providers, each confirmed to fail against the pre-fix wording and pass
+  against the fix.
 - [ ] `M88.16` `pgprox-core`'s `lib.rs` contracts table is missing four traits.
   The crate-level doc comment tables the traits non-negotiable 6 governs, and
   four defined in the crate are not rows in it, which means a future

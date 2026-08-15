@@ -3579,6 +3579,23 @@ named: `{:X}` became `{:08X}` on the low half only. The existing
 `Lsn::ZERO.to_string() == "0/0"` — and had to be corrected alongside the two
 new tests the finding's acceptance criterion asked for.
 
+**`M88.15`.** `pgprox-config`'s `AGENTS.md`, ADR 0006, and `plan.md` all said
+`ConfigSource` "has three implementations" — a file provider, an etcd-watch
+provider, and an HTTP-poll provider — when the crate has always shipped
+exactly one, `FileSource`. This landed as the documentation catching up to
+the workspace rather than the workspace catching up to the documentation:
+unlike `M24.9`'s certificate hot reload, which was one small security-relevant
+gap worth building outright, the two missing providers are full network
+subsystems with their own dependencies and feature gates, and nothing in the
+roadmap has asked for the non-k8s deployment target either would serve. The
+ADR keeps the original design intent in its `Decision` and `Consequences`
+sections — that is what was decided — and gets a new `## Outstanding` section
+saying plainly that two of the three were never built, following `0012`'s
+"accepted, with one item outstanding" pattern. Checked by two new
+`pgprox-config` tests that `include_str!` `AGENTS.md` and the ADR at compile
+time and assert neither overclaims, each confirmed to fail against the old
+wording restored temporarily and pass against the fix.
+
 ## M89: the review from outside this repo, and the four gaps it found (complete)
 
 ```bash
